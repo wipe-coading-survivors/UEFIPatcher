@@ -30,8 +30,8 @@ WebUI (SvelteKit/TypeScript) для управления UEFI-образами �
 │   │       ├── session.rs     # cookie-маппинг: session_id → token (in-memory map)
 │   │       ├── routes/
 │   │       │   ├── mod.rs
-│   │       │   ├── session.rs # POST/DELETE/GET /api/session(s)
-│   │       │   ├── image.rs   # POST /api/image/open, GET dump/items/find, POST save
+│   │       │   ├── session.rs # POST/DELETE/GET /api/v1/session(s)
+│   │       │   ├── image.rs   # POST /api/v1/image/open, GET dump/items/find, POST save
 │   │       │   ├── edit.rs    # POST insert/remove/replace/rebuild
 │   │       │   ├── setup.rs   # POST set-visibility, GET setup-items, POST add-formset
 │   │       │   └── upload.rs  # POST upload (multipart), GET download
@@ -96,50 +96,50 @@ WebUI (SvelteKit/TypeScript) для управления UEFI-образами �
 
 ## API/Контракты
 
-Все эндпоинты под `/api/`. Cookie `uefipatcher_session` (HttpOnly, SameSite=Strict) = session_id. Cookie `uefipatcher_image` = active image_id.
+Все эндпоинты под `/api/v1/` (версионирование для будущих несовместимых изменений). Cookie `uefipatcher_session` (HttpOnly, SameSite=Strict) = session_id. Cookie `uefipatcher_image` = active image_id.
 
 ### Session
 
 | Метод | Path | Тело | Ответ | Описание |
 |---|---|---|---|---|
-| POST | `/api/session` | `{}` | `{session_id}` + Set-Cookie | CreateSession |
-| DELETE | `/api/session` | — | `{ok}` | DestroySession |
-| GET | `/api/sessions` | — | `[{session_id, created_at, last_activity}]` | ListSessions |
+| POST | `/api/v1/session` | `{}` | `{session_id}` + Set-Cookie | CreateSession |
+| DELETE | `/api/v1/session` | — | `{ok}` | DestroySession |
+| GET | `/api/v1/sessions` | — | `[{session_id, created_at, last_activity}]` | ListSessions |
 
 ### Image
 
 | Метод | Path | Тело | Ответ | Описание |
 |---|---|---|---|---|
-| POST | `/api/image/open` | `{path, mode: "read"\|"write"}` | `{image_id, root_guid}` + Set-Cookie | OpenImage |
-| POST | `/api/image/upload` | multipart `file` | `{path}` | сохраняет во temp файл |
-| GET | `/api/image/:id/dump?format=text\|tsv` | — | `{text}` | DumpTree |
-| GET | `/api/image/:id/items?filter=` | — | `[{path, type, subtype, guid, offset, size, name}]` | ListItems |
-| GET | `/api/image/:id/find?target=` | — | `{item_id}` | FindItem |
-| POST | `/api/image/:id/save` | `{output_path}` | `{ok}` | SaveImage |
-| GET | `/api/image/:id/download` | — | binary file | SaveImage в temp → отдаёт файл |
+| POST | `/api/v1/image/open` | `{path, mode: "read"\|"write"}` | `{image_id, root_guid}` + Set-Cookie | OpenImage |
+| POST | `/api/v1/image/upload` | multipart `file` | `{path}` | сохраняет во temp файл |
+| GET | `/api/v1/image/:id/dump?format=text\|tsv` | — | `{text}` | DumpTree |
+| GET | `/api/v1/image/:id/items?filter=` | — | `[{path, type, subtype, guid, offset, size, name}]` | ListItems |
+| GET | `/api/v1/image/:id/find?target=` | — | `{item_id}` | FindItem |
+| POST | `/api/v1/image/:id/save` | `{output_path}` | `{ok}` | SaveImage |
+| GET | `/api/v1/image/:id/download` | — | binary file | SaveImage в temp → отдаёт файл |
 
 ### Edit
 
 | Метод | Path | Тело | Ответ |
 |---|---|---|---|
-| POST | `/api/image/:id/insert` | `{target, ffs_path, mode}` | `{item_id}` |
-| POST | `/api/image/:id/remove` | `{target}` | `{ok}` |
-| POST | `/api/image/:id/replace` | `{target, data_path, body_only}` | `{item_id}` |
-| POST | `/api/image/:id/rebuild` | `{target}` | `{ok}` |
+| POST | `/api/v1/image/:id/insert` | `{target, ffs_path, mode}` | `{item_id}` |
+| POST | `/api/v1/image/:id/remove` | `{target}` | `{ok}` |
+| POST | `/api/v1/image/:id/replace` | `{target, data_path, body_only}` | `{item_id}` |
+| POST | `/api/v1/image/:id/rebuild` | `{target}` | `{ok}` |
 
 ### Setup
 
 | Метод | Path | Тело | Ответ |
 |---|---|---|---|
-| POST | `/api/image/:id/set-visibility` | `{item_id, visible}` | `{ok}` |
-| GET | `/api/image/:id/setup-items` | — | `[{items}]` (Section type) |
-| POST | `/api/image/:id/add-formset` | `{schema_json, target_ffs_guid}` | `{new_ffs_id, inserted_form_ids, string_ids}` |
+| POST | `/api/v1/image/:id/set-visibility` | `{item_id, visible}` | `{ok}` |
+| GET | `/api/v1/image/:id/setup-items` | — | `[{items}]` (Section type) |
+| POST | `/api/v1/image/:id/add-formset` | `{schema_json, target_ffs_guid}` | `{new_ffs_id, inserted_form_ids, string_ids}` |
 
 ### WebSocket
 
 | Path | Описание |
 |---|---|
-| `ws://host/api/image/:id/dump/ws` | streaming dump |
+| `ws://host/api/v1/image/:id/dump/ws` | streaming dump |
 
 ### Ошибки
 
@@ -192,7 +192,7 @@ HTTP status ← gRPC code: `401` UNAUTHENTICATED, `404` NOT_FOUND, `400` INVALID
 
 ## Этапы реализации
 
-1. **uefi-gateway скелет**: Cargo.toml, axum server, config (env), health endpoint `/api/health`.
+1. **uefi-gateway скелет**: Cargo.toml, axum server, config (env), health endpoint `/api/v1/health`.
 2. **gateway/client.rs**: gRPC-клиент к движку (tonic, uefi-proto).
 3. **gateway/session.rs**: cookie-маппинг (session_id → token in-memory map).
 4. **gateway/routes/**: session, image, edit, setup, upload — REST эндпоинты.
