@@ -50,11 +50,13 @@
 - **Зависимости**: цикл 1.
 - **Статус**: отменён. В цикле 1 менеджер сессий встроен в движок (TTL 10 дней, фоновый GC, SQLite). Встроенного достаточно для текущих требований. Вынесение в отдельный процесс не требуется.
 
-### Цикл 5+7 — WebUI + gRPC-шлюз (дизайн готов, к плану)
+### Цикл 5+7 — WebUI + gRPC-шлюз (план готов, к реализации)
 
 - **Scope**: WebUI (п.2.3, SvelteKit/TypeScript) + gRPC-шлюз (п.4.2, Rust/axum REST+WS прокси). Объединены — шлюз нужен для WebUI.
 - **Зависимости**: цикл 1 (gRPC-контракт), цикл 6 (add-formset, опционально).
 - **Spec**: `docs/superpowers/specs/2026-07-22-uefi-webui-design.md`
+- **Plan**: `docs/superpowers/plans/2026-07-22-uefi-webui.md`
+- **Статус**: план реализации готов (12 задач TDD), к исполнению.
 - **Что включено**: крейт `uefi-gateway` (axum REST+WS, cookie→gRPC metadata, upload/download); `webui/` (SvelteKit SPA, tree-view, details, операции, setup add-formset); Docker (engine+gateway+webui); тесты (gateway integration + Playwright E2E).
 
 ### Цикл 6 — Расширенный Setup (план готов, к реализации)
