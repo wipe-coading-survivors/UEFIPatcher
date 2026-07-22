@@ -50,12 +50,12 @@
 - **Зависимости**: цикл 1.
 - **Статус**: отменён. В цикле 1 менеджер сессий встроен в движок (TTL 10 дней, фоновый GC, SQLite). Встроенного достаточно для текущих требований. Вынесение в отдельный процесс не требуется.
 
-### Цикл 5 — WebUI
+### Цикл 5+7 — WebUI + gRPC-шлюз (дизайн готов, к плану)
 
-- **Scope**: WebUI (п.2.3) на TypeScript (svelte или аналог).
-- **Зависимости**: цикл 1 (gRPC-контракт или grpc-шлюз из цикла 7, если WebUI не может в unix-сокет).
-- **Что включено**: просмотр дерева UEFI-образа, редактирование, панель настроек Setup, загрузка/скачивание образов, управление сессиями (cookies для session_id).
-- **Вопросы для brainstorm**: бэкенд-компонент (тонкий grpc-клиент на Rust/Go/Node, проксирующий в движок), или grpc-web напрямую, или REST-шлюз (цикл 7).
+- **Scope**: WebUI (п.2.3, SvelteKit/TypeScript) + gRPC-шлюз (п.4.2, Rust/axum REST+WS прокси). Объединены — шлюз нужен для WebUI.
+- **Зависимости**: цикл 1 (gRPC-контракт), цикл 6 (add-formset, опционально).
+- **Spec**: `docs/superpowers/specs/2026-07-22-uefi-webui-design.md`
+- **Что включено**: крейт `uefi-gateway` (axum REST+WS, cookie→gRPC metadata, upload/download); `webui/` (SvelteKit SPA, tree-view, details, операции, setup add-formset); Docker (engine+gateway+webui); тесты (gateway integration + Playwright E2E).
 
 ### Цикл 6 — Расширенный Setup (план готов, к реализации)
 
@@ -67,12 +67,9 @@
 - **Что включено**: JSON-схема для описания FormSet/форм/пунктов; генерация IFR (FormSet/Form/VarStore/OneOf/CheckBox/Numeric/Ref/Text/Default); авто-добавление строк в HII String-пакет; сборка отдельного FFS с новым FormSet (аналог IntelRCSetup); обязательный AMI-патчинг setupdataBin (accessLevel/failsafe/optimal) + amitseSct (регистрация FormId); дефолты через EFI_IFR_DEFAULT (0=Optimized, 1=Failsafe); gRPC-метод AddSetupFormSet.
 - **Вопросы для brainstorm**: разрешены — JSON-схема, отдельный FFS, обязательный AMI, авто-strings.
 
-### Цикл 7 — gRPC-шлюз (опционально)
+### Цикл 7 — gRPC-шлюз (объединён с циклом 5)
 
-- **Scope**: grpc-компонент (п.4.2) — внешний API для клиентов, не способных работать через unix-сокет.
-- **Зависимости**: цикл 1.
-- **Статус**: опциональный. Нужен, если WebUI или внешние клиенты не могут подключаться к unix-сокету движка напрямую. Общается с движком через unix-сокет.
-- **Вопросы для brainstorm**: REST (grpc-gateway) или grpc-web, аутентификация внешних клиентов, TLS.
+- **Статус**: объединён с циклом 5. Шлюз `uefi-gateway` реализован как часть цикла 5+7.
 
 ## Связи между циклами
 
