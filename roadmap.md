@@ -35,11 +35,13 @@
 - **Что включено**: команды session (init/list/destroy), image (open/switch/close/dump/list/find/save), edit (insert/remove/replace/rebuild), setup (set-visibility/list-items); клиентская сессия в `.uefipatcher` (TOML) в CWD; приоритет sock `--sock` > env > state > default (`${XDG_STATE_HOME}/uefipatcher/uefipatcher.sock`); JSON/text/tsv вывод.
 - **Вопросы для brainstorm**: разрешены — синтаксис, state, вывод, lifecycle согласованы.
 
-### Цикл 3 — TUI (дизайн готов, к плану)
+### Цикл 3 — TUI (план готов, к реализации)
 
 - **Scope**: TUI (п.2.2) с ANSI + UTF-8 (иконки, псевдографика), аналог yazi/nvim.
 - **Зависимости**: цикл 1 (gRPC-контракт), цикл 2 (переиспользование state/commands).
 - **Spec**: `docs/superpowers/specs/2026-07-22-uefi-tui-design.md`
+- **Plan**: `docs/superpowers/plans/2026-07-22-uefi-tui.md`
+- **Статус**: план реализации готов (9 задач TDD), к исполнению.
 - **Что включено**: крейт `uefi-tui` (ratatui + crossterm); крейт `uefi-common` (state/error из uefi-cli); vim-like режимы (Normal/Command/Insert); 3 панели (дерево|детали|команды) + статус-бар + hint-бар; Nerd Font иконки по FfsType + Unicode псевдографика + цвета по Action; `:`-command-line для всех операций движка; `:help` popup; тесты (unit + integration через TestBackend + E2E round-trip).
 
 ### Цикл 4 — Менеджер сессий (опционально)
