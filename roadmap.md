@@ -56,12 +56,13 @@
 - **Что включено**: просмотр дерева UEFI-образа, редактирование, панель настроек Setup, загрузка/скачивание образов, управление сессиями (cookies для session_id).
 - **Вопросы для brainstorm**: бэкенд-компонент (тонкий grpc-клиент на Rust/Go/Node, проксирующий в движок), или grpc-web напрямую, или REST-шлюз (цикл 7).
 
-### Цикл 6 — Расширенный Setup
+### Цикл 6 — Расширенный Setup (дизайн готов, к плану)
 
 - **Scope**: доработка п.1.2 — добавление новых пунктов и разделов меню, управление NVRAM-переменными (существующими и новыми).
-- **Зависимости**: цикл 1 (парсер IFR, SetSetupItemVisibility).
-- **Что включено**: генерация новых IFR-форм, связывание с NVRAM-переменными, значения по умолчанию (Optimized/Failsafe), референс UEFI-Editor.
-- **Вопросы для brainstorm**: формат описания новых пунктов (JSON-схема?), совместимость с AMITSE/setupdata, тестовые образы.
+- **Зависимости**: цикл 1 (парсер IFR, SetSetupItemVisibility, ops::insert).
+- **Spec**: `docs/superpowers/specs/2026-07-22-uefi-setup-advanced-design.md`
+- **Что включено**: JSON-схема для описания FormSet/форм/пунктов; генерация IFR (FormSet/Form/VarStore/OneOf/CheckBox/Numeric/Ref/Text/Default); авто-добавление строк в HII String-пакет; сборка отдельного FFS с новым FormSet (аналог IntelRCSetup); обязательный AMI-патчинг setupdataBin (accessLevel/failsafe/optimal) + amitseSct (регистрация FormId); дефолты через EFI_IFR_DEFAULT (0=Optimized, 1=Failsafe); gRPC-метод AddSetupFormSet.
+- **Вопросы для brainstorm**: разрешены — JSON-схема, отдельный FFS, обязательный AMI, авто-strings.
 
 ### Цикл 7 — gRPC-шлюз (опционально)
 
