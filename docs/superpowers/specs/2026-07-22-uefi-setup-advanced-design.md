@@ -55,7 +55,7 @@ crates/uefi-engine/src/setup_advanced/
 - Метод: gRPC `EngineService/AddSetupFormSet`
 - Параметры:
   - `image_id`: string, обязательный — ID открытого образа
-  - `schema_json`: string, обязательный — JSON со схемой FormSet
+  - `schema_json`: string, обязательный — JSON со схемой FormSet (включая опциональные `setupdata_guid`/`amitse_guid` для прямого поиска AMI-модулей)
   - `target_ffs_guid`: string, необязательный — GUID FFS для поиска String-пакета (пусто = авто-поиск)
 - Ответ:
   - Успех: `{new_ffs_id: string, inserted_form_ids: [u16], string_ids: map<string, u16>}`
@@ -68,7 +68,7 @@ crates/uefi-engine/src/setup_advanced/
 
 | Тип | Поля | Описание |
 |---|---|---|
-| `FormSetSchema` | `formset_guid: string`, `title: string`, `help: string`, `class_guids: [string]`, `varstores: [VarStoreSchema]`, `default_stores: [DefaultStoreSchema]`, `forms: [FormSchema]` | Корень |
+| `FormSetSchema` | `formset_guid: string`, `title: string`, `help: string`, `class_guids: [string]`, `varstores: [VarStoreSchema]`, `default_stores: [DefaultStoreSchema]`, `forms: [FormSchema]`, `setupdata_guid: string?`, `amitse_guid: string?` | Корень; опциональные `setupdata_guid`/`amitse_guid` — GUID'ы AMI-модулей для прямого поиска (иначе авто-поиск по имени/эвристике) |
 | `VarStoreSchema` | `id: u16`, `guid: string`, `size: u16`, `name: string`, `type: "buffer"\|"efi"` | NVRAM-хранилище |
 | `DefaultStoreSchema` | `name: string`, `id: u16` (0=Optimized, 1=Failsafe) | Профиль дефолтов |
 | `FormSchema` | `id: u16`, `title: string`, `items: [ItemSchema]` | Форма (меню) |
@@ -89,6 +89,8 @@ crates/uefi-engine/src/setup_advanced/
   "title": "My Custom Setup",
   "help": "Custom UEFI settings",
   "class_guids": ["A3C4B5D6-..."],
+  "setupdata_guid": "12345678-90AB-CDEF-1234-567890ABCDEF",
+  "amitse_guid": "87654321-FEDC-BA09-8765-432109FEDCBA",
   "varstores": [
     { "id": 1, "guid": "11111111-2222-3333-4444-555555555555", "size": 256, "name": "MySetupVar", "type": "buffer" }
   ],
@@ -163,7 +165,11 @@ crates/uefi-engine/src/setup_advanced/
 ## AMI-патчинг
 
 `ami_patcher.rs`:
-- Поиск `setupdataBin` и `amitseSct` в образе (по именам FFS "setupdata"/"AMITSE" или эвристике по содержимому — наличие QuestionId-маркеров).
+- Поиск `setupdataBin` и `amitseSct` в образе. Приоритет методов поиска (применяются по очереди до успеха):
+  1. **По GUID FFS**: если в JSON-схеме указаны `setupdata_guid`/`amitse_guid` — прямой поиск FFS по GUID через `find_item` (цикл 1). Самый надёжный способ.
+  2. **По имени FFS**: поиск FFS с UI-секцией имени "setupdata"/"AMITSE" (AMI-конвенция имён).
+  3. **Эвристика по содержимому**: сканирование тела FFS на наличие QuestionId-маркеров (паттерн AMI-записи с recognizable offset-структурой) — запасной метод для неизвестных имён/GUID.
+- Опциональные поля JSON-схемы: `setupdata_guid: Option<string>`, `amitse_guid: Option<string>` — GUID'ы соответствующих FFS-модулей в образе для прямого поиска. Если не указаны — используются авто-методы 2/3.
 - Для каждого нового QuestionId:
   - Генерация 108-байтной AMI-записи в `setupdataBin`:
     - `[+0] QuestionId (u16 LE)` — маркер
@@ -174,7 +180,7 @@ crates/uefi-engine/src/setup_advanced/
     - Остальные байты — 0x00 (AMI-специфичные, не критичные)
   - Дополнение записи в конец `setupdataBin`.
 - Регистрация форм в `amitseSct`: для каждой новой формы — запись `FormId (u16 LE)` после FormSetId-маркера (хвост GUID FormSet `formSet[4]+formSet[5]`). Референс: `../refs/UEFI-Editor/src/components/scripts/scripts.ts:242-272`.
-- `patch_ami(image: &mut Image, formset_guid: Guid, form_ids: &[u16], questions: &[QuestionAmiRecord]) -> Result<()>`
+- `patch_ami(image: &mut Image, formset_guid: Guid, form_ids: &[u16], questions: &[QuestionAmiRecord], setupdata_guid: Option<Guid>, amitse_guid: Option<Guid>) -> Result<()>` — поиск setupdataBin/amitseSct по приоритету: GUID (если передан) → имя FFS → эвристика.
 - `QuestionAmiRecord { question_id: u16, page_id: Option<u16>, access_level: u8, failsafe: u8, optimal: u8 }`
 - Если `setupdataBin`/`amitseSct` не найдены — `Err(SetupAdvancedError::AmiFilesNotFound)` (обязательный патчинг).
 
@@ -192,7 +198,7 @@ crates/uefi-engine/src/setup_advanced/
 ### Unit-тесты
 - `ifr_builder`: генерация каждого опкода → сравнение с эталонными байтами (edk2 размеры/scope); round-trip emit→parse.
 - `string_pack`: парсинг синтетического String-пакета, добавление строк, пересчёт checksum.
-- `ami_patcher`: генерация 108-байтной записи, проверка offset'ов (accessLevel=+32, failsafe=+104, optimal=+106), вставка FormId в amitseSct.
+- `ami_patcher`: генерация 108-байтной записи, проверка offset'ов (accessLevel=+32, failsafe=+104, optimal=+106), вставка FormId в amitseSct; поиск setupdataBin/amitseSct по GUID (прямое совпадение), по имени FFS, эвристика по содержимому (fallback).
 - `schema`: валидация JSON (типы, обязательные поля, диапазоны, enum-values).
 
 ### Интеграционные тесты
