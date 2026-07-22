@@ -14,21 +14,24 @@
 
 ## Циклы
 
-### Цикл 1 — UEFI Engine (текущий, в работе)
+### Цикл 1 — UEFI Engine (план готов, к реализации)
 
 - **Scope**: серверный движок (п.4.1) + setup-visibility (часть п.1.2, только видимость) + CLI-минимум для smoke-теста RPC.
 - **Зависимости**: нет.
 - **Spec**: `docs/superpowers/specs/2026-07-22-uefi-engine-design.md`
+- **Plan**: `docs/superpowers/plans/2026-07-22-uefi-engine.md`
+- **Статус**: план реализации готов (18 задач TDD), к исполнению.
 - **Стек**: Rust, tonic gRPC over unix-сокет, SQLite, родная реализация парсера UEFI (референс UEFITool 0.28.8).
 - **Что включено**: парсер UEFI-образа → дерево `FfsNode`, builder (сборка обратно), модификации (insert/remove/replace/rebuild), SetSetupItemVisibility, хранилище сессий+артефактов (TTL 10 дней, GC), gRPC-сервер `EngineService`, токены авторизации.
 - **Что НЕ включено**: полный CLI, TUI, WebUI, новые пункты Setup, NVRAM, grpc-шлюз, менеджер сессий как отдельный процесс.
 
-### Цикл 2 — Полный CLI
+### Цикл 2 — Полный CLI (текущий, дизайн готов)
 
-- **Scope**: полный CLI (п.2.1) для скриптования, аналог UEFIEdit.
+- **Scope**: полный CLI (п.2.1) для скриптования, аналог UEFIEdit, но свой rust-idiomatic синтаксис.
 - **Зависимости**: цикл 1 (gRPC-контракт `uefi-proto`).
-- **Что включено**: все команды из примера UEFIEdit (dump/list/save/insert/insert-before/insert-after/remove/replace/replace-body/rebuild) + `set-visibility`, цепочки команд до save, коды ошибок USTATUS, help/version, скриптовый режим (чтение команд из stdin/файла).
-- **Вопросы для brainstorm**: формат цепочек команд, интерактивный режим, генерация completion (bash/zsh/fish).
+- **Spec**: `docs/superpowers/specs/2026-07-22-uefi-cli-design.md`
+- **Что включено**: команды session (init/list/destroy), image (open/switch/close/dump/list/find/save), edit (insert/remove/replace/rebuild), setup (set-visibility/list-items); клиентская сессия в `.uefipatcher` (TOML) в CWD; приоритет sock `--sock` > env > state > default (`${XDG_STATE_HOME}/uefipatcher/uefipatcher.sock`); JSON/text/tsv вывод.
+- **Вопросы для brainstorm**: разрешены — синтаксис, state, вывод, lifecycle согласованы.
 
 ### Цикл 3 — TUI
 
