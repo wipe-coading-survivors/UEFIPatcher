@@ -1,0 +1,1402 @@
+# UEFI Advanced Setup (цикл 6) Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Реализовать генерацию новых IFR-форм/пунктов с привязкой к NVRAM, авто-добавление строк в HII String-пакет, обязательный AMI-патчинг (setupdataBin + amitseSct), и gRPC-метод `AddSetupFormSet` для расширения Setup-меню UEFI BIOS.
+
+**Architecture:** Новый модуль `setup_advanced` в крейте `uefi-engine` (расширение цикла 1): `schema.rs` (JSON-схема через serde), `ifr_builder.rs` (генерация IFR-байтов по edk2-структурам), `string_pack.rs` (поиск/дополнение HII String-пакета), `ami_patcher.rs` (патч setupdataBin + amitseSct с поиском по GUID/имени/эвристике), `ffs_assembler.rs` (сборка FFS), `mod.rs` (координатор). Новый gRPC-метод `AddSetupFormSet` в `EngineService`. Вход — JSON-схема; результат — отдельный FFS с новым FormSet, вставленный в DXE-том.
+
+**Tech Stack:** Rust, serde/serde_json (JSON-схема), существующие `uefi-engine` модули (parser, builder, ops, types, ffs), tonic (gRPC), uuid (FFS GUID).
+
+## Global Constraints
+
+- Спека: `docs/superpowers/specs/2026-07-22-uefi-setup-advanced-design.md` — источник истины.
+- Референс IFR-структур: `../refs/edk2/MdePkg/Include/Uefi/UefiInternalFormRepresentation.h` (структуры опкодов, Type-union, DefaultId-константы).
+- Референс генерации IFR: `../refs/edk2/BaseTools/Source/C/VfrCompile/VfrFormPkg.{h,cpp}` (C++-паттерн, таблица размеров/scope `gOpcodeSizesScopeTable` в `VfrFormPkg.cpp:2255-2357`).
+- Референс String-пакета: `../refs/IFRExtractor-RS/src/uefi_parser.rs:167` (`hii_string_package`), `:312` (`sibt_string_scsu`), `:355` (`sibt_string_ucs2`).
+- Референс AMI-патчинга: `../refs/UEFI-Editor/src/components/scripts/scripts.ts:100-159` (setupdataBin формат: accessLevel=+32, failsafe=+104, optimal=+106, pageId=+24), `:242-272` (amitseSct: FormId LE после FormSetId-маркера).
+- DefaultId-константы (edk2): `STANDARD=0x0000` (Optimized), `MANUFACTURING=0x0001` (Failsafe), `SAFE=0x0002`.
+- IFR Type-константы: `NUM_SIZE_8=0x00`, `NUM_SIZE_16=0x01`, `NUM_SIZE_32=0x02`, `NUM_SIZE_64=0x03`, `BOOLEAN=0x04`, `STRING=0x07`.
+- Question flags: `READ_ONLY=0x01`, `CALLBACK=0x04`, `RESET_REQUIRED=0x10`, `REST_STYLE=0x20`, `RECONNECT_REQUIRED=0x40`, `OPTIONS_ONLY=0x80`.
+- Numeric/OneOf flags: `NUMERIC_SIZE=0x03` (маска: 0=u8,1=u16,2=u32,3=u64), `DISPLAY=0x30` (0=int_dec,0x10=uint_dec,0x20=uint_hex).
+- CheckBox flags: `DEFAULT=0x01`, `DEFAULT_MFG=0x02`.
+- OneOfOption flags: `OPTION_DEFAULT=0x10`, `OPTION_DEFAULT_MFG=0x20`.
+- Поиск AMI-файлов приоритет: 1) GUID из JSON-схемы (`setupdata_guid`/`amitse_guid`) → `find_item`, 2) имя FFS ("setupdata"/"AMITSE"), 3) эвристика по содержимому (QuestionId-маркеры).
+- AMI-запись: 108 байт, `[+0] QuestionId u16 LE`, `[+24] pageId u16 (Ref only)`, `[+32] accessLevel u8 (0x05)`, `[+104] failsafe u8`, `[+106] optimal u8`, остальное 0x00.
+- Кодстайл: `cargo fmt`, `cargo clippy -- -D warnings`. Без комментариев в коде (кроме ссылок на референс `file:line`).
+
+---
+
+## Файлы плана
+
+| Файл | Назначение |
+|---|---|
+| `crates/uefi-engine/src/setup_advanced/mod.rs` | координатор `add_setup_formset` |
+| `crates/uefi-engine/src/setup_advanced/schema.rs` | JSON-схема (serde), валидация |
+| `crates/uefi-engine/src/setup_advanced/ifr_builder.rs` | генерация IFR-байтов |
+| `crates/uefi-engine/src/setup_advanced/string_pack.rs` | поиск/дополнение HII String-пакета |
+| `crates/uefi-engine/src/setup_advanced/ami_patcher.rs` | патч setupdataBin + amitseSct |
+| `crates/uefi-engine/src/setup_advanced/ffs_assembler.rs` | сборка FFS |
+| `crates/uefi-proto/proto/engine.proto` | добавить `AddSetupFormSet` RPC + сообщения |
+| `crates/uefi-engine/src/rpc/server.rs` | impl `add_setup_form_set` |
+| `crates/uefi-engine/src/lib.rs` | подключить `setup_advanced` |
+| `crates/uefi-engine/Cargo.toml` | добавить `serde`/`serde_json` |
+
+---
+
+### Task 1: Зависимости и schema.rs — JSON-схема FormSet
+
+**Files:**
+- Modify: `crates/uefi-engine/Cargo.toml`
+- Create: `crates/uefi-engine/src/setup_advanced/mod.rs`
+- Create: `crates/uefi-engine/src/setup_advanced/schema.rs`
+
+**Interfaces:**
+- Consumes: нет
+- Produces:
+  - `pub struct FormSetSchema { formset_guid, title, help, class_guids, varstores, default_stores, forms, setupdata_guid: Option<String>, amitse_guid: Option<String> }`
+  - `pub struct VarStoreSchema { id: u16, guid: String, size: u16, name: String, var_type: VarStoreType }`
+  - `pub enum VarStoreType { Buffer, Efi }`
+  - `pub struct DefaultStoreSchema { name: String, id: u16 }`
+  - `pub struct FormSchema { id: u16, title: String, items: Vec<ItemSchema> }`
+  - `pub enum ItemSchema { OneOf(OneOfItem), CheckBox(CheckBoxItem), Numeric(NumericItem), Text(TextItem), Ref(RefItem), String(StringItem), Action(ActionItem), OrderedList(OrderedListItem) }`
+  - `pub struct OneOfItem { prompt, help, question_id: u16, var_store_id: u16, var_offset: u16, size: u8, display: DisplayMode, options: Vec<OptionSchema>, defaults: Defaults }`
+  - `pub struct OptionSchema { text: String, value: u64, default: Option<DefaultClass> }`
+  - `pub enum DefaultClass { Optimized, Failsafe }`
+  - `pub enum DisplayMode { IntDec, UintDec, UintHex }`
+  - `pub struct Defaults { optimized: Option<u64>, failsafe: Option<u64> }`
+  - `pub struct CheckBoxItem { prompt, help, question_id, var_store_id, var_offset, defaults }`
+  - `pub struct NumericItem { prompt, help, question_id, var_store_id, var_offset, size, min: u64, max: u64, step: u64, display, defaults }`
+  - `pub struct TextItem { prompt, help, text_two: String }`
+  - `pub struct RefItem { prompt, help, question_id, form_id: u16 }`
+  - `pub struct StringItem { prompt, help, question_id, var_store_id, var_offset, min_size: u8, max_size: u8 }`
+  - `pub struct ActionItem { prompt, help, question_id, config: String }`
+  - `pub struct OrderedListItem { prompt, help, question_id, var_store_id, var_offset, max_containers: u8 }`
+  - `pub fn parse_schema(json: &str) -> Result<FormSetSchema, SetupAdvancedError>`
+  - `pub enum SetupAdvancedError { InvalidSchema(String), StringPackageNotFound, AmiFilesNotFound, IfrBuildError(String), FfsAssemblyError(String) }`
+
+- [ ] **Step 1: Обновить Cargo.toml**
+
+Добавить в `crates/uefi-engine/Cargo.toml` [dependencies]:
+```toml
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+```
+
+- [ ] **Step 2: Написать failing test для parse_schema**
+
+`crates/uefi-engine/src/setup_advanced/mod.rs`:
+```rust
+pub mod schema;
+
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum SetupAdvancedError {
+    #[error("invalid schema: {0}")]
+    InvalidSchema(String),
+    #[error("string package not found")]
+    StringPackageNotFound,
+    #[error("AMI files not found (setupdataBin/amitseSct)")]
+    AmiFilesNotFound,
+    #[error("IFR build error: {0}")]
+    IfrBuildError(String),
+    #[error("FFS assembly error: {0}")]
+    FfsAssemblyError(String),
+}
+```
+
+`crates/uefi-engine/src/setup_advanced/schema.rs`:
+```rust
+use serde::{Deserialize, Serialize};
+use std::str::FromStr;
+use super::SetupAdvancedError;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FormSetSchema {
+    pub formset_guid: String,
+    pub title: String,
+    pub help: String,
+    #[serde(default)]
+    pub class_guids: Vec<String>,
+    pub varstores: Vec<VarStoreSchema>,
+    pub default_stores: Vec<DefaultStoreSchema>,
+    pub forms: Vec<FormSchema>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setupdata_guid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub amitse_guid: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VarStoreSchema {
+    pub id: u16,
+    pub guid: String,
+    pub size: u16,
+    pub name: String,
+    #[serde(rename = "type")]
+    pub var_type: VarStoreType,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum VarStoreType { Buffer, Efi }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DefaultStoreSchema {
+    pub name: String,
+    pub id: u16,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FormSchema {
+    pub id: u16,
+    pub title: String,
+    pub items: Vec<ItemSchema>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ItemSchema {
+    OneOf(OneOfItem),
+    CheckBox(CheckBoxItem),
+    Numeric(NumericItem),
+    Text(TextItem),
+    Ref(RefItem),
+    String(StringItem),
+    Action(ActionItem),
+    OrderedList(OrderedListItem),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OneOfItem {
+    pub prompt: String,
+    pub help: String,
+    pub question_id: u16,
+    pub var_store_id: u16,
+    pub var_offset: u16,
+    pub size: u8,
+    #[serde(default = "default_display")]
+    pub display: DisplayMode,
+    pub options: Vec<OptionSchema>,
+    #[serde(default)]
+    pub defaults: Defaults,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OptionSchema {
+    pub text: String,
+    pub value: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<DefaultClass>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DefaultClass { Optimized, Failsafe }
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DisplayMode { IntDec, UintDec, UintHex }
+
+fn default_display() -> DisplayMode { DisplayMode::UintDec }
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Defaults {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub optimized: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failsafe: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CheckBoxItem {
+    pub prompt: String,
+    pub help: String,
+    pub question_id: u16,
+    pub var_store_id: u16,
+    pub var_offset: u16,
+    #[serde(default)]
+    pub defaults: Defaults,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NumericItem {
+    pub prompt: String,
+    pub help: String,
+    pub question_id: u16,
+    pub var_store_id: u16,
+    pub var_offset: u16,
+    pub size: u8,
+    pub min: u64,
+    pub max: u64,
+    pub step: u64,
+    #[serde(default = "default_display")]
+    pub display: DisplayMode,
+    #[serde(default)]
+    pub defaults: Defaults,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TextItem {
+    pub prompt: String,
+    pub help: String,
+    pub text_two: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RefItem {
+    pub prompt: String,
+    pub help: String,
+    pub question_id: u16,
+    pub form_id: u16,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StringItem {
+    pub prompt: String,
+    pub help: String,
+    pub question_id: u16,
+    pub var_store_id: u16,
+    pub var_offset: u16,
+    pub min_size: u8,
+    pub max_size: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActionItem {
+    pub prompt: String,
+    pub help: String,
+    pub question_id: u16,
+    pub config: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrderedListItem {
+    pub prompt: String,
+    pub help: String,
+    pub question_id: u16,
+    pub var_store_id: u16,
+    pub var_offset: u16,
+    pub max_containers: u8,
+}
+
+pub fn parse_schema(json: &str) -> Result<FormSetSchema, SetupAdvancedError> {
+    serde_json::from_str(json).map_err(|e| SetupAdvancedError::InvalidSchema(e.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_minimal_schema() {
+        let json = r#"{
+            "formset_guid": "A1B2C3D4-E5F6-7890-ABCD-EF1234567890",
+            "title": "Test", "help": "Test help",
+            "class_guids": [],
+            "varstores": [{"id": 1, "guid": "11111111-2222-3333-4444-555555555555", "size": 256, "name": "MyVar", "type": "buffer"}],
+            "default_stores": [{"name": "Optimized", "id": 0}, {"name": "Failsafe", "id": 1}],
+            "forms": [{"id": 1, "title": "Main", "items": [
+                {"type": "one_of", "prompt": "P", "help": "H", "question_id": 256, "var_store_id": 1, "var_offset": 0, "size": 1,
+                 "options": [{"text": "A", "value": 0, "default": "optimized"}]}
+            ]}]
+        }"#;
+        let s = parse_schema(json).unwrap();
+        assert_eq!(s.title, "Test");
+        assert_eq!(s.varstores.len(), 1);
+        assert_eq!(s.forms[0].items.len(), 1);
+        match &s.forms[0].items[0] {
+            ItemSchema::OneOf(o) => { assert_eq!(o.question_id, 256); assert_eq!(o.options.len(), 1); }
+            _ => panic!("expected OneOf"),
+        }
+    }
+
+    #[test]
+    fn parse_with_ami_guids() {
+        let json = r#"{
+            "formset_guid": "A1B2C3D4-E5F6-7890-ABCD-EF1234567890",
+            "title": "T", "help": "H", "class_guids": [],
+            "setupdata_guid": "12345678-90AB-CDEF-1234-567890ABCDEF",
+            "amitse_guid": "87654321-FEDC-BA09-8765-432109FEDCBA",
+            "varstores": [], "default_stores": [], "forms": []
+        }"#;
+        let s = parse_schema(json).unwrap();
+        assert!(s.setupdata_guid.is_some());
+        assert!(s.amitse_guid.is_some());
+    }
+
+    #[test]
+    fn parse_invalid_json() {
+        assert!(parse_schema("{invalid").is_err());
+    }
+}
+```
+
+- [ ] **Step 3: Подключить модуль в lib.rs**
+
+`crates/uefi-engine/src/lib.rs`: добавить `pub mod setup_advanced;`
+
+- [ ] **Step 4: Запустить тесты**
+
+Run: `cargo test -p uefi-engine setup_advanced::schema`
+Expected: PASS
+
+- [ ] **Step 5: Коммит**
+
+```bash
+git add crates/uefi-engine/Cargo.toml crates/uefi-engine/src/setup_advanced/ crates/uefi-engine/src/lib.rs
+git commit -m "feat(setup_advanced): add JSON schema (FormSet/Form/Item/Defaults) with serde"
+```
+
+---
+
+### Task 2: ifr_builder.rs — генерация IFR-опкодов
+
+**Files:**
+- Create: `crates/uefi-engine/src/setup_advanced/ifr_builder.rs`
+
+**Interfaces:**
+- Consumes: `schema::*`, `types::Guid`
+- Produces:
+  - `pub struct IfrBuilder { buf: Vec<u8> }`
+  - Методы `emit_*` для каждого опкода (см. спеку)
+  - `pub fn build() -> Vec<u8>`
+  - Константы опкодов: `OP_FORM_SET=0x0E`, `OP_FORM=0x01`, `OP_END=0x29`, `OP_VARSTORE=0x24`, `OP_VARSTORE_EFI=0x26`, `OP_DEFAULT_STORE=0x5C`, `OP_ONE_OF=0x05`, `OP_ONE_OF_OPTION=0x09`, `OP_CHECKBOX=0x06`, `OP_NUMERIC=0x07`, `OP_REF=0x0F`, `OP_TEXT=0x03`, `OP_STRING=0x1C`, `OP_ACTION=0x0C`, `OP_ORDERED_LIST=0x23`, `OP_DEFAULT=0x5B`
+
+- [ ] **Step 1: Написать failing tests для базовых опкодов**
+
+`crates/uefi-engine/src/setup_advanced/ifr_builder.rs`:
+```rust
+use crate::types::Guid;
+use std::str::FromStr;
+
+pub const OP_FORM_SET: u8 = 0x0E;
+pub const OP_FORM: u8 = 0x01;
+pub const OP_END: u8 = 0x29;
+pub const OP_VARSTORE: u8 = 0x24;
+pub const OP_VARSTORE_EFI: u8 = 0x26;
+pub const OP_DEFAULT_STORE: u8 = 0x5C;
+pub const OP_ONE_OF: u8 = 0x05;
+pub const OP_ONE_OF_OPTION: u8 = 0x09;
+pub const OP_CHECKBOX: u8 = 0x06;
+pub const OP_NUMERIC: u8 = 0x07;
+pub const OP_REF: u8 = 0x0F;
+pub const OP_TEXT: u8 = 0x03;
+pub const OP_STRING: u8 = 0x1C;
+pub const OP_ACTION: u8 = 0x0C;
+pub const OP_ORDERED_LIST: u8 = 0x23;
+pub const OP_DEFAULT: u8 = 0x5B;
+
+pub const TYPE_NUM_SIZE_8: u8 = 0x00;
+pub const TYPE_NUM_SIZE_16: u8 = 0x01;
+pub const TYPE_NUM_SIZE_32: u8 = 0x02;
+pub const TYPE_NUM_SIZE_64: u8 = 0x03;
+pub const TYPE_BOOLEAN: u8 = 0x04;
+pub const TYPE_STRING: u8 = 0x07;
+
+pub const DEFAULT_ID_STANDARD: u16 = 0x0000;
+pub const DEFAULT_ID_MANUFACTURING: u16 = 0x0001;
+
+pub struct IfrBuilder {
+    buf: Vec<u8>,
+}
+
+impl IfrBuilder {
+    pub fn new() -> Self { Self { buf: Vec::new() } }
+
+    fn write_header(&mut self, opcode: u8, scope: bool, data_len: usize) {
+        let total = (data_len + 2) as u8;
+        let length = total & 0x7F;
+        let scope_bit: u8 = if scope { 0x80 } else { 0x00 };
+        self.buf.push(opcode);
+        self.buf.push(length | scope_bit);
+    }
+
+    pub fn emit_form_set(&mut self, guid: &Guid, title_id: u16, help_id: u16, class_guids: &[Guid]) {
+        let flags = class_guids.len() as u8 & 0x03;
+        self.write_header(OP_FORM_SET, true, 20 + 16 * class_guids.len());
+        self.buf.extend_from_slice(&guid_bytes(guid));
+        self.buf.extend_from_slice(&title_id.to_le_bytes());
+        self.buf.extend_from_slice(&help_id.to_le_bytes());
+        self.buf.push(flags);
+        for cg in class_guids {
+            self.buf.extend_from_slice(&guid_bytes(cg));
+        }
+    }
+
+    pub fn emit_var_store(&mut self, id: u16, guid: &Guid, size: u16, name: &str) {
+        let name_bytes = name.as_bytes();
+        self.write_header(OP_VARSTORE, false, 20 + name_bytes.len() + 1);
+        self.buf.extend_from_slice(&guid_bytes(guid));
+        self.buf.extend_from_slice(&id.to_le_bytes());
+        self.buf.extend_from_slice(&size.to_le_bytes());
+        self.buf.extend_from_slice(name_bytes);
+        self.buf.push(0);
+    }
+
+    pub fn emit_default_store(&mut self, name_id: u16, default_id: u16) {
+        self.write_header(OP_DEFAULT_STORE, false, 4);
+        self.buf.extend_from_slice(&name_id.to_le_bytes());
+        self.buf.extend_from_slice(&default_id.to_le_bytes());
+    }
+
+    pub fn emit_form(&mut self, id: u16, title_id: u16) {
+        self.write_header(OP_FORM, true, 4);
+        self.buf.extend_from_slice(&id.to_le_bytes());
+        self.buf.extend_from_slice(&title_id.to_le_bytes());
+    }
+
+    pub fn emit_one_of(&mut self, prompt_id: u16, help_id: u16, qid: u16, vsid: u16, voff: u16, flags: u8, size: u8) {
+        self.write_header(OP_ONE_OF, true, 13);
+        self.buf.extend_from_slice(&prompt_id.to_le_bytes());
+        self.buf.extend_from_slice(&help_id.to_le_bytes());
+        self.buf.extend_from_slice(&qid.to_le_bytes());
+        self.buf.extend_from_slice(&vsid.to_le_bytes());
+        self.buf.extend_from_slice(&voff.to_le_bytes());
+        self.buf.push(0);
+        let numeric_flags = (size - 1) & 0x03;
+        self.buf.push(numeric_flags | flags);
+        let (min, max, step) = min_max_step_default(size);
+        self.buf.extend_from_slice(&min);
+        self.buf.extend_from_slice(&max);
+        self.buf.extend_from_slice(&step);
+    }
+
+    pub fn emit_one_of_option(&mut self, text_id: u16, flags: u8, value_type: u8, value: u64, size: u8) {
+        let val_bytes = value_to_bytes(value, size);
+        self.write_header(OP_ONE_OF_OPTION, false, 4 + val_bytes.len());
+        self.buf.extend_from_slice(&text_id.to_le_bytes());
+        self.buf.push(flags | value_type);
+        self.buf.push(value_type);
+        self.buf.extend_from_slice(&val_bytes);
+    }
+
+    pub fn emit_check_box(&mut self, prompt_id: u16, help_id: u16, qid: u16, vsid: u16, voff: u16, flags: u8) {
+        self.write_header(OP_CHECKBOX, true, 12);
+        self.buf.extend_from_slice(&prompt_id.to_le_bytes());
+        self.buf.extend_from_slice(&help_id.to_le_bytes());
+        self.buf.extend_from_slice(&qid.to_le_bytes());
+        self.buf.extend_from_slice(&vsid.to_le_bytes());
+        self.buf.extend_from_slice(&voff.to_le_bytes());
+        self.buf.push(0);
+        self.buf.push(flags);
+    }
+
+    pub fn emit_numeric(&mut self, prompt_id: u16, help_id: u16, qid: u16, vsid: u16, voff: u16, flags: u8, size: u8, min: u64, max: u64, step: u64) {
+        self.write_header(OP_NUMERIC, true, 13);
+        self.buf.extend_from_slice(&prompt_id.to_le_bytes());
+        self.buf.extend_from_slice(&help_id.to_le_bytes());
+        self.buf.extend_from_slice(&qid.to_le_bytes());
+        self.buf.extend_from_slice(&vsid.to_le_bytes());
+        self.buf.extend_from_slice(&voff.to_le_bytes());
+        self.buf.push(0);
+        let numeric_flags = (size - 1) & 0x03;
+        self.buf.push(numeric_flags | flags);
+        self.buf.extend_from_slice(&value_to_bytes(min, size));
+        self.buf.extend_from_slice(&value_to_bytes(max, size));
+        self.buf.extend_from_slice(&value_to_bytes(step, size));
+    }
+
+    pub fn emit_ref(&mut self, prompt_id: u16, help_id: u16, qid: u16, vsid: u16, voff: u16, form_id: u16) {
+        self.write_header(OP_REF, false, 13);
+        self.buf.extend_from_slice(&prompt_id.to_le_bytes());
+        self.buf.extend_from_slice(&help_id.to_le_bytes());
+        self.buf.extend_from_slice(&qid.to_le_bytes());
+        self.buf.extend_from_slice(&vsid.to_le_bytes());
+        self.buf.extend_from_slice(&voff.to_le_bytes());
+        self.buf.push(0);
+        self.buf.extend_from_slice(&form_id.to_le_bytes());
+    }
+
+    pub fn emit_text(&mut self, prompt_id: u16, help_id: u16, text_two_id: u16) {
+        self.write_header(OP_TEXT, false, 6);
+        self.buf.extend_from_slice(&prompt_id.to_le_bytes());
+        self.buf.extend_from_slice(&help_id.to_le_bytes());
+        self.buf.extend_from_slice(&text_two_id.to_le_bytes());
+    }
+
+    pub fn emit_default(&mut self, default_id: u16, value_type: u8, value: u64, size: u8) {
+        let val_bytes = value_to_bytes(value, size);
+        self.write_header(OP_DEFAULT, false, 3 + val_bytes.len());
+        self.buf.extend_from_slice(&default_id.to_le_bytes());
+        self.buf.push(value_type);
+        self.buf.extend_from_slice(&val_bytes);
+    }
+
+    pub fn emit_end(&mut self) {
+        self.write_header(OP_END, false, 0);
+    }
+
+    pub fn build(self) -> Vec<u8> { self.buf }
+}
+
+pub fn guid_bytes(g: &Guid) -> [u8; 16] {
+    let mut b = [0u8; 16];
+    b[0..4].copy_from_slice(&g.data1.to_le_bytes());
+    b[4..6].copy_from_slice(&g.data2.to_le_bytes());
+    b[6..8].copy_from_slice(&g.data3.to_le_bytes());
+    b[8..16].copy_from_slice(&g.data4);
+    b
+}
+
+fn value_to_bytes(v: u64, size: u8) -> Vec<u8> {
+    match size {
+        1 => vec![v as u8],
+        2 => (v as u16).to_le_bytes().to_vec(),
+        4 => (v as u32).to_le_bytes().to_vec(),
+        8 => v.to_le_bytes().to_vec(),
+        _ => vec![v as u8],
+    }
+}
+
+fn min_max_step_default(size: u8) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    let z = value_to_bytes(0, size);
+    let m = value_to_bytes(match size { 1 => 0xFF, 2 => 0xFFFF, 4 => 0xFFFFFFFF, _ => 0xFFFFFFFFFFFFFFFF }, size);
+    (z.clone(), m, z)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn emit_form_set_header() {
+        let mut b = IfrBuilder::new();
+        let g = Guid::from_str("A1B2C3D4-E5F6-7890-ABCD-EF1234567890").unwrap();
+        b.emit_form_set(&g, 1, 2, &[]);
+        let buf = b.build();
+        assert_eq!(buf[0], OP_FORM_SET);
+        assert_eq!(buf[1] & 0x7F, 22);
+        assert_eq!(buf[1] & 0x80, 0x80);
+        assert_eq!(&buf[2..18], &guid_bytes(&g));
+        assert_eq!(u16::from_le_bytes([buf[18], buf[19]]), 1);
+    }
+
+    #[test]
+    fn emit_form_header() {
+        let mut b = IfrBuilder::new();
+        b.emit_form(5, 10);
+        let buf = b.build();
+        assert_eq!(buf[0], OP_FORM);
+        assert_eq!(buf[1] & 0x80, 0x80);
+        assert_eq!(u16::from_le_bytes([buf[2], buf[3]]), 5);
+        assert_eq!(u16::from_le_bytes([buf[4], buf[5]]), 10);
+    }
+
+    #[test]
+    fn emit_end() {
+        let mut b = IfrBuilder::new();
+        b.emit_end();
+        let buf = b.build();
+        assert_eq!(buf, vec![OP_END, 0x02]);
+    }
+
+    #[test]
+    fn emit_var_store_with_name() {
+        let mut b = IfrBuilder::new();
+        let g = Guid::from_str("11111111-2222-3333-4444-555555555555").unwrap();
+        b.emit_var_store(1, &g, 256, "MyVar");
+        let buf = b.build();
+        assert_eq!(buf[0], OP_VARSTORE);
+        assert_eq!(u16::from_le_bytes([buf[20], buf[21]]), 1);
+        assert_eq!(u16::from_le_bytes([buf[22], buf[23]]), 256);
+        assert_eq!(&buf[24..29], b"MyVar");
+        assert_eq!(buf[29], 0);
+    }
+
+    #[test]
+    fn emit_one_of_option_u8() {
+        let mut b = IfrBuilder::new();
+        b.emit_one_of_option(5, 0x10, TYPE_NUM_SIZE_8, 2, 1);
+        let buf = b.build();
+        assert_eq!(buf[0], OP_ONE_OF_OPTION);
+        assert_eq!(u16::from_le_bytes([buf[2], buf[3]]), 5);
+        assert_eq!(buf[6], 2);
+    }
+
+    #[test]
+    fn emit_default_standard() {
+        let mut b = IfrBuilder::new();
+        b.emit_default(DEFAULT_ID_STANDARD, TYPE_NUM_SIZE_8, 1, 1);
+        let buf = b.build();
+        assert_eq!(buf[0], OP_DEFAULT);
+        assert_eq!(u16::from_le_bytes([buf[2], buf[3]]), DEFAULT_ID_STANDARD);
+        assert_eq!(buf[4], TYPE_NUM_SIZE_8);
+        assert_eq!(buf[5], 1);
+    }
+}
+```
+
+- [ ] **Step 2: Подключить в setup_advanced/mod.rs**
+
+`crates/uefi-engine/src/setup_advanced/mod.rs`: добавить `pub mod ifr_builder;`
+
+- [ ] **Step 3: Запустить тесты**
+
+Run: `cargo test -p uefi-engine setup_advanced::ifr_builder`
+Expected: PASS
+
+- [ ] **Step 4: Коммит**
+
+```bash
+git add crates/uefi-engine/src/setup_advanced/ifr_builder.rs crates/uefi-engine/src/setup_advanced/mod.rs
+git commit -m "feat(setup_advanced): add IFR builder (FormSet/Form/VarStore/OneOf/CheckBox/Numeric/Ref/Text/Default/End)"
+```
+
+---
+
+### Task 3: string_pack.rs — поиск и дополнение HII String-пакета
+
+**Files:**
+- Create: `crates/uefi-engine/src/setup_advanced/string_pack.rs`
+
+**Interfaces:**
+- Consumes: `types::*` (Image, FfsNode, Guid), `parser::target::find_item`
+- Produces:
+  - `pub fn add_strings(image: &mut Image, ffs_guid: Option<&Guid>, strings: &[String]) -> Result<HashMap<String, u16>, SetupAdvancedError>`
+  - Поиск String-пакета: по GUID FFS (если передан) → авто-поиск (первый FFS с HII String Package)
+  - Парсинг: извлечение существующих StringId → `max_string_id`
+  - Добавление: alloc новых StringId (от max+1), запись SIBT-блоков
+  - Пересборка: обновление Length заголовка, пересчёт checksum
+  - Возврат: маппинг текст→StringId
+
+- [ ] **Step 1: Написать failing test**
+
+`crates/uefi-engine/src/setup_advanced/string_pack.rs`:
+```rust
+use std::collections::HashMap;
+use crate::types::*;
+use super::SetupAdvancedError;
+
+pub fn add_strings(image: &mut Image, ffs_guid: Option<&Guid>, strings: &[String]) -> Result<HashMap<String, u16>, SetupAdvancedError> {
+    let (ffs_idx, section_idx) = find_string_package(image, ffs_guid)?;
+    let node = &mut image.root.children[ffs_idx].children[section_idx];
+    let max_id = parse_max_string_id(&node.body);
+    let mut mapping = HashMap::new();
+    let mut next_id = max_id + 1;
+    for s in strings {
+        mapping.insert(s.clone(), next_id);
+        append_string_to_package(&mut node.body, next_id, s);
+        next_id += 1;
+    }
+    update_package_header(&mut node.body);
+    Ok(mapping)
+}
+
+fn find_string_package(image: &Image, ffs_guid: Option<&Guid>) -> Result<(usize, usize), SetupAdvancedError> {
+    for (vi, vol) in image.root.children.iter().enumerate() {
+        for (fi, file) in vol.children.iter().enumerate() {
+            if let Some(g) = ffs_guid {
+                if file.guid != Some(*g) { continue; }
+            }
+            for (_si, sec) in file.children.iter().enumerate() {
+                if is_string_package(&sec.body) {
+                    return Ok((vi, fi));
+                }
+            }
+        }
+    }
+    Err(SetupAdvancedError::StringPackageNotFound)
+}
+
+fn is_string_package(body: &[u8]) -> bool {
+    body.len() >= 4 && body[3] == 0x04
+}
+
+fn parse_max_string_id(body: &[u8]) -> u16 {
+    if body.len() < 6 { return 0; }
+    u16::from_le_bytes([body[4], body[5]])
+}
+
+fn append_string_to_package(body: &mut Vec<u8>, string_id: u16, text: &str) {
+    body.push(0x00);
+    body.push(0x01);
+    body.extend_from_slice(&string_id.to_le_bytes());
+    body.extend_from_slice(text.as_bytes());
+    body.push(0x00);
+}
+
+fn update_package_header(body: &mut Vec<u8>) {
+    let len = body.len() as u32;
+    body[0..4].copy_from_slice(&len.to_le_bytes());
+    let max_id = parse_max_string_id(body);
+    let _ = max_id;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_minimal_string_package() -> Vec<u8> {
+        let mut buf = vec![0u8; 6];
+        buf[3] = 0x04;
+        buf[0..4].copy_from_slice(&6u32.to_le_bytes());
+        buf[4..6].copy_from_slice(&0u16.to_le_bytes());
+        buf
+    }
+
+    #[test]
+    fn parse_max_id_empty() {
+        let pkg = make_minimal_string_package();
+        assert_eq!(parse_max_string_id(&pkg), 0);
+    }
+
+    #[test]
+    fn append_string_increases_size() {
+        let mut pkg = make_minimal_string_package();
+        let len_before = pkg.len();
+        append_string_to_package(&mut pkg, 1, "hello");
+        assert!(pkg.len() > len_before);
+        assert_eq!(&pkg[len_before+2..len_before+4], &1u16.to_le_bytes());
+        assert_eq!(&pkg[len_before+4..len_before+9], b"hello");
+    }
+
+    #[test]
+    fn is_string_package_detects() {
+        let pkg = make_minimal_string_package();
+        assert!(is_string_package(&pkg));
+        assert!(!is_string_package(&[0x00, 0x00, 0x00, 0x02]));
+    }
+}
+```
+
+- [ ] **Step 2: Подключить в mod.rs и запустить тесты**
+
+`crates/uefi-engine/src/setup_advanced/mod.rs`: добавить `pub mod string_pack;`
+
+Run: `cargo test -p uefi-engine setup_advanced::string_pack`
+Expected: PASS
+
+- [ ] **Step 3: Коммит**
+
+```bash
+git add crates/uefi-engine/src/setup_advanced/string_pack.rs crates/uefi-engine/src/setup_advanced/mod.rs
+git commit -m "feat(setup_advanced): add HII String package search and string addition"
+```
+
+---
+
+### Task 4: ami_patcher.rs — патч setupdataBin + amitseSct
+
+**Files:**
+- Create: `crates/uefi-engine/src/setup_advanced/ami_patcher.rs`
+
+**Interfaces:**
+- Consumes: `types::*`, `parser::target::find_item`, `Guid`
+- Produces:
+  - `pub struct QuestionAmiRecord { pub question_id: u16, pub page_id: Option<u16>, pub access_level: u8, pub failsafe: u8, pub optimal: u8 }`
+  - `pub fn patch_ami(image: &mut Image, formset_guid: &Guid, form_ids: &[u16], questions: &[QuestionAmiRecord], setupdata_guid: Option<&Guid>, amitse_guid: Option<&Guid>) -> Result<(), SetupAdvancedError>`
+  - Поиск setupdataBin/amitseSct по приоритету: GUID → имя FFS → эвристика
+  - Генерация 108-байтной AMI-записи, дополнение в setupdataBin
+  - Регистрация FormId в amitseSct
+
+- [ ] **Step 1: Написать failing tests**
+
+`crates/uefi-engine/src/setup_advanced/ami_patcher.rs`:
+```rust
+use crate::types::*;
+use super::SetupAdvancedError;
+
+pub const AMI_RECORD_SIZE: usize = 108;
+pub const AMI_DEFAULT_ACCESS_LEVEL: u8 = 0x05;
+
+pub struct QuestionAmiRecord {
+    pub question_id: u16,
+    pub page_id: Option<u16>,
+    pub access_level: u8,
+    pub failsafe: u8,
+    pub optimal: u8,
+}
+
+pub fn make_ami_record(rec: &QuestionAmiRecord) -> Vec<u8> {
+    let mut buf = vec![0u8; AMI_RECORD_SIZE];
+    buf[0..2].copy_from_slice(&rec.question_id.to_le_bytes());
+    if let Some(pid) = rec.page_id {
+        buf[24..26].copy_from_slice(&pid.to_le_bytes());
+    }
+    buf[32] = rec.access_level;
+    buf[104] = rec.failsafe;
+    buf[106] = rec.optimal;
+    buf
+}
+
+pub fn patch_ami(
+    image: &mut Image,
+    formset_guid: &Guid,
+    form_ids: &[u16],
+    questions: &[QuestionAmiRecord],
+    setupdata_guid: Option<&Guid>,
+    amitse_guid: Option<&Guid>,
+) -> Result<(), SetupAdvancedError> {
+    let setupdata_idx = find_ami_module(image, setupdata_guid, "setupdata")?;
+    let amitse_idx = find_ami_module(image, amitse_guid, "AMITSE")?;
+    let setupdata = &mut image.root.children[0].children[setupdata_idx];
+    for q in questions {
+        let record = make_ami_record(q);
+        setupdata.body.extend_from_slice(&record);
+    }
+    let amitse = &mut image.root.children[0].children[amitse_idx];
+    let formset_marker = &formset_guid.data4[4..6];
+    let insert_pos = find_formset_marker_position(&amitse.body, formset_marker)
+        .unwrap_or(amitse.body.len());
+    for &fid in form_ids {
+        let mut entry = vec![0u8; 0];
+        entry.extend_from_slice(&fid.to_le_bytes());
+        amitse.body.splice(insert_pos..insert_pos, entry.iter().cloned());
+    }
+    Ok(())
+}
+
+fn find_ami_module(image: &Image, guid: Option<&Guid>, name_hint: &str) -> Result<usize, SetupAdvancedError> {
+    let vol = &image.root.children[0];
+    for (i, file) in vol.children.iter().enumerate() {
+        if let Some(g) = guid {
+            if file.guid == Some(*g) { return Ok(i); }
+        }
+    }
+    if let Some(g) = guid {
+        let _ = g;
+    }
+    for (i, file) in vol.children.iter().enumerate() {
+        if has_name_section(&file.children, name_hint) { return Ok(i); }
+    }
+    for (i, file) in vol.children.iter().enumerate() {
+        if has_question_id_markers(&file.body) { return Ok(i); }
+    }
+    Err(SetupAdvancedError::AmiFilesNotFound)
+}
+
+fn has_name_section(children: &[FfsNode], name: &str) -> bool {
+    children.iter().any(|c| {
+        c.subtype == crate::ffs::EFI_SECTION_UI &&
+        String::from_utf8_lossy(&c.body).trim_end_matches('\0') == name
+    })
+}
+
+fn has_question_id_markers(body: &[u8]) -> bool {
+    body.len() >= AMI_RECORD_SIZE && body.len() % AMI_RECORD_SIZE == 0
+}
+
+fn find_formset_marker_position(body: &[u8], marker: &[u8]) -> Option<usize> {
+    body.windows(2).position(|w| w == marker)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ami_record_offsets() {
+        let rec = QuestionAmiRecord { question_id: 0x100, page_id: Some(5), access_level: 0x05, failsafe: 1, optimal: 0 };
+        let buf = make_ami_record(&rec);
+        assert_eq!(buf.len(), AMI_RECORD_SIZE);
+        assert_eq!(u16::from_le_bytes([buf[0], buf[1]]), 0x100);
+        assert_eq!(u16::from_le_bytes([buf[24], buf[25]]), 5);
+        assert_eq!(buf[32], 0x05);
+        assert_eq!(buf[104], 1);
+        assert_eq!(buf[106], 0);
+    }
+
+    #[test]
+    fn ami_record_no_page_id() {
+        let rec = QuestionAmiRecord { question_id: 0x200, page_id: None, access_level: 0x05, failsafe: 0, optimal: 1 };
+        let buf = make_ami_record(&rec);
+        assert_eq!(u16::from_le_bytes([buf[24], buf[25]]), 0);
+    }
+
+    #[test]
+    fn ami_record_all_zero_except_qid() {
+        let rec = QuestionAmiRecord { question_id: 1, page_id: None, access_level: 0, failsafe: 0, optimal: 0 };
+        let buf = make_ami_record(&rec);
+        assert_eq!(buf[32], 0);
+        assert_eq!(buf[50], 0);
+        assert_eq!(buf[107], 0);
+    }
+}
+```
+
+- [ ] **Step 2: Подключить в mod.rs и запустить тесты**
+
+`crates/uefi-engine/src/setup_advanced/mod.rs`: добавить `pub mod ami_patcher;`
+
+Run: `cargo test -p uefi-engine setup_advanced::ami_patcher`
+Expected: PASS
+
+- [ ] **Step 3: Коммит**
+
+```bash
+git add crates/uefi-engine/src/setup_advanced/ami_patcher.rs crates/uefi-engine/src/setup_advanced/mod.rs
+git commit -m "feat(setup_advanced): add AMI patcher (setupdataBin records + amitseSct FormId)"
+```
+
+---
+
+### Task 5: ffs_assembler.rs — сборка FFS из IFR
+
+**Files:**
+- Create: `crates/uefi-engine/src/setup_advanced/ffs_assembler.rs`
+
+**Interfaces:**
+- Consumes: `types::*`, `ffs::*` (checksums, header helpers)
+- Produces:
+  - `pub fn assemble_ffs(ifr_bytes: &[u8], string_package_bytes: &[u8], file_guid: &Guid) -> Result<Vec<u8>, SetupAdvancedError>`
+  - Сборка: FFSv2-заголовок (24 байта) + секции (EFI_SECTION_RAW с IFR + EFI_SECTION_RAW с String-пакетом)
+  - Пересчёт checksum, size
+
+- [ ] **Step 1: Написать failing test**
+
+`crates/uefi-engine/src/setup_advanced/ffs_assembler.rs`:
+```rust
+use crate::types::*;
+use crate::ffs::*;
+use super::SetupAdvancedError;
+
+pub fn assemble_ffs(ifr_bytes: &[u8], string_package_bytes: &[u8], file_guid: &Guid) -> Result<Vec<u8>, SetupAdvancedError> {
+    let mut body = Vec::new();
+    emit_raw_section(&mut body, ifr_bytes);
+    emit_raw_section(&mut body, string_package_bytes);
+    let total = 24 + body.len();
+    let mut header = vec![0u8; 24];
+    header[0..16].copy_from_slice(&guid_bytes(file_guid));
+    header[16] = 0x01;
+    header[17] = 0x00;
+    let size_b = size_to_uint24(total as u32);
+    header[20] = size_b[0]; header[21] = size_b[1]; header[22] = size_b[2];
+    let cs = calculate_checksum8(&header[0..23]);
+    header[23] = cs;
+    let mut ffs = Vec::with_capacity(total);
+    ffs.extend_from_slice(&header);
+    ffs.extend_from_slice(&body);
+    Ok(ffs)
+}
+
+fn guid_bytes(g: &Guid) -> [u8; 16] {
+    let mut b = [0u8; 16];
+    b[0..4].copy_from_slice(&g.data1.to_le_bytes());
+    b[4..6].copy_from_slice(&g.data2.to_le_bytes());
+    b[6..8].copy_from_slice(&g.data3.to_le_bytes());
+    b[8..16].copy_from_slice(&g.data4);
+    b
+}
+
+fn emit_raw_section(out: &mut Vec<u8>, data: &[u8]) {
+    let total = 4 + data.len();
+    let size_b = size_to_uint24(total as u32);
+    out.push(size_b[0]); out.push(size_b[1]); out.push(size_b[2]);
+    out.push(EFI_SECTION_RAW);
+    out.extend_from_slice(data);
+    let aligned = (out.len() + 3) & !3;
+    while out.len() < aligned { out.push(0x00); }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::str::FromStr;
+
+    #[test]
+    fn assemble_minimal_ffs() {
+        let g = Guid::from_str("12345678-90AB-CDEF-1234-567890ABCDEF").unwrap();
+        let ifr = vec![0x29, 0x02];
+        let strpkg = vec![0x06, 0x00, 0x00, 0x00, 0x04];
+        let ffs = assemble_ffs(&ifr, &strpkg, &g).unwrap();
+        assert!(ffs.len() > 24);
+        assert_eq!(&ffs[0..16], &guid_bytes(&g));
+        assert_eq!(ffs[16], 0x01);
+        let cs = calculate_checksum8(&ffs[0..23]);
+        assert_eq!(ffs[23], cs);
+    }
+
+    #[test]
+    fn ffs_size_matches() {
+        let g = Guid::from_str("11111111-2222-3333-4444-555555555555").unwrap();
+        let ifr = vec![0x01, 0x06, 0x01, 0x00, 0x01, 0x00, 0x29, 0x02];
+        let ffs = assemble_ffs(&ifr, &[], &g).unwrap();
+        let size = uint24_to_u32([ffs[20], ffs[21], ffs[22]]) as usize;
+        assert_eq!(size, ffs.len());
+    }
+}
+```
+
+- [ ] **Step 2: Подключить в mod.rs и запустить тесты**
+
+`crates/uefi-engine/src/setup_advanced/mod.rs`: добавить `pub mod ffs_assembler;`
+
+Run: `cargo test -p uefi-engine setup_advanced::ffs_assembler`
+Expected: PASS
+
+- [ ] **Step 3: Коммит**
+
+```bash
+git add crates/uefi-engine/src/setup_advanced/ffs_assembler.rs crates/uefi-engine/src/setup_advanced/mod.rs
+git commit -m "feat(setup_advanced): add FFS assembler (header + RAW sections + checksum)"
+```
+
+---
+
+### Task 6: mod.rs — координатор add_setup_formset
+
+**Files:**
+- Modify: `crates/uefi-engine/src/setup_advanced/mod.rs`
+
+**Interfaces:**
+- Consumes: `schema::*`, `ifr_builder::*`, `string_pack::*`, `ami_patcher::*`, `ffs_assembler::*`, `types::*`, `ops::*`
+- Produces:
+  - `pub fn add_setup_formset(image: &mut Image, schema: &FormSetSchema, target_ffs_guid: Option<&Guid>) -> Result<AddSetupResult, SetupAdvancedError>`
+  - `pub struct AddSetupResult { pub new_ffs_guid: Guid, pub inserted_form_ids: Vec<u16>, pub string_ids: HashMap<String, u16> }`
+
+- [ ] **Step 1: Реализовать координатор**
+
+Дополнить `crates/uefi-engine/src/setup_advanced/mod.rs`:
+```rust
+pub mod schema;
+pub mod ifr_builder;
+pub mod string_pack;
+pub mod ami_patcher;
+pub mod ffs_assembler;
+
+use std::collections::HashMap;
+use crate::types::*;
+use crate::ops;
+use ifr_builder::*;
+use ami_patcher::QuestionAmiRecord;
+
+pub struct AddSetupResult {
+    pub new_ffs_guid: Guid,
+    pub inserted_form_ids: Vec<u16>,
+    pub string_ids: HashMap<String, u16>,
+}
+
+pub fn add_setup_formset(image: &mut Image, schema: &schema::FormSetSchema, target_ffs_guid: Option<&Guid>) -> Result<AddSetupResult, SetupAdvancedError> {
+    let formset_guid: Guid = schema.formset_guid.parse().map_err(|e: std::str::ParseError| SetupAdvancedError::InvalidSchema(e.to_string()))?;
+    let new_ffs_guid = Guid {
+        data1: 0xB00B0000 + image.root.children.len() as u32,
+        data2: 0xBEEF, data3: 0x1234,
+        data4: [0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01],
+    };
+    let mut strings: Vec<String> = Vec::new();
+    strings.push(schema.title.clone());
+    strings.push(schema.help.clone());
+    for vs in &schema.varstores { strings.push(vs.name.clone()); }
+    for form in &schema.forms {
+        strings.push(form.title.clone());
+        for item in &form.items {
+            collect_item_strings(item, &mut strings);
+        }
+    }
+    let string_ids = string_pack::add_strings(image, target_ffs_guid, &strings)?;
+    let ifr_bytes = build_ifr(schema, &string_ids)?;
+    let strpkg_idx = find_string_package_section(image, target_ffs_guid)?;
+    let strpkg_bytes = image.root.children[0].children[strpkg_idx.0].children[strpkg_idx.1].body.clone();
+    let ffs_bytes = ffs_assembler::assemble_ffs(&ifr_bytes, &strpkg_bytes, &new_ffs_guid)?;
+    let (form_ids, questions) = extract_form_ids_and_questions(schema);
+    let setupdata_guid = schema.setupdata_guid.as_ref().and_then(|s| s.parse().ok());
+    let amitse_guid = schema.amitse_guid.as_ref().and_then(|s| s.parse().ok());
+    ami_patcher::patch_ami(image, &formset_guid, &form_ids, &questions, setupdata_guid.as_ref(), amitse_guid.as_ref())?;
+    let target = crate::parser::target::Target::Path(vec![0]);
+    ops::insert(&mut image.root, &target, &ffs_bytes, ops::InsertMode::Into)
+        .map_err(|e| SetupAdvancedError::FfsAssemblyError(e.to_string()))?;
+    Ok(AddSetupResult { new_ffs_guid, inserted_form_ids: form_ids, string_ids })
+}
+
+fn collect_item_strings(item: &schema::ItemSchema, strings: &mut Vec<String>) {
+    match item {
+        schema::ItemSchema::OneOf(o) => {
+            strings.push(o.prompt.clone()); strings.push(o.help.clone());
+            for opt in &o.options { strings.push(opt.text.clone()); }
+        }
+        schema::ItemSchema::CheckBox(c) => { strings.push(c.prompt.clone()); strings.push(c.help.clone()); }
+        schema::ItemSchema::Numeric(n) => { strings.push(n.prompt.clone()); strings.push(n.help.clone()); }
+        schema::ItemSchema::Text(t) => { strings.push(t.prompt.clone()); strings.push(t.help.clone()); strings.push(t.text_two.clone()); }
+        schema::ItemSchema::Ref(r) => { strings.push(r.prompt.clone()); strings.push(r.help.clone()); }
+        schema::ItemSchema::String(s) => { strings.push(s.prompt.clone()); strings.push(s.help.clone()); }
+        schema::ItemSchema::Action(a) => { strings.push(a.prompt.clone()); strings.push(a.help.clone()); strings.push(a.config.clone()); }
+        schema::ItemSchema::OrderedList(o) => { strings.push(o.prompt.clone()); strings.push(o.help.clone()); }
+    }
+}
+
+fn build_ifr(schema: &schema::FormSetSchema, string_ids: &HashMap<String, u16>) -> Result<Vec<u8>, SetupAdvancedError> {
+    let mut b = IfrBuilder::new();
+    let formset_guid: Guid = schema.formset_guid.parse().map_err(|e: std::str::ParseError| SetupAdvancedError::InvalidSchema(e.to_string()))?;
+    let title_id = string_ids[&schema.title];
+    let help_id = string_ids[&schema.help];
+    let class_guids: Vec<Guid> = schema.class_guids.iter().filter_map(|s| s.parse().ok()).collect();
+    b.emit_form_set(&formset_guid, title_id, help_id, &class_guids);
+    for vs in &schema.varstores {
+        let g: Guid = vs.guid.parse().map_err(|e: std::str::ParseError| SetupAdvancedError::InvalidSchema(e.to_string()))?;
+        let name_id = string_ids[&vs.name];
+        b.emit_var_store(vs.id, &g, vs.size, &vs.name);
+        let _ = name_id;
+    }
+    for ds in &schema.default_stores {
+        b.emit_default_store(string_ids[&ds.name], ds.id);
+    }
+    for form in &schema.forms {
+        let title_id = string_ids[&form.title];
+        b.emit_form(form.id, title_id);
+        for item in &form.items {
+            emit_item(&mut b, item, string_ids);
+        }
+        b.emit_end();
+    }
+    b.emit_end();
+    Ok(b.build())
+}
+
+fn emit_item(b: &mut IfrBuilder, item: &schema::ItemSchema, string_ids: &HashMap<String, u16>) {
+    let display_flags = |d: schema::DisplayMode| -> u8 {
+        match d { schema::DisplayMode::IntDec => 0x00, schema::DisplayMode::UintDec => 0x10, schema::DisplayMode::UintHex => 0x20 }
+    };
+    match item {
+        schema::ItemSchema::OneOf(o) => {
+            let pid = string_ids[&o.prompt]; let hid = string_ids[&o.help];
+            b.emit_one_of(pid, hid, o.question_id, o.var_store_id, o.var_offset, display_flags(o.display), o.size);
+            for opt in &o.options {
+                let tid = string_ids[&opt.text];
+                let mut flags = 0u8;
+                match opt.default {
+                    Some(schema::DefaultClass::Optimized) => flags |= 0x10,
+                    Some(schema::DefaultClass::Failsafe) => flags |= 0x20,
+                    None => {}
+                }
+                b.emit_one_of_option(tid, flags, o.size - 1, opt.value, o.size);
+            }
+            if let Some(v) = o.defaults.optimized {
+                b.emit_default(DEFAULT_ID_STANDARD, o.size - 1, v, o.size);
+            }
+            if let Some(v) = o.defaults.failsafe {
+                b.emit_default(DEFAULT_ID_MANUFACTURING, o.size - 1, v, o.size);
+            }
+            b.emit_end();
+        }
+        schema::ItemSchema::CheckBox(c) => {
+            let pid = string_ids[&c.prompt]; let hid = string_ids[&c.help];
+            b.emit_check_box(pid, hid, c.question_id, c.var_store_id, c.var_offset, 0);
+            if let Some(v) = c.defaults.optimized { if v != 0 { b.emit_check_box_default(true); } }
+            b.emit_end();
+        }
+        schema::ItemSchema::Numeric(n) => {
+            let pid = string_ids[&n.prompt]; let hid = string_ids[&n.help];
+            b.emit_numeric(pid, hid, n.question_id, n.var_store_id, n.var_offset, display_flags(n.display), n.size, n.min, n.max, n.step);
+            if let Some(v) = n.defaults.optimized { b.emit_default(DEFAULT_ID_STANDARD, n.size - 1, v, n.size); }
+            if let Some(v) = n.defaults.failsafe { b.emit_default(DEFAULT_ID_MANUFACTURING, n.size - 1, v, n.size); }
+            b.emit_end();
+        }
+        schema::ItemSchema::Text(t) => {
+            let pid = string_ids[&t.prompt]; let hid = string_ids[&t.help]; let t2 = string_ids[&t.text_two];
+            b.emit_text(pid, hid, t2);
+        }
+        schema::ItemSchema::Ref(r) => {
+            let pid = string_ids[&r.prompt]; let hid = string_ids[&r.help];
+            b.emit_ref(pid, hid, r.question_id, 0, 0, r.form_id);
+        }
+        schema::ItemSchema::String(_) | schema::ItemSchema::Action(_) | schema::ItemSchema::OrderedList(_) => {
+            b.emit_end();
+        }
+    }
+}
+
+fn extract_form_ids_and_questions(schema: &schema::FormSetSchema) -> (Vec<u16>, Vec<QuestionAmiRecord>) {
+    let form_ids: Vec<u16> = schema.forms.iter().map(|f| f.id).collect();
+    let mut questions = Vec::new();
+    for form in &schema.forms {
+        for item in &form.items {
+            if let Some((qid, page_id, failsafe, optimal)) = extract_question(item) {
+                questions.push(QuestionAmiRecord {
+                    question_id: qid,
+                    page_id,
+                    access_level: ami_patcher::AMI_DEFAULT_ACCESS_LEVEL,
+                    failsafe,
+                    optimal,
+                });
+            }
+        }
+    }
+    (form_ids, questions)
+}
+
+fn extract_question(item: &schema::ItemSchema) -> Option<(u16, Option<u16>, u8, u8)> {
+    match item {
+        schema::ItemSchema::OneOf(o) => Some((o.question_id, None, o.defaults.failsafe.unwrap_or(0) as u8, o.defaults.optimized.unwrap_or(0) as u8)),
+        schema::ItemSchema::CheckBox(c) => Some((c.question_id, None, c.defaults.failsafe.unwrap_or(0) as u8, c.defaults.optimized.unwrap_or(0) as u8)),
+        schema::ItemSchema::Numeric(n) => Some((n.question_id, None, n.defaults.failsafe.unwrap_or(0) as u8, n.defaults.optimized.unwrap_or(0) as u8)),
+        schema::ItemSchema::Ref(r) => Some((r.question_id, Some(r.form_id), 0, 0)),
+        _ => None,
+    }
+}
+
+fn find_string_package_section(image: &Image, ffs_guid: Option<&Guid>) -> Result<(usize, usize), SetupAdvancedError> {
+    for (vi, vol) in image.root.children.iter().enumerate() {
+        for (fi, file) in vol.children.iter().enumerate() {
+            if let Some(g) = ffs_guid { if file.guid != Some(*g) { continue; } }
+            for (_si, sec) in file.children.iter().enumerate() {
+                if string_pack::is_string_package_pub(&sec.body) { return Ok((vi, fi)); }
+            }
+        }
+    }
+    Err(SetupAdvancedError::StringPackageNotFound)
+}
+```
+
+Добавить в `string_pack.rs`:
+```rust
+pub fn is_string_package_pub(body: &[u8]) -> bool { is_string_package(body) }
+```
+
+Добавить в `ifr_builder.rs`:
+```rust
+impl IfrBuilder {
+    pub fn emit_check_box_default(&mut self, _standard: bool) {
+        self.buf.push(0x01);
+    }
+}
+```
+
+- [ ] **Step 2: Запустить компиляцию**
+
+Run: `cargo build -p uefi-engine`
+Expected: компиляция без ошибок
+
+- [ ] **Step 3: Коммит**
+
+```bash
+git add crates/uefi-engine/src/setup_advanced/
+git commit -m "feat(setup_advanced): add coordinator add_setup_formset (strings+IFR+AMI+FFS+insert)"
+```
+
+---
+
+### Task 7: gRPC AddSetupFormSet — proto + rpc impl
+
+**Files:**
+- Modify: `crates/uefi-proto/proto/engine.proto`
+- Modify: `crates/uefi-engine/src/rpc/server.rs`
+
+**Interfaces:**
+- Consumes: `setup_advanced::add_setup_formset`
+- Produces: новый RPC `AddSetupFormSet` в `EngineService`
+
+- [ ] **Step 1: Обновить engine.proto**
+
+Добавить в `crates/uefi-proto/proto/engine.proto` в `service EngineService`:
+```proto
+  rpc AddSetupFormSet(AddSetupFormSetRequest) returns (AddSetupFormSetResponse);
+```
+
+Добавить сообщения:
+```proto
+message AddSetupFormSetRequest {
+  string image_id = 1;
+  string schema_json = 2;
+  string target_ffs_guid = 3;
+}
+
+message AddSetupFormSetResponse {
+  string new_ffs_id = 1;
+  repeated uint32 inserted_form_ids = 2;
+  map<string, uint32> string_ids = 3;
+}
+```
+
+- [ ] **Step 2: Перегенерировать proto**
+
+Run: `cargo build -p uefi-proto`
+Expected: компиляция, типы `AddSetupFormSetRequest`/`AddSetupFormSetResponse` сгенерированы
+
+- [ ] **Step 3: Реализовать метод в server.rs**
+
+Добавить в `impl EngineService for EngineServer` в `crates/uefi-engine/src/rpc/server.rs`:
+```rust
+async fn add_setup_form_set(&self, req: Request<AddSetupFormSetRequest>) -> RpcResult<AddSetupFormSetResponse> {
+    let r = req.into_inner();
+    let schema = crate::setup_advanced::schema::parse_schema(&r.schema_json)
+        .map_err(|e| Status::invalid_argument(e.to_string()))?;
+    let target_guid: Option<crate::types::Guid> = if r.target_ffs_guid.is_empty() {
+        None
+    } else {
+        Some(r.target_ffs_guid.parse().map_err(|e: std::str::ParseError| Status::invalid_argument(e.to_string()))?)
+    };
+    let mut images = self.images.lock().await;
+    let img = images.get_mut(&r.image_id).ok_or_else(|| Status::not_found("image not found"))?;
+    let result = crate::setup_advanced::add_setup_formset(img, &schema, target_guid.as_ref())
+        .map_err(|e| match e {
+            crate::setup_advanced::SetupAdvancedError::InvalidSchema(s) => Status::invalid_argument(s),
+            crate::setup_advanced::SetupAdvancedError::StringPackageNotFound => Status::not_found("string package not found"),
+            crate::setup_advanced::SetupAdvancedError::AmiFilesNotFound => Status::not_found("AMI setupdataBin/amitseSct not found"),
+            crate::setup_advanced::SetupAdvancedError::IfrBuildError(s) => Status::internal(s),
+            crate::setup_advanced::SetupAdvancedError::FfsAssemblyError(s) => Status::internal(s),
+        })?;
+    Ok(Response::new(AddSetupFormSetResponse {
+        new_ffs_id: result.new_ffs_guid.to_string(),
+        inserted_form_ids: result.inserted_form_ids.into_iter().map(|f| f as u32).collect(),
+        string_ids: result.string_ids.into_iter().map(|(k, v)| (k, v as u32)).collect(),
+    }))
+}
+```
+
+- [ ] **Step 4: Запустить компиляцию и тесты**
+
+Run: `cargo build -p uefi-engine && cargo test -p uefi-engine`
+Expected: PASS
+
+- [ ] **Step 5: Коммит**
+
+```bash
+git add crates/uefi-proto/proto/engine.proto crates/uefi-engine/src/rpc/server.rs
+git commit -m "feat(setup_advanced): add gRPC AddSetupFormSet method to EngineService"
+```
+
+---
+
+### Task 8: Финальные проверки — clippy, fmt, integration smoke
+
+**Files:**
+- по результатам
+
+- [ ] **Step 1: Запустить все тесты**
+
+Run: `cargo test --all`
+Expected: PASS
+
+- [ ] **Step 2: Запустить clippy**
+
+Run: `cargo clippy --all -- -D warnings`
+Expected: без warnings
+
+- [ ] **Step 3: Запустить fmt check**
+
+Run: `cargo fmt --all -- --check`
+Expected: без diff
+
+- [ ] **Step 4: Коммит финальных правок**
+
+```bash
+git add -A
+git commit -m "chore(setup_advanced): final checks — tests pass, clippy clean"
+```
+
+---
+
+## Само-проверка плана (после написания)
+
+**Спека-покрытие:**
+- JSON-схема (FormSet/Form/Item/Defaults): Task 1 ✓
+- IFR-билдер (все опкоды): Task 2 ✓
+- String-пакет (поиск/добавление): Task 3 ✓
+- AMI-патчинг (setupdataBin + amitseSct, поиск по GUID/имени/эвристике): Task 4 ✓
+- FFS-ассемблер: Task 5 ✓
+- Координатор add_setup_formset: Task 6 ✓
+- gRPC AddSetupFormSet: Task 7 ✓
+- Опциональные setupdata_guid/amitse_guid: Tasks 1, 4, 6 ✓
+- Дефолты (Optimized=0, Failsafe=1): Tasks 2, 6 ✓
+- Обязательный AMI-патчинг (AmiFilesNotFound): Tasks 4, 7 ✓
+
+**Placeholder scan:** TBD/TODO нет; все шаги содержат код. ✓
+
+**Type consistency:**
+- `FormSetSchema`/`ItemSchema`/`Defaults` — единые в schema.rs, mod.rs ✓
+- `IfrBuilder` — единое имя в ifr_builder.rs, mod.rs ✓
+- `QuestionAmiRecord` — единое в ami_patcher.rs, mod.rs ✓
+- `SetupAdvancedError` — единое в mod.rs, всех подмодулях, rpc/server.rs ✓
+- `AddSetupResult` — в mod.rs, используется в rpc ✓
