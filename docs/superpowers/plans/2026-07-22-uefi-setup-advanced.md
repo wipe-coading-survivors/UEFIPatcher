@@ -24,6 +24,9 @@
 - Поиск AMI-файлов приоритет: 1) GUID из JSON-схемы (`setupdata_guid`/`amitse_guid`) → `find_item`, 2) имя FFS ("setupdata"/"AMITSE"), 3) эвристика по содержимому (QuestionId-маркеры).
 - AMI-запись: 108 байт, `[+0] QuestionId u16 LE`, `[+24] pageId u16 (Ref only)`, `[+32] accessLevel u8 (0x05)`, `[+104] failsafe u8`, `[+106] optimal u8`, остальное 0x00.
 - Кодстайл: `cargo fmt`, `cargo clippy -- -D warnings`. Без комментариев в коде (кроме ссылок на референс `file:line`).
+- **Module-first rule:** `pub mod X;` объявляется ДО `cargo test`.
+- **IFR-структуры:** использовать `r_efi::hii::*`, не определять свои.
+- **GUID:** `uguid::Guid` с `.to_bytes()` / `Guid::from_bytes()`.
 
 ---
 
@@ -81,6 +84,8 @@
 ```toml
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+r-efi.workspace = true
+binrw.workspace = true
 ```
 
 - [ ] **Step 2: Написать failing test для parse_schema**
@@ -371,6 +376,13 @@ git commit -m "feat(setup_advanced): add JSON schema (FormSet/Form/Item/Defaults
 use crate::types::Guid;
 use std::str::FromStr;
 
+// NOTE: вместо ручных констант предпочтительно использовать `r_efi::hii::*`:
+//   IFR_FORM_SET_OP, IFR_FORM_OP, IFR_END_OP, IFR_VARSTORE_OP, IFR_VARSTORE_EFI_OP,
+//   IFR_DEFAULT_STORE_OP, IFR_ONE_OF_OP, IFR_ONE_OF_OPTION_OP, IFR_CHECKBOX_OP,
+//   IFR_NUMERIC_OP, IFR_REF_OP, IFR_TEXT_OP, IFR_STRING_OP, IFR_ACTION_OP,
+//   IFR_ORDERED_LIST_OP, IFR_DEFAULT_OP.
+// Локальные алиасы ниже оставлены для совместимости с остальным кодом плана;
+// при реализации можно заменить на `pub use r_efi::hii::IFR_FORM_SET_OP as OP_FORM_SET;` и т.д.
 pub const OP_FORM_SET: u8 = 0x0E;
 pub const OP_FORM: u8 = 0x01;
 pub const OP_END: u8 = 0x29;
@@ -416,19 +428,19 @@ impl IfrBuilder {
     pub fn emit_form_set(&mut self, guid: &Guid, title_id: u16, help_id: u16, class_guids: &[Guid]) {
         let flags = class_guids.len() as u8 & 0x03;
         self.write_header(OP_FORM_SET, true, 20 + 16 * class_guids.len());
-        self.buf.extend_from_slice(&guid_bytes(guid));
+        self.buf.extend_from_slice(&guid_to_bytes(guid));
         self.buf.extend_from_slice(&title_id.to_le_bytes());
         self.buf.extend_from_slice(&help_id.to_le_bytes());
         self.buf.push(flags);
         for cg in class_guids {
-            self.buf.extend_from_slice(&guid_bytes(cg));
+            self.buf.extend_from_slice(&guid_to_bytes(cg));
         }
     }
 
     pub fn emit_var_store(&mut self, id: u16, guid: &Guid, size: u16, name: &str) {
         let name_bytes = name.as_bytes();
         self.write_header(OP_VARSTORE, false, 20 + name_bytes.len() + 1);
-        self.buf.extend_from_slice(&guid_bytes(guid));
+        self.buf.extend_from_slice(&guid_to_bytes(guid));
         self.buf.extend_from_slice(&id.to_le_bytes());
         self.buf.extend_from_slice(&size.to_le_bytes());
         self.buf.extend_from_slice(name_bytes);
@@ -531,13 +543,8 @@ impl IfrBuilder {
     pub fn build(self) -> Vec<u8> { self.buf }
 }
 
-pub fn guid_bytes(g: &Guid) -> [u8; 16] {
-    let mut b = [0u8; 16];
-    b[0..4].copy_from_slice(&g.data1.to_le_bytes());
-    b[4..6].copy_from_slice(&g.data2.to_le_bytes());
-    b[6..8].copy_from_slice(&g.data3.to_le_bytes());
-    b[8..16].copy_from_slice(&g.data4);
-    b
+pub fn guid_to_bytes(g: &Guid) -> [u8; 16] {
+    g.to_bytes()
 }
 
 fn value_to_bytes(v: u64, size: u8) -> Vec<u8> {
@@ -569,7 +576,7 @@ mod tests {
         assert_eq!(buf[0], OP_FORM_SET);
         assert_eq!(buf[1] & 0x7F, 22);
         assert_eq!(buf[1] & 0x80, 0x80);
-        assert_eq!(&buf[2..18], &guid_bytes(&g));
+        assert_eq!(&buf[2..18], &guid_to_bytes(&g));
         assert_eq!(u16::from_le_bytes([buf[18], buf[19]]), 1);
     }
 
@@ -837,7 +844,7 @@ pub fn patch_ami(
         setupdata.body.extend_from_slice(&record);
     }
     let amitse = &mut image.root.children[0].children[amitse_idx];
-    let formset_marker = &formset_guid.data4[4..6];
+    let formset_marker = &formset_guid.to_bytes()[12..14];
     let insert_pos = find_formset_marker_position(&amitse.body, formset_marker)
         .unwrap_or(amitse.body.len());
     for &fid in form_ids {
@@ -958,7 +965,7 @@ pub fn assemble_ffs(ifr_bytes: &[u8], string_package_bytes: &[u8], file_guid: &G
     emit_raw_section(&mut body, string_package_bytes);
     let total = 24 + body.len();
     let mut header = vec![0u8; 24];
-    header[0..16].copy_from_slice(&guid_bytes(file_guid));
+    header[0..16].copy_from_slice(&guid_to_bytes(file_guid));
     header[16] = 0x01;
     header[17] = 0x00;
     let size_b = size_to_uint24(total as u32);
@@ -971,13 +978,10 @@ pub fn assemble_ffs(ifr_bytes: &[u8], string_package_bytes: &[u8], file_guid: &G
     Ok(ffs)
 }
 
-fn guid_bytes(g: &Guid) -> [u8; 16] {
-    let mut b = [0u8; 16];
-    b[0..4].copy_from_slice(&g.data1.to_le_bytes());
-    b[4..6].copy_from_slice(&g.data2.to_le_bytes());
-    b[6..8].copy_from_slice(&g.data3.to_le_bytes());
-    b[8..16].copy_from_slice(&g.data4);
-    b
+// NOTE: дубликат `guid_to_bytes` из ifr_builder.rs — при реализации вынести в общий
+// хелпер (например, в `crate::types`) и переиспользовать; `uguid::Guid::to_bytes()` уже даёт [u8;16].
+fn guid_to_bytes(g: &Guid) -> [u8; 16] {
+    g.to_bytes()
 }
 
 fn emit_raw_section(out: &mut Vec<u8>, data: &[u8]) {
@@ -1002,7 +1006,7 @@ mod tests {
         let strpkg = vec![0x06, 0x00, 0x00, 0x00, 0x04];
         let ffs = assemble_ffs(&ifr, &strpkg, &g).unwrap();
         assert!(ffs.len() > 24);
-        assert_eq!(&ffs[0..16], &guid_bytes(&g));
+        assert_eq!(&ffs[0..16], &guid_to_bytes(&g));
         assert_eq!(ffs[16], 0x01);
         let cs = calculate_checksum8(&ffs[0..23]);
         assert_eq!(ffs[23], cs);
@@ -1070,11 +1074,11 @@ pub struct AddSetupResult {
 
 pub fn add_setup_formset(image: &mut Image, schema: &schema::FormSetSchema, target_ffs_guid: Option<&Guid>) -> Result<AddSetupResult, SetupAdvancedError> {
     let formset_guid: Guid = schema.formset_guid.parse().map_err(|e: std::str::ParseError| SetupAdvancedError::InvalidSchema(e.to_string()))?;
-    let new_ffs_guid = Guid {
-        data1: 0xB00B0000 + image.root.children.len() as u32,
-        data2: 0xBEEF, data3: 0x1234,
-        data4: [0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01],
-    };
+    let new_ffs_guid = Guid::try_parse(&format!(
+        "{:08X}-BEEF-1234-8000-000000000001",
+        0xB00B0000 + image.root.children.len() as u32,
+    ))
+    .map_err(|e| SetupAdvancedError::IfrBuildError(e.to_string()))?;
     let mut strings: Vec<String> = Vec::new();
     strings.push(schema.title.clone());
     strings.push(schema.help.clone());

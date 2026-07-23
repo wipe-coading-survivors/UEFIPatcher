@@ -48,12 +48,12 @@ sock_path = "/home/user/.local/state/uefipatcher/uefipatcher.sock"
 
 ### Зависимости
 
-Расширяет `uefi-cli` из цикла 1:
-- `toml` (latest) — чтение/запись state-файла
-- `serde` + `serde_json` (latest) — JSON-вывод
-- `clap` (latest, derive) — уже из цикла 1
-- `tonic`, `uefi-proto`, `tokio`, `anyhow` — уже из цикла 1
-- `directories` (latest) — для `${XDG_STATE_HOME}` / `~/.local/state` по умолчанию
+Использует `uefi-common` (создан в цикле 1):
+- `uefi-common` (path) — state.rs (State, read_state, write_state, resolve_sock) и error.rs (AppError, ExitCode)
+- `toml` (0.8) — через uefi-common
+- `serde` + `serde_json` (1) — JSON-вывод
+- `clap` (4, derive, env) — CLI-фреймворк
+- `tonic`, `uefi-proto`, `tokio`, `anyhow` — уже из workspace
 
 ## Фронтенды
 
@@ -67,7 +67,7 @@ sock_path = "/home/user/.local/state/uefipatcher/uefipatcher.sock"
 
 | Команда | Параметры | Описание |
 |---|---|---|
-| `session init [--sock PATH] [--force]` | `--sock` (override), `--force` (перезаписать существующий state) | CreateSession на движке, запись `.uefipatcher` |
+| `session init [--sock PATH] [--force]` | `--sock` (override), `--force` (перезаписать существующий state) | CreateSession(name=CWD) на движке, запись `.uefipatcher`. **name = `env::var("PWD")`** (без symlink resolution) |
 | `session list` | нет | ListSessions (требует токен из state или `--sock`) |
 | `session destroy` | нет | DestroySession + удалить `.uefipatcher` |
 
@@ -82,14 +82,18 @@ sock_path = "/home/user/.local/state/uefipatcher/uefipatcher.sock"
 | `image list [--filter STR]` | `--filter` (необязательный) | ListItems активного образа |
 | `image find <TARGET>` | `TARGET` (обязательный, GUID/PATH/GUID:T/GUID:T:N) | FindItem, вывести item_id |
 | `image save <OUTPUT_PATH>` | `OUTPUT_PATH` (обязательный) | SaveImage активного образа |
+| `image extract <TARGET> [--body-only]` | `TARGET`, `--body-only` (экстрагировать только тело, без заголовка) | ExtractArtifact → artifact_id |
+| `image export <ARTIFACT_ID> [OUTPUT_PATH]` | `ARTIFACT_ID` (обязательный), `OUTPUT_PATH` (по умолч. текущий каталог) | ExportArtifact в файл |
+| `image import <FILE_PATH>` | `FILE_PATH` (обязательный) | ImportArtifact из файла → artifact_id |
+| `image artifacts` | нет | ListArtifacts — список артефактов сессии |
 
 ### Группа `edit`
 
 | Команда | Параметры | Описание |
 |---|---|---|
-| `edit insert <TARGET> <FFS_PATH> [--mode into\|before\|after]` | `TARGET`, `FFS_PATH`, `--mode` (по умолч. `into`) | Insert |
+| `edit insert <TARGET> <FFS_PATH> [--mode into\|before\|after]` или `--from-artifact <ID>` | `TARGET`, `FFS_PATH` ИЛИ `--from-artifact`, `--mode` (по умолч. `into`) | Insert (из файла или артефакта) |
 | `edit remove <TARGET>` | `TARGET` | Remove |
-| `edit replace <TARGET> <DATA_PATH> [--body-only]` | `TARGET`, `DATA_PATH`, `--body-only` | Replace |
+| `edit replace <TARGET> <DATA_PATH> [--body-only]` или `--from-artifact <ID>` | `TARGET`, `DATA_PATH` ИЛИ `--from-artifact`, `--body-only` | Replace (из файла или артефакта) |
 | `edit rebuild <TARGET>` | `TARGET` | Rebuild |
 
 ### Группа `setup`

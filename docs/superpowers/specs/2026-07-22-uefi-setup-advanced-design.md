@@ -15,6 +15,14 @@
 
 ## Архитектура
 
+### Зависимости (крейт `uefi-engine`)
+
+- `serde` / `serde_json` — JSON-схема FormSet
+- `uguid = "2.2.1"` (features: `serde`) — `uguid::Guid` (замена ручного `Guid` с `data1/data2/data3/data4`); API: `Guid::try_parse(...)`, `g.to_bytes()`, `Guid::from_bytes(arr)`
+- `r-efi = "7.0"` — модуль `r_efi::hii::*` со всеми IFR-структурами (`IfrFormSet`, `IfrForm`, `IfrCheckbox`, `IfrNumeric`, `IfrOneOf`, `IfrOneOfOption`, `IfrDefault`, `IfrVarstore`, `IfrVarstoreEfi`, `IfrText`, `IfrSubtitle`, `IfrEnd`, `IfrOpHeader`, `IfrQuestionHeader`, ...) и константами опкодов (`IFR_FORM_SET_OP`, `IFR_NUMERIC_OP`, `IFR_CHECKBOX_OP`, и т.д.)
+- `binrw = "0.15"` — декларативный бинарный парсинг (заголовки FFS, секции, String-пакет)
+- `tonic` (gRPC), существующие модули цикла 1 (`parser`, `builder`, `ops`, `types`, `ffs`)
+
 ### Расширение `uefi-engine` (цикл 1) + `uefi-proto`
 
 ```
@@ -149,14 +157,14 @@ crates/uefi-engine/src/setup_advanced/
 - `emit_end()` — 0x29
 - `build() -> Vec<u8>`
 
-Каждый `emit_*` пишет `OpCode(u8) + Length:7bit|Scope:1bit + data` по структурам edk2 `UefiInternalFormRepresentation.h`. Референс размеров/scope: `BaseTools/Source/C/VfrCompile/VfrFormPkg.cpp:2255-2357`.
+Каждый `emit_*` пишет `OpCode(u8) + Length:7bit|Scope:1bit + data` по структурам edk2 `UefiInternalFormRepresentation.h`. IFR-структуры **брать из `r_efi::hii::*`** (`IfrFormSet`, `IfrForm`, `IfrCheckbox`, `IfrNumeric`, `IfrOneOf`, `IfrOneOfOption`, `IfrDefault`, `IfrVarstore`, `IfrVarstoreEfi`, `IfrText`, `IfrSubtitle`, `IfrEnd`, `IfrOpHeader`, `IfrQuestionHeader`, ...), не определять свои; константы опкодов — `IFR_FORM_SET_OP`, `IFR_NUMERIC_OP`, `IFR_CHECKBOX_OP` и т.п. Референс размеров/scope: `BaseTools/Source/C/VfrCompile/VfrFormPkg.cpp:2255-2357`.
 
 ## String-пакет
 
 `string_pack.rs`:
 - Поиск HII String Package в образе: итерация по FFS → секциям → поиск `HII_STRING_PACKAGE`. Референс: `../refs/IFRExtractor-RS/src/uefi_parser.rs:167` (`hii_string_package`), `:312` (`sibt_string_scsu`), `:355` (`sibt_string_ucs2`).
 - Парсинг существующего пакета: `string_id_map: HashMap<u16, String>`, `max_string_id`.
-- `add_strings(image: &mut Image, ffs_guid: Option<Guid>, strings: &[String]) -> Result<HashMap<String, u16>>`:
+- `add_strings(image: &mut Image, ffs_guid: Option<uguid::Guid>, strings: &[String]) -> Result<HashMap<String, u16>>`:
   - Alloc новых StringId (от `max+1`).
   - Запись SIBT-блоков для каждой строки (SCSU для ASCII, UCS2 для unicode).
   - Пересборка String-пакета: обновление `Length` заголовка, пересчёт checksum.
@@ -180,7 +188,7 @@ crates/uefi-engine/src/setup_advanced/
     - Остальные байты — 0x00 (AMI-специфичные, не критичные)
   - Дополнение записи в конец `setupdataBin`.
 - Регистрация форм в `amitseSct`: для каждой новой формы — запись `FormId (u16 LE)` после FormSetId-маркера (хвост GUID FormSet `formSet[4]+formSet[5]`). Референс: `../refs/UEFI-Editor/src/components/scripts/scripts.ts:242-272`.
-- `patch_ami(image: &mut Image, formset_guid: Guid, form_ids: &[u16], questions: &[QuestionAmiRecord], setupdata_guid: Option<Guid>, amitse_guid: Option<Guid>) -> Result<()>` — поиск setupdataBin/amitseSct по приоритету: GUID (если передан) → имя FFS → эвристика.
+- `patch_ami(image: &mut Image, formset_guid: uguid::Guid, form_ids: &[u16], questions: &[QuestionAmiRecord], setupdata_guid: Option<uguid::Guid>, amitse_guid: Option<uguid::Guid>) -> Result<()>` — поиск setupdataBin/amitseSct по приоритету: GUID (если передан) → имя FFS → эвристика.
 - `QuestionAmiRecord { question_id: u16, page_id: Option<u16>, access_level: u8, failsafe: u8, optimal: u8 }`
 - Если `setupdataBin`/`amitseSct` не найдены — `Err(SetupAdvancedError::AmiFilesNotFound)` (обязательный патчинг).
 
@@ -206,6 +214,12 @@ crates/uefi-engine/src/setup_advanced/
 
 ### E2E-тесты
 - Реальный BIOS-образ (из `../refs`) — `AddSetupFormSet` → `SaveImage` → UEFITool: новый FormSet виден, формы в дереве.
+
+## Тонкости имплементации
+
+- **IFR-структуры** использовать из `r_efi::hii::*` (IfrFormSet, IfrForm, IfrCheckbox, IfrNumeric, IfrOneOf, IfrDefault, IfrVarstoreEfi, IfrText, IfrEnd, etc.), не определять свои.
+- **GUID** — `uguid::Guid` с `.to_bytes()` / `Guid::from_bytes()` вместо ручного `guid_bytes()`.
+- **Module-first rule:** `pub mod X;` объявляется ДО `cargo test`.
 
 ## Этапы реализации
 

@@ -12,43 +12,57 @@
 4. Менеджер сессий, п.4.3
 5. WebUI, п.2.3
 
+## Технологический стек (общий)
+
+| Крейт | Версия | Назначение |
+|-------|--------|-----------|
+| `uguid` | 2.2.1 (serde) | `Guid` с Display/FromStr/serde. UEFI mixed-endian. UPPERCASE wrapper для индустриального формата. |
+| `r-efi` | 7.0 | UEFI спецификация: `base::Guid`, `hii::*` (IFR-структуры, opcode-константы, package types). no_std. |
+| `binrw` | 0.15 (std) | Declarative binary parsing/writing через `#[brw]`-макросы. |
+| `object` | 0.39 (read_core, pe) | PE32 parsing для PEI/DXE модулей. |
+| `lzma-rs` | 0.3 | LZMA декомпрессия. |
+| `tonic` | 0.12 | gRPC over unix-сокет. |
+| `rusqlite` | 0.31 (bundled) | SQLite хранилище. |
+| `clap` | 4 (derive, env) | CLI. |
+| Rust edition | 2024 | |
+
 ## Циклы
 
 ### Цикл 1 — UEFI Engine (план готов, к реализации)
 
-- **Scope**: серверный движок (п.4.1) + setup-visibility (часть п.1.2, только видимость) + CLI-минимум для smoke-теста RPC.
+- **Scope**: серверный движок (п.4.1) + setup-visibility (часть п.1.2, только видимость) + крейт `uefi-common` (state/error) + engine binary с clap CLI + CLI-минимум для smoke-теста RPC.
 - **Зависимости**: нет.
 - **Spec**: `docs/superpowers/specs/2026-07-22-uefi-engine-design.md`
 - **Plan**: `docs/superpowers/plans/2026-07-22-uefi-engine.md`
-- **Статус**: план реализации готов (18 задач TDD), к исполнению.
-- **Стек**: Rust, tonic gRPC over unix-сокет, SQLite, родная реализация парсера UEFI (референс UEFITool 0.28.8).
-- **Что включено**: парсер UEFI-образа → дерево `FfsNode`, builder (сборка обратно), модификации (insert/remove/replace/rebuild), SetSetupItemVisibility, хранилище сессий+артефактов (TTL 10 дней, GC), gRPC-сервер `EngineService`, токены авторизации.
-- **Что НЕ включено**: полный CLI, TUI, WebUI, новые пункты Setup, NVRAM, grpc-шлюз, менеджер сессий как отдельный процесс.
+- **Статус**: план реализации готов (19 задач TDD), к исполнению.
+- **Стек**: Rust edition 2024, uguid + r-efi + binrw + object, tonic gRPC over unix-сокет, SQLite.
+- **Что включено**: крейт `uefi-common` (state.rs, error.rs — скелет, наполняется в цикле 2); парсер UEFI-образа → дерево `FfsNode` (через binrw); builder (сборка обратно); модификации (insert/remove/replace/rebuild, с поддержкой artifact_id); экстракция/импорт/экспорт артефактов; SetSetupItemVisibility (IFR через `r_efi::hii`); именованные сессии (name = CWD без symlink resolution); хранилище сессий+артефактов (TTL 10 дней, GC с `--purge-artifacts` по умолчанию false); gRPC-сервер `EngineService`; engine binary (`src/bin/engine.rs`, clap CLI); токены авторизации.
+- **Что НЕ включено**: полный CLI, TUI, WebUI, новые пункты Setup, NVRAM, grpc-шлюз.
 
 ### Цикл 2 — Полный CLI (план готов, к реализации)
 
 - **Scope**: полный CLI (п.2.1) для скриптования, аналог UEFIEdit, но свой rust-idiomatic синтаксис.
-- **Зависимости**: цикл 1 (gRPC-контракт `uefi-proto`).
+- **Зависимости**: цикл 1 (gRPC-контракт `uefi-proto`, `uefi-common`).
 - **Spec**: `docs/superpowers/specs/2026-07-22-uefi-cli-design.md`
 - **Plan**: `docs/superpowers/plans/2026-07-22-uefi-cli.md`
 - **Статус**: план реализации готов (12 задач TDD), к исполнению.
-- **Что включено**: команды session (init/list/destroy), image (open/switch/close/dump/list/find/save), edit (insert/remove/replace/rebuild), setup (set-visibility/list-items); клиентская сессия в `.uefipatcher` (TOML) в CWD; приоритет sock `--sock` > env > state > default (`${XDG_STATE_HOME}/uefipatcher/uefipatcher.sock`); JSON/text/tsv вывод.
+- **Что включено**: наполнение `uefi-common` (state.rs, error.rs — полная реализация); команды session (init/list/destroy, name=CWD), image (open/switch/close/dump/list/find/save, extract/export/import/artifacts), edit (insert/remove/replace/rebuild, --from-artifact), setup (set-visibility/list-items); клиентская сессия в `.uefipatcher` (TOML) в CWD; JSON/text/tsv вывод.
 - **Вопросы для brainstorm**: разрешены — синтаксис, state, вывод, lifecycle согласованы.
 
 ### Цикл 3 — TUI (план готов, к реализации)
 
 - **Scope**: TUI (п.2.2) с ANSI + UTF-8 (иконки, псевдографика), аналог yazi/nvim.
-- **Зависимости**: цикл 1 (gRPC-контракт), цикл 2 (переиспользование state/commands).
+- **Зависимости**: цикл 1 (gRPC-контракт, `uefi-common`), цикл 2 (переиспользование commands).
 - **Spec**: `docs/superpowers/specs/2026-07-22-uefi-tui-design.md`
 - **Plan**: `docs/superpowers/plans/2026-07-22-uefi-tui.md`
-- **Статус**: план реализации готов (9 задач TDD), к исполнению.
-- **Что включено**: крейт `uefi-tui` (ratatui + crossterm); крейт `uefi-common` (state/error из uefi-cli); vim-like режимы (Normal/Command/Insert); 3 панели (дерево|детали|команды) + статус-бар + hint-бар; Nerd Font иконки по FfsType + Unicode псевдографика + цвета по Action; `:`-command-line для всех операций движка; `:help` popup; тесты (unit + integration через TestBackend + E2E round-trip).
+- **Статус**: план реализации готов (8 задач TDD), к исполнению.
+- **Что включено**: крейт `uefi-tui` (ratatui + crossterm); `uefi-common` уже существует из цикла 1 (не нужен шаг извлечения); vim-like режимы; `:`-command-line для всех операций движка (включая :extract/:export/:import/:artifacts); `:help` popup.
 
 ### Цикл 4 — Менеджер сессий (ОТМЕНЁН)
 
 - **Scope**: менеджер сессий (п.4.3) как отдельный процесс.
 - **Зависимости**: цикл 1.
-- **Статус**: отменён. В цикле 1 менеджер сессий встроен в движок (TTL 10 дней, фоновый GC, SQLite). Встроенного достаточно для текущих требований. Вынесение в отдельный процесс не требуется.
+- **Статус**: отменён. В цикле 1 менеджер сессий встроен в движок (TTL 10 дней, фоновый GC с --purge-artifacts, SQLite). Встроенного достаточно.
 
 ### Цикл 5+7 — WebUI + gRPC-шлюз (план готов, к реализации)
 
@@ -57,17 +71,16 @@
 - **Spec**: `docs/superpowers/specs/2026-07-22-uefi-webui-design.md`
 - **Plan**: `docs/superpowers/plans/2026-07-22-uefi-webui.md`
 - **Статус**: план реализации готов (12 задач TDD), к исполнению.
-- **Что включено**: крейт `uefi-gateway` (axum REST+WS, cookie→gRPC metadata, upload/download); `webui/` (SvelteKit SPA, tree-view, details, операции, setup add-formset); Docker (engine+gateway+webui); тесты (gateway integration + Playwright E2E).
+- **Что включено**: крейт `uefi-gateway` (axum REST+WS, cookie→gRPC metadata, upload/download, artifact endpoints); `webui/` (SvelteKit SPA, tree-view, details, операции, setup add-formset); контейнеризация (`<component>.containerfile`, `registry.fedoraproject.org/fedora:44`, `rust-builder.containerfile`); тесты.
 
 ### Цикл 6 — Расширенный Setup (план готов, к реализации)
 
-- **Scope**: доработка п.1.2 — добавление новых пунктов и разделов меню, управление NVRAM-переменными (существующими и новыми).
+- **Scope**: доработка п.1.2 — добавление новых пунктов и разделов меню, управление NVRAM-переменными.
 - **Зависимости**: цикл 1 (парсер IFR, SetSetupItemVisibility, ops::insert).
 - **Spec**: `docs/superpowers/specs/2026-07-22-uefi-setup-advanced-design.md`
 - **Plan**: `docs/superpowers/plans/2026-07-22-uefi-setup-advanced.md`
 - **Статус**: план реализации готов (8 задач TDD), к исполнению.
-- **Что включено**: JSON-схема для описания FormSet/форм/пунктов; генерация IFR (FormSet/Form/VarStore/OneOf/CheckBox/Numeric/Ref/Text/Default); авто-добавление строк в HII String-пакет; сборка отдельного FFS с новым FormSet (аналог IntelRCSetup); обязательный AMI-патчинг setupdataBin (accessLevel/failsafe/optimal) + amitseSct (регистрация FormId); дефолты через EFI_IFR_DEFAULT (0=Optimized, 1=Failsafe); gRPC-метод AddSetupFormSet.
-- **Вопросы для brainstorm**: разрешены — JSON-схема, отдельный FFS, обязательный AMI, авто-strings.
+- **Что включено**: JSON-схема; генерация IFR (FormSet/Form/VarStore/OneOf/CheckBox/Numeric/Ref/Text/Default) через `r_efi::hii` структуры; авто-добавление строк в HII String-пакет; сборка отдельного FFS; AMI-патчинг; gRPC-метод AddSetupFormSet. Использует `uguid::Guid` и `binrw`.
 
 ### Цикл 7 — gRPC-шлюз (объединён с циклом 5)
 
@@ -76,11 +89,11 @@
 ## Связи между циклами
 
 ```
-Цикл 1 (движок)
+Цикл 1 (движок + uefi-common)
 ├── Цикл 2 (CLI) ──────── Цикл 3 (TUI)
 ├── Цикл 4 (session mgr, опц.)
 ├── Цикл 5 (WebUI) ────── Цикл 7 (grpc-шлюз, опц.)
 └── Цикл 6 (расш. Setup)
 ```
 
-Циклы 2 и 3 можно делать параллельно после цикла 1. Цикл 5 может потребовать цикл 7, если WebUI не работает с unix-сокетом. Цикл 6 независим от 2/3/5.
+Циклы 2 и 3 можно делать параллельно после цикла 1. Цикл 6 независим от 2/3/5.

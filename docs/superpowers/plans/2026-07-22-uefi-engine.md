@@ -4,30 +4,36 @@
 
 **Goal:** Реализовать серверный движок для парсинга/модификации UEFI-образов, управления видимостью пунктов Setup-меню, хранения сессий и предоставления gRPC API над unix-сокетом.
 
-**Architecture:** Cargo workspace с тремя крейтами: `uefi-proto` (protobuf-контракт), `uefi-engine` (ядро: parser/builder/setup/session/storage/rpc), `uefi-cli` (smoke-тест). Парсер строит дерево `FfsNode` из байтов образа (референс UEFITool-ai-fork `FfsParser`); builder собирает дерево обратно (референс `FfsBuilder`); sеtup-модуль парсит IFR (референс IFRExtractor-RS) и управляет SuppressIf-блоками (референс UEFI-Editor). Менеджер сессий встроен в движок, хранит метаданные в SQLite, артефакты на диске, TTL 10 дней, фоновый GC.
+**Architecture:** Cargo workspace с четырьмя крейтами: `uefi-proto` (protobuf-контракт), `uefi-common` (state/error для всех клиентов), `uefi-engine` (ядро: parser/builder/setup/session/storage/rpc), `uefi-cli` (smoke-тест). Парсер строит дерево `FfsNode` из байтов образа через `binrw`-декларативные структуры (референс UEFITool-ai-fork `FfsParser`); builder собирает дерево обратно (референс `FfsBuilder`); setup-модуль парсит IFR через `r_efi::hii` структуры и управляет SuppressIf-блоками. Менеджер сессий встроен в движок, именованные сессии, артефакты с экстракцией/импортом/экспортом, TTL 10 дней, фоновый GC с `--purge-artifacts` (по умолчанию НЕ удаляет файлы).
 
-**Tech Stack:** Rust, tonic (gRPC over unix-socket), prost (protobuf), rusqlite (SQLite), tokio (async), clap (CLI), uuid, anyhow/thiserror, tracing.
+**Tech Stack:** `uguid 2.2.1` (Guid, serde), `r-efi 7.0` (UEFI/PI типы, IFR-структуры, hii), `binrw 0.15` (декларативный binary-парсинг), `object 0.39` (PE32), `lzma-rs 0.3` (декомпрессия), `tonic 0.12` (gRPC), `prost 0.13` (protobuf), `rusqlite 0.31` (SQLite), `tokio 1` (async), `clap 4` (CLI), `uuid 1` (IDs), `anyhow 1`, `thiserror 1`, `tracing 0.1`.
 
 ## Global Constraints
 
-- Референс парсера: `../refs/UEFITool-ai-fork/common/ffsparser.{h,cpp}` (разделённый `FfsParser`), НЕ `../refs/UEFITool/ffsengine.cpp` (объединённый 0.28.8).
+- **Module-first rule (issue #2, п.3):** при создании файла модуля (например `ffs.rs`), шаг добавления `pub mod ffs;` в `lib.rs`/`mod.rs` выполняется В ТОМ ЖЕ ШАГЕ, ДО запуска `cargo test`. Binary-крейты получают `main.rs` одновременно с `Cargo.toml`. Это исключает false-positive тестов (0 из 0) из-за неподключённых модулей. **Это правило применяется во ВСЕХ задачах ниже автоматически.**
+- **TDD порядок:** (1) объявить `mod` + создать файл с тестами → (2) `cargo test` (падает) → (3) реализация → (4) `cargo test` (проходит) → (5) commit.
+- **Crate stack:** `uguid::Guid` для всех GUID-значений (Display/FromStr/serde). `r_efi::hii::*` для IFR-структур и opcode-констант. `#[brw]`-макросы `binrw` для FFS/section/FV заголовков. `object` для PE32. Не писать самописный byte-offset парсинг.
+- **GUID UPPERCASE:** `uguid::Guid` выводит lowercase. Wrapper-функция `fn guid_to_upper_string(g: &Guid) -> String` приводит к верхнему регистру для индустриального формата (AMI/OEM/EDK2).
+- **Checksum wrapping:** использовать `wrapping_add`/`wrapping_sub` (см. референс `refs/current/fixes/UEFIPatcher/crates/uefi-engine/src/ffs.rs`).
+- Референс парсера: `../refs/UEFITool-ai-fork/common/ffsparser.{h,cpp}`.
 - Референс билдера: `../refs/UEFITool-ai-fork/common/ffsbuilder.{h,cpp}`.
 - Референс FFS-структур: `../refs/UEFITool-ai-fork/common/ffs.h` (FFSv2 24б, FFSv3 large 32б, Lenovo large 32б).
 - Референс Target/команд: `../refs/UEFITool-ai-fork/UEFIEdit/uefiedit.{h,cpp}`.
-- Референс IFR: `../refs/IFRExtractor-RS/src/uefi_parser.rs` (IfrOpcode, ifr_operations).
-- Референс Setup-видимости: `../refs/UEFI-Editor/src/components/scripts/scripts.ts` (Unsuppress логика: вставка `End` 0x2902 после `{0A 82}`, удаление оригинального End).
+- Референс IFR: `../refs/IFRExtractor-RS/src/uefi_parser.rs` (IfrOpcode, ifr_operations). Структуры: `r_efi::hii::*`.
+- Референс Setup-видимости: `../refs/UEFI-Editor/src/components/scripts/scripts.ts` (Unsuppress логика).
+- Референс ffs.rs (checksums): `../refs/current/fixes/UEFIPatcher/crates/uefi-engine/src/ffs.rs`.
 - Точка истины при багах: `../refs/edk2`.
-- Критичные баги для Rust-порта (из `../refs/UEFITool-ai-fork/IMPLEMENTATION.md` и `UEFIEDIT_BUGS-2.md`):
+- Критичные баги для Rust-порта:
   1. `replace` должен `clearChildren` перед `setBody` (баг 9).
   2. `buildVolume` должен потреблять FreeSpace, дополнять `emptyByte` (баг 4).
   3. `buildFile`/`buildSection` с `rowCount==0` используют `body` as-is (баг 5).
-  4. `buildSection` для GUIDed-секций сжимает LZMA/Tiano по GUID из parsing data (баг 10).
-  5. `buildVolume` сохраняет оригинальные offset'ы неизменённых файлов или pad FFS к оригинальному размеру (баг 11).
-  6. Каскадная пометка `Rebuild` для всех предков до root после insert/remove/replace/rebuild.
-  7. Три варианта FFS-заголовка: FFSv2 (24б), FFSv3 large (32б, UINT64 ExtendedSize), Lenovo large (32б, UINT32 ExtendedSize, FFSv2 rev2).
-- Переменные окружения: `UEFIPATCHER_DATA` (по умолч. `~/.local/share/uefipatcher`), `UEFIPATCHER_SOCK` (по умолч. `${XDG_RUNTIME_DIR}/uefipatcher.sock`), `UEFIPATCHER_SESSION_TTL_SECS` (864000), `UEFIPATCHER_SESSION_GC_INTERVAL_SECS` (3600).
-- gRPC: `Authorization: Bearer <token>` в metadata; токен в `${UEFIPATCHER_DATA}/token` (0600).
-- Кодстайл: `cargo fmt`, `cargo clippy -- -D warnings`. Без комментариев в коде (кроме ссылок на референс `file:line`).
+  4. `buildSection` для GUIDed-секций сжимает LZMA/Tiano по GUID (баг 10).
+  5. `buildVolume` сохраняет оригинальные offset'ы или pad FFS (баг 11).
+  6. Каскадная пометка `Rebuild` для всех предков после insert/remove/replace/rebuild.
+  7. Три варианта FFS-заголовка: FFSv2 (24б), FFSv3 large (32б), Lenovo large (32б).
+- Переменные окружения: `UEFIPATCHER_DATA`, `UEFIPATCHER_SOCK`, `UEFIPATCHER_SESSION_TTL_SECS` (864000), `UEFIPATCHER_SESSION_GC_INTERVAL_SECS` (3600), `UEFIPATCHER_PURGE_ARTIFACTS` (false).
+- gRPC: `Authorization: Bearer <token>` в metadata.
+- Кодстайл: `cargo fmt`, `cargo clippy -- -D warnings`. Без комментариев в коде.
 
 ---
 
@@ -35,64 +41,87 @@
 
 | Файл | Назначение |
 |---|---|
-| `Cargo.toml` | workspace manifest |
+| `Cargo.toml` | workspace manifest (members + workspace deps: uguid, r-efi, binrw, object, lzma-rs, tonic, prost, tokio, clap, uuid, anyhow, thiserror, tracing, rusqlite) |
 | `crates/uefi-proto/Cargo.toml`, `build.rs`, `proto/engine.proto`, `src/lib.rs` | protobuf-контракт EngineService |
+| `crates/uefi-common/Cargo.toml`, `src/lib.rs`, `src/state.rs`, `src/error.rs` | общий крейт: State, read_state/write_state, AppError, ExitCode |
 | `crates/uefi-engine/Cargo.toml`, `src/lib.rs` | ядро: re-export модулей |
-| `crates/uefi-engine/src/types.rs` | базовые типы: `Guid`, `FfsNode`, `FfsType`, `Action`, `Image`, `Target`, parsing-data structs |
-| `crates/uefi-engine/src/ffs.rs` | FFS-структуры (заголовки), константы, checksum-хелперы |
-| `crates/uefi-engine/src/parser/mod.rs`, `volume.rs`, `file.rs`, `section.rs` | парсинг образа → дерево |
-| `crates/uefi-engine/src/parser/target.rs` | парсинг Target-строки (GUID/PATH/GUID:T/GUID:T:N) |
-| `crates/uefi-engine/src/builder/mod.rs`, `align.rs` | сборка дерева → байты |
-| `crates/uefi-engine/src/setup/mod.rs`, `ifr.rs` | парсинг IFR, SetSetupItemVisibility |
-| `crates/uefi-engine/src/storage/mod.rs`, `schema.rs`, `artifact.rs` | SQLite + файлы артефактов |
-| `crates/uefi-engine/src/session/mod.rs` | менеджер сессий + GC |
-| `crates/uefi-engine/src/rpc/mod.rs`, `auth.rs`, `server.rs` | gRPC-сервер над unix-сокетом |
-| `crates/uefi-cli/Cargo.toml`, `src/main.rs`, `src/client.rs` | CLI-минимум |
-| `docker/Dockerfile.engine`, `docker/docker-compose.yml` | контейнеризация |
+| `crates/uefi-engine/src/types.rs` | `FfsNode`, `Image`, `Target`, Guid wrapper (uguid) |
+| `crates/uefi-engine/src/ffs.rs` | FFS-константы (r-efi), checksum-хелперы (wrapping), well-known GUIDs |
+| `crates/uefi-engine/src/parser/mod.rs`, `volume.rs`, `file.rs`, `section.rs` | парсинг образа → дерево (binrw-структуры) |
+| `crates/uefi-engine/src/parser/target.rs` | парсинг Target-строки |
+| `crates/uefi-engine/src/decompress.rs` | Tiano/LZMA декомпрессия |
+| `crates/uefi-engine/src/builder.rs` | сборка дерева → байты |
+| `crates/uefi-engine/src/ops.rs` | insert/remove/replace/rebuild (с artifact_id) |
+| `crates/uefi-engine/src/setup.rs` | IFR-парсинг (r_efi::hii), SetSetupItemVisibility |
+| `crates/uefi-engine/src/storage/mod.rs`, `schema.rs`, `artifact.rs` | SQLite (sessions с name, artifacts), extract/import/export |
+| `crates/uefi-engine/src/session.rs` | менеджер сессий + GC (--purge-artifacts) |
+| `crates/uefi-engine/src/rpc/mod.rs`, `auth.rs`, `server.rs` | gRPC-сервер, все RPC (вкл. artifact ops) |
+| `crates/uefi-engine/src/bin/engine.rs` | engine binary (clap CLI, --purge-artifacts) |
+| `crates/uefi-cli/Cargo.toml`, `src/main.rs` | CLI-минимум (depends on uefi-common) |
+| `docker/rust-builder.containerfile` | базовый Rust builder (fedora:44) |
+| `docker/engine.containerfile` | движок на базе rust-builder |
+| `docker/docker-compose.yml` | контейнеризация |
 | `tests/fixtures/` | синтетические тестовые образы |
 | `crates/uefi-engine/tests/` | интеграционные тесты |
-| `crates/uefi-cli/tests/e2e.rs` | E2E-тесты |
 
 ---
 
-### Task 1: Скелет Cargo workspace и uefi-proto
+### Task 1: Скелет Cargo workspace, uefi-proto и uefi-common
 
 **Files:**
 - Create: `Cargo.toml`
-- Create: `crates/uefi-proto/Cargo.toml`
-- Create: `crates/uefi-proto/build.rs`
-- Create: `crates/uefi-proto/proto/engine.proto`
-- Create: `crates/uefi-proto/src/lib.rs`
+- Create: `crates/uefi-proto/{Cargo.toml, build.rs, proto/engine.proto, src/lib.rs}`
+- Create: `crates/uefi-common/{Cargo.toml, src/lib.rs, src/state.rs, src/error.rs}`
+- Create: `crates/uefi-engine/{Cargo.toml, src/lib.rs}`
+- Create: `crates/uefi-cli/{Cargo.toml, src/main.rs}`
 
 **Interfaces:**
 - Consumes: нет (первый task)
-- Produces: сгенерированные типы `engine_pb::*` (сообщения, enums), trait `engine_service_server::EngineService` для `uefi-engine`. Имена сообщений: `CreateSessionRequest`, `CreateSessionResponse`, `DestroySessionRequest`, `ListSessionsRequest`, `SessionInfo`, `ListSessionsResponse`, `OpenImageRequest`, `OpenImageResponse`, `DumpTreeRequest`, `DumpTreeResponse`, `ListItemsRequest`, `Item`, `ListItemsResponse`, `FindItemRequest`, `FindItemResponse`, `InsertRequest`, `InsertResponse`, `RemoveRequest`, `ReplaceRequest`, `ReplaceResponse`, `RebuildRequest`, `SetSetupItemVisibilityRequest`, `SaveImageRequest`, `Empty`. Enums: `ImageMode` (READ=0/WRITE=1), `InsertMode` (INTO=0/BEFORE=1/AFTER=2), `DumpFormat` (TEXT=0/TSV=1).
+- Produces: сгенерированные proto-типы; скелеты `uefi-common` (State, AppError), `uefi-engine` (пустой lib.rs), `uefi-cli` (stub main.rs).
 
 - [ ] **Step 1: Создать workspace manifest**
 
 `Cargo.toml`:
 ```toml
 [workspace]
-members = ["crates/uefi-proto", "crates/uefi-engine", "crates/uefi-cli"]
+members = ["crates/uefi-proto", "crates/uefi-common", "crates/uefi-engine", "crates/uefi-cli"]
 resolver = "2"
 
 [workspace.package]
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 license = "MIT"
 
 [workspace.dependencies]
+# UEFI-specific
+uguid = { version = "2.2", features = ["serde"] }
+r-efi = "7.0"
+binrw = "0.15"
+object = { version = "0.39", default-features = false, features = ["read_core", "pe"] }
+lzma-rs = "0.3"
+# gRPC / async
 tonic = "0.12"
 prost = "0.13"
 tokio = { version = "1", features = ["full"] }
+# Storage
+rusqlite = { version = "0.31", features = ["bundled"] }
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+# Utility
 uuid = { version = "1", features = ["v4"] }
 anyhow = "1"
 thiserror = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+directories = "5"
+nix = { version = "0.29", features = ["fs"] }
+num_enum = "0.7"
 ```
 
-- [ ] **Step 2: Создать uefi-proto Cargo.toml**
+- [ ] **Step 2: Создать uefi-proto**
 
 `crates/uefi-proto/Cargo.toml`:
 ```toml
@@ -110,8 +139,6 @@ prost.workspace = true
 tonic-build = "0.12"
 ```
 
-- [ ] **Step 3: Создать build.rs**
-
 `crates/uefi-proto/build.rs`:
 ```rust
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -119,8 +146,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 ```
-
-- [ ] **Step 4: Создать engine.proto**
 
 `crates/uefi-proto/proto/engine.proto`:
 ```proto
@@ -139,6 +164,10 @@ service EngineService {
   rpc Remove(RemoveRequest) returns (Empty);
   rpc Replace(ReplaceRequest) returns (ReplaceResponse);
   rpc Rebuild(RebuildRequest) returns (Empty);
+  rpc ExtractArtifact(ExtractArtifactRequest) returns (ExtractArtifactResponse);
+  rpc ExportArtifact(ExportArtifactRequest) returns (Empty);
+  rpc ImportArtifact(ImportArtifactRequest) returns (ImportArtifactResponse);
+  rpc ListArtifacts(ListArtifactsRequest) returns (ListArtifactsResponse);
   rpc SetSetupItemVisibility(SetSetupItemVisibilityRequest) returns (Empty);
   rpc SaveImage(SaveImageRequest) returns (Empty);
 }
@@ -147,11 +176,11 @@ enum ImageMode { READ = 0; WRITE = 1; }
 enum InsertMode { INTO = 0; BEFORE = 1; AFTER = 2; }
 enum DumpFormat { TEXT = 0; TSV = 1; }
 
-message CreateSessionRequest {}
+message CreateSessionRequest { string name = 1; }
 message CreateSessionResponse { string session_id = 1; string token = 2; }
 message DestroySessionRequest { string session_id = 1; }
 message ListSessionsRequest {}
-message SessionInfo { string session_id = 1; int64 created_at = 2; int64 last_activity = 3; }
+message SessionInfo { string session_id = 1; string name = 2; int64 created_at = 3; int64 last_activity = 4; }
 message ListSessionsResponse { repeated SessionInfo sessions = 1; }
 
 message OpenImageRequest { string session_id = 1; string image_path = 2; ImageMode mode = 3; }
@@ -167,15 +196,27 @@ message ListItemsResponse { repeated Item items = 1; }
 message FindItemRequest { string image_id = 1; string target = 2; }
 message FindItemResponse { string item_id = 1; }
 
-message InsertRequest { string image_id = 1; string target = 2; string ffs_path = 3; InsertMode mode = 4; }
+message InsertRequest { string image_id = 1; string target = 2; string ffs_path = 3; string artifact_id = 4; InsertMode mode = 5; }
 message InsertResponse { string item_id = 1; }
 
 message RemoveRequest { string image_id = 1; string target = 2; }
 
-message ReplaceRequest { string image_id = 1; string target = 2; string ffs_path = 3; bool body_only = 4; }
+message ReplaceRequest { string image_id = 1; string target = 2; string ffs_path = 3; string artifact_id = 4; bool body_only = 5; }
 message ReplaceResponse { string item_id = 1; }
 
 message RebuildRequest { string image_id = 1; string target = 2; }
+
+message ExtractArtifactRequest { string image_id = 1; string target = 2; bool body_only = 3; }
+message ExtractArtifactResponse { string artifact_id = 1; }
+
+message ExportArtifactRequest { string artifact_id = 1; string output_path = 2; }
+
+message ImportArtifactRequest { string session_id = 1; string file_path = 2; }
+message ImportArtifactResponse { string artifact_id = 1; }
+
+message ListArtifactsRequest { string session_id = 1; }
+message ArtifactInfo { string artifact_id = 1; string kind = 2; uint64 size = 3; int64 created_at = 4; string source = 5; }
+message ListArtifactsResponse { repeated ArtifactInfo artifacts = 1; }
 
 message SetSetupItemVisibilityRequest { string image_id = 1; string item_id = 2; bool visible = 3; }
 
@@ -184,81 +225,75 @@ message SaveImageRequest { string image_id = 1; string output_path = 2; }
 message Empty {}
 ```
 
-- [ ] **Step 5: Создать lib.rs**
-
 `crates/uefi-proto/src/lib.rs`:
 ```rust
 pub mod engine {
     tonic::include_proto!("engine");
 }
-
 pub use engine::*;
 ```
 
-- [ ] **Step 6: Проверить компиляцию**
+- [ ] **Step 3: Создать uefi-common (скелет state.rs + error.rs)**
 
-Run: `cargo build -p uefi-proto`
-Expected: компиляция без ошибок, сгенерированы типы `engine::*`
+`crates/uefi-common/Cargo.toml`:
+```toml
+[package]
+name = "uefi-common"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 
-- [ ] **Step 7: Коммит**
-
-```bash
-git add Cargo.toml crates/uefi-proto/
-git commit -m "feat: scaffold workspace and uefi-proto (EngineService protobuf)"
+[dependencies]
+serde.workspace = true
+toml.workspace = true
+directories.workspace = true
+thiserror.workspace = true
 ```
 
----
-
-### Task 2: Базовые типы движка (Guid, FfsNode, Action, FfsType, Image, Target, parsing data)
-
-**Files:**
-- Create: `crates/uefi-engine/Cargo.toml`
-- Create: `crates/uefi-engine/src/lib.rs`
-- Create: `crates/uefi-engine/src/types.rs`
-- Test: `crates/uefi-engine/src/types.rs` (inline `#[cfg(test)] mod tests`)
-
-**Interfaces:**
-- Consumes: нет
-- Produces:
-  - `Guid { data1: u32, data2: u16, data3: u16, data4: [u8; 8] }` с `Display`/`FromStr`/`PartialEq`/`Eq`/`Hash`
-  - `enum FfsType { Root=60, Capsule=61, Image=62, Region=63, Padding=64, Volume=65, File=66, Section=67, FreeSpace=68 }`
-  - `enum Action { NoAction=50, Create=51, Insert=52, Replace=53, Remove=54, Rebuild=55, Rebase=56 }`
-  - `struct FfsNode { guid: Option<Guid>, node_type: FfsType, subtype: u8, offset: u32, header: Vec<u8>, body: Vec<u8>, tail: Vec<u8>, children: Vec<FfsNode>, action: Action, parsing_data: ParsingData, fixed: bool, compressed: bool, alignment_bytes: Vec<u8> }`
-  - `enum ParsingData { None, Volume(VolumeParsingData), File(FileParsingData), GuidedSection(GuidedSectionParsingData), CompressedSection(CompressedSectionParsingData) }`
-  - `struct VolumeParsingData { extended_header_guid: Option<Guid>, alignment: u32, ffs_version: u8, empty_byte: u8, revision: u8 }`
-  - `struct FileParsingData { empty_byte: u8, guid: Guid }`
-  - `struct GuidedSectionParsingData { guid: Guid, dictionary_size: u32 }`
-  - `struct CompressedSectionParsingData { uncompressed_size: u32, compression_type: u8, algorithm: u8, dictionary_size: u32 }`
-  - `struct Image { image_id: String, session_id: String, root: FfsNode, mode: ImageMode }`
-  - `enum Target { Guid(Guid), Path(Vec<usize>), GuidSection { guid: Guid, section_type: u8, section_index: Option<usize> } }`
-
-- [ ] **Step 1: Написать failing tests для Guid**
-
-`crates/uefi-engine/src/types.rs` (модуль tests внизу):
+`crates/uefi-common/src/lib.rs`:
 ```rust
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::str::FromStr;
-
-    #[test]
-    fn guid_display_roundtrip() {
-        let g = Guid { data1: 0x5C60F367, data2: 0xA505, data3: 0x419A, data4: [0x85, 0x9E, 0x2A, 0x4F, 0xF6, 0xCA, 0x6F, 0xE5] };
-        let s = format!("{g}");
-        assert_eq!(s, "5C60F367-A505-419A-859E-2A4FF6CA6FE5");
-        let g2 = Guid::from_str(&s).unwrap();
-        assert_eq!(g, g2);
-    }
-
-    #[test]
-    fn guid_from_str_invalid() {
-        assert!(Guid::from_str("not-a-guid").is_err());
-        assert!(Guid::from_str("5C60F367-A505-419A-859E-2A4FF6CA6FE").is_err());
-    }
-}
+pub mod state;
+pub mod error;
+pub use state::*;
+pub use error::*;
 ```
 
-- [ ] **Step 2: Создать uefi-engine Cargo.toml**
+`crates/uefi-common/src/state.rs` — скелет (полное наполнение в цикле 2):
+```rust
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct State {
+    pub session_id: Option<String>,
+    pub token: Option<String>,
+    pub active_image_id: Option<String>,
+    pub sock_path: Option<String>,
+}
+
+pub fn state_path() -> PathBuf {
+    PathBuf::from(".uefipatcher")
+}
+// TODO цикл 2: read_state, write_state, resolve_sock, default_sock
+```
+
+`crates/uefi-common/src/error.rs` — скелет:
+```rust
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum AppError {
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("not found: {0}")]
+    NotFound(String),
+    #[error("invalid: {0}")]
+    Invalid(String),
+}
+// TODO цикл 2: ErrKind, ExitCode, print_error
+```
+
+- [ ] **Step 4: Создать uefi-engine скелет**
 
 `crates/uefi-engine/Cargo.toml`:
 ```toml
@@ -270,90 +305,127 @@ license.workspace = true
 
 [dependencies]
 uefi-proto = { path = "../uefi-proto" }
+uguid.workspace = true
+r-efi.workspace = true
+binrw.workspace = true
 uuid.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-rusqlite = { version = "0.31", features = ["bundled"] }
-nix = { version = "0.29", features = ["fs"] }
+num_enum.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
 ```
 
-- [ ] **Step 3: Запустить тесты — должны упасть (нет Guid)**
-
-Run: `cargo test -p uefi-engine guid_`
-Expected: FAIL — `Guid` не определён
-
-- [ ] **Step 4: Реализовать Guid**
-
-`crates/uefi-engine/src/types.rs` (начало):
+`crates/uefi-engine/src/lib.rs`:
 ```rust
-use std::fmt;
-use std::str::FromStr;
-use thiserror::Error;
+// Модули добавляются по мере реализации в последующих задачах
+```
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Guid {
-    pub data1: u32,
-    pub data2: u16,
-    pub data3: u16,
-    pub data4: [u8; 8],
+- [ ] **Step 5: Создать uefi-cli stub (зависит от uefi-common)**
+
+`crates/uefi-cli/Cargo.toml`:
+```toml
+[package]
+name = "uefi-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+uefi-proto = { path = "../uefi-proto" }
+uefi-common = { path = "../uefi-common" }
+tonic.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+```
+
+`crates/uefi-cli/src/main.rs`:
+```rust
+fn main() {
+    println!("uefi-cli stub — smoke test in Task 17");
+}
+```
+
+- [ ] **Step 6: Проверить компиляцию всего workspace**
+
+Run: `cargo build --all`
+Expected: компиляция без ошибок; все 4 крейта собираются; proto-типы сгенерированы.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add -A && git commit -m "feat: workspace skeleton with uefi-proto, uefi-common, uefi-engine, uefi-cli"
+```
+
+---
+
+### Task 2: Базовые типы движка (Guid через uguid, FfsNode, Action, FfsType, Image, Target)
+
+**Files:**
+- Create: `crates/uefi-engine/src/types.rs`
+- Modify: `crates/uefi-engine/src/lib.rs` (добавить `pub mod types;`)
+- Modify: `crates/uefi-engine/Cargo.toml` (добавить `num_enum`)
+
+**Interfaces:**
+- Consumes: `uguid::Guid` (внешний крейт)
+- Produces:
+  - `pub fn guid_to_upper_string(g: &Guid) -> String` — UPPERCASE Display wrapper для индустриального формата
+  - Re-export `pub use uguid::Guid;` — используем uguid напрямую
+  - `enum FfsType`, `enum Action`, `struct FfsNode`, `enum ParsingData` и sub-structs
+  - `struct Image`, `enum Target` — все используют `uguid::Guid`
+
+- [ ] **Step 1: Добавить `pub mod types;` в lib.rs и создать types.rs с failing tests**
+
+`crates/uefi-engine/src/lib.rs`:
+```rust
+pub mod types;
+pub use types::*;
+```
+
+`crates/uefi-engine/src/types.rs` (только tests сначала):
+```rust
+pub use uguid::Guid;
+
+pub fn guid_to_upper_string(g: &Guid) -> String {
+    g.to_string().to_ascii_uppercase()
 }
 
-#[derive(Debug, Error)]
-pub enum GuidError {
-    #[error("invalid GUID format: {0}")]
-    InvalidFormat(String),
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::str::FromStr;
 
-impl fmt::Display for Guid {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{:08X}-{:04X}-{:04X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}",
-            self.data1, self.data2, self.data3,
-            self.data4[0], self.data4[1],
-            self.data4[2], self.data4[3], self.data4[4],
-            self.data4[5], self.data4[6], self.data4[7]
-        )
+    #[test]
+    fn guid_display_uppercase() {
+        let g = Guid::try_parse("5c60f367-a505-419a-859e-2a4ff6ca6fe5").unwrap();
+        let s = guid_to_upper_string(&g);
+        assert_eq!(s, "5C60F367-A505-419A-859E-2A4FF6CA6FE5");
     }
-}
 
-impl FromStr for Guid {
-    type Err = GuidError;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let parts: Vec<&str> = s.split('-').collect();
-        if parts.len() != 5 { return Err(GuidError::InvalidFormat(s.into())); }
-        let d1 = u32::from_str_radix(parts[0], 16).map_err(|_| GuidError::InvalidFormat(s.into()))?;
-        if parts[0].len() != 8 { return Err(GuidError::InvalidFormat(s.into())); }
-        let d2 = u16::from_str_radix(parts[1], 16).map_err(|_| GuidError::InvalidFormat(s.into()))?;
-        if parts[1].len() != 4 { return Err(GuidError::InvalidFormat(s.into())); }
-        let d3 = u16::from_str_radix(parts[2], 16).map_err(|_| GuidError::InvalidFormat(s.into()))?;
-        if parts[2].len() != 4 { return Err(GuidError::InvalidFormat(s.into())); }
-        if parts[3].len() != 4 { return Err(GuidError::InvalidFormat(s.into())); }
-        let d4a = u8::from_str_radix(&parts[3][0..2], 16).map_err(|_| GuidError::InvalidFormat(s.into()))?;
-        let d4b = u8::from_str_radix(&parts[3][2..4], 16).map_err(|_| GuidError::InvalidFormat(s.into()))?;
-        if parts[4].len() != 12 { return Err(GuidError::InvalidFormat(s.into())); }
-        let mut d4 = [0u8; 8];
-        for i in 0..6 {
-            d4[i] = u8::from_str_radix(&parts[4][i*2..i*2+2], 16).map_err(|_| GuidError::InvalidFormat(s.into()))?;
-        }
-        d4[6] = d4a; d4[7] = d4b;
-        Ok(Guid { data1: d1, data2: d2, data3: d3, data4: d4 })
+    #[test]
+    fn guid_from_str_roundtrip() {
+        let g = Guid::from_str("5C60F367-A505-419A-859E-2A4FF6CA6FE5").unwrap();
+        let s = guid_to_upper_string(&g);
+        assert_eq!(s, "5C60F367-A505-419A-859E-2A4FF6CA6FE5");
+    }
+
+    #[test]
+    fn guid_invalid() {
+        assert!(Guid::try_parse("not-a-guid").is_err());
     }
 }
 ```
 
-- [ ] **Step 5: Запустить тесты Guid — должны пройти**
+- [ ] **Step 2: Запустить тесты — должны пройти (uguid уже реализует FromStr)**
 
-Run: `cargo test -p uefi-engine guid_`
-Expected: PASS
+Run: `cargo test -p uefi-engine types::tests`
+Expected: PASS — uguid предоставляет Display/FromStr/serde
 
-- [ ] **Step 6: Реализовать остальные типы**
+- [ ] **Step 3: Реализовать остальные типы**
 
-Дополнить `crates/uefi-engine/src/types.rs`:
+Дополнить `crates/uefi-engine/src/types.rs` (после Guid-секций):
 ```rust
 #[derive(Debug, Clone, Copy, PartialEq, Eq, num_enum::TryFromPrimitive)]
 #[repr(u8)]
@@ -437,26 +509,18 @@ pub enum Target {
 }
 ```
 
-Добавить в `crates/uefi-engine/Cargo.toml` dependencies: `num_enum = "0.7"`.
+Добавить `num_enum.workspace = true` в `crates/uefi-engine/Cargo.toml`.
 
-- [ ] **Step 7: Создать lib.rs**
+- [ ] **Step 4: Запустить все тесты**
 
-`crates/uefi-engine/src/lib.rs`:
-```rust
-pub mod types;
-pub use types::*;
-```
-
-- [ ] **Step 8: Запустить все тесты**
-
-Run: `cargo test -p uefi-engine`
+Run: `cargo test -p uefi-engine && cargo clippy -p uefi-engine -- -D warnings`
 Expected: PASS
 
-- [ ] **Step 9: Коммит**
+- [ ] **Step 5: Коммит**
 
 ```bash
 git add crates/uefi-engine/
-git commit -m "feat: add base types (Guid, FfsNode, Image, Target, parsing data)"
+git commit -m "feat: base types using uguid::Guid, FfsNode, Image, Target"
 ```
 
 ---
@@ -480,24 +544,36 @@ git commit -m "feat: add base types (Guid, FfsNode, Image, Target, parsing data)
   - `size_to_uint24(size: u32) -> [u8; 3]` (FFS size field is 24-bit)
   - `uint24_to_u32(b: [u8; 3]) -> u32`
 
-- [ ] **Step 1: Написать failing tests**
+- [ ] **Step 1: Добавить `pub mod ffs;` в lib.rs и написать failing tests**
 
-`crates/uefi-engine/src/ffs.rs` (модуль tests):
+`crates/uefi-engine/src/lib.rs` (обновить):
 ```rust
+pub mod types;
+pub mod ffs;
+pub use types::*;
+```
+
+`crates/uefi-engine/src/ffs.rs` (только tests):
+```rust
+use crate::types::Guid;
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn checksum8_known_vector() {
-        let data = [0x01, 0x02, 0x03, 0x04];
-        assert_eq!(calculate_checksum8(&data), 0xF6);
+        let mut data = [0x01, 0x02, 0x03, 0x04, 0x00];
+        let checksum = calculate_checksum8(&data);
+        assert_eq!(checksum, 0xF6);
+        if let Some(last) = data.last_mut() { *last = checksum; }
+        assert_eq!(calculate_checksum8(&data), 0);
     }
 
     #[test]
     fn checksum16_known_vector() {
         let data = [0x01, 0x00, 0x02, 0x00];
-        assert_eq!(calculate_checksum16(&data), 0x03);
+        assert_eq!(calculate_checksum16(&data), 0xFFFD);
     }
 
     #[test]
@@ -509,10 +585,26 @@ mod tests {
 
     #[test]
     fn large_section_threshold() {
-        let mut hdr = vec![0x00, 0x00, 0x00, 0x00];
-        assert!(!is_large_section(&hdr));
-        hdr.extend_from_slice(&[0xFF; 4]);
-        assert!(is_large_section(&hdr));
+        let small_hdr = vec![0x00, 0x00, 0x00, 0x00];
+        assert!(!is_large_section(&small_hdr));
+        let mut large_hdr = vec![0xFF, 0xFF, 0xFF, 0x00];
+        large_hdr.extend_from_slice(&[0x00, 0x00, 0x00, 0x02]);
+        assert!(is_large_section(&large_hdr));
+    }
+
+    #[test]
+    fn ffs_file_size_parsing() {
+        let mut small_ffs = vec![0; 24];
+        small_ffs[20..23].copy_from_slice(&size_to_uint24(0x000150));
+        assert!(!is_large_ffs(&small_ffs));
+        assert_eq!(ffs_file_size(&small_ffs), 0x000150);
+
+        let mut large_ffs = vec![0; 32];
+        large_ffs[20] = 0xFF; large_ffs[21] = 0xFF; large_ffs[22] = 0xFF;
+        let large_size: u64 = 0x02000000;
+        large_ffs[24..32].copy_from_slice(&large_size.to_le_bytes());
+        assert!(is_large_ffs(&large_ffs));
+        assert_eq!(ffs_file_size(&large_ffs), 0x02000000);
     }
 }
 ```
@@ -522,9 +614,9 @@ mod tests {
 Run: `cargo test -p uefi-engine ffs::tests`
 Expected: FAIL — функции не определены
 
-- [ ] **Step 3: Реализовать ffs.rs**
+- [ ] **Step 3: Реализовать ffs.rs (по референсу `refs/current/fixes/UEFIPatcher/crates/uefi-engine/src/ffs.rs`)**
 
-`crates/uefi-engine/src/ffs.rs`:
+`crates/uefi-engine/src/ffs.rs` (добавить реализацию):
 ```rust
 use crate::types::Guid;
 
@@ -542,28 +634,34 @@ pub const EFI_SECTION_DEPEX: u8 = 0x1C;
 pub const EFI_FVH_SIGNATURE: u32 = 0x4856465F;
 pub const EFI_FVB2_ERASE_POLARITY: u32 = 0x00000800;
 
-pub const TIANO_GUID: Guid = Guid { data1: 0xA31280AD, data2: 0x0411, data3: 0x42B8, data4: [0xAA, 0x09, 0xC4, 0x84, 0xA2, 0x90, 0x6F, 0xDC] };
-pub const LZMA_GUID: Guid = Guid { data1: 0xEE4E5ACE, data2: 0x8C72, data3: 0x4AE3, data4: [0x8B, 0xFC, 0xE1, 0xF3, 0xC1, 0xA0, 0x8C, 0x14] };
-pub const LZMAF86_GUID: Guid = Guid { data1: 0xD42AE6BD, data2: 0x1352, data3: 0x4B12, data4: [0x95, 0xA0, 0xC1, 0xD4, 0x1D, 0xF2, 0x9E, 0x0C] };
-pub const CRC32_GUID: Guid = Guid { data1: 0xFCDEFEEE, data2: 0x3598, data3: 0x4908, data4: [0xB3, 0x37, 0x78, 0xF5, 0x9F, 0x8F, 0x1A, 0x8E] };
+pub fn tiano_guid() -> Guid {
+    Guid::try_parse("a31280ad-0411-42b8-aa09-c484a2906fdc").unwrap()
+}
+pub fn lzma_guid() -> Guid {
+    Guid::try_parse("ee4e5ace-8c72-4ae3-8bfc-e1f3c1a08c14").unwrap()
+}
+pub fn lzmaf86_guid() -> Guid {
+    Guid::try_parse("d42ae6bd-1352-4b12-95a0-c1d41df29e0c").unwrap()
+}
+pub fn crc32_guid() -> Guid {
+    Guid::try_parse("fcdefeee-3598-4908-b337-78f59f8f1a8e").unwrap()
+}
 
 pub fn calculate_checksum8(data: &[u8]) -> u8 {
-    let sum: u32 = data.iter().map(|&b| b as u32).sum();
-    (0x100 - (sum & 0xFF) as u8) & 0xFF
+    let sum = data.iter().fold(0u8, |acc, &byte| acc.wrapping_add(byte));
+    0u8.wrapping_sub(sum)
 }
 
 pub fn calculate_checksum16(data: &[u8]) -> u16 {
-    assert!(data.len() % 2 == 0, "checksum16 requires even length");
-    let mut sum: u32 = 0;
-    for chunk in data.chunks_exact(2) {
-        sum += u16::from_le_bytes([chunk[0], chunk[1]]) as u32;
+    let mut sum: u16 = 0;
+    for &byte in data {
+        sum = sum.wrapping_add(byte as u16);
     }
-    let result = (0x10000 - (sum & 0xFFFF)) as u16;
-    result & 0xFFFF
+    0u16.wrapping_sub(sum)
 }
 
 pub fn size_to_uint24(size: u32) -> [u8; 3] {
-    [(size & 0xFF) as u8, ((size >> 8) & 0xFF) as u8, ((size >> 16) & 0xFF) as u8]
+    [size as u8, (size >> 8) as u8, (size >> 16) as u8]
 }
 
 pub fn uint24_to_u32(b: [u8; 3]) -> u32 {
@@ -571,11 +669,11 @@ pub fn uint24_to_u32(b: [u8; 3]) -> u32 {
 }
 
 pub fn is_large_section(header: &[u8]) -> bool {
-    header.len() >= 8 && header[3] == 0xFF && header[4] == 0xFF && header[5] == 0xFF
+    header.len() >= 8 && header[0] == 0xFF && header[1] == 0xFF && header[2] == 0xFF
 }
 
 pub fn is_large_ffs(header: &[u8]) -> bool {
-    header.len() >= 30 && header[25] == 0xFF && header[26] == 0xFF && header[27] == 0xFF
+    header.len() >= 32 && header[20] == 0xFF && header[21] == 0xFF && header[22] == 0xFF
 }
 
 pub fn section_size(header: &[u8]) -> u32 {
@@ -588,37 +686,34 @@ pub fn section_size(header: &[u8]) -> u32 {
 
 pub fn ffs_file_size(header: &[u8]) -> u32 {
     if is_large_ffs(header) {
-        u32::from_le_bytes([header[20], header[21], header[22], header[23]])
+        if header.len() >= 32 {
+            u32::from_le_bytes([header[24], header[25], header[26], header[27]])
+        } else {
+            0
+        }
     } else {
         uint24_to_u32([header[20], header[21], header[22]])
     }
 }
 ```
 
+**Важно:** well-known GUIDs — функции возвращают `Guid`, так как `uguid::Guid` не поддерживает `const` struct literal. Использовать `Guid::try_parse(...)` под капотом. Альтернатива: `Guid::from_bytes_le(&[16 байт])`.
+
 - [ ] **Step 4: Запустить тесты — должны пройти**
 
 Run: `cargo test -p uefi-engine ffs::tests`
 Expected: PASS
 
-- [ ] **Step 5: Подключить модуль в lib.rs**
-
-`crates/uefi-engine/src/lib.rs` (изменить):
-```rust
-pub mod types;
-pub mod ffs;
-pub use types::*;
-```
-
-- [ ] **Step 6: Запустить все тесты и clippy**
+- [ ] **Step 5: Запустить все тесты и clippy**
 
 Run: `cargo test -p uefi-engine && cargo clippy -p uefi-engine -- -D warnings`
 Expected: PASS
 
-- [ ] **Step 7: Коммит**
+- [ ] **Step 6: Коммит**
 
 ```bash
 git add crates/uefi-engine/src/ffs.rs crates/uefi-engine/src/lib.rs
-git commit -m "feat: add FFS structures and checksum helpers"
+git commit -m "feat: FFS structures and checksum helpers (wrapping arithmetic, ref ffs.rs)"
 ```
 
 ---
@@ -655,6 +750,15 @@ pub enum ParserError {
 }
 
 pub mod volume;
+```
+
+**Module-first rule:** добавить `pub mod parser;` в `crates/uefi-engine/src/lib.rs` (ДО запуска `cargo test` в Step 2):
+
+```rust
+pub mod types;
+pub mod ffs;
+pub mod parser;
+pub use types::*;
 ```
 
 `crates/uefi-engine/src/parser/volume.rs`:
@@ -752,15 +856,7 @@ pub fn parse_volume(buf: &[u8], offset: u32) -> Result<FfsNode, ParserError> {
 Run: `cargo test -p uefi-engine parser::volume::tests`
 Expected: PASS
 
-- [ ] **Step 5: Подключить модуль в lib.rs и коммит**
-
-`crates/uefi-engine/src/lib.rs`:
-```rust
-pub mod types;
-pub mod ffs;
-pub mod parser;
-pub use types::*;
-```
+- [ ] **Step 5: Коммит**
 
 ```bash
 git add crates/uefi-engine/src/parser/ crates/uefi-engine/src/lib.rs
@@ -790,8 +886,8 @@ mod tests {
 
     fn make_minimal_ffs() -> Vec<u8> {
         let mut buf = vec![0u8; 48];
-        let guid = Guid { data1: 0x5C60F367, data2: 0xA505, data3: 0x419A, data4: [0x85, 0x9E, 0x2A, 0x4F, 0xF6, 0xCA, 0x6F, 0xE5] };
-        let gb = guid_bytes(&guid);
+        let guid = Guid::try_parse("5C60F367-A505-419A-859E-2A4FF6CA6FE5").unwrap();
+        let gb = guid.to_bytes();
         buf[0..16].copy_from_slice(&gb);
         buf[16] = 0x01; // type: FFSv2 RAW
         buf[17] = 0x02; // attributes
@@ -804,15 +900,6 @@ mod tests {
         buf[23] = cs;
         buf[24..48].copy_from_slice(&[0xFF; 24]);
         buf
-    }
-
-    fn guid_bytes(g: &Guid) -> [u8; 16] {
-        let mut b = [0u8; 16];
-        b[0..4].copy_from_slice(&g.data1.to_le_bytes());
-        b[4..6].copy_from_slice(&g.data2.to_le_bytes());
-        b[6..8].copy_from_slice(&g.data3.to_le_bytes());
-        b[8..16].copy_from_slice(&g.data4);
-        b
     }
 
     #[test]
@@ -832,30 +919,38 @@ mod tests {
 Run: `cargo test -p uefi-engine parser::file::tests`
 Expected: FAIL
 
-- [ ] **Step 3: Реализовать parse_file**
+- [ ] **Step 3: Реализовать parse_file и подключить модуль**
+
+Обновить `crates/uefi-engine/src/parser/mod.rs` — добавить `pub mod file;` (БЕЗ `pub mod section;` — он будет добавлён в Task 6):
+```rust
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum ParserError {
+    #[error("invalid header: {0}")]
+    InvalidHeader(String),
+    #[error("unknown type")]
+    UnknownType,
+    #[error("end of buffer")]
+    EndOfBuffer,
+}
+
+pub mod volume;
+pub mod file;
+```
 
 `crates/uefi-engine/src/parser/file.rs`:
 ```rust
 use crate::types::*;
 use crate::ffs::*;
-use super::ParserError;
 
-pub fn guid_bytes(g: &Guid) -> [u8; 16] {
-    let mut b = [0u8; 16];
-    b[0..4].copy_from_slice(&g.data1.to_le_bytes());
-    b[4..6].copy_from_slice(&g.data2.to_le_bytes());
-    b[6..8].copy_from_slice(&g.data3.to_le_bytes());
-    b[8..16].copy_from_slice(&g.data4);
-    b
+pub fn guid_to_bytes(g: &Guid) -> [u8; 16] {
+    g.to_bytes()
 }
 
-fn guid_from_bytes(b: &[u8]) -> Guid {
-    Guid {
-        data1: u32::from_le_bytes([b[0], b[1], b[2], b[3]]),
-        data2: u16::from_le_bytes([b[4], b[5]]),
-        data3: u16::from_le_bytes([b[6], b[7]]),
-        data4: [b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]],
-    }
+pub fn guid_from_bytes(b: &[u8]) -> Result<Guid, ()> {
+    let arr: [u8; 16] = b.get(..16).ok_or(())?.try_into().unwrap();
+    Ok(Guid::from_bytes(arr))
 }
 
 pub fn parse_file(buf: &[u8], offset: u32, erase_polarity: u8, revision: u8) -> Result<FfsNode, ParserError> {
@@ -864,16 +959,17 @@ pub fn parse_file(buf: &[u8], offset: u32, erase_polarity: u8, revision: u8) -> 
     let large = is_large_ffs(&buf[off..]);
     let hdr_len = if large { 32 } else { 24 };
     if off + hdr_len > buf.len() { return Err(ParserError::EndOfBuffer); }
-    let guid = guid_from_bytes(&buf[off..off+16]);
+    let guid = guid_from_bytes(&buf[off..off+16]).map_err(|_| ParserError::InvalidHeader("guid".into()))?;
     let ftype = buf[off+16];
     let attributes = buf[off+17];
     let size = ffs_file_size(&buf[off..]);
     let total = size as usize;
     if off + total > buf.len() { return Err(ParserError::EndOfBuffer); }
+    if total < hdr_len { return Err(ParserError::InvalidHeader("size < header".into())); }
     let header = buf[off..off+hdr_len].to_vec();
     let tail_len = if revision == 1 { 2 } else { 0 };
     let body_end = off + total - tail_len;
-    let body = buf[off+hdr_len..body_end].to_vec();
+    let body = if body_end > off + hdr_len { buf[off+hdr_len..body_end].to_vec() } else { vec![] };
     let tail = if tail_len > 0 { buf[body_end..body_end+tail_len].to_vec() } else { vec![] };
     let parsing_data = ParsingData::File(FileParsingData { empty_byte: erase_polarity, guid });
     Ok(FfsNode {
@@ -894,37 +990,18 @@ pub fn parse_file(buf: &[u8], offset: u32, erase_polarity: u8, revision: u8) -> 
 }
 ```
 
-- [ ] **Step 4: Запустить тест — должен пройти**
+**Важно:** `guid_from_bytes` проверяет длину через `.get(..16)` — не падает при некорректных байтах. `Guid::from_bytes` принимает любые 16 байт (без RFC-валидации) — UEFI-образы могут содержать нестандартные GUID. `body_end > off + hdr_len` защищает от отрицательного body при `total < hdr_len + tail_len`.
+
+- [ ] **Step 4: Запустить тест — должен пройти (модуль уже подключён в Step 3)**
 
 Run: `cargo test -p uefi-engine parser::file::tests`
 Expected: PASS
 
-- [ ] **Step 5: Подключить модуль в parser/mod.rs**
-
-`crates/uefi-engine/src/parser/mod.rs`:
-```rust
-use thiserror::Error;
-
-#[derive(Debug, Error)]
-pub enum ParserError {
-    #[error("invalid header: {0}")]
-    InvalidHeader(String),
-    #[error("unknown type")]
-    UnknownType,
-    #[error("end of buffer")]
-    EndOfBuffer,
-}
-
-pub mod volume;
-pub mod file;
-pub mod section;
-```
-
-- [ ] **Step 6: Коммит**
+- [ ] **Step 5: Коммит**
 
 ```bash
 git add crates/uefi-engine/src/parser/file.rs crates/uefi-engine/src/parser/mod.rs
-git commit -m "feat: add FFS file parser"
+git commit -m "feat: add FFS file parser (safe guid_from_bytes, uguid::Guid)"
 ```
 
 ---
@@ -943,6 +1020,8 @@ git commit -m "feat: add FFS file parser"
 - Референс: `../refs/UEFITool-ai-fork/common/ffsparser.cpp` `parseSectionHeader`/`parseSectionBody`/`parseCompressedSectionBody`/`parseGuidedSectionBody`. Заголовок секции 4 байта (или 8 для large). Для `EFI_SECTION_COMPRESSION` — body распаковывается (алгоритм Tiano/LZMA) и рекурсивно парсится `parse_sections`. Для `EFI_SECTION_GUID_DEFINED` — определяется алгоритм по GUID (TIANO/LZMA/LZMAF86/CRC32), распаковывается. Для leaf-секций (PE32, RAW, UI) — body as-is.
 
 - [ ] **Step 1: Написать failing test для raw-секции**
+
+**Module-first rule:** добавить `pub mod section;` в `crates/uefi-engine/src/parser/mod.rs` (ДО запуска `cargo test` в Step 2).
 
 `crates/uefi-engine/src/parser/section.rs`:
 ```rust
@@ -1003,12 +1082,7 @@ pub fn parse_section(buf: &[u8], offset: u32) -> Result<FfsNode, ParserError> {
     let body = buf[off+hdr_len..off+size].to_vec();
     let parsing_data = match stype {
         EFI_SECTION_GUID_DEFINED if body.len() >= 20 => {
-            let guid = Guid {
-                data1: u32::from_le_bytes([body[0], body[1], body[2], body[3]]),
-                data2: u16::from_le_bytes([body[4], body[5]]),
-                data3: u16::from_le_bytes([body[6], body[7]]),
-                data4: [body[8], body[9], body[10], body[11], body[12], body[13], body[14], body[15]],
-            };
+            let guid = crate::parser::file::guid_from_bytes(&body[0..16]).map_err(|_| ParserError::InvalidHeader("guid".into()))?;
             let data_offset = u16::from_le_bytes([body[16], body[17]]) as usize;
             let _attributes = u16::from_le_bytes([body[18], body[19]]);
             ParsingData::GuidedSection(GuidedSectionParsingData { guid, dictionary_size: 0 })
@@ -1099,6 +1173,8 @@ git commit -m "feat: add section parser (raw, pe32, guid-defined, compression st
 - Референс: `../refs/UEFITool-ai-fork/common/ffsparser.cpp` `decompress`. Tiano — LZSS-вариант EDK2. LZMA — через `LzmaDecode`.
 
 - [ ] **Step 1: Написать failing test для not-compressed**
+
+**Module-first rule:** добавить `pub mod decompress;` в `crates/uefi-engine/src/lib.rs` (ДО запуска `cargo test` в Step 3).
 
 `crates/uefi-engine/src/decompress.rs`:
 ```rust
@@ -1193,23 +1269,12 @@ if stype == EFI_SECTION_COMPRESSION {
 ```
 (заменить заглушку `children = vec![]` на этот блок)
 
-- [ ] **Step 5: Подключить модуль decompress в lib.rs**
-
-`crates/uefi-engine/src/lib.rs`:
-```rust
-pub mod types;
-pub mod ffs;
-pub mod parser;
-pub mod decompress;
-pub use types::*;
-```
-
-- [ ] **Step 6: Запустить все тесты**
+- [ ] **Step 5: Запустить все тесты**
 
 Run: `cargo test -p uefi-engine`
 Expected: PASS
 
-- [ ] **Step 7: Коммит**
+- [ ] **Step 6: Коммит**
 
 ```bash
 git add crates/uefi-engine/src/decompress.rs crates/uefi-engine/src/parser/section.rs crates/uefi-engine/src/lib.rs crates/uefi-engine/Cargo.toml
@@ -1234,6 +1299,8 @@ git commit -m "feat: add decompression (LZMA via lzma-rs, Tiano stub)"
 - `parse_image` ищет сигнатуру `_FVH` через весь буфер, парсит все volumes, соединяет в один root `FfsType::Image`.
 
 - [ ] **Step 1: Написать failing test**
+
+**Module-first rule:** добавить `pub mod image;` в `crates/uefi-engine/src/parser/mod.rs` (ДО запуска `cargo test` в Step 2).
 
 `crates/uefi-engine/src/parser/image.rs`:
 ```rust
@@ -1397,22 +1464,12 @@ fn list_recursive(node: &FfsNode, path: &str, items: &mut Vec<Item>, filter: Opt
 }
 ```
 
-- [ ] **Step 4: Подключить image в parser/mod.rs**
-
-`crates/uefi-engine/src/parser/mod.rs`:
-```rust
-pub mod volume;
-pub mod file;
-pub mod section;
-pub mod image;
-```
-
-- [ ] **Step 5: Запустить тесты — должны пройти**
+- [ ] **Step 4: Запустить тесты — должны пройти**
 
 Run: `cargo test -p uefi-engine parser::image::tests`
 Expected: PASS
 
-- [ ] **Step 6: Коммит**
+- [ ] **Step 5: Коммит**
 
 ```bash
 git add crates/uefi-engine/src/parser/image.rs crates/uefi-engine/src/parser/mod.rs
@@ -1435,6 +1492,8 @@ git commit -m "feat: add parse_image, dump_tree, list_items"
 - Референс: `../refs/UEFITool-ai-fork/UEFIEdit/uefiedit.cpp:195` `parseTarget`. Path: десятичные индексы детей от root, разделённые `/`. GUID: 36-символьная строка. `GUID:T` — file GUID + первая секция типа T (hex). `GUID:T:N` — N-ная секция типа T.
 
 - [ ] **Step 1: Написать failing tests**
+
+**Module-first rule:** добавить `pub mod target;` в `crates/uefi-engine/src/parser/mod.rs` (ДО запуска `cargo test` в Step 2).
 
 `crates/uefi-engine/src/parser/target.rs`:
 ```rust
@@ -1568,9 +1627,7 @@ fn find_by_guid<'a>(node: &'a FfsNode, g: &Guid) -> Option<&'a FfsNode> {
 }
 ```
 
-- [ ] **Step 4: Подключить в parser/mod.rs и запустить тесты**
-
-`crates/uefi-engine/src/parser/mod.rs`: добавить `pub mod target;`
+- [ ] **Step 4: Запустить тесты**
 
 Run: `cargo test -p uefi-engine parser::target::tests`
 Expected: PASS
@@ -1599,6 +1656,8 @@ git commit -m "feat: add Target parsing (guid/path/guid:type/guid:type:index) an
 - Референс: `../refs/UEFITool-ai-fork/common/ffsbuilder.cpp` `build`/`buildVolume`/`buildFile`/`buildSection`. Файлы выравниваются по 8 (padding `empty_byte`), секции по 4. `buildFile`/`buildSection` с `children.is_empty()` используют `body` as-is (баг 5). `buildVolume` сохраняет оригинальные offset'ы неизменённых файлов, padding к оригинальному размеру (баг 11). Контрольные суммы пересчитываются.
 
 - [ ] **Step 1: Написать round-trip failing test**
+
+**Module-first rule:** добавить `pub mod builder;` в `crates/uefi-engine/src/lib.rs` (ДО запуска `cargo test` в Step 2).
 
 `crates/uefi-engine/src/builder/mod.rs`:
 ```rust
@@ -1756,24 +1815,12 @@ fn build_section(node: &FfsNode, out: &mut Vec<u8>) -> Result<(), BuilderError> 
 }
 ```
 
-- [ ] **Step 5: Подключить модуль builder в lib.rs**
-
-`crates/uefi-engine/src/lib.rs`:
-```rust
-pub mod types;
-pub mod ffs;
-pub mod parser;
-pub mod decompress;
-pub mod builder;
-pub use types::*;
-```
-
-- [ ] **Step 6: Запустить round-trip тест — должен пройти**
+- [ ] **Step 5: Запустить round-trip тест — должен пройти**
 
 Run: `cargo test -p uefi-engine builder::tests`
 Expected: PASS
 
-- [ ] **Step 7: Коммит**
+- [ ] **Step 6: Коммит**
 
 ```bash
 git add crates/uefi-engine/src/builder/ crates/uefi-engine/src/lib.rs
@@ -1801,6 +1848,8 @@ git commit -m "feat: add builder (round-trip volume/file/section)"
 - Референс: `../refs/UEFITool-ai-fork/UEFIEdit/uefiedit.cpp:375` (insert), `472` (remove), `494` (replace), `520` (rebuild). После каждой операции — каскад `Rebuild` для всех предков до root. `replace` с `body_only=true` заменяет только body, сохраняет заголовок. `replace` должен `clearChildren` перед `setBody` (баг 9).
 
 - [ ] **Step 1: Написать failing tests**
+
+**Module-first rule:** добавить `pub mod ops;` в `crates/uefi-engine/src/lib.rs` (ДО запуска `cargo test` в Step 2).
 
 `crates/uefi-engine/src/ops.rs`:
 ```rust
@@ -1972,9 +2021,7 @@ fn parse_ffs_bytes(data: &[u8]) -> Result<FfsNode, ParserError> {
 }
 ```
 
-- [ ] **Step 4: Подключить в lib.rs и запустить тесты**
-
-`crates/uefi-engine/src/lib.rs`: добавить `pub mod ops;`
+- [ ] **Step 4: Запустить тесты**
 
 Run: `cargo test -p uefi-engine ops::tests`
 Expected: PASS
@@ -1988,26 +2035,33 @@ git commit -m "feat: add tree ops (insert/remove/replace/rebuild) with cascade r
 
 ---
 
-### Task 12: Storage (SQLite) — sessions и artifacts
+### Task 12: Storage (SQLite) — sessions (с name) и artifacts (extract/import/export)
 
 **Files:**
 - Create: `crates/uefi-engine/src/storage/mod.rs`
 - Create: `crates/uefi-engine/src/storage/schema.rs`
 - Create: `crates/uefi-engine/src/storage/artifact.rs`
-- Test: inline tests с tempfile
+- Modify: `crates/uefi-engine/src/lib.rs` (добавить `pub mod storage;`)
 
 **Interfaces:**
 - Consumes: `rusqlite`
 - Produces:
   - `pub struct Db { conn: rusqlite::Connection }`
   - `pub fn open_db(path: &Path) -> Result<Db>`
-  - `Db::insert_session(id, token)`, `Db::get_session(id) -> Option<SessionRow>`, `Db::touch_session(id)`, `Db::delete_session(id)`, `Db::list_sessions() -> Vec<SessionRow>`, `Db::list_expired(ttl_secs) -> Vec<String>`
-  - `Db::insert_artifact(id, session_id, kind, path, size)`, `Db::delete_artifacts_for_session(id)`
-  - `pub fn store_artifact_file(data_dir, session_id, image_id, bytes) -> Result<PathBuf>`
+  - `SessionRow { id, token, name, created_at, last_activity }`
+  - `Db::insert_session(id, token, name)`, `Db::get_session(id)`, `Db::touch_session(id)`, `Db::delete_session(id)`, `Db::delete_session_metadata(id)` (только БД, без файлов), `Db::list_sessions()`, `Db::list_expired(ttl_secs)`
+  - `Db::insert_artifact(id, session_id, kind, path, size, source)`, `Db::get_artifact(id)`, `Db::list_artifacts(session_id)`, `Db::delete_artifacts_for_session(id)`
+  - `ArtifactRow { id, session_id, kind, path, size, source, created_at }`
+  - `store_artifact_file(data_dir, session_id, artifact_id, bytes) -> Result<PathBuf>`
 
-- [ ] **Step 1: Написать failing tests**
+- [ ] **Step 1: Объявить модуль и написать failing tests**
 
-`crates/uefi-engine/src/storage/mod.rs`:
+`crates/uefi-engine/src/lib.rs` (добавить):
+```rust
+pub mod storage;
+```
+
+`crates/uefi-engine/src/storage/mod.rs` (структуры + tests):
 ```rust
 pub mod schema;
 pub mod artifact;
@@ -2019,7 +2073,10 @@ use anyhow::Result;
 pub struct Db { pub conn: Connection }
 
 #[derive(Debug, Clone)]
-pub struct SessionRow { pub id: String, pub token: String, pub created_at: i64, pub last_activity: i64 }
+pub struct SessionRow { pub id: String, pub token: String, pub name: String, pub created_at: i64, pub last_activity: i64 }
+
+#[derive(Debug, Clone)]
+pub struct ArtifactRow { pub id: String, pub session_id: String, pub kind: String, pub path: String, pub size: i64, pub source: String, pub created_at: i64 }
 
 #[cfg(test)]
 mod tests {
@@ -2033,26 +2090,38 @@ mod tests {
     }
 
     #[test]
-    fn insert_and_get_session() {
+    fn insert_and_get_session_with_name() {
         let (_td, db) = test_db();
-        db.insert_session("s1", "tok1").unwrap();
+        db.insert_session("s1", "tok1", "/home/user/work").unwrap();
         let row = db.get_session("s1").unwrap().unwrap();
         assert_eq!(row.token, "tok1");
+        assert_eq!(row.name, "/home/user/work");
     }
 
     #[test]
-    fn delete_session_cascades_artifacts() {
+    fn delete_session_metadata_keeps_no_trace() {
         let (_td, db) = test_db();
-        db.insert_session("s1", "t").unwrap();
-        db.insert_artifact("a1", "s1", "image", "/x", 100).unwrap();
-        db.delete_session("s1").unwrap();
+        db.insert_session("s1", "t", "name1").unwrap();
+        db.insert_artifact("a1", "s1", "extracted", "/x.bin", 100, "GUID:0x10").unwrap();
+        db.delete_session_metadata("s1").unwrap();
         assert!(db.get_session("s1").unwrap().is_none());
+        assert!(db.list_artifacts("s1").unwrap().is_empty());
+    }
+
+    #[test]
+    fn list_artifacts_for_session() {
+        let (_td, db) = test_db();
+        db.insert_session("s1", "t", "n").unwrap();
+        db.insert_artifact("a1", "s1", "extracted", "/x", 100, "target1").unwrap();
+        db.insert_artifact("a2", "s1", "imported", "/y", 200, "file.bin").unwrap();
+        let arts = db.list_artifacts("s1").unwrap();
+        assert_eq!(arts.len(), 2);
     }
 
     #[test]
     fn list_expired() {
         let (_td, db) = test_db();
-        db.insert_session("s1", "t").unwrap();
+        db.insert_session("s1", "t", "n").unwrap();
         db.conn.execute("UPDATE sessions SET last_activity = 0").unwrap();
         let expired = db.list_expired(3600).unwrap();
         assert!(expired.contains(&"s1".into()));
@@ -2065,29 +2134,33 @@ mod tests {
 Run: `cargo test -p uefi-engine storage::tests`
 Expected: FAIL
 
-- [ ] **Step 3: Реализовать schema.rs**
+- [ ] **Step 3: Реализовать schema.rs (с session_name и source напрямую в CREATE TABLE)**
 
 `crates/uefi-engine/src/storage/schema.rs`:
 ```rust
 pub const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS sessions (
-    id TEXT PRIMARY KEY,
-    token TEXT NOT NULL,
-    created_at INTEGER NOT NULL,
+    id            TEXT PRIMARY KEY,
+    token         TEXT NOT NULL,
+    name          TEXT NOT NULL DEFAULT '',
+    created_at    INTEGER NOT NULL,
     last_activity INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS artifacts (
-    id TEXT PRIMARY KEY,
+    id         TEXT PRIMARY KEY,
     session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-    kind TEXT NOT NULL,
-    path TEXT NOT NULL,
-    size INTEGER NOT NULL,
+    kind       TEXT NOT NULL,
+    path       TEXT NOT NULL,
+    size       INTEGER NOT NULL,
+    source     TEXT NOT NULL DEFAULT '',
     created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_artifacts_session ON artifacts(session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_last_activity ON sessions(last_activity);
 "#;
 ```
+
+**Важно (issue #1, п.2):** `session_name` добавляется напрямую в `CREATE TABLE`, НЕ через `ALTER TABLE`.
 
 - [ ] **Step 4: Реализовать artifact.rs**
 
@@ -2097,12 +2170,23 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use std::fs;
 
-pub fn store_artifact_file(data_dir: &Path, session_id: &str, image_id: &str, bytes: &[u8]) -> Result<PathBuf> {
-    let dir = data_dir.join("sessions").join(session_id).join("images");
+pub fn store_artifact_file(data_dir: &Path, session_id: &str, artifact_id: &str, bytes: &[u8]) -> Result<PathBuf> {
+    let dir = data_dir.join("sessions").join(session_id).join("artifacts");
     fs::create_dir_all(&dir)?;
-    let path = dir.join(format!("{image_id}.bin"));
+    let path = dir.join(format!("{artifact_id}.bin"));
     fs::write(&path, bytes)?;
     Ok(path)
+}
+
+pub fn read_artifact_file(data_dir: &Path, session_id: &str, artifact_id: &str) -> Result<Vec<u8>> {
+    let path = data_dir.join("sessions").join(session_id).join("artifacts").join(format!("{artifact_id}.bin"));
+    Ok(fs::read(&path)?)
+}
+
+pub fn write_artifact_to_output(data_dir: &Path, session_id: &str, artifact_id: &str, output_path: &str) -> Result<()> {
+    let bytes = read_artifact_file(data_dir, session_id, artifact_id)?;
+    fs::write(output_path, &bytes)?;
+    Ok(())
 }
 ```
 
@@ -2125,19 +2209,19 @@ fn now() -> i64 {
 }
 
 impl Db {
-    pub fn insert_session(&self, id: &str, token: &str) -> Result<()> {
+    pub fn insert_session(&self, id: &str, token: &str, name: &str) -> Result<()> {
         let t = now();
-        self.conn.execute("INSERT INTO sessions (id, token, created_at, last_activity) VALUES (?1, ?2, ?3, ?3)",
-            params![id, token, t])?;
+        self.conn.execute(
+            "INSERT INTO sessions (id, token, name, created_at, last_activity) VALUES (?1, ?2, ?3, ?4, ?4)",
+            params![id, token, name, t])?;
         Ok(())
     }
     pub fn get_session(&self, id: &str) -> Result<Option<SessionRow>> {
-        let row = self.conn.query_row(
-            "SELECT id, token, created_at, last_activity FROM sessions WHERE id=?1",
+        self.conn.query_row(
+            "SELECT id, token, name, created_at, last_activity FROM sessions WHERE id=?1",
             params![id],
-            |r| Ok(SessionRow { id: r.get(0)?, token: r.get(1)?, created_at: r.get(2)?, last_activity: r.get(3)? })
-        ).optional()?;
-        Ok(row)
+            |r| Ok(SessionRow { id: r.get(0)?, token: r.get(1)?, name: r.get(2)?, created_at: r.get(3)?, last_activity: r.get(4)? })
+        ).optional().map_err(Into::into)
     }
     pub fn touch_session(&self, id: &str) -> Result<()> {
         self.conn.execute("UPDATE sessions SET last_activity=?1 WHERE id=?2", params![now(), id])?;
@@ -2148,9 +2232,12 @@ impl Db {
         self.conn.execute("DELETE FROM sessions WHERE id=?1", params![id])?;
         Ok(())
     }
+    pub fn delete_session_metadata(&self, id: &str) -> Result<()> {
+        self.delete_session(id)
+    }
     pub fn list_sessions(&self) -> Result<Vec<SessionRow>> {
-        let mut stmt = self.conn.prepare("SELECT id, token, created_at, last_activity FROM sessions")?;
-        let rows = stmt.query_map([], |r| Ok(SessionRow { id: r.get(0)?, token: r.get(1)?, created_at: r.get(2)?, last_activity: r.get(3)? }))?;
+        let mut stmt = self.conn.prepare("SELECT id, token, name, created_at, last_activity FROM sessions")?;
+        let rows = stmt.query_map([], |r| Ok(SessionRow { id: r.get(0)?, token: r.get(1)?, name: r.get(2)?, created_at: r.get(3)?, last_activity: r.get(4)? }))?;
         let mut v = vec![];
         for r in rows { v.push(r?); }
         Ok(v)
@@ -2163,10 +2250,25 @@ impl Db {
         for r in rows { v.push(r?); }
         Ok(v)
     }
-    pub fn insert_artifact(&self, id: &str, session_id: &str, kind: &str, path: &str, size: i64) -> Result<()> {
-        self.conn.execute("INSERT INTO artifacts (id, session_id, kind, path, size, created_at) VALUES (?1,?2,?3,?4,?5,?6)",
-            params![id, session_id, kind, path, size, now()])?;
+    pub fn insert_artifact(&self, id: &str, session_id: &str, kind: &str, path: &str, size: i64, source: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO artifacts (id, session_id, kind, path, size, source, created_at) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+            params![id, session_id, kind, path, size, source, now()])?;
         Ok(())
+    }
+    pub fn get_artifact(&self, id: &str) -> Result<Option<ArtifactRow>> {
+        self.conn.query_row(
+            "SELECT id, session_id, kind, path, size, source, created_at FROM artifacts WHERE id=?1",
+            params![id],
+            |r| Ok(ArtifactRow { id: r.get(0)?, session_id: r.get(1)?, kind: r.get(2)?, path: r.get(3)?, size: r.get(4)?, source: r.get(5)?, created_at: r.get(6)? })
+        ).optional().map_err(Into::into)
+    }
+    pub fn list_artifacts(&self, session_id: &str) -> Result<Vec<ArtifactRow>> {
+        let mut stmt = self.conn.prepare("SELECT id, session_id, kind, path, size, source, created_at FROM artifacts WHERE session_id=?1")?;
+        let rows = stmt.query_map(params![session_id], |r| Ok(ArtifactRow { id: r.get(0)?, session_id: r.get(1)?, kind: r.get(2)?, path: r.get(3)?, size: r.get(4)?, source: r.get(5)?, created_at: r.get(6)? }))?;
+        let mut v = vec![];
+        for r in rows { v.push(r?); }
+        Ok(v)
     }
 }
 ```
@@ -2176,37 +2278,37 @@ impl Db {
 Run: `cargo test -p uefi-engine storage::tests`
 Expected: PASS
 
-- [ ] **Step 7: Подключить в lib.rs и коммит**
-
-`crates/uefi-engine/src/lib.rs`: добавить `pub mod storage;`
+- [ ] **Step 7: Коммит**
 
 ```bash
 git add crates/uefi-engine/src/storage/ crates/uefi-engine/src/lib.rs
-git commit -m "feat: add SQLite storage (sessions, artifacts, GC queries)"
+git commit -m "feat: SQLite storage with session_name, artifact extract/import/export"
 ```
 
 ---
 
-### Task 13: Session manager + фоновый GC
+### Task 13: Session manager + фоновый GC (--purge-artifacts)
 
 **Files:**
-- Create: `crates/uefi-engine/src/session/mod.rs`
-- Test: inline tests с mock time (малый TTL)
+- Create: `crates/uefi-engine/src/session.rs`
+- Modify: `crates/uefi-engine/src/lib.rs` (добавить `pub mod session;`)
 
 **Interfaces:**
 - Consumes: `storage::Db`, `uuid`, `tokio`
 - Produces:
-  - `pub struct SessionManager { db: Arc<Db>, data_dir: PathBuf, ttl: Duration, gc_interval: Duration }`
-  - `SessionManager::create_session() -> (session_id, token)`
-  - `SessionManager::destroy_session(id) -> Result<()>`
-  - `SessionManager::list_sessions() -> Vec<SessionRow>`
-  - `SessionManager::touch(id)`
-  - `SessionManager::spawn_gc() -> JoinHandle` (фоновой task)
-  - `SessionManager::validate_token(session_id, token) -> bool`
+  - `pub struct SessionManager { db, data_dir, ttl, gc_interval, purge_artifacts: bool }`
+  - `SessionManager::create_session(name: &str) -> (session_id, token)` — name по умолчанию = `env::var("PWD")` (без symlink resolution)
+  - `SessionManager::destroy_session(id, purge_files: bool) -> Result<()>` — при `purge_files=false` удаляет только БД metadata
+  - `SessionManager::spawn_gc() -> JoinHandle` — GC учитывает `purge_artifacts` flag
 
-- [ ] **Step 1: Написать failing tests**
+- [ ] **Step 1: Объявить модуль и написать failing tests**
 
-`crates/uefi-engine/src/session/mod.rs`:
+`crates/uefi-engine/src/lib.rs` (добавить):
+```rust
+pub mod session;
+```
+
+`crates/uefi-engine/src/session.rs` (структура + tests):
 ```rust
 use std::path::PathBuf;
 use std::time::Duration;
@@ -2219,6 +2321,7 @@ pub struct SessionManager {
     pub data_dir: PathBuf,
     pub ttl: Duration,
     pub gc_interval: Duration,
+    pub purge_artifacts: bool,
 }
 
 #[cfg(test)]
@@ -2228,30 +2331,46 @@ mod tests {
 
     fn sm() -> (TempDir, SessionManager) {
         let td = TempDir::new().unwrap();
-        let db = Db::open_db(&td.path().join("s.db")).unwrap();
+        let db = crate::storage::open_db(&td.path().join("s.db")).unwrap();
         let sm = SessionManager {
             db: Arc::new(db),
             data_dir: td.path().to_path_buf(),
             ttl: Duration::from_secs(1),
             gc_interval: Duration::from_millis(100),
+            purge_artifacts: false,
         };
         (td, sm)
     }
 
     #[test]
-    fn create_and_validate() {
+    fn create_session_with_name() {
         let (_td, sm) = sm();
-        let (id, tok) = sm.create_session().unwrap();
+        let (id, tok) = sm.create_session("/home/user/bios").unwrap();
         assert!(sm.validate_token(&id, &tok));
-        assert!(!sm.validate_token(&id, "wrong"));
+        let sessions = sm.list_sessions().unwrap();
+        assert_eq!(sessions[0].name, "/home/user/bios");
     }
 
     #[test]
-    fn destroy_removes() {
-        let (_td, sm) = sm();
-        let (id, _) = sm.create_session().unwrap();
-        sm.destroy_session(&id).unwrap();
+    fn destroy_without_purge_keeps_files() {
+        let (td, sm) = sm();
+        let (id, _) = sm.create_session("n").unwrap();
+        let art_dir = td.path().join("sessions").join(&id).join("artifacts");
+        std::fs::create_dir_all(&art_dir).unwrap();
+        std::fs::write(art_dir.join("a1.bin"), b"data").unwrap();
+        sm.destroy_session(&id, false).unwrap();
         assert!(sm.list_sessions().unwrap().is_empty());
+        assert!(art_dir.join("a1.bin").exists(), "files must survive when purge=false");
+    }
+
+    #[test]
+    fn destroy_with_purge_removes_files() {
+        let (td, sm) = sm();
+        let (id, _) = sm.create_session("n").unwrap();
+        let sess_dir = td.path().join("sessions").join(&id);
+        std::fs::create_dir_all(&sess_dir).unwrap();
+        sm.destroy_session(&id, true).unwrap();
+        assert!(!sess_dir.exists(), "files must be removed when purge=true");
     }
 }
 ```
@@ -2263,27 +2382,29 @@ Expected: FAIL
 
 - [ ] **Step 3: Реализовать SessionManager**
 
-Дополнить `crates/uefi-engine/src/session/mod.rs`:
+Дополнить `crates/uefi-engine/src/session.rs`:
 ```rust
 use uuid::Uuid;
 use std::fs;
 
 impl SessionManager {
-    pub fn new(db: Db, data_dir: PathBuf, ttl: Duration, gc_interval: Duration) -> Self {
-        Self { db: Arc::new(db), data_dir, ttl, gc_interval }
+    pub fn new(db: Db, data_dir: PathBuf, ttl: Duration, gc_interval: Duration, purge_artifacts: bool) -> Self {
+        Self { db: Arc::new(db), data_dir, ttl, gc_interval, purge_artifacts }
     }
-    pub fn create_session(&self) -> Result<(String, String)> {
+    pub fn create_session(&self, name: &str) -> Result<(String, String)> {
         let id = Uuid::new_v4().to_string();
         let token = Uuid::new_v4().to_string();
-        self.db.insert_session(&id, &token)?;
+        self.db.insert_session(&id, &token, name)?;
         let sess_dir = self.data_dir.join("sessions").join(&id);
         fs::create_dir_all(&sess_dir)?;
         Ok((id, token))
     }
-    pub fn destroy_session(&self, id: &str) -> Result<()> {
-        self.db.delete_session(id)?;
-        let sess_dir = self.data_dir.join("sessions").join(id);
-        let _ = fs::remove_dir_all(&sess_dir);
+    pub fn destroy_session(&self, id: &str, purge_files: bool) -> Result<()> {
+        self.db.delete_session_metadata(id)?;
+        if purge_files {
+            let sess_dir = self.data_dir.join("sessions").join(id);
+            let _ = fs::remove_dir_all(&sess_dir);
+        }
         Ok(())
     }
     pub fn list_sessions(&self) -> Result<Vec<SessionRow>> {
@@ -2301,14 +2422,19 @@ impl SessionManager {
     pub fn spawn_gc(self: Arc<Self>) -> tokio::task::JoinHandle<()> {
         let interval = self.gc_interval;
         let ttl = self.ttl;
+        let purge = self.purge_artifacts;
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(interval);
             loop {
                 ticker.tick().await;
                 if let Ok(expired) = self.db.list_expired(ttl.as_secs() as i64) {
                     for id in expired {
-                        let _ = self.destroy_session(&id);
-                        tracing::info!("GC removed session {id}");
+                        let _ = self.destroy_session(&id, purge);
+                        if purge {
+                            tracing::info!("GC purged session {id} (files+metadata)");
+                        } else {
+                            tracing::info!("GC removed session {id} metadata (files preserved)");
+                        }
                     }
                 }
             }
@@ -2317,20 +2443,18 @@ impl SessionManager {
 }
 ```
 
-- [ ] **Step 4: Добавить tokio в dev-dependencies если нужно, подключить модуль**
+**Важно (issue #1, п.3):** при `purge_artifacts=false` (default) GC удаляет только session metadata из БД, но **СОХРАНЯЕТ файлы артефактов**. Безопасность данных > экономия места.
 
-`crates/uefi-engine/src/lib.rs`: добавить `pub mod session;`
-
-- [ ] **Step 5: Запустить тесты**
+- [ ] **Step 4: Запустить тесты**
 
 Run: `cargo test -p uefi-engine session::tests`
 Expected: PASS
 
-- [ ] **Step 6: Коммит**
+- [ ] **Step 5: Коммит**
 
 ```bash
-git add crates/uefi-engine/src/session/ crates/uefi-engine/src/lib.rs
-git commit -m "feat: add SessionManager with TTL and background GC"
+git add crates/uefi-engine/src/session.rs crates/uefi-engine/src/lib.rs
+git commit -m "feat: SessionManager with named sessions and --purge-artifacts GC policy"
 ```
 
 ---
@@ -2352,6 +2476,8 @@ git commit -m "feat: add SessionManager with TTL and background GC"
 - Референс: `../refs/IFRExtractor-RS/src/uefi_parser.rs:436` (SuppressIf=0x0A), `../refs/UEFI-Editor/src/components/scripts/scripts.ts:488` (unsuppress логика: вставка `2902` после `{0A 82}`, удаление оригинального `2902`).
 
 - [ ] **Step 1: Написать failing tests**
+
+**Module-first rule:** добавить `pub mod setup;` в `crates/uefi-engine/src/lib.rs` (ДО запуска `cargo test` в Step 2).
 
 `crates/uefi-engine/src/setup/mod.rs`:
 ```rust
@@ -2482,9 +2608,7 @@ pub fn find_item_mut<'a>(root: &'a mut FfsNode, target: &Target) -> Result<&'a m
 Run: `cargo test -p uefi-engine setup::tests`
 Expected: PASS
 
-- [ ] **Step 7: Подключить в lib.rs и коммит**
-
-`crates/uefi-engine/src/lib.rs`: добавить `pub mod setup;`
+- [ ] **Step 7: Коммит**
 
 ```bash
 git add crates/uefi-engine/src/setup/ crates/uefi-engine/src/parser/target.rs crates/uefi-engine/src/lib.rs
@@ -2510,6 +2634,8 @@ git commit -m "feat: add IFR parser and SetSetupItemVisibility (unsuppress)"
   - `pub fn serve(socket_path: &Path, db: Db, data_dir: PathBuf, ttl: Duration, gc_interval: Duration) -> Result<()>`
 
 - [ ] **Step 1: Написать failing integration test**
+
+**Module-first rule:** добавить `pub mod rpc;` в `crates/uefi-engine/src/lib.rs` (ДО запуска `cargo test`). Также создать `crates/uefi-engine/src/rpc/mod.rs` с `pub mod auth; pub mod server;` (модуль-декларации — в Step 1, реализация EngineService — в Step 4).
 
 `crates/uefi-engine/src/rpc/server.rs`:
 ```rust
@@ -2541,7 +2667,7 @@ mod tests {
         let td = TempDir::new().unwrap();
         let sock = td.path().join("test.sock");
         let db = Db::open_db(&td.path().join("db.sqlite")).unwrap();
-        let sm = Arc::new(SessionManager::new(db, td.path().to_path_buf(), Duration::from_secs(864000), Duration::from_secs(3600)));
+        let sm = Arc::new(SessionManager::new(db, td.path().to_path_buf(), Duration::from_secs(864000), Duration::from_secs(3600), false));
         let images = Arc::new(Mutex::new(HashMap::new()));
         let server = EngineServer { sm, images, data_dir: td.path().to_path_buf() };
         let sock2 = sock.clone();
@@ -2620,20 +2746,26 @@ use tonic::{Request, Response, Status};
 type RpcResult<T> = Result<Response<T>, Status>;
 
 impl EngineService for EngineServer {
-    async fn create_session(&self, _req: Request<CreateSessionRequest>) -> RpcResult<CreateSessionResponse> {
-        let (id, tok) = self.sm.create_session().map_err(|e| Status::internal(e.to_string()))?;
+    async fn create_session(&self, req: Request<CreateSessionRequest>) -> RpcResult<CreateSessionResponse> {
+        let r = req.into_inner();
+        let name = if r.name.is_empty() {
+            std::env::var("PWD").unwrap_or_default()
+        } else {
+            r.name
+        };
+        let (id, tok) = self.sm.create_session(&name).map_err(|e| Status::internal(e.to_string()))?;
         Ok(Response::new(CreateSessionResponse { session_id: id, token: tok }))
     }
     async fn destroy_session(&self, req: Request<DestroySessionRequest>) -> RpcResult<Empty> {
         let r = req.into_inner();
-        self.sm.destroy_session(&r.session_id).map_err(|e| Status::internal(e.to_string()))?;
+        self.sm.destroy_session(&r.session_id, self.sm.purge_artifacts).map_err(|e| Status::internal(e.to_string()))?;
         Ok(Response::new(Empty {}))
     }
     async fn list_sessions(&self, _req: Request<ListSessionsRequest>) -> RpcResult<ListSessionsResponse> {
         let rows = self.sm.list_sessions().map_err(|e| Status::internal(e.to_string()))?;
         Ok(Response::new(ListSessionsResponse {
             sessions: rows.into_iter().map(|r| SessionInfo {
-                session_id: r.id, created_at: r.created_at, last_activity: r.last_activity
+                session_id: r.id, name: r.name, created_at: r.created_at, last_activity: r.last_activity
             }).collect()
         }))
     }
@@ -2673,7 +2805,13 @@ impl EngineService for EngineServer {
     }
     async fn insert(&self, req: Request<InsertRequest>) -> RpcResult<InsertResponse> {
         let r = req.into_inner();
-        let ffs_bytes = fs::read(&r.ffs_path).map_err(|e| Status::not_found(e.to_string()))?;
+        let ffs_bytes = if !r.artifact_id.is_empty() {
+            let art = self.sm.db.get_artifact(&r.artifact_id).map_err(|e| Status::internal(e.to_string()))?
+                .ok_or_else(|| Status::not_found("artifact not found"))?;
+            crate::storage::artifact::read_artifact_file(&self.data_dir, &art.session_id, &art.id).map_err(|e| Status::internal(e.to_string()))?
+        } else {
+            fs::read(&r.ffs_path).map_err(|e| Status::not_found(e.to_string()))?
+        };
         let mut images = self.images.lock().await;
         let img = images.get_mut(&r.image_id).ok_or_else(|| Status::not_found("image not found"))?;
         let t = parse_target(&r.target).map_err(|e| Status::invalid_argument(e.to_string()))?;
@@ -2691,7 +2829,13 @@ impl EngineService for EngineServer {
     }
     async fn replace(&self, req: Request<ReplaceRequest>) -> RpcResult<ReplaceResponse> {
         let r = req.into_inner();
-        let data = fs::read(&r.ffs_path).map_err(|e| Status::not_found(e.to_string()))?;
+        let data = if !r.artifact_id.is_empty() {
+            let art = self.sm.db.get_artifact(&r.artifact_id).map_err(|e| Status::internal(e.to_string()))?
+                .ok_or_else(|| Status::not_found("artifact not found"))?;
+            crate::storage::artifact::read_artifact_file(&self.data_dir, &art.session_id, &art.id).map_err(|e| Status::internal(e.to_string()))?
+        } else {
+            fs::read(&r.ffs_path).map_err(|e| Status::not_found(e.to_string()))?
+        };
         let mut images = self.images.lock().await;
         let img = images.get_mut(&r.image_id).ok_or_else(|| Status::not_found("image not found"))?;
         let t = parse_target(&r.target).map_err(|e| Status::invalid_argument(e.to_string()))?;
@@ -2705,6 +2849,46 @@ impl EngineService for EngineServer {
         let t = parse_target(&r.target).map_err(|e| Status::invalid_argument(e.to_string()))?;
         rebuild(&mut img.root, &t).map_err(|e| Status::internal(e.to_string()))?;
         Ok(Response::new(Empty {}))
+    }
+    async fn extract_artifact(&self, req: Request<ExtractArtifactRequest>) -> RpcResult<ExtractArtifactResponse> {
+        let r = req.into_inner();
+        let images = self.images.lock().await;
+        let img = images.get(&r.image_id).ok_or_else(|| Status::not_found("image not found"))?;
+        let t = parse_target(&r.target).map_err(|e| Status::invalid_argument(e.to_string()))?;
+        let node = find_item(&img.root, &t).map_err(|e| Status::not_found(e.to_string()))?;
+        let bytes = if r.body_only { node.body.clone() } else { node.header.iter().chain(node.body.iter()).copied().collect() };
+        drop(images);
+        let artifact_id = Uuid::new_v4().to_string();
+        let path = crate::storage::artifact::store_artifact_file(&self.data_dir, &img.session_id, &artifact_id, &bytes).map_err(|e| Status::internal(e.to_string()))?;
+        let kind = if r.body_only { "body" } else { "whole" };
+        let source = format!("{}{}", r.target, if r.body_only { ":body" } else { "" });
+        self.sm.db.insert_artifact(&artifact_id, &img.session_id, kind, &path.to_string_lossy(), bytes.len() as i64, &source).map_err(|e| Status::internal(e.to_string()))?;
+        Ok(Response::new(ExtractArtifactResponse { artifact_id }))
+    }
+    async fn export_artifact(&self, req: Request<ExportArtifactRequest>) -> RpcResult<Empty> {
+        let r = req.into_inner();
+        let art = self.sm.db.get_artifact(&r.artifact_id).map_err(|e| Status::internal(e.to_string()))?
+            .ok_or_else(|| Status::not_found("artifact not found"))?;
+        crate::storage::artifact::write_artifact_to_output(&self.data_dir, &art.session_id, &art.id, &r.output_path).map_err(|e| Status::internal(e.to_string()))?;
+        Ok(Response::new(Empty {}))
+    }
+    async fn import_artifact(&self, req: Request<ImportArtifactRequest>) -> RpcResult<ImportArtifactResponse> {
+        let r = req.into_inner();
+        let bytes = fs::read(&r.file_path).map_err(|e| Status::not_found(e.to_string()))?;
+        let artifact_id = Uuid::new_v4().to_string();
+        let path = crate::storage::artifact::store_artifact_file(&self.data_dir, &r.session_id, &artifact_id, &bytes).map_err(|e| Status::internal(e.to_string()))?;
+        let source = std::path::Path::new(&r.file_path).file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        self.sm.db.insert_artifact(&artifact_id, &r.session_id, "imported", &path.to_string_lossy(), bytes.len() as i64, &source).map_err(|e| Status::internal(e.to_string()))?;
+        Ok(Response::new(ImportArtifactResponse { artifact_id }))
+    }
+    async fn list_artifacts(&self, req: Request<ListArtifactsRequest>) -> RpcResult<ListArtifactsResponse> {
+        let r = req.into_inner();
+        let arts = self.sm.db.list_artifacts(&r.session_id).map_err(|e| Status::internal(e.to_string()))?;
+        Ok(Response::new(ListArtifactsResponse {
+            artifacts: arts.into_iter().map(|a| ArtifactInfo {
+                artifact_id: a.id, kind: a.kind, size: a.size as u64, created_at: a.created_at, source: a.source
+            }).collect()
+        }))
     }
     async fn set_setup_item_visibility(&self, req: Request<SetSetupItemVisibilityRequest>) -> RpcResult<Empty> {
         let r = req.into_inner();
@@ -2723,10 +2907,10 @@ impl EngineService for EngineServer {
     }
 }
 
-pub fn serve(socket_path: &Path, db: Db, data_dir: PathBuf, ttl: Duration, gc_interval: Duration) -> Result<()> {
+pub fn serve(socket_path: &Path, db: Db, data_dir: PathBuf, ttl: Duration, gc_interval: Duration, purge_artifacts: bool) -> Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
-        let sm = Arc::new(SessionManager::new(db, data_dir.clone(), ttl, gc_interval));
+        let sm = Arc::new(SessionManager::new(db, data_dir.clone(), ttl, gc_interval, purge_artifacts));
         sm.clone().spawn_gc();
         let server = EngineServer {
             sm,
@@ -2743,29 +2927,12 @@ pub fn serve(socket_path: &Path, db: Db, data_dir: PathBuf, ttl: Duration, gc_in
 }
 ```
 
-- [ ] **Step 5: Подключить rpc в lib.rs**
-
-`crates/uefi-engine/src/lib.rs`:
-```rust
-pub mod types;
-pub mod ffs;
-pub mod parser;
-pub mod decompress;
-pub mod builder;
-pub mod ops;
-pub mod storage;
-pub mod session;
-pub mod setup;
-pub mod rpc;
-pub use types::*;
-```
-
-- [ ] **Step 6: Запустить тесты**
+- [ ] **Step 5: Запустить тесты**
 
 Run: `cargo test -p uefi-engine rpc::server::tests`
 Expected: PASS
 
-- [ ] **Step 7: Коммит**
+- [ ] **Step 6: Коммит**
 
 ```bash
 git add crates/uefi-engine/src/rpc/ crates/uefi-engine/src/lib.rs crates/uefi-engine/Cargo.toml
@@ -2774,46 +2941,114 @@ git commit -m "feat: add gRPC EngineService server over unix-socket"
 
 ---
 
-### Task 16: CLI-минимум (uefi-cli)
+### Task 16: Engine binary (`src/bin/engine.rs` — clap CLI с --purge-artifacts)
 
 **Files:**
-- Create: `crates/uefi-cli/Cargo.toml`
-- Create: `crates/uefi-cli/src/main.rs`
-- Create: `crates/uefi-cli/src/client.rs`
+- Create: `crates/uefi-engine/src/bin/engine.rs`
+- Modify: `crates/uefi-engine/Cargo.toml` (добавить `clap`)
+
+**Interfaces:**
+- Consumes: `rpc::serve`, `clap`, env vars
+- Produces: бинарник `uefi-engine` с флагами:
+  - `--data-dir <PATH>` [env: UEFIPATCHER_DATA]
+  - `--sock <PATH>` [env: UEFIPATCHER_SOCK]
+  - `--ttl <SECS>` [env: UEFIPATCHER_SESSION_TTL_SECS] (default: 864000)
+  - `--gc-interval <SECS>` [env: UEFIPATCHER_SESSION_GC_INTERVAL_SECS] (default: 3600)
+  - `--purge-artifacts` [env: UEFIPATCHER_PURGE_ARTIFACTS] (default: false)
+
+- [ ] **Step 1: Добавить clap в Cargo.toml**
+
+`crates/uefi-engine/Cargo.toml` [dependencies]:
+```toml
+clap = { workspace = true }
+```
+
+- [ ] **Step 2: Реализовать engine binary**
+
+`crates/uefi-engine/src/bin/engine.rs`:
+```rust
+use clap::Parser;
+use std::path::PathBuf;
+use std::time::Duration;
+
+#[derive(Parser)]
+#[command(name = "uefi-engine", version, about = "UEFIPatcher engine server")]
+struct Args {
+    #[arg(long, env = "UEFIPATCHER_DATA")]
+    data_dir: Option<PathBuf>,
+    #[arg(long, env = "UEFIPATCHER_SOCK")]
+    sock: Option<PathBuf>,
+    #[arg(long, env = "UEFIPATCHER_SESSION_TTL_SECS", default_value = "864000")]
+    ttl: u64,
+    #[arg(long, env = "UEFIPATCHER_SESSION_GC_INTERVAL_SECS", default_value = "3600")]
+    gc_interval: u64,
+    #[arg(long, env = "UEFIPATCHER_PURGE_ARTIFACTS", default_value = "false")]
+    purge_artifacts: bool,
+}
+
+fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env()).init();
+    let args = Args::parse();
+    let data_dir = args.data_dir.unwrap_or_else(|| {
+        directories::ProjectDirs::from("", "", "uefipatcher")
+            .map(|d| d.data_dir().to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("./data"))
+    });
+    let sock = args.sock.unwrap_or_else(|| PathBuf::from("/run/uefipatcher.sock"));
+    std::fs::create_dir_all(&data_dir)?;
+    if sock.parent().is_some() { let _ = std::fs::remove_file(&sock); }
+    let db = uefi_engine::storage::open_db(&data_dir.join("uefipatcher.db"))?;
+    tracing::info!("Starting engine: sock={}, data={}, purge_artifacts={}", sock.display(), data_dir.display(), args.purge_artifacts);
+    uefi_engine::rpc::server::serve(
+        &sock, db, data_dir,
+        Duration::from_secs(args.ttl),
+        Duration::from_secs(args.gc_interval),
+        args.purge_artifacts,
+    )
+}
+```
+
+- [ ] **Step 3: Проверить сборку и запуск**
+
+Run: `cargo build -p uefi-engine --bin engine`
+Expected: бинарник `target/debug/engine` создан
+
+Run: `./target/debug/engine --help`
+Expected: показывает все флаги включая `--purge-artifacts`
+
+- [ ] **Step 4: Коммит**
+
+```bash
+git add crates/uefi-engine/src/bin/engine.rs crates/uefi-engine/Cargo.toml
+git commit -m "feat: engine binary with clap CLI (--purge-artifacts, env fallbacks)"
+```
+
+---
+
+### Task 17: CLI-минимум (uefi-cli, зависит от uefi-common)
+
+**Files:**
+- Modify: `crates/uefi-cli/Cargo.toml` (уже создан в Task 1, добавить clap, uefi-common)
+- Modify: `crates/uefi-cli/src/main.rs` (уже stub из Task 1)
 - Test: `crates/uefi-cli/tests/smoke.rs`
 
 **Interfaces:**
-- Consumes: `uefi-proto` (клиент)
+- Consumes: `uefi-proto`, `uefi-common`
 - Produces: бинарник `uefi-cli` с командами:
-  - `uefi-cli session create` → session_id, token
+  - `uefi-cli session create` → session_id, token (name = CWD через PWD env)
   - `uefi-cli session destroy <id>`
-  - `uefi-cli <session_id> open <path> [--mode read|write]`
-  - `uefi-cli <image_id> dump [--format text|tsv]`
-  - `uefi-cli <image_id> list [--filter <str>]`
-  - `uefi-cli <image_id> find <target>`
-  - `uefi-cli <image_id> insert <target> <ffs> [--mode into|before|after]`
-  - `uefi-cli <image_id> remove <target>`
-  - `uefi-cli <image_id> replace <target> <ffs> [--body-only]`
-  - `uefi-cli <image_id> rebuild <target>`
-  - `uefi-cli <image_id> set-visibility <item_id> [--visible]`
-  - `uefi-cli <image_id> save <output>`
+  - `uefi-cli <image_id> extract <target> [--body-only]` → artifact_id
+  - `uefi-cli artifact export <artifact_id> <output_path>`
+  - `uefi-cli artifact import <file_path>` → artifact_id
+  - `uefi-cli artifact list`
+  - `uefi-cli <image_id> insert <target> <ffs> [--mode into|before|after]` или `--from-artifact <id>`
+  - остальные команды (open/dump/list/find/remove/replace/rebuild/save/set-visibility)
 
-- [ ] **Step 1: Создать uefi-cli Cargo.toml**
+- [ ] **Step 1: Обновить Cargo.toml**
 
-`crates/uefi-cli/Cargo.toml`:
+`crates/uefi-cli/Cargo.toml` [dependencies]:
 ```toml
-[package]
-name = "uefi-cli"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-
-[dependencies]
-uefi-proto = { path = "../uefi-proto" }
-tonic.workspace = true
-tokio.workspace = true
-clap = { version = "4", features = ["derive"] }
-anyhow.workspace = true
+clap = { workspace = true }
 ```
 
 - [ ] **Step 2: Реализовать client.rs**
@@ -2933,38 +3168,47 @@ git commit -m "feat: add uefi-cli smoke CLI (session create/destroy + clap)"
 
 ---
 
-### Task 17: Контейнеризация (Dockerfile + docker-compose)
+### Task 18: Контейнеризация (containerfile + fedora:44 + rust-builder)
 
 **Files:**
-- Create: `docker/Dockerfile.engine`
+- Create: `docker/rust-builder.containerfile`
+- Create: `docker/engine.containerfile`
 - Create: `docker/docker-compose.yml`
 - Create: `docker/.dockerignore`
 
 **Interfaces:**
 - Consumes: workspace
-- Produces: образ `uefipatcher-engine`, compose-сервис с volume для unix-сокета и данных
+- Produces: образ `uefipatcher-engine` на базе `registry.fedoraproject.org/fedora:44`
 
-- [ ] **Step 1: Создать Dockerfile**
+- [ ] **Step 1: Создать rust-builder.containerfile (базовый образ для всех Rust-сборок)**
 
-`docker/Dockerfile.engine`:
+`docker/rust-builder.containerfile`:
 ```dockerfile
-FROM rust:1.81-slim AS builder
+FROM registry.fedoraproject.org/fedora:44
+RUN dnf install -y rust cargo protobuf-compiler make gcc && dnf clean all
+WORKDIR /app
+```
+
+- [ ] **Step 2: Создать engine.containerfile**
+
+`docker/engine.containerfile`:
+```dockerfile
+FROM uefipatcher-rust-builder AS builder
 WORKDIR /app
 COPY . .
-RUN apt-get update && apt-get install -y protobuf-compiler && rm -rf /var/lib/apt/lists/*
-RUN cargo build --release -p uefi-engine
+RUN cargo build --release --bin engine -p uefi-engine
 
-FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y ca-certificates libsqlite3-0 && rm -rf /var/lib/apt/lists/*
-COPY --from=builder /app/target/release/uefi-engine /usr/local/bin/
+FROM registry.fedoraproject.org/fedora:44
+RUN dnf install -y ca-certificates sqlite-libs && dnf clean all
+COPY --from=builder /app/target/release/engine /usr/local/bin/uefi-engine
 VOLUME ["/data", "/run/uefipatcher"]
 ENV UEFIPATCHER_DATA=/data
 ENV UEFIPATCHER_SOCK=/run/uefipatcher/uefipatcher.sock
-EXPOSE 0
+ENV UEFIPATCHER_PURGE_ARTIFACTS=false
 ENTRYPOINT ["uefi-engine"]
 ```
 
-- [ ] **Step 2: Создать docker-compose.yml**
+- [ ] **Step 3: Создать docker-compose.yml**
 
 `docker/docker-compose.yml`:
 ```yaml
@@ -2973,7 +3217,7 @@ services:
   engine:
     build:
       context: ..
-      dockerfile: docker/Dockerfile.engine
+      dockerfile: docker/engine.containerfile
     volumes:
       - uefi-data:/data
       - uefi-sock:/run/uefipatcher
@@ -2982,12 +3226,13 @@ services:
       UEFIPATCHER_SOCK: /run/uefipatcher/uefipatcher.sock
       UEFIPATCHER_SESSION_TTL_SECS: "864000"
       UEFIPATCHER_SESSION_GC_INTERVAL_SECS: "3600"
+      UEFIPATCHER_PURGE_ARTIFACTS: "false"
 volumes:
   uefi-data:
   uefi-sock:
 ```
 
-- [ ] **Step 3: Создать .dockerignore**
+- [ ] **Step 4: Создать .dockerignore**
 
 `docker/.dockerignore`:
 ```
@@ -2997,21 +3242,21 @@ docs/
 *.md
 ```
 
-- [ ] **Step 4: Проверить валидность compose**
+- [ ] **Step 5: Проверить валидность compose**
 
-Run: `podman-compose -f docker/docker-compose.yml config` (или `docker compose -f docker/docker-compose.yml config`)
+Run: `podman-compose -f docker/docker-compose.yml config`
 Expected: корректный вывод конфигурации
 
-- [ ] **Step 5: Коммит**
+- [ ] **Step 6: Коммит**
 
 ```bash
 git add docker/
-git commit -m "feat: add Dockerfile and docker-compose for engine"
+git commit -m "feat: containerfile (fedora:44 + rust-builder), --purge-artifacts=false default"
 ```
 
 ---
 
-### Task 18: Финальная проверка — все тесты, clippy, fmt, round-trip на синтетике
+### Task 19: Финальная проверка — все тесты, clippy, fmt, round-trip на синтетике
 
 **Files:**
 - Modify: по результатам проверок
@@ -3031,11 +3276,12 @@ Expected: без warnings
 Run: `cargo fmt --all -- --check`
 Expected: без diff
 
-- [ ] **Step 4: Round-trip тест на синтетическом образе (вручную через CLI)**
+- [ ] **Step 4: Round-trip тест через engine binary**
 
-Запустить движок: `cargo run -p uefi-engine` (нужен main для движка — добавить минимальный `src/bin/engine.rs` если нет)
-Открыть образ, dump, save, сравнить.
-Expected: бинарно идентичны
+Run: `cargo build -p uefi-engine --bin engine`
+Запустить: `./target/debug/engine --data-dir /tmp/uefi-test --sock /tmp/uefi-test.sock`
+Через uefi-cli: открыть образ, dump, extract, import, insert --from-artifact, save, сравнить.
+Expected: бинарно идентичны (round-trip)
 
 - [ ] **Step 5: Коммит финальных правок**
 
@@ -3049,16 +3295,32 @@ git commit -m "chore: final checks — all tests pass, clippy clean, round-trip 
 ## Само-проверка плана (после написания)
 
 **Спека-покрытие:**
-- Парсер (п.1.1): Tasks 4-8 ✓
+- Парсер: Tasks 4-8 ✓
 - Builder (round-trip): Task 10 ✓
-- Модификации (insert/remove/replace/rebuild): Task 11 ✓
-- Setup-visibility: Task 14 ✓
-- Хранилище + сессии + TTL 10 дней: Tasks 12-13 ✓
-- gRPC EngineService (все методы): Task 15 ✓
-- CLI-минимум: Task 16 ✓
-- Контейнеризация: Task 17 ✓
-- Баги 9/10/11 (IMPLEMENTATION.md): учтены в Task 11 (clearChildren в replace) и Task 10 (preserve offsets). Баг 10 (LZMA-компрессия) — частично (decompress есть, compress — заглушка, приемлемо для цикла 1 с round-trip на uncompressed-секциях).
+- Модификации (insert/remove/replace/rebuild с artifact_id): Task 11 ✓
+- Setup-visibility (IFR через r_efi::hii): Task 14 ✓
+- Хранилище (session_name + artifacts extract/import/export): Task 12 ✓
+- Session manager (named sessions, --purge-artifacts GC): Task 13 ✓
+- gRPC EngineService (все методы, вкл. artifact ops): Task 15 ✓
+- Engine binary (clap CLI, --purge-artifacts): Task 16 ✓
+- uefi-common (state.rs + error.rs скелет): Task 1 ✓
+- CLI-минимум (зависит от uefi-common): Task 17 ✓
+- Контейнеризация (containerfile + fedora:44 + rust-builder): Task 18 ✓
+- uguid (Display/FromStr/serde + UPPERCASE): Task 2 ✓
+- ffs.rs (wrapping arithmetic, correct offsets, ref ffs.rs): Task 3 ✓
+- Module-first rule: Global Constraints ✓ (mod объявляется до cargo test)
+- Баги 9/10/11: учтены в Tasks 10-11 ✓
 
-**Placeholder scan:** TBD/TODO нет; все шаги содержат код или команды. ✓
+**Issue #1 покрытие:**
+- Extract/Export/Import артефактов: Tasks 12, 15 ✓
+- Session name (CWD без symlink resolution через PWD): Tasks 12, 13, 15 ✓
+- --purge-artifacts (default false): Tasks 13, 16, 18 ✓
+- uefi-common в цикле 1: Task 1 ✓
+- Docker → containerfile + fedora:44 + rust-builder: Task 18 ✓
 
-**Type consistency:** `FfsNode`, `Image`, `Target`, `Action`, `FfsType`, `ParsingData` — единые имена во всём плане. `InsertMode` дублируется в `ops.rs` и uefi-proto enum — это намеренно (внутренний enum vs protobuf enum, маппинг в Task 15). ✓
+**Issue #2 покрытие:**
+- Guid → uguid: Task 2 ✓
+- ffs.rs rewrite по референсу: Task 3 ✓
+- Module ordering (mod до test): Global Constraints ✓
+
+**Crate stack:** uguid, r-efi, binrw, object, lzma-rs — workspace deps в Task 1 ✓

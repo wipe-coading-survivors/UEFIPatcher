@@ -11,7 +11,7 @@ WebUI (SvelteKit/TypeScript) для управления UEFI-образами �
 - Реализовать cookie-based хранение session_id (HttpOnly, SameSite=Strict) + шлюз маппит cookie → gRPC metadata (token + x-session-id)
 - Реализовать REST API эндпоинты для всех операций движка
 - Реализовать WebSocket для streaming dump
-- Подготовить Dockerfile для gateway и webui, docker-compose (engine + gateway + webui)
+- Подготовить containerfile для gateway и webui (на базе `rust-builder.containerfile` из цикла 1, `registry.fedoraproject.org/fedora:44`), docker-compose (engine + gateway + webui)
 - Объединить циклы 5 (WebUI) и 7 (gRPC-шлюз) — шлюз нужен именно для WebUI
 
 ## Архитектура
@@ -57,8 +57,8 @@ WebUI (SvelteKit/TypeScript) для управления UEFI-образами �
 │   │   └── app.html
 │   └── static/
 └── docker/
-    ├── Dockerfile.gateway
-    ├── Dockerfile.webui
+    ├── gateway.containerfile       # на базе rust-builder.containerfile (цикл 1), fedora:44
+    ├── webui.containerfile
     └── docker-compose.yml
 ```
 
@@ -102,7 +102,7 @@ WebUI (SvelteKit/TypeScript) для управления UEFI-образами �
 
 | Метод | Path | Тело | Ответ | Описание |
 |---|---|---|---|---|
-| POST | `/api/v1/session` | `{}` | `{session_id}` + Set-Cookie | CreateSession |
+| POST | `/api/v1/session` | `{name?}` | `{session_id}` + Set-Cookie | CreateSession (если `name` пустой, шлюз использует рабочий каталог запроса или default) |
 | DELETE | `/api/v1/session` | — | `{ok}` | DestroySession |
 | GET | `/api/v1/sessions` | — | `[{session_id, created_at, last_activity}]` | ListSessions |
 
@@ -122,10 +122,19 @@ WebUI (SvelteKit/TypeScript) для управления UEFI-образами �
 
 | Метод | Path | Тело | Ответ |
 |---|---|---|---|
-| POST | `/api/v1/image/:id/insert` | `{target, ffs_path, mode}` | `{item_id}` |
+| POST | `/api/v1/image/:id/insert` | `{target, ffs_path?, artifact_id?, mode}` | `{item_id}` |
 | POST | `/api/v1/image/:id/remove` | `{target}` | `{ok}` |
-| POST | `/api/v1/image/:id/replace` | `{target, data_path, body_only}` | `{item_id}` |
+| POST | `/api/v1/image/:id/replace` | `{target, data_path?, artifact_id?, body_only}` | `{item_id}` |
 | POST | `/api/v1/image/:id/rebuild` | `{target}` | `{ok}` |
+
+### Artifact
+
+| Метод | Path | Тело | Ответ |
+|---|---|---|---|
+| POST | `/api/v1/image/:id/extract` | `{target, body_only}` | `{artifact_id}` (ExtractArtifact) |
+| POST | `/api/v1/artifact/:id/export` | `{output_path}` | `{ok}` (ExportArtifact в файл) |
+| POST | `/api/v1/artifact/import` | multipart `{file, session_id}` | `{artifact_id}` (ImportArtifact) |
+| GET | `/api/v1/artifacts` | query `?session_id=` | `{artifacts[]}` (ListArtifacts) |
 
 ### Setup
 
@@ -201,7 +210,7 @@ HTTP status ← gRPC code: `401` UNAUTHENTICATED, `404` NOT_FOUND, `400` INVALID
 7. **webui/lib/tree.svelte + details.svelte**: tree-view + детали.
 8. **webui/image/[id]/+page.svelte**: страница образа с операциями.
 9. **webui/setup/+page.svelte**: setup (видимость + add-formset).
-10. **Docker**: Dockerfile.gateway, Dockerfile.webui, docker-compose (engine + gateway + webui).
+10. **Docker**: gateway.containerfile, webui.containerfile (на базе `rust-builder.containerfile` из цикла 1, `registry.fedoraproject.org/fedora:44`), docker-compose (engine + gateway + webui).
 11. **Тесты**: gateway integration, WebUI E2E (Playwright).
 
 ## Риски и ограничения
@@ -222,4 +231,4 @@ HTTP status ← gRPC code: `401` UNAUTHENTICATED, `404` NOT_FOUND, `400` INVALID
 - Сессии: cookie-based (HttpOnly, SameSite=Strict), шлюз маппит cookie → gRPC metadata.
 - Функционал: полный аналог CLI/TUI + upload/download образов + setup add-formset.
 - Архитектура: браузер ↔ HTTP/WS ↔ gateway ↔ gRPC ↔ engine.
-- Docker: engine + gateway + webui в docker-compose.
+- Docker: engine + gateway + webui в docker-compose. Шлюз и webui используют общий `rust-builder.containerfile` (из цикла 1) и runtime-базу `registry.fedoraproject.org/fedora:44`.
