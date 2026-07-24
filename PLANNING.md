@@ -2,192 +2,88 @@
 
 ## Краткое описание
 
-Серверный движок для модификации UEFI BIOS: парсинг образа в дерево, вставка/удаление/замена/перестройка FFS-файлов и секций (DXE/PEI), управление видимостью пунктов Setup-меню, хранение сессий и артефактов, gRPC-сервер над unix-сокетом.
+Серверный движок для модификации UEFI BIOS: парсинг образа в дерево, вставка/удаление/замена/перестройка FFS-файлов и секций, экстракция/импорт/экспорт артефактов, управление видимостью пунктов Setup-меню, именованные сессии, хранилище с GC-политикой (`--purge-artifacts`), gRPC-сервер над unix-сокетом, engine binary с clap CLI.
 
 ## Цели
 
-- Реализовать парсинг UEFI-образа в дерево `FfsNode` и обратную сборку (round-trip бинарно идентичен исходнику)
-- Поддержать модификации: вставка (into/before/after), удаление, замена (полная и только тело), пересборка
-- Поддержать скрытие/показ существующих пунктов Setup-меню (без добавления новых и без NVRAM — это цикл 6)
-- Реализовать хранилище сессий и артефактов: SQLite + файлы, TTL 10 дней, фоновый GC
-- Реализовать gRPC-сервер `EngineService` над unix-сокетом с авторизацией по токену
-- Предоставить минимальный CLI для smoke-тестирования RPC
-- Подготовить Dockerfile и docker-compose пример
+- Использовать специализированные крейты: `uguid` (GUID), `r-efi` (UEFI/PI типы, IFR), `binrw` (binary-парсинг), `object` (PE32)
+- Реализовать парсинг UEFI-образа в дерево `FfsNode` и обратную сборку (round-trip)
+- Поддержать модификации: insert/remove/replace/rebuild, с поддержкой `artifact_id`
+- Экстракция/импорт/экспорт артефактов (секции целиком или тело)
+- Скрытие/показ пунктов Setup-меню (IFR через `r_efi::hii`)
+- Именованные сессии (name = CWD без symlink resolution через `env::var("PWD")`)
+- Хранилище: SQLite + файлы, TTL 10 дней, GC с `--purge-artifacts` (default false — артефакты НЕ удаляются)
+- gRPC-сервер `EngineService` над unix-сокетом
+- Engine binary (`src/bin/engine.rs`) с clap CLI
+- Крейт `uefi-common` (state.rs, error.rs — скелет, наполняется в цикле 2)
+- Контейнеризация: `<component>.containerfile`, `registry.fedoraproject.org/fedora:44`, `rust-builder.containerfile`
 
 ## Архитектура
 
-Cargo workspace с тремя крейтами:
+Cargo workspace (edition 2024) с четырьмя крейтами:
 
-- `uefi-proto` — protobuf-схема `EngineService` и tonic-генерируемые типы. Общий для движка и всех клиентов (CLI/TUI/WebUI в последующих циклах).
-- `uefi-engine` — ядро: модули `parser`, `builder`, `setup`, `session`, `storage`, `rpc`. Движок слушает unix-сокет, обслуживает gRPC-запросы клиентов.
-- `uefi-cli` — минимальный CLI для smoke-теста RPC (полный CLI — цикл 2).
-
-Связи: клиенты (CLI в цикле 1; TUI/WebUI в следующих циклах) подключаются к unix-сокету движка, авторизуются токеном, создают сессию, открывают образ, выполняют операции, сохраняют результат. Менеджер сессий встроен в движок (фоновой GC-task).
-
-## Фронтенды
-
-- [x] gRPC API: `EngineService` над unix-сокетом — см. раздел «API/Контракты»
-- [~] CLI-минимум (`uefi-cli`): dump/list/save/insert/remove/replace/rebuild/set-visibility — подмножество для smoke-теста. Полный CLI — цикл 2 (roadmap)
-- [ ] TUI — цикл 3 (roadmap)
-- [ ] WebUI — цикл 5 (roadmap)
-
-## Модули/Компоненты
-
-### uefi-proto
-- Описание: protobuf-схема `EngineService`, tonic-генерация типов. Общий контракт для всех клиентов.
-- Зависимости: нет (только tonic/prost build-dependencies).
-- API: публикует сгенерированные `engine.proto` типы и trait `engine_service_server::EngineService`.
-
-### parser
-- Описание: чтение UEFI-образа в дерево `FfsNode`. Референс — UEFITool 0.28.8 (`FfsParser`).
-- Зависимости: `uefi-proto` (типы).
-- API: `parse_image(bytes) -> Image`, `dump_tree(image, format) -> String`, `list_items(image, filter) -> Vec<Item>`.
-
-### builder
-- Описание: сборка дерева `FfsNode` обратно в байты, выравнивание (padding/gap), перестройка дерева. Референс — UEFITool `FfsBuilder`.
-- Зависимости: `parser` (тип `FfsNode`).
-- API: `build_image(image) -> bytes`.
-
-### setup
-- Описание: работа с Setup-секцией. Парсинг IFR (референс ifrExtractor). В цикле 1 — только видимость пунктов.
-- Зависимости: `parser`.
-- API: `set_item_visibility(image, item_id, visible) -> ()`.
-
-### session
-- Описание: менеджер сессий. Создание, обновление `last_activity`, удаление по TTL, фоновый GC.
-- Зависимости: `storage`.
-- API: `create_session() -> (session_id, token)`, `destroy_session(id)`, `touch_session(id)`, `list_sessions()`, `gc_loop()`.
-
-### storage
-- Описание: SQLite-хранилище (таблицы `sessions`, `artifacts`), артефакты на диске в `${UEFIPATCHER_DATA}`.
-- Зависимости: нет (rusqlite).
-- API: `open_db(path)`, CRUD для `sessions` и `artifacts`, `store_artifact(session_id, bytes) -> artifact_path`.
-
-### rpc
-- Описание: gRPC-сервер над unix-сокетом. Реализует `EngineService`. Авторизация по токену в metadata.
-- Зависимости: `uefi-proto`, `parser`, `builder`, `setup`, `session`, `storage`.
-- API: `serve(socket_path, engine) -> ()`.
-
-### uefi-cli
-- Описание: минимальный CLI для smoke-теста RPC. Подмножество команд UEFIEdit.
-- Зависимости: `uefi-proto` (клиент).
-- API: `uefi-cli <image> <command> [args]`.
+- `uefi-proto` — protobuf-схема `EngineService` и tonic-генерируемые типы.
+- `uefi-common` — state.rs (State, read_state/write_state) и error.rs (AppError, ExitCode). Скелет в цикле 1, полная реализация в цикле 2.
+- `uefi-engine` — ядро: `types`, `ffs`, `parser`, `decompress`, `builder`, `ops`, `setup`, `session`, `storage`, `rpc`, `bin/engine.rs`.
+- `uefi-cli` — минимальный CLI для smoke-теста RPC (зависит от uefi-common).
 
 ## API/Контракты
 
-Протокол: tonic gRPC over unix-сокет (`${UEFIPATCHER_SOCK}`).
-Авторизация: `Authorization: Bearer <token>` в metadata. Токен генерируется при старте, пишется в `${UEFIPATCHER_DATA}/token` (0600).
+Протокол: tonic gRPC over unix-сокет. Авторизация: `Authorization: Bearer <token>` в metadata.
 
-### CreateSession
-- Метод: gRPC `CreateSession`
-- Параметры: нет
-- Ответ: `{session_id: string, token: string}`
-- Пример: `grpc_cli call ${SOCK} EngineService/CreateSession`
+### Методы EngineService
 
-### DestroySession
-- Метод: gRPC `DestroySession`
-- Параметры: `session_id: string` (обязательный)
-- Ответ: `{}`
-- Ошибки: `NOT_FOUND` — сессия не найдена
-
-### ListSessions
-- Метод: gRPC `ListSessions`
-- Параметры: нет (требует токен)
-- Ответ: `{sessions: [{session_id, created_at, last_activity}]}`
-
-### OpenImage
-- Метод: gRPC `OpenImage`
-- Параметры: `session_id: string` (обязательный), `image_path: string` (обязательный), `mode: enum READ|WRITE` (обязательный)
-- Ответ: `{image_id: string, root_guid: string}`
-- Ошибки: `NOT_FOUND` (сессия), `INVALID_ARGUMENT` (путь), `INTERNAL` (невалидный образ)
-- При `mode=WRITE` образ копируется в `${UEFIPATCHER_DATA}/sessions/<id>/images/<image_id>.bin`.
-
-### DumpTree
-- Метод: gRPC `DumpTree`
-- Параметры: `image_id: string` (обязательный), `format: enum TEXT|TSV` (обязательный)
-- Ответ: `{text: string}`
-- Ошибки: `NOT_FOUND` (image_id)
-
-### ListItems
-- Метод: gRPC `ListItems`
-- Параметры: `image_id: string` (обязательный), `filter: string` (необязательный)
-- Ответ: `{items: [{path, type, subtype, guid, offset, size, name}]}`
-
-### FindItem
-- Метод: gRPC `FindItem`
-- Параметры: `image_id: string` (обязательный), `target: string` (обязательный; GUID | PATH | GUID:T | GUID:T:N)
-- Ответ: `{item_id: string}`
-- Ошибки: `NOT_FOUND` — элемент не найден
-
-### Insert
-- Метод: gRPC `Insert`
-- Параметры: `image_id`, `target`, `ffs_path: string` (обязательный), `mode: enum INTO|BEFORE|AFTER` (обязательный)
-- Ответ: `{item_id: string}`
-- Ошибки: `NOT_FOUND`, `INVALID_ARGUMENT`
-
-### Remove
-- Метод: gRPC `Remove`
-- Параметры: `image_id`, `target`
-- Ответ: `{}`
-
-### Replace
-- Метод: gRPC `Replace`
-- Параметры: `image_id`, `target`, `ffs_path`, `body_only: bool` (по умолчанию false)
-- Ответ: `{item_id: string}`
-
-### Rebuild
-- Метод: gRPC `Rebuild`
-- Параметры: `image_id`, `target`
-- Ответ: `{}`
-
-### SetSetupItemVisibility
-- Метод: gRPC `SetSetupItemVisibility`
-- Параметры: `image_id`, `item_id: string`, `visible: bool` (по умолчанию true)
-- Ответ: `{}`
-- Ошибки: `NOT_FOUND`, `INVALID_ARGUMENT` (элемент не является пунктом Setup)
-
-### SaveImage
-- Метод: gRPC `SaveImage`
-- Параметры: `image_id`, `output_path: string` (обязательный)
-- Ответ: `{}`
-- Ошибки: `INTERNAL` — сборка не удалась
+| Метод | Параметры | Ответ |
+|---|---|---|
+| `CreateSession` | `{name?}` | `{session_id, token}` |
+| `DestroySession` | `{session_id}` | `{}` |
+| `ListSessions` | `{}` | `{sessions[]: {session_id, name, created_at, last_activity}}` |
+| `OpenImage` | `{session_id, image_path, mode}` | `{image_id, root_guid}` |
+| `DumpTree` | `{image_id, format}` | `{text}` |
+| `ListItems` | `{image_id, filter?}` | `{items[]}` |
+| `FindItem` | `{image_id, target}` | `{item_id}` |
+| `Insert` | `{image_id, target, ffs_path?, artifact_id?, mode}` | `{item_id}` |
+| `Remove` | `{image_id, target}` | `{}` |
+| `Replace` | `{image_id, target, ffs_path?, artifact_id?, body_only}` | `{item_id}` |
+| `Rebuild` | `{image_id, target}` | `{}` |
+| `ExtractArtifact` | `{image_id, target, body_only}` | `{artifact_id}` |
+| `ExportArtifact` | `{artifact_id, output_path}` | `{}` |
+| `ImportArtifact` | `{session_id, file_path}` | `{artifact_id}` |
+| `ListArtifacts` | `{session_id}` | `{artifacts[]}` |
+| `SetSetupItemVisibility` | `{image_id, item_id, visible}` | `{}` |
+| `SaveImage` | `{image_id, output_path}` | `{}` |
 
 ## Зависимости
 
-### Внешние библиотеки (Rust)
+| Крейт | Версия | Назначение |
+|-------|--------|-----------|
+| `uguid` | 2.2.1 (serde) | Guid с Display/FromStr/serde, UPPERCASE wrapper |
+| `r-efi` | 7.0 | UEFI типы: `base::Guid`, `hii::*` (IFR-структуры, opcode-константы) |
+| `binrw` | 0.15 (std) | Declarative binary parsing/writing |
+| `object` | 0.39 (read_core, pe) | PE32 parsing |
+| `lzma-rs` | 0.3 | LZMA декомпрессия |
+| `tonic` | 0.12 | gRPC over unix-сокет |
+| `rusqlite` | 0.31 (bundled) | SQLite |
+| `clap` | 4 (derive, env) | CLI |
+| `tokio` | 1 (full) | Async runtime |
+| `uuid` | 1 (v4) | ID generation |
 
-- `tonic` (latest): gRPC-сервер/клиент над unix-сокетом
-- `prost` (latest): protobuf-генерация
-- `rusqlite` (latest): SQLite-хранилище
-- `uuid` (latest): генерация session_id/image_id
-- `clap` (latest): разбор аргументов CLI (крейт `uefi-cli`)
-- `anyhow` / `thiserror`: обработка ошибок
-- `tracing` / `tracing-subscriber`: логирование
-- `tokio` (latest): async-runtime для tonic и GC-task
+## Переменные окружения
 
-### Референсные исходники (не зависимости, только для чтения)
+| Переменная | По умолчанию |
+|---|---|
+| `UEFIPATCHER_DATA` | `~/.local/share/uefipatcher` |
+| `UEFIPATCHER_SOCK` | `${XDG_RUNTIME_DIR}/uefipatcher.sock` |
+| `UEFIPATCHER_SESSION_TTL_SECS` | `864000` (10 дней) |
+| `UEFIPATCHER_SESSION_GC_INTERVAL_SECS` | `3600` (1 час) |
+| `UEFIPATCHER_PURGE_ARTIFACTS` | `false` |
 
-- `../refs/UEFITool` (0.28.8) — `FfsParser`, `FfsBuilder` — парсинг/сборка UEFI
-- `../refs/IFRExtractor-RS` — парсинг IFR Setup-форм
-- `../refs/edk2` — точка истины при багах/непонятностях
+## Этапы реализации (19 задач)
 
-## Этапы реализации
+Подробное описание: `docs/superpowers/plans/2026-07-22-uefi-engine.md`
 
-1. **Скелет workspace**: Cargo workspace, крейты `uefi-proto`, `uefi-engine`, `uefi-cli`; `engine.proto` с заглушками; tonic-генерация; unix-сокет сервер поднимается; `CreateSession`/`DestroySession` работают.
-2. **Парсер**: чтение UEFI-образа → `FfsNode`. Покрытие: FirmwareVolume, FFS-файлы, секции (PE32, GUIDed, compressed). `DumpTree`/`ListItems` работают на реальных образах.
-3. **Target-поиск**: парсинг `target` (GUID/PATH/GUID:T/GUID:T:N) → `FindItem`.
-4. **Builder**: сборка дерева в байты, выравнивание. `SaveImage` работает; round-trip бинарно идентичен исходнику.
-5. **Модификации**: `Insert`, `Remove`, `Replace` (full/body), `Rebuild`. Тесты.
-6. **Setup-visibility**: парсинг IFR, `SetSetupItemVisibility`. Только скрытие/показ.
-7. **Хранилище и сессии**: SQLite, артефакты на диске, TTL 10 дней, GC, токены.
-8. **CLI-минимум**: `uefi-cli` команды dump/list/save/insert/remove/replace/rebuild/set-visibility.
-9. **Контейнеризация**: Dockerfile для `uefi-engine`, docker-compose пример.
+## Риски
 
-## Риски и ограничения
-
-- **Несоответствие парсера UEFITool** — binary-различия в round-trip. Мера: фиксировать тестовые образы; сравнивать с UEFITool 0.28.8; сверяться с edk2.
-- **Объём портируемой логики UEFI** — много типов секций/сжатий. Мера: поддерживать только реально встречающиеся (LZMA/EFI fattest); неизвестные секции сохранять as-is.
-- **Родная реализация на Rust длиннее FFI** — этапы 2-5 делать поэтажно, после каждого — бинарный тест round-trip.
-- **gRPC над unix-сокетом** — меньше примеров. Мера: smoke-тест на этапе 1 (tonic `Endpoint::from_unix`).
-- **TTL 10 дней** — накопление артефактов. Мера: GC раз в час; ручной `DestroySession`; документация `UEFIPATCHER_DATA`.
-- **Setup-visibility без NVRAM** — ожидание полного Setup. Мера: явно зафиксировать в roadmap, что NVRAM и новые пункты — цикл 6.
+- Round-trip различия с UEFITool — фиксировать тестовые образы
+- binrw variable-length структуры — изучить документацию
+- Накопление артефактов при `--purge-artifacts=false` — документация по ручной очистке

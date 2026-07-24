@@ -24,7 +24,7 @@
 - WebSocket: `/api/v1/image/:id/dump/ws` — streaming dump.
 - Кодстайл Rust: `cargo fmt`, `cargo clippy -- -D warnings`. Кодстайл TS: `eslint`, `prettier`, `svelte-check`.
 - Без комментариев в коде.
-- Docker: `docker/Dockerfile.gateway`, `docker/Dockerfile.webui`, обновить `docker/docker-compose.yml`.
+- Docker: `docker/gateway.containerfile`, `docker/webui.containerfile` (на базе `docker/rust-builder.containerfile` из цикла 1, `registry.fedoraproject.org/fedora:44`), обновить `docker/docker-compose.yml`.
 
 ---
 
@@ -45,6 +45,7 @@
 | `crates/uefi-gateway/src/routes/edit.rs` | /api/v1/image/:id/{insert,remove,replace,rebuild} |
 | `crates/uefi-gateway/src/routes/setup.rs` | /api/v1/image/:id/{set-visibility,setup-items,add-formset} |
 | `crates/uefi-gateway/src/routes/upload.rs` | /api/v1/image/upload, /api/v1/image/:id/download |
+| `crates/uefi-gateway/src/routes/artifact.rs` | /api/v1/image/:id/extract, /api/v1/artifact/{export,import}, /api/v1/artifacts |
 | `crates/uefi-gateway/src/ws.rs` | WebSocket streaming dump |
 | `crates/uefi-gateway/tests/mock_server.rs` | mock EngineService |
 | `crates/uefi-gateway/tests/integration.rs` | integration-тесты |
@@ -62,8 +63,8 @@
 | `webui/src/lib/stores.ts` | svelte stores |
 | `webui/src/lib/Tree.svelte` | tree-view компонент |
 | `webui/src/lib/Details.svelte` | details panel |
-| `docker/Dockerfile.gateway` | gateway образ |
-| `docker/Dockerfile.webui` | webui образ (nginx + static) |
+| `docker/gateway.containerfile` | gateway образ (на базе rust-builder.containerfile, fedora:44) |
+| `docker/webui.containerfile` | webui образ (fedora:44 + nginx/static) |
 | `docker/docker-compose.yml` | engine + gateway + webui |
 
 ---
@@ -236,7 +237,7 @@ git commit -m "feat(gateway): scaffold uefi-gateway (axum, config, health, error
 - Produces:
   - `pub struct EngineClient { inner: EngineServiceClient<Channel> }`
   - `pub async fn connect(sock_path: &Path) -> Result<EngineClient>`
-  - Методы-обёртки для всех RPC (с metadata auth): `create_session`, `destroy_session`, `list_sessions`, `open_image`, `dump_tree`, `list_items`, `find_item`, `insert`, `remove`, `replace`, `rebuild`, `set_setup_visibility`, `save_image`, `add_setup_form_set`
+  - Методы-обёртки для всех RPC (с metadata auth): `create_session(name)`, `destroy_session`, `list_sessions`, `open_image`, `dump_tree`, `list_items`, `find_item`, `insert`, `remove`, `replace`, `rebuild`, `set_setup_visibility`, `save_image`, `add_setup_form_set`, `extract_artifact`, `export_artifact`, `import_artifact`, `list_artifacts`
 
 - [ ] **Step 1: Реализовать client.rs**
 
@@ -269,8 +270,8 @@ impl EngineClient {
         Ok(req)
     }
 
-    pub async fn create_session(&mut self) -> anyhow::Result<(String, String)> {
-        let r = self.inner.create_session(CreateSessionRequest {}).await?.into_inner();
+    pub async fn create_session(&mut self, name: &str) -> anyhow::Result<(String, String)> {
+        let r = self.inner.create_session(CreateSessionRequest { name: name.into() }).await?.into_inner();
         Ok((r.session_id, r.token))
     }
     pub async fn destroy_session(&mut self, id: &str) -> anyhow::Result<()> {
@@ -296,8 +297,8 @@ impl EngineClient {
         let req = FindItemRequest { image_id: image_id.into(), target: target.into() };
         Ok(self.inner.find_item(Self::auth_req(sessions, session_id, req)?).await?.into_inner().item_id)
     }
-    pub async fn insert(&mut self, sessions: &SessionMap, session_id: &str, image_id: &str, target: &str, ffs_path: &str, mode: i32) -> anyhow::Result<String> {
-        let req = InsertRequest { image_id: image_id.into(), target: target.into(), ffs_path: ffs_path.into(), mode };
+    pub async fn insert(&mut self, sessions: &SessionMap, session_id: &str, image_id: &str, target: &str, ffs_path: &str, artifact_id: &str, mode: i32) -> anyhow::Result<String> {
+        let req = InsertRequest { image_id: image_id.into(), target: target.into(), ffs_path: ffs_path.into(), artifact_id: artifact_id.into(), mode };
         Ok(self.inner.insert(Self::auth_req(sessions, session_id, req)?).await?.into_inner().item_id)
     }
     pub async fn remove(&mut self, sessions: &SessionMap, session_id: &str, image_id: &str, target: &str) -> anyhow::Result<()> {
@@ -305,8 +306,8 @@ impl EngineClient {
         self.inner.remove(Self::auth_req(sessions, session_id, req)?).await?;
         Ok(())
     }
-    pub async fn replace(&mut self, sessions: &SessionMap, session_id: &str, image_id: &str, target: &str, data_path: &str, body_only: bool) -> anyhow::Result<String> {
-        let req = ReplaceRequest { image_id: image_id.into(), target: target.into(), ffs_path: data_path.into(), body_only };
+    pub async fn replace(&mut self, sessions: &SessionMap, session_id: &str, image_id: &str, target: &str, data_path: &str, artifact_id: &str, body_only: bool) -> anyhow::Result<String> {
+        let req = ReplaceRequest { image_id: image_id.into(), target: target.into(), ffs_path: data_path.into(), artifact_id: artifact_id.into(), body_only };
         Ok(self.inner.replace(Self::auth_req(sessions, session_id, req)?).await?.into_inner().item_id)
     }
     pub async fn rebuild(&mut self, sessions: &SessionMap, session_id: &str, image_id: &str, target: &str) -> anyhow::Result<()> {
@@ -327,6 +328,23 @@ impl EngineClient {
     pub async fn add_setup_form_set(&mut self, sessions: &SessionMap, session_id: &str, image_id: &str, schema_json: &str, target_ffs_guid: &str) -> anyhow::Result<AddSetupFormSetResponse> {
         let req = AddSetupFormSetRequest { image_id: image_id.into(), schema_json: schema_json.into(), target_ffs_guid: target_ffs_guid.into() };
         Ok(self.inner.add_setup_form_set(Self::auth_req(sessions, session_id, req)?).await?.into_inner())
+    }
+    pub async fn extract_artifact(&mut self, sessions: &SessionMap, session_id: &str, image_id: &str, target: &str, body_only: bool) -> anyhow::Result<String> {
+        let req = ExtractArtifactRequest { image_id: image_id.into(), target: target.into(), body_only };
+        Ok(self.inner.extract_artifact(Self::auth_req(sessions, session_id, req)?).await?.into_inner().artifact_id)
+    }
+    pub async fn export_artifact(&mut self, sessions: &SessionMap, session_id: &str, artifact_id: &str, output_path: &str) -> anyhow::Result<()> {
+        let req = ExportArtifactRequest { artifact_id: artifact_id.into(), output_path: output_path.into() };
+        self.inner.export_artifact(Self::auth_req(sessions, session_id, req)?).await?;
+        Ok(())
+    }
+    pub async fn import_artifact(&mut self, sessions: &SessionMap, session_id: &str, file_path: &str) -> anyhow::Result<String> {
+        let req = ImportArtifactRequest { session_id: session_id.into(), file_path: file_path.into() };
+        Ok(self.inner.import_artifact(Self::auth_req(sessions, session_id, req)?).await?.into_inner().artifact_id)
+    }
+    pub async fn list_artifacts(&mut self, sessions: &SessionMap, session_id: &str) -> anyhow::Result<Vec<ArtifactInfo>> {
+        let req = ListArtifactsRequest { session_id: session_id.into() };
+        Ok(self.inner.list_artifacts(Self::auth_req(sessions, session_id, req)?).await?.into_inner().artifacts)
     }
 }
 ```
@@ -448,6 +466,7 @@ pub mod image;
 pub mod edit;
 pub mod setup;
 pub mod upload;
+pub mod artifact;
 
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -479,6 +498,10 @@ pub fn router(state: AppState) -> axum::Router {
         .route("/api/v1/image/:id/set-visibility", axum::routing::post(setup::set_visibility))
         .route("/api/v1/image/:id/setup-items", axum::routing::get(setup::list_items))
         .route("/api/v1/image/:id/add-formset", axum::routing::post(setup::add_formset))
+        .route("/api/v1/image/:id/extract", axum::routing::post(artifact::extract))
+        .route("/api/v1/artifact/:id/export", axum::routing::post(artifact::export))
+        .route("/api/v1/artifact/import", axum::routing::post(artifact::import))
+        .route("/api/v1/artifacts", axum::routing::get(artifact::list))
         .with_state(state)
 }
 ```
@@ -490,14 +513,23 @@ pub fn router(state: AppState) -> axum::Router {
 use axum::extract::State;
 use axum::Json;
 use axum_extra::extract::CookieJar;
+use serde::Deserialize;
 use serde_json::{json, Value};
 use crate::error::AppError;
 use crate::session::{make_session_cookie, extract_session_id};
 use super::AppState;
 
-pub async fn create(State(state): State<AppState>) -> Result<(CookieJar, Json<Value>), AppError> {
+#[derive(Deserialize, Default)]
+pub struct CreateBody {
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+pub async fn create(State(state): State<AppState>, Json(body): Json<CreateBody>) -> Result<(CookieJar, Json<Value>), AppError> {
     let mut c = state.client.lock().await;
-    let (sid, tok) = c.create_session().await.map_err(|e| AppError::Internal(e.to_string()))?;
+    let name = body.name.filter(|n| !n.is_empty())
+        .unwrap_or_else(|| std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_default());
+    let (sid, tok) = c.create_session(&name).await.map_err(|e| AppError::Internal(e.to_string()))?;
     state.sessions.insert(sid.clone(), tok).await;
     let jar = CookieJar::new().add(make_session_cookie(&sid));
     Ok((jar, Json(json!({ "session_id": sid }))))
@@ -598,12 +630,12 @@ use crate::session::extract_session_id;
 use super::AppState;
 
 #[derive(Deserialize)]
-pub struct InsertBody { pub target: String, pub ffs_path: String, pub mode: String }
+pub struct InsertBody { pub target: String, pub ffs_path: Option<String>, pub artifact_id: Option<String>, pub mode: String }
 pub async fn insert(State(state): State<AppState>, jar: CookieJar, Path(id): Path<String>, Json(body): Json<InsertBody>) -> Result<Json<Value>, AppError> {
     let sid = extract_session_id(&jar).ok_or(AppError::Auth)?;
     let mode = match body.mode.as_str() { "into" => 0, "before" => 1, "after" => 2, _ => return Err(AppError::BadRequest("mode must be into|before|after".into())) };
     let mut c = state.client.lock().await;
-    let item_id = c.insert(&state.sessions, &sid, &id, &body.target, &body.ffs_path, mode).await.map_err(AppError::from)?;
+    let item_id = c.insert(&state.sessions, &sid, &id, &body.target, body.ffs_path.as_deref().unwrap_or(""), body.artifact_id.as_deref().unwrap_or(""), mode).await.map_err(AppError::from)?;
     Ok(Json(json!({ "item_id": item_id })))
 }
 
@@ -617,11 +649,11 @@ pub async fn remove(State(state): State<AppState>, jar: CookieJar, Path(id): Pat
 }
 
 #[derive(Deserialize)]
-pub struct ReplaceBody { pub target: String, pub data_path: String, pub body_only: bool }
+pub struct ReplaceBody { pub target: String, pub data_path: Option<String>, pub artifact_id: Option<String>, pub body_only: bool }
 pub async fn replace(State(state): State<AppState>, jar: CookieJar, Path(id): Path<String>, Json(body): Json<ReplaceBody>) -> Result<Json<Value>, AppError> {
     let sid = extract_session_id(&jar).ok_or(AppError::Auth)?;
     let mut c = state.client.lock().await;
-    let item_id = c.replace(&state.sessions, &sid, &id, &body.target, &body.data_path, body.body_only).await.map_err(AppError::from)?;
+    let item_id = c.replace(&state.sessions, &sid, &id, &body.target, body.data_path.as_deref().unwrap_or(""), body.artifact_id.as_deref().unwrap_or(""), body.body_only).await.map_err(AppError::from)?;
     Ok(Json(json!({ "item_id": item_id })))
 }
 
@@ -711,6 +743,64 @@ pub async fn download(State(state): State<AppState>, jar: CookieJar, Path(id): P
         .header(header::CONTENT_DISPOSITION, "attachment; filename=\"patched.bin\"")
         .body(Body::from(data))
         .unwrap())
+}
+```
+
+`crates/uefi-gateway/src/routes/artifact.rs`:
+```rust
+use axum::extract::{Multipart, Path, Query, State};
+use axum::Json;
+use axum_extra::extract::CookieJar;
+use serde::Deserialize;
+use serde_json::{json, Value};
+use std::path::PathBuf;
+use uuid::Uuid;
+use crate::error::AppError;
+use crate::session::extract_session_id;
+use super::AppState;
+
+#[derive(Deserialize)]
+pub struct ExtractBody { pub target: String, pub body_only: bool }
+pub async fn extract(State(state): State<AppState>, jar: CookieJar, Path(id): Path<String>, Json(body): Json<ExtractBody>) -> Result<Json<Value>, AppError> {
+    let sid = extract_session_id(&jar).ok_or(AppError::Auth)?;
+    let mut c = state.client.lock().await;
+    let artifact_id = c.extract_artifact(&state.sessions, &sid, &id, &body.target, body.body_only).await.map_err(AppError::from)?;
+    Ok(Json(json!({ "artifact_id": artifact_id })))
+}
+
+#[derive(Deserialize)]
+pub struct ExportBody { pub output_path: String }
+pub async fn export(State(state): State<AppState>, jar: CookieJar, Path(id): Path<String>, Json(body): Json<ExportBody>) -> Result<Json<Value>, AppError> {
+    let sid = extract_session_id(&jar).ok_or(AppError::Auth)?;
+    let mut c = state.client.lock().await;
+    c.export_artifact(&state.sessions, &sid, &id, &body.output_path).await.map_err(AppError::from)?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+pub async fn import(State(state): State<AppState>, jar: CookieJar, mut multipart: Multipart) -> Result<Json<Value>, AppError> {
+    let sid = extract_session_id(&jar).ok_or(AppError::Auth)?;
+    let mut file_path: Option<String> = None;
+    while let Some(field) = multipart.next_field().await.map_err(|e| AppError::BadRequest(e.to_string()))? {
+        if field.name() == Some("file") {
+            let data = field.bytes().await.map_err(|e| AppError::BadRequest(e.to_string()))?;
+            let path = PathBuf::from(format!("/tmp/uefipatcher-import-{}.bin", Uuid::new_v4()));
+            tokio::fs::write(&path, &data).await.map_err(|e| AppError::Internal(e.to_string()))?;
+            file_path = Some(path.display().to_string());
+        }
+    }
+    let fp = file_path.ok_or_else(|| AppError::BadRequest("no file field in multipart".into()))?;
+    let mut c = state.client.lock().await;
+    let artifact_id = c.import_artifact(&state.sessions, &sid, &fp).await.map_err(AppError::from)?;
+    Ok(Json(json!({ "artifact_id": artifact_id })))
+}
+
+#[derive(Deserialize)]
+pub struct ListQuery { pub session_id: Option<String> }
+pub async fn list(State(state): State<AppState>, jar: CookieJar, Query(q): Query<ListQuery>) -> Result<Json<Value>, AppError> {
+    let sid = q.session_id.or_else(|| extract_session_id(&jar)).ok_or(AppError::Auth)?;
+    let mut c = state.client.lock().await;
+    let artifacts = c.list_artifacts(&state.sessions, &sid).await.map_err(AppError::from)?;
+    Ok(Json(json!({ "artifacts": artifacts })))
 }
 ```
 
@@ -1474,46 +1564,52 @@ git commit -m "feat(webui): add setup page (visibility toggle + add-formset)"
 
 ---
 
-### Task 11: Docker — Dockerfile.gateway, Dockerfile.webui, docker-compose
+### Task 11: Docker — gateway.containerfile, webui.containerfile, docker-compose
 
 **Files:**
-- Create: `docker/Dockerfile.gateway`
-- Create: `docker/Dockerfile.webui`
+- Create: `docker/gateway.containerfile`
+- Create: `docker/webui.containerfile`
+- Create: `docker/webui-nginx.conf`
 - Modify: `docker/docker-compose.yml`
 
-- [ ] **Step 1: Dockerfile.gateway**
+> **Note:** Rust-сборки переиспользуют общий `docker/rust-builder.containerfile` (создан в Цикле 1, Task 18: `registry.fedoraproject.org/fedora:44` + `rust`/`cargo`/`protobuf-compiler`). Перед сборкой gateway образ нужно собрать базовый образ: `podman build -f docker/rust-builder.containerfile -t uefipatcher-rust-builder ..`
 
-`docker/Dockerfile.gateway`:
+- [ ] **Step 1: gateway.containerfile**
+
+`docker/gateway.containerfile`:
 ```dockerfile
-FROM rust:1.81-slim AS builder
+# Builder переиспользует общий rust-builder.containerfile (Цикл 1: fedora:44 + rust/cargo/protobuf-compiler)
+FROM uefipatcher-rust-builder AS builder
 WORKDIR /app
 COPY . .
-RUN apt-get update && apt-get install -y protobuf-compiler && rm -rf /var/lib/apt/lists/*
 RUN cargo build --release -p uefi-gateway
 
-FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+FROM registry.fedoraproject.org/fedora:44
+RUN dnf install -y ca-certificates && dnf clean all
 COPY --from=builder /app/target/release/uefi-gateway /usr/local/bin/
 ENV UEFIPATCHER_GATEWAY_LISTEN=0.0.0.0:8080
 EXPOSE 8080
 ENTRYPOINT ["uefi-gateway"]
 ```
 
-- [ ] **Step 2: Dockerfile.webui (multi-stage: build SvelteKit + nginx)**
+- [ ] **Step 2: webui.containerfile (multi-stage: build SvelteKit + nginx)**
 
-`docker/Dockerfile.webui`:
+`docker/webui.containerfile`:
 ```dockerfile
-FROM node:22-slim AS builder
+FROM registry.fedoraproject.org/fedora:44 AS builder
+RUN dnf install -y nodejs npm && dnf clean all
 WORKDIR /app
 COPY webui/package*.json ./
 RUN npm install
 COPY webui/ .
 RUN npm run build
 
-FROM nginx:alpine
+FROM registry.fedoraproject.org/fedora:44
+RUN dnf install -y nginx && dnf clean all
 COPY --from=builder /app/build /usr/share/nginx/html
 COPY docker/webui-nginx.conf /etc/nginx/conf.d/default.conf
 EXPOSE 80
+ENTRYPOINT ["nginx", "-g", "daemon off;"]
 ```
 
 `docker/webui-nginx.conf`:
@@ -1537,14 +1633,14 @@ server {
 
 - [ ] **Step 3: Обновить docker-compose.yml**
 
-Добавить сервисы `gateway` и `webui` к существующему `engine`:
+Добавить сервисы `gateway` и `webui` к существующему `engine` (см. `docker/engine.containerfile` из Цикла 1):
 ```yaml
 version: "3.8"
 services:
   engine:
     build:
       context: ..
-      dockerfile: docker/Dockerfile.engine
+      dockerfile: docker/engine.containerfile
     volumes:
       - uefi-data:/data
       - uefi-sock:/run/uefipatcher
@@ -1554,7 +1650,7 @@ services:
   gateway:
     build:
       context: ..
-      dockerfile: docker/Dockerfile.gateway
+      dockerfile: docker/gateway.containerfile
     volumes:
       - uefi-sock:/run/uefipatcher
     environment:
@@ -1567,7 +1663,7 @@ services:
   webui:
     build:
       context: ..
-      dockerfile: docker/Dockerfile.webui
+      dockerfile: docker/webui.containerfile
     ports:
       - "3000:80"
     depends_on:
@@ -1586,7 +1682,7 @@ Expected: корректный вывод
 
 ```bash
 git add docker/
-git commit -m "feat: add Dockerfile.gateway, Dockerfile.webui, update docker-compose"
+git commit -m "feat: add gateway.containerfile, webui.containerfile (rust-builder + fedora:44), update docker-compose"
 ```
 
 ---
@@ -1630,13 +1726,16 @@ git commit -m "chore: final checks — all tests pass, clippy clean, svelte-chec
 - REST API `/api/v1/` все эндпоинты: Task 4 ✓
 - WebSocket streaming dump: Task 5 ✓
 - Upload/download (multipart + binary): Task 4 (upload.rs) ✓
-- gRPC-клиент к движку (все методы): Task 2 ✓
+- Artifact endpoints (extract/export/import/list): Task 4 (artifact.rs) + client methods Task 2 ✓
+- Insert/Replace с `artifact_id`-альтернативой: Task 4 (edit.rs) + client Task 2 ✓
+- Session с `name` (CreateBody → CreateSessionRequest): Task 4 (session.rs) + client Task 2 ✓
+- gRPC-клиент к движку (все методы, incl. artifacts): Task 2 ✓
 - WebUI SvelteKit (SPA): Tasks 7-10 ✓
 - api.ts (REST-клиент): Task 7 ✓
 - Tree + Details компоненты: Task 8 ✓
 - Image page (tree + ops + save/download): Task 9 ✓
 - Setup page (visibility + add-formset): Task 10 ✓
-- Docker (gateway + webui + compose): Task 11 ✓
+- Docker (gateway + webui + compose, fedora:44 + rust-builder.containerfile): Task 11 ✓
 - Тесты (gateway integration + svelte-check): Tasks 6, 12 ✓
 - `/api/v1/` versioning: все routes Tasks 4-5 ✓
 - CORS: Task 1 (CorsLayer) ✓

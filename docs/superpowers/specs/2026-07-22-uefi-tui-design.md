@@ -2,12 +2,12 @@
 
 ## Краткое описание
 
-TUI-фронтенд `uefi-tui` для навигации и редактирования UEFI-образов через движок. Vim-like режимы (Normal/Command/Insert), 3 панели (дерево|детали|команды), Nerd Font иконки + цветовое кодирование, `:`-command-line для операций. Переиспользует `uefi-proto` (gRPC) и `uefi-common` (state/error из CLI).
+TUI-фронтенд `uefi-tui` для навигации и редактирования UEFI-образов через движок. Vim-like режимы (Normal/Command/Insert), 3 панели (дерево|детали|команды), Nerd Font иконки + цветовое кодирование, `:`-command-line для операций. Переиспользует `uefi-proto` (gRPC) и `uefi-common` (state/error, уже создан в цикле 1).
 
 ## Цели цикла 3
 
 - Реализовать TUI-фронтенд `uefi-tui` как отдельный бинарник, подключающийся к движку через gRPC over unix-сокет
-- Извлечь общий код (state `.uefipatcher`, error/exit-codes) в крейт `uefi-common` для переиспользования CLI и TUI
+- `uefi-common` уже создан в цикле 1, переиспользуется напрямую (state `.uefipatcher`, error/exit-codes) — не нужен шаг извлечения
 - Реализовать vim-like режимы: Normal (навигация), Command (`:`-команды), Insert (ввод target/path)
 - Реализовать 3-панельный layout: дерево UEFI-образа слева, детали узла центр, command-line/хелп внизу, статус-бар сверху
 - Реализовать Nerd Font иконки для типов узлов + Unicode псевдографику (├──, └──, │) + цветовое кодирование по Action
@@ -20,13 +20,12 @@ TUI-фронтенд `uefi-tui` для навигации и редактиро�
 
 ```
 crates/
-├── uefi-common/          # НОВЫЙ: state.rs + error.rs (извлечено из uefi-cli)
+├── uefi-common/          # ИЗ ЦИКЛА 1: state.rs + error.rs (переиспользуется напрямую, без извлечения)
 │   ├── Cargo.toml
 │   └── src/
 │       ├── lib.rs
 │       ├── state.rs      # .uefipatcher TOML, sock-приоритет
 │       └── error.rs      # ExitCode, ErrKind, AppError
-├── uefi-cli/             # REFACTOR: зависимость от uefi-common вместо локальных state.rs/error.rs
 ├── uefi-tui/             # НОВЫЙ
 │   ├── Cargo.toml
 │   └── src/
@@ -49,7 +48,7 @@ crates/
 - `ratatui` (latest) — TUI-рендеринг
 - `crossterm` (latest) — terminal backend, events, ANSI/UTF-8
 - `uefi-proto` (path) — gRPC-контракт
-- `uefi-common` (path) — state, error
+- `uefi-common` (path, из цикла 1) — state, error
 - `tonic`, `tokio` — gRPC-клиент
 - `clap` (derive) — `--sock`, `--format` глобальные флаги
 - `anyhow` — ошибки
@@ -99,9 +98,15 @@ TUI — gRPC-клиент к `EngineService` (как CLI в цикле 2). По�
 | `:rebuild TARGET` | Rebuild |
 | `:set-visibility ITEM [--visible\|--hidden]` | SetSetupItemVisibility |
 | `:save OUTPUT` | SaveImage |
+| `:extract TARGET [--body-only]` | ExtractArtifact |
+| `:export ARTIFACT_ID [PATH]` | ExportArtifact to current directory |
+| `:import FILE` | ImportArtifact from filesystem |
+| `:artifacts` | ListArtifacts |
 | `:session init\|destroy\|list` | Управление сессией |
 | `:help` / `:h` | Help popup |
 | `:quit` / `:q` | Выход |
+
+> **Note:** `:session init` передаёт CWD (`env::var("PWD")`) как имя сессии.
 
 ## Layout
 
@@ -220,23 +225,23 @@ pub struct TreeNode {
 
 ## Этапы реализации
 
-1. **uefi-common**: извлечь `state.rs`/`error.rs` из uefi-cli в общий крейт. Refactor uefi-cli на uefi-common.
-2. **uefi-tui скелет**: Cargo.toml, main.rs (ratatui/crossterm setup), app.rs (Mode enum, App struct, базовый event loop).
-3. **input.rs**: crossterm events → AppEvent (key/mode/quit).
-4. **theme.rs**: Nerd Font иконки/цвета по FfsType/Action.
-5. **ui/tree.rs**: рендер дерева + cursor + expand/collapse.
-6. **ui/details.rs + status.rs + cmdline.rs + help.rs**: остальные панели.
-7. **commands.rs**: парсинг `:`-команд, gRPC-вызовы, обновление app state.
-8. **app.rs**: полный state machine (Normal/Command/Insert transitions).
-9. **Integration-тесты**: mock-движок, полный flow через app state.
-10. **E2E**: round-trip через TUI.
+0. **uefi-common**: уже создан в цикле 1 — переиспользуется напрямую, шаг извлечения не нужен.
+1. **uefi-tui скелет**: Cargo.toml, main.rs (ratatui/crossterm setup), app.rs (Mode enum, App struct, базовый event loop).
+2. **input.rs**: crossterm events → AppEvent (key/mode/quit).
+3. **theme.rs**: Nerd Font иконки/цвета по FfsType/Action.
+4. **ui/tree.rs**: рендер дерева + cursor + expand/collapse.
+5. **ui/details.rs + status.rs + cmdline.rs + help.rs**: остальные панели.
+6. **commands.rs**: парсинг `:`-команд, gRPC-вызовы, обновление app state.
+7. **app.rs**: полный state machine (Normal/Command/Insert transitions).
+8. **Integration-тесты**: mock-движок, полный flow через app state.
+9. **E2E**: round-trip через TUI.
 
 ## Риски и ограничения
 
 - **Nerd Font не установлен** — иконки покажутся как `□`/``. Мера: fallback на Unicode-символы при обнаружении (опция `--no-icons` или авто-детект через `TERM`); документировать требование Nerd Font.
 - **ratatui test backend** — для integration-тестов без реального терминала. Мера: `ratatui::backend::TestBackend` — встроенный, подходит.
 - **Большие деревья BIOS** — реальный образ может иметь сотни узлов. Мера: виртуальный скролл (рендер только видимых строк), lazy expand.
-- **Refactor uefi-cli → uefi-common** — может сломать цикл 2. Мера: делать после реализации цикла 2; или uefi-tui зависит от uefi-cli (re-export state), без нового крейта — но это менее чисто. Решение: uefi-common крейт, refactor минимальный.
+- **uefi-common уже существует из цикла 1** — не нужен шаг рефакторинга/извлечения. Мера: TUI зависит от uefi-common напрямую.
 - **Async в TUI** — ratatui синхронный, gRPC async. Мера: tokio runtime в main, gRPC-вызовы через `tokio::runtime::Handle::block_on` или канал между input-loop и async-задачей.
 
 ## Решения (фиксация)
@@ -247,5 +252,7 @@ pub struct TreeNode {
 - Layout: 3 панели (дерево|детали|команды) + статус-бар + hint-бар.
 - Операции: просмотр + `:`-command-line для всех операций движка.
 - Иконки: Nerd Font по FfsType + Unicode псевдографика + цвета по Action.
-- Общий код: крейт `uefi-common` (state + error), refactor uefi-cli.
+- Общий код: крейт `uefi-common` (state + error) — уже существует из цикла 1, не нужен шаг рефакторинга/извлечения.
 - Архитектура: отдельный крейт `uefi-tui`, переиспользует uefi-proto/uefi-common.
+
+> **Тонкости имплементации:** uefi-common уже существует из цикла 1 — не нужен шаг рефакторинга/извлечения.

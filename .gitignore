@@ -1,0 +1,28 @@
+# Rust
+/target/
+**/target/
+Cargo.lock
+
+# Node/WebUI
+/webui/node_modules/
+/webui/.svelte-kit/
+/webui/build/
+/webui/dist/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Opencode sessions
+session-ses_*.md
+
+# Environment
+.env
+.env.*
+
+# UEFIPatcher runtime data
+.uefipatcher
