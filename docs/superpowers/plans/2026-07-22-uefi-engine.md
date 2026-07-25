@@ -1514,6 +1514,8 @@ git commit -m "feat: add parse_image, dump_tree, list_items"
   - `pub fn find_item(root: &FfsNode, target: &Target) -> Result<&FfsNode, ParserError>`
 - Референс: `../refs/UEFITool-ai-fork/UEFIEdit/uefiedit.cpp:195` `parseTarget`. Path: десятичные индексы детей от root, разделённые `/`. GUID: 36-символьная строка. `GUID:T` — file GUID + первая секция типа T (hex). `GUID:T:N` — N-ная секция типа T.
 
+> **NOTE (исправление плана, 2026-07-25):** исходный Task 9 требовал `s.contains('/')` для Path-таргета, отклоняя одиночные индексы ("0"). Но `list_items` (Task 8) эмитит "0"/"1"/... для детей первого уровня (конвенция без ведущего root-маркера), а Task 11 ops должны уметь адресовать volume (первый ребёнок root) через "0". Условие ослаблено: Path = непустая строка из цифр и '/', начинающаяся с цифры — принимает "0", "0/2/207". Не конфликтует с GUID (содержит буквы/дефисы) и `GUID:T` (содержит ':'). Референс требует '/', т.к. его конвенция пути включает ведущий root "0" (минимум "0/0"); в нашей конвенции одиночный индекс валиден.
+
 - [ ] **Step 1: Написать failing tests**
 
 **Module-first rule:** добавить `pub mod target;` в `crates/uefi-engine/src/parser/mod.rs` (ДО запуска `cargo test` в Step 2).
@@ -1581,7 +1583,12 @@ use std::str::FromStr;
 use super::ParserError;
 
 pub fn parse_target(s: &str) -> Result<Target, ParserError> {
-    if s.chars().all(|c| c.is_ascii_digit() || c == '/') && s.contains('/') {
+    // Path: все символы — цифры или '/', первый символ — цифра (принимает одиночные индексы "0",
+    // т.к. list_items эмитит "0"/"1"/... для детей первого уровня — без ведущего root-маркера).
+    if !s.is_empty()
+        && s.chars().next().is_some_and(|c| c.is_ascii_digit())
+        && s.chars().all(|c| c.is_ascii_digit() || c == '/')
+    {
         let path: Result<Vec<usize>, _> = s.split('/').map(|p| p.parse::<usize>()).collect();
         return path.map(Target::Path).map_err(|_| ParserError::InvalidHeader(format!("bad path: {s}")));
     }
@@ -1901,6 +1908,13 @@ git commit -m "feat: add builder (round-trip volume/file/section)"
   - `enum OpsError { NotFound, InvalidParent, InvalidFfs }`
 - Референс: `../refs/UEFITool-ai-fork/UEFIEdit/uefiedit.cpp:375` (insert), `472` (remove), `494` (replace), `520` (rebuild). После каждой операции — каскад `Rebuild` для всех предков до root. `replace` с `body_only=true` заменяет только body, сохраняет заголовок. `replace` должен `clearChildren` перед `setBody` (баг 9).
 
+> **NOTE (исправление плана, 2026-07-25):** исходный Task 11 содержал четыре дефекта:
+> 1. **Сломанный synthetic fixture** (`make_simple_image`, тот же класс что Task 4/8/10): пишет `256u32` в offset 20 вместо канонического `FvLength@32`. Fixture переписан.
+> 2. **`parse_target("0")` отвергался** Task 9 (требовалось '/'), но тест `rebuild_marks_node` использует "0" для адресации volume (первый ребёнок root). Исправлено в Task 9 (см. NOTE выше) — одиночные индексы теперь валидны.
+> 3. **`use super::ParserError`** неразрешим: `ops.rs` лежит в корне крейта (`crate::ops`), `super` = crate root, где `ParserError` не реэкспортирован. Заменено на `use crate::parser::ParserError;`.
+> 4. **Неиспользуемые импорты** `find_item`, `parse_target` (ops используют `find_mut` по path) — удалены.
+> Дополнение к дизайну: `mark_rebuild_to_root_by_path` помечает только `NoAction`-узлы (не перезаписывает `Remove`/`Replace`), чтобы корректно сочетаться с уже выставленными действиями. Size-absorption (заполнение/раздвижение) выполняется builder'ом (Task 10): ops лишь меняют дерево + ставят `Rebuild`-каскад, а builder поглощает size-дельту через free-space volume.
+
 - [ ] **Step 1: Написать failing tests**
 
 **Module-first rule:** добавить `pub mod ops;` в `crates/uefi-engine/src/lib.rs` (ДО запуска `cargo test` в Step 2).
@@ -1930,9 +1944,12 @@ mod tests {
 
     fn make_simple_image() -> Vec<u8> {
         let mut buf = vec![0xFFu8; 256];
-        buf[40..44].copy_from_slice(&crate::ffs::EFI_FVH_SIGNATURE.to_le_bytes());
-        buf[20..24].copy_from_slice(&256u32.to_le_bytes());
-        buf[44] = 0x48; buf[45] = 0xFE; buf[46] = 0xFF; buf[47] = 0xFF;
+        // Канонический EFI_FIRMWARE_VOLUME_HEADER (см. исправление Task 4/8/10)
+        buf[32..40].copy_from_slice(&256u64.to_le_bytes()); // FvLength@32 (u64)
+        buf[40..44].copy_from_slice(&crate::ffs::EFI_FVH_SIGNATURE.to_le_bytes()); // Signature@40
+        buf[44..48].copy_from_slice(&crate::ffs::EFI_FVB2_ERASE_POLARITY.to_le_bytes()); // Attributes@44
+        buf[48..50].copy_from_slice(&56u16.to_le_bytes()); // HeaderLength@48
+        buf[55] = 2; // Revision@55
         buf
     }
 
@@ -1958,8 +1975,7 @@ Expected: FAIL
 ```rust
 use crate::types::*;
 use crate::ffs::*;
-use crate::parser::target::{find_item, parse_target};
-use super::ParserError;
+use crate::parser::ParserError;
 
 #[derive(Debug, thiserror::Error)]
 pub enum OpsError {
