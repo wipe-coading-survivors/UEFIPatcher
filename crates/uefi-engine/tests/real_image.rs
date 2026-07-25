@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use uefi_engine::ffs::{EFI_SECTION_GUID_DEFINED, EFI_SECTION_PE32, is_lzma_guid};
 use uefi_engine::parser::file::parse_file;
+use uefi_engine::parser::image::{dump_tree, list_items, parse_image};
 use uefi_engine::parser::section::parse_sections;
 use uefi_engine::parser::volume::parse_volume;
 use uefi_engine::types::{FfsNode, FfsType, ParsingData};
@@ -267,5 +268,87 @@ fn real_image_decompresses_lzma_sections() {
     assert!(
         inner_pe32 > 30,
         "expected PE32 DXE modules inside decompressed bodies, got {inner_pe32}"
+    );
+}
+
+#[test]
+#[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
+fn real_image_parse_image_full() {
+    use uefi_engine::types::ImageMode;
+    use uefi_proto::DumpFormat;
+
+    let data = load_fw();
+    let img = parse_image(&data, ImageMode::Read, "img1", "s1").expect("parse_image");
+
+    assert_eq!(img.root.node_type, FfsType::Image);
+    assert!(
+        img.root.children.len() >= 3,
+        "expected >=3 top-level volumes, got {}",
+        img.root.children.len()
+    );
+
+    for &off in &[0x800000u32, 0x890000u32, 0xda0000u32] {
+        let vol = img
+            .root
+            .children
+            .iter()
+            .find(|c| c.offset == off)
+            .unwrap_or_else(|| panic!("parse_image did not locate FV @{off:#x}"));
+        assert_eq!(vol.node_type, FfsType::Volume);
+        assert!(vol.header.len() >= 56, "FV @{off:#x}: header too small");
+        assert!(!vol.body.is_empty(), "FV @{off:#x}: empty body");
+    }
+
+    let main = img
+        .root
+        .children
+        .iter()
+        .find(|c| c.offset == 0x890000)
+        .expect("main FV");
+    assert!(
+        main.children.len() > 100,
+        "main FV should hold many FFS files, got {}",
+        main.children.len()
+    );
+    assert!(
+        main.children.iter().all(|f| f.node_type == FfsType::File),
+        "all volume children must be FFS files"
+    );
+
+    let mut guided = 0usize;
+    let mut decompressed = 0usize;
+    for f in &main.children {
+        for s in &f.children {
+            if s.subtype == EFI_SECTION_GUID_DEFINED {
+                guided += 1;
+                if !s.children.is_empty() {
+                    decompressed += 1;
+                }
+            }
+        }
+    }
+    assert!(guided > 100, "main FV guided sections: {guided}");
+    assert_eq!(
+        decompressed, guided,
+        "all guided sections in main FV must decompress"
+    );
+
+    let tree = dump_tree(&img.root, DumpFormat::Text);
+    assert!(tree.contains("Image"));
+    assert!(tree.contains("Volume"));
+    assert!(tree.contains("File"));
+    let items = list_items(&img.root, None);
+    assert!(
+        items.len() > 1000,
+        "expected many list items, got {}",
+        items.len()
+    );
+
+    eprintln!(
+        "real_image parse_image: {} top-level volumes, main FV files={}, guided={}, decompressed={}",
+        img.root.children.len(),
+        main.children.len(),
+        guided,
+        decompressed
     );
 }
