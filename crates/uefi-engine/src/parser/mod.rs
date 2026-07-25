@@ -10,4 +10,5 @@ pub enum ParserError {
     EndOfBuffer,
 }
 
+pub mod file;
 pub mod volume;
