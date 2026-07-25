@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use uefi_engine::ffs::{EFI_SECTION_GUID_DEFINED, EFI_SECTION_PE32};
+use uefi_engine::ffs::{EFI_SECTION_GUID_DEFINED, EFI_SECTION_PE32, is_lzma_guid};
 use uefi_engine::parser::file::parse_file;
 use uefi_engine::parser::section::parse_sections;
 use uefi_engine::parser::volume::parse_volume;
@@ -205,4 +205,67 @@ fn real_image_parses_sections() {
         "expected many GUID_DEFINED wrappers, got {guided}"
     );
     assert!(pe32 > 30, "expected PE32 DXE modules, got {pe32}");
+}
+
+#[test]
+#[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
+fn real_image_decompresses_lzma_sections() {
+    let data = load_fw();
+
+    let mut lzma_total = 0usize;
+    let mut lzma_decompressed = 0usize;
+    let mut inner_pe32 = 0usize;
+    let mut inner_total = 0usize;
+
+    for fv_off in [0x890000u32, 0xda0000u32] {
+        let vol = parse_volume(&data, fv_off).expect("FV");
+        let (erase, rev) = match &vol.parsing_data {
+            ParsingData::Volume(d) => (d.empty_byte, d.revision),
+            _ => unreachable!(),
+        };
+        for f in scan_ffs_files(&vol.body, erase, rev) {
+            if f.body.is_empty() {
+                continue;
+            }
+            for s in parse_sections(&f.body, 0) {
+                if s.subtype != EFI_SECTION_GUID_DEFINED {
+                    continue;
+                }
+                let guid = match &s.parsing_data {
+                    ParsingData::GuidedSection(d) => &d.guid,
+                    _ => continue,
+                };
+                if !is_lzma_guid(guid) {
+                    continue;
+                }
+                lzma_total += 1;
+                if s.children.is_empty() {
+                    continue;
+                }
+                lzma_decompressed += 1;
+                for child in &s.children {
+                    inner_total += 1;
+                    if child.subtype == EFI_SECTION_PE32 {
+                        inner_pe32 += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    eprintln!(
+        "real_image LZMA: guided_lzma={lzma_total} decompressed_ok={lzma_decompressed} inner_sections={inner_total} inner_pe32={inner_pe32}"
+    );
+    assert!(
+        lzma_total > 100,
+        "expected many LZMA GUIDed sections, got {lzma_total}"
+    );
+    assert_eq!(
+        lzma_decompressed, lzma_total,
+        "every LZMA GUIDed section must decompress"
+    );
+    assert!(
+        inner_pe32 > 30,
+        "expected PE32 DXE modules inside decompressed bodies, got {inner_pe32}"
+    );
 }

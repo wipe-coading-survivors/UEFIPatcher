@@ -15,16 +15,34 @@ pub const EFI_FVH_SIGNATURE: u32 = 0x4856465F;
 pub const EFI_FVB2_ERASE_POLARITY: u32 = 0x00000800;
 
 pub fn tiano_guid() -> Guid {
-    Guid::try_parse("a31280ad-0411-42b8-aa09-c484a2906fdc").unwrap()
+    Guid::try_parse("a31280ad-481e-41b6-95e8-127f4c984779").unwrap()
 }
 pub fn lzma_guid() -> Guid {
-    Guid::try_parse("ee4e5ace-8c72-4ae3-8bfc-e1f3c1a08c14").unwrap()
+    Guid::try_parse("ee4e5898-3914-4259-9d6e-dc7bd79403cf").unwrap()
+}
+pub fn lzma_hp_guid() -> Guid {
+    Guid::try_parse("0ed85e23-f253-413f-a03c-901987b04397").unwrap()
+}
+pub fn lzma_ms_guid() -> Guid {
+    Guid::try_parse("bd9921ea-ed91-404a-8b2f-b4d724747c8c").unwrap()
 }
 pub fn lzmaf86_guid() -> Guid {
-    Guid::try_parse("d42ae6bd-1352-4b12-95a0-c1d41df29e0c").unwrap()
+    Guid::try_parse("d42ae6bd-1352-4bfb-909a-ca72a6eae889").unwrap()
 }
 pub fn crc32_guid() -> Guid {
-    Guid::try_parse("fcdefeee-3598-4908-b337-78f59f8f1a8e").unwrap()
+    Guid::try_parse("fc1bcdb0-7d31-49aa-936a-a4600d9dd083").unwrap()
+}
+
+pub fn is_lzma_guid(g: &Guid) -> bool {
+    let b = g.to_bytes();
+    b == lzma_guid().to_bytes()
+        || b == lzma_hp_guid().to_bytes()
+        || b == lzma_ms_guid().to_bytes()
+        || b == lzmaf86_guid().to_bytes()
+}
+
+pub fn is_tiano_guid(g: &Guid) -> bool {
+    g.to_bytes() == tiano_guid().to_bytes()
 }
 
 pub fn calculate_checksum8(data: &[u8]) -> u8 {
@@ -79,6 +97,7 @@ pub fn ffs_file_size(header: &[u8]) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::guid_to_upper_string;
 
     #[test]
     fn checksum8_known_vector() {
@@ -128,5 +147,31 @@ mod tests {
         large_ffs[24..32].copy_from_slice(&large_size.to_le_bytes());
         assert!(is_large_ffs(&large_ffs));
         assert_eq!(ffs_file_size(&large_ffs), 0x02000000);
+    }
+
+    #[test]
+    fn well_known_guids_match_edk2() {
+        assert_eq!(
+            guid_to_upper_string(&lzma_guid()),
+            "EE4E5898-3914-4259-9D6E-DC7BD79403CF"
+        );
+        assert_eq!(
+            guid_to_upper_string(&tiano_guid()),
+            "A31280AD-481E-41B6-95E8-127F4C984779"
+        );
+        assert_eq!(
+            guid_to_upper_string(&lzmaf86_guid()),
+            "D42AE6BD-1352-4BFB-909A-CA72A6EAE889"
+        );
+        assert_eq!(
+            guid_to_upper_string(&crc32_guid()),
+            "FC1BCDB0-7D31-49AA-936A-A4600D9DD083"
+        );
+        assert!(is_lzma_guid(&lzma_guid()));
+        assert!(is_lzma_guid(&lzma_hp_guid()));
+        assert!(is_lzma_guid(&lzma_ms_guid()));
+        assert!(is_lzma_guid(&lzmaf86_guid()));
+        assert!(!is_lzma_guid(&tiano_guid()));
+        assert!(is_tiano_guid(&tiano_guid()));
     }
 }

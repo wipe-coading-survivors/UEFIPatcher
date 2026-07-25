@@ -1,4 +1,5 @@
 use super::ParserError;
+use crate::decompress::{self, EFI_LZMA_COMPRESSION, EFI_STANDARD_COMPRESSION};
 use crate::ffs::*;
 use crate::types::*;
 
@@ -16,30 +17,50 @@ pub fn parse_section(buf: &[u8], offset: u32) -> Result<FfsNode, ParserError> {
     let stype = buf[off + 3];
     let header = buf[off..off + hdr_len].to_vec();
     let body = buf[off + hdr_len..off + size].to_vec();
-    let parsing_data = match stype {
+
+    let (parsing_data, children) = match stype {
         EFI_SECTION_GUID_DEFINED if body.len() >= 20 => {
             let guid = crate::parser::file::guid_from_bytes(&body[0..16])
                 .ok_or_else(|| ParserError::InvalidHeader("guid".into()))?;
-            let _data_offset = u16::from_le_bytes([body[16], body[17]]) as usize;
+            let data_offset = u16::from_le_bytes([body[16], body[17]]) as usize;
             let _attributes = u16::from_le_bytes([body[18], body[19]]);
-            ParsingData::GuidedSection(GuidedSectionParsingData {
+            let dictionary_size = decompress_guided_payload(&guid, &body, data_offset)
+                .map(decompress::lzma_dictionary_size)
+                .unwrap_or(0);
+            let pd = GuidedSectionParsingData {
                 guid,
-                dictionary_size: 0,
-            })
+                dictionary_size,
+            };
+            let ch = decompress_guided(&guid, &body, data_offset);
+            (ParsingData::GuidedSection(pd), ch)
         }
         EFI_SECTION_COMPRESSION if body.len() >= 5 => {
             let uncomp_size = u32::from_le_bytes([body[0], body[1], body[2], body[3]]);
             let comp_type = body[4];
-            ParsingData::CompressedSection(CompressedSectionParsingData {
-                uncompressed_size: uncomp_size,
-                compression_type: comp_type,
-                algorithm: 0,
-                dictionary_size: 0,
-            })
+            let ch = if body.len() > 5 {
+                match decompress::decompress(&body[5..], comp_type) {
+                    Ok(decompressed) => parse_sections(&decompressed, 0),
+                    Err(e) => {
+                        tracing::warn!("decompress failed at {off}: {e}");
+                        vec![]
+                    }
+                }
+            } else {
+                vec![]
+            };
+            (
+                ParsingData::CompressedSection(CompressedSectionParsingData {
+                    uncompressed_size: uncomp_size,
+                    compression_type: comp_type,
+                    algorithm: comp_type,
+                    dictionary_size: 0,
+                }),
+                ch,
+            )
         }
-        _ => ParsingData::None,
+        _ => (ParsingData::None, vec![]),
     };
-    let children = vec![];
+
     Ok(FfsNode {
         guid: None,
         node_type: FfsType::Section,
@@ -55,6 +76,50 @@ pub fn parse_section(buf: &[u8], offset: u32) -> Result<FfsNode, ParserError> {
         compressed: stype == EFI_SECTION_COMPRESSION,
         alignment_bytes: vec![],
     })
+}
+
+fn guided_payload(body: &[u8], data_offset: usize) -> Option<&[u8]> {
+    let start = data_offset.checked_sub(4)?;
+    body.get(start..)
+}
+
+fn guided_algorithm(guid: &Guid) -> Option<u8> {
+    if is_lzma_guid(guid) {
+        Some(EFI_LZMA_COMPRESSION)
+    } else if is_tiano_guid(guid) {
+        Some(EFI_STANDARD_COMPRESSION)
+    } else {
+        None
+    }
+}
+
+fn decompress_guided_payload<'a>(
+    guid: &Guid,
+    body: &'a [u8],
+    data_offset: usize,
+) -> Option<&'a [u8]> {
+    let payload = guided_payload(body, data_offset)?;
+    if guided_algorithm(guid).is_some() {
+        Some(payload)
+    } else {
+        None
+    }
+}
+
+fn decompress_guided(guid: &Guid, body: &[u8], data_offset: usize) -> Vec<FfsNode> {
+    let Some(algo) = guided_algorithm(guid) else {
+        return vec![];
+    };
+    let Some(payload) = guided_payload(body, data_offset) else {
+        return vec![];
+    };
+    match decompress::decompress(payload, algo) {
+        Ok(decompressed) => parse_sections(&decompressed, 0),
+        Err(e) => {
+            tracing::warn!("guided section decompress failed: {e}");
+            vec![]
+        }
+    }
 }
 
 pub fn parse_sections(buf: &[u8], start: u32) -> Vec<FfsNode> {
@@ -112,5 +177,34 @@ mod tests {
         assert_eq!(nodes.len(), 2);
         assert_eq!(nodes[0].subtype, EFI_SECTION_RAW);
         assert_eq!(nodes[1].subtype, EFI_SECTION_PE32);
+    }
+
+    #[test]
+    fn parse_guided_lzma_section_decompresses_children() {
+        let section = include_bytes!("../../../../tests/fixtures/lzma_guided_section.bin");
+        let node = parse_section(section, 0).unwrap();
+        assert_eq!(node.node_type, FfsType::Section);
+        assert_eq!(node.subtype, EFI_SECTION_GUID_DEFINED);
+        assert!(!node.children.is_empty(), "LZMA section must decompress");
+        let pd = match &node.parsing_data {
+            ParsingData::GuidedSection(d) => d,
+            other => panic!("unexpected parsing data: {other:?}"),
+        };
+        assert!(is_lzma_guid(&pd.guid));
+        assert!(pd.dictionary_size > 0);
+    }
+
+    #[test]
+    fn parse_guided_lzma_section_children_match_decompressed() {
+        let section = include_bytes!("../../../../tests/fixtures/lzma_guided_section.bin");
+        let expected =
+            include_bytes!("../../../../tests/fixtures/lzma_guided_section.decompressed.bin");
+        let node = parse_section(section, 0).unwrap();
+        assert!(!node.children.is_empty());
+        let mut total = 0usize;
+        for child in &node.children {
+            total += child.header.len() + child.body.len() + child.tail.len();
+        }
+        assert!(total <= expected.len() + node.children.len() * 8);
     }
 }
