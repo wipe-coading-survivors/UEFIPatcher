@@ -1678,6 +1678,12 @@ git commit -m "feat: add Target parsing (guid/path/guid:type/guid:type:index) an
   - `enum BuilderError { SizeMismatch, ChecksumFailed }`
 - Референс: `../refs/UEFITool-ai-fork/common/ffsbuilder.cpp` `build`/`buildVolume`/`buildFile`/`buildSection`. Файлы выравниваются по 8 (padding `empty_byte`), секции по 4. `buildFile`/`buildSection` с `children.is_empty()` используют `body` as-is (баг 5). `buildVolume` сохраняет оригинальные offset'ы неизменённых файлов, padding к оригинальному размеру (баг 11). Контрольные суммы пересчитываются.
 
+> **NOTE (исправление плана, 2026-07-25):** исходный Task 10 содержал четыре дефекта, выявленные сверкой с референсом `ffsbuilder.cpp` и валидацией round-trip на реальном образе:
+> 1. **Сломанный synthetic fixture** (тот же класс, что Task 4/8): пишет `256u32` в offset 20 вместо канонического `FvLength@32` (u64). Без этого `parse_volume` падает → round-trip тривиально проваливается. Fixture переписан под канонический `EFI_FIRMWARE_VOLUME_HEADER`.
+> 2. **Always-rebuild вместо verbatim-for-NoAction:** исходный `build_file`/`build_section` всегда пересобирали body из children при `!children.is_empty()`. Но референс (`ffsbuilder.cpp:533`, `:396`) для `action == NoAction` эмитит `model->full(index)` дословно (header+body+tail). Это критично для round-trip немодифицированного образа и для compressed/guided-секций (чья body — непрозрачный сжатый blob, а children — распакованные для инспекции; пересборка невозможна без рекомпрессии). Исправлено: `NoAction` → verbatim; `Rebuild/Replace/Insert` → rebuild-путь.
+> 3. **Чексумма пишется в byte 23 (State), а не в byte 16/17:** `header[23] = calculate_checksum8(header[0..23])` — это поле `State` (см. Task 5), а не `IntegrityCheck`. Канон: Header-чексумма в `IntegrityCheck.Checksum.Header` (byte 16) по формуле `0x100 - (sum_all - byte16 - byte17 - byte23)` (`ffsbuilder.cpp:649-653`); File-чексумма в byte 17 (`calculate_checksum8(body)` при `FFS_ATTRIB_CHECKSUM`, иначе фиксированная). Исправлено: пересчёт в bytes 16/17.
+> 4. **Отсутствует size-absorption (заполнение/раздвижение) в `build_volume`:** при insert/remove/replace размеры детей меняются, и референс поглощает дельту через free-space (паддинг `empty_byte` до `oldBodySize = node.body.len()`, error при переполнении — `ffsbuilder.cpp:462-480`). `build_file`/`build_section` пересчитывают размер снизу-вверх (size propagates: секция→файл→volume). Для compressed/guided-секций рекомпрессия в цикле 1 недоступна → verbatim body. Для FFSv2/large файлов размер пишется в Size@20 (24-bit) или ExtendedSize@24 (large).
+
 - [ ] **Step 1: Написать round-trip failing test**
 
 **Module-first rule:** добавить `pub mod builder;` в `crates/uefi-engine/src/lib.rs` (ДО запуска `cargo test` в Step 2).
@@ -1704,9 +1710,12 @@ mod tests {
 
     fn make_image_with_volume() -> Vec<u8> {
         let mut buf = vec![0xFFu8; 256];
-        buf[40..44].copy_from_slice(&EFI_FVH_SIGNATURE.to_le_bytes());
-        buf[20..24].copy_from_slice(&256u32.to_le_bytes());
-        buf[44] = 0x48; buf[45] = 0xFE; buf[46] = 0xFF; buf[47] = 0xFF;
+        // Канонический EFI_FIRMWARE_VOLUME_HEADER (см. исправление Task 4/8)
+        buf[32..40].copy_from_slice(&256u64.to_le_bytes()); // FvLength@32 (u64)
+        buf[40..44].copy_from_slice(&EFI_FVH_SIGNATURE.to_le_bytes()); // Signature@40
+        buf[44..48].copy_from_slice(&EFI_FVB2_ERASE_POLARITY.to_le_bytes()); // Attributes@44
+        buf[48..50].copy_from_slice(&56u16.to_le_bytes()); // HeaderLength@48
+        buf[55] = 2; // Revision@55
         buf
     }
 
@@ -1773,67 +1782,89 @@ fn build_node(node: &FfsNode, out: &mut Vec<u8>) -> Result<(), BuilderError> {
 }
 
 fn build_volume(node: &FfsNode, out: &mut Vec<u8>) -> Result<(), BuilderError> {
+    if node.action == Action::Remove { return Ok(()); }
+    // NoAction → verbatim (header+body+tail). body уже содержит FFS+free-space.
+    if node.action == Action::NoAction {
+        out.extend_from_slice(&node.header);
+        out.extend_from_slice(&node.body);
+        out.extend_from_slice(&node.tail);
+        return Ok(());
+    }
+    // Rebuild/Replace/Insert: пересобрать children, поглотить size-дельту через free-space.
+    let vol_start = out.len();
     out.extend_from_slice(&node.header);
     let empty_byte = if let ParsingData::Volume(vd) = &node.parsing_data { vd.empty_byte } else { 0xFF };
+    let body_start = out.len();
     for child in &node.children {
         if child.action == Action::Remove { continue; }
-        let before = out.len();
+        // выравнивание файла по 8 относительно начала volume (заполнение empty_byte)
+        let target = vol_start + align8(out.len() - vol_start);
+        pad_to(out, target, empty_byte);
         build_node(child, out)?;
-        let aligned = align8(out.len());
-        pad_to(out, aligned, empty_byte);
     }
+    // size-absorption: pad до oldBodySize (оригинальный размер body) — free-space забирает рост/усадку
+    let old_total = vol_start + node.header.len() + node.body.len();
+    if out.len() > old_total {
+        return Err(BuilderError::SizeMismatch); // контент превысил ёмкость volume
+    }
+    pad_to(out, old_total, empty_byte);
+    out.extend_from_slice(&node.tail);
     Ok(())
 }
 
 fn build_file(node: &FfsNode, out: &mut Vec<u8>) -> Result<(), BuilderError> {
     if node.action == Action::Remove { return Ok(()); }
-    let mut header = node.header.clone();
-    if !node.children.is_empty() {
-        let mut body = vec![];
-        for child in &node.children {
-            build_node(child, &mut body)?;
-            let aligned = align4(body.len());
-            pad_to(&mut body, aligned, 0x00);
-        }
-        let total = header.len() + body.len() + node.tail.len();
-        let size_bytes = size_to_uint24(total as u32);
-        header[20] = size_bytes[0]; header[21] = size_bytes[1]; header[22] = size_bytes[2];
-        let cs = calculate_checksum8(&header[0..23]);
-        header[23] = cs;
-        out.extend_from_slice(&header);
-        out.extend_from_slice(&body);
-        out.extend_from_slice(&node.tail);
-    } else {
-        out.extend_from_slice(&header);
+    if node.action == Action::NoAction {
+        out.extend_from_slice(&node.header);
         out.extend_from_slice(&node.body);
         out.extend_from_slice(&node.tail);
+        return Ok(());
     }
+    // Rebuild/Replace/Insert: пересобрать body из children (баг 5: пустые children → body as-is)
+    let mut header = node.header.clone();
+    let mut body = if node.children.is_empty() { node.body.clone() } else { vec![] };
+    for child in &node.children {
+        build_node(child, &mut body)?;
+        let aligned = align4(body.len());
+        pad_to(&mut body, aligned, 0x00);
+    }
+    let tail = node.tail.clone();
+    let total = header.len() + body.len() + tail.len();
+    set_ffs_size(&mut header, total);                         // 24-bit или large ExtendedSize
+    recompute_ffs_checksums(&mut header, &body);              // bytes 16 (Header) / 17 (File), НЕ byte 23 (State)
+    out.extend_from_slice(&header);
+    out.extend_from_slice(&body);
+    out.extend_from_slice(&tail);
     Ok(())
 }
 
 fn build_section(node: &FfsNode, out: &mut Vec<u8>) -> Result<(), BuilderError> {
-    if !node.children.is_empty() {
-        let mut body = vec![];
-        for child in &node.children {
-            build_node(child, &mut body)?;
-            let aligned = align4(body.len());
-            pad_to(&mut body, aligned, 0x00);
-        }
-        let mut header = node.header.clone();
-        let total = header.len() + body.len();
-        if is_large_section(&header) {
-            let sb = (total as u32).to_le_bytes();
-            header[4] = sb[0]; header[5] = sb[1]; header[6] = sb[2]; header[7] = sb[3];
-        } else {
-            let sb = size_to_uint24(total as u32);
-            header[0] = sb[0]; header[1] = sb[1]; header[2] = sb[2];
-        }
-        out.extend_from_slice(&header);
-        out.extend_from_slice(&body);
-    } else {
+    if node.action == Action::NoAction
+        || is_compressed_or_guided(node)   // recompress недоступен в цикле 1 → verbatim body
+    {
         out.extend_from_slice(&node.header);
         out.extend_from_slice(&node.body);
+        out.extend_from_slice(&node.tail);
+        return Ok(());
     }
+    // Rebuild для uncompressed container-секций (FV_IMAGE и т.п.)
+    let mut body = if node.children.is_empty() { node.body.clone() } else { vec![] };
+    for child in &node.children {
+        build_node(child, &mut body)?;
+        let aligned = align4(body.len());
+        pad_to(&mut body, aligned, 0x00);
+    }
+    let mut header = node.header.clone();
+    let total = header.len() + body.len();
+    if is_large_section(&header) {
+        let sb = (total as u32).to_le_bytes();
+        header[4] = sb[0]; header[5] = sb[1]; header[6] = sb[2]; header[7] = sb[3];
+    } else {
+        let sb = size_to_uint24(total as u32);
+        header[0] = sb[0]; header[1] = sb[1]; header[2] = sb[2];
+    }
+    out.extend_from_slice(&header);
+    out.extend_from_slice(&body);
     Ok(())
 }
 ```
