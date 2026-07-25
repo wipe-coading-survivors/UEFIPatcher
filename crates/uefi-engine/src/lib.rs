@@ -1,3 +1,4 @@
+pub mod builder;
 pub mod decompress;
 pub mod ffs;
 pub mod parser;

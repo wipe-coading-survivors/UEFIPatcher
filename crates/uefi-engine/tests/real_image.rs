@@ -404,3 +404,49 @@ fn real_image_target_and_find_item() {
         "real_image target: guid={guid_str} file_offset={expected_offset:#x} pe32_ok path_ok"
     );
 }
+
+#[test]
+#[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
+fn real_image_builder_round_trip() {
+    use uefi_engine::builder::build_image;
+    use uefi_engine::types::ImageMode;
+
+    let data = load_fw();
+
+    for fv_off in [0x800000u64, 0x890000u64, 0xda0000u64] {
+        let fvlen = u64::from_le_bytes(
+            data[fv_off as usize + 32..fv_off as usize + 40]
+                .try_into()
+                .unwrap(),
+        );
+        let slice = &data[fv_off as usize..fv_off as usize + fvlen as usize];
+
+        let img = parse_image(slice, ImageMode::Read, "img1", "s1").expect("parse_image");
+        assert!(!img.root.children.is_empty(), "FV @{fv_off:#x} not parsed");
+        let rebuilt = build_image(&img).expect("build_image");
+        assert_eq!(
+            rebuilt,
+            slice,
+            "FV @{fv_off:#x} round-trip mismatch (rebuilt {} != orig {})",
+            rebuilt.len(),
+            slice.len()
+        );
+    }
+
+    let main_len = u64::from_le_bytes(data[0x890000 + 32..0x890000 + 40].try_into().unwrap());
+    let main_slice = &data[0x890000..0x890000 + main_len as usize];
+    let img = parse_image(main_slice, ImageMode::Read, "img1", "s1").unwrap();
+    let vol = &img.root.children[0];
+    eprintln!(
+        "real_image round-trip: main FV files={}, sections rebuilt verbatim (incl. {} guided LZMA)",
+        vol.children.len(),
+        vol.children
+            .iter()
+            .map(|f| f
+                .children
+                .iter()
+                .filter(|s| s.subtype == EFI_SECTION_GUID_DEFINED)
+                .count())
+            .sum::<usize>()
+    );
+}
