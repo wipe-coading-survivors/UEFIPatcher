@@ -881,7 +881,9 @@ git commit -m "feat: add FirmwareVolume parser"
 **Interfaces:**
 - Consumes: `types::*`, `ffs::*`, `parser::ParserError`, `parser::section::parse_sections` (Task 6)
 - Produces: `pub fn parse_file(buf: &[u8], offset: u32, erase_polarity: u8, revision: u8) -> Result<FfsNode, ParserError>`
-- Референс: `../refs/UEFITool-ai-fork/common/ffsparser.cpp` `parseFileHeader`/`parseFileBody`. Заголовок `EFI_FFS_FILE_HEADER` 24 байта (FFSv2) или 32 байта (FFSv3 large / Lenovo large). GUID из первых 16 байт. Checksum проверяется: `calculate_checksum8(header) == 0`. Tail для revision 1 — 2 байта `~TailReference`. После заголовка — тело (body), парсится `parse_sections`.
+- Референс: `../refs/UEFITool-ai-fork/common/ffsparser.cpp` `parseFileHeader`/`parseFileBody`. Заголовок `EFI_FFS_FILE_HEADER` (layout — `../refs/UEFITool-ai-fork/common/ffs.h:270-277`): `Name@0(16) | IntegrityCheck@16(2) | **Type@18(1)** | **Attributes@19(1)** | Size@20(3) | State@23`. FFSv2 = 24 байта; FFSv3 large (`EFI_FFS_FILE_HEADER2`, 32 байта, Size=0xFFFFFF → ExtendedSize@24 u64) и Lenovo large (ExtendedSize@24 u32) — ffs.h:280-299. GUID из первых 16 байт. Checksum (валидация отложена на поздний цикл): header-checksum в `IntegrityCheck.Checksum.Header@16`, `calculate_checksum8(header) == 0` при FFS_ATTRIB_CHECKSUM. Tail для revision 1 — 2 байта `~TailReference`. После заголовка — тело (body), парсится `parse_sections` (Task 6).
+
+> **NOTE (исправление плана, 2026-07-25):** исходный Step 1/Step 3 читал `Type@16` и `Attributes@17` — это позиции `EFI_FFS_INTEGRITY_CHECK` (union Header/File @16-17, ffs.h:261-268), а не Type/Attributes. Тест-фикстура и impl были согласованы между собой (оба писали Type в IntegrityCheck.Header), поэтому тест прошёл бы формально, но на реальном образе `node.subtype` и атрибуты считывались бы неправильно (Type брался из checksum-байта). Смещения исправлены на канонические Type@18/Attributes@19. Заодно удалён неиспользуемый read `attributes` (не хранится в `FileParsingData`; будет добавлен когда понадобится для checksum/alignment). Причина: `ffs.h:270-277`.
 
 - [ ] **Step 1: Написать failing test**
 
@@ -894,18 +896,13 @@ mod tests {
     fn make_minimal_ffs() -> Vec<u8> {
         let mut buf = vec![0u8; 48];
         let guid = Guid::try_parse("5C60F367-A505-419A-859E-2A4FF6CA6FE5").unwrap();
-        let gb = guid.to_bytes();
-        buf[0..16].copy_from_slice(&gb);
-        buf[16] = 0x01; // type: FFSv2 RAW
-        buf[17] = 0x02; // attributes
-        buf[18] = 0x00; // size[0]
-        buf[19] = 0x00; // size[1]
-        buf[20] = size_to_uint24(48)[0];
-        buf[21] = size_to_uint24(48)[1];
-        buf[22] = size_to_uint24(48)[2];
-        let cs = calculate_checksum8(&buf[0..23]);
-        buf[23] = cs;
-        buf[24..48].copy_from_slice(&[0xFF; 24]);
+        buf[0..16].copy_from_slice(&guid.to_bytes());
+        // IntegrityCheck @16-17 — нули (валидация checksum отложена)
+        buf[18] = 0x01; // Type: RAW (canonical offset)
+        buf[19] = 0x02; // Attributes (canonical offset)
+        buf[20..23].copy_from_slice(&size_to_uint24(48)); // Size[3] @20
+        // State @23 — 0
+        buf[24..48].copy_from_slice(&[0xFF; 24]); // body
         buf
     }
 
@@ -955,9 +952,9 @@ pub fn guid_to_bytes(g: &Guid) -> [u8; 16] {
     g.to_bytes()
 }
 
-pub fn guid_from_bytes(b: &[u8]) -> Result<Guid, ()> {
-    let arr: [u8; 16] = b.get(..16).ok_or(())?.try_into().unwrap();
-    Ok(Guid::from_bytes(arr))
+pub fn guid_from_bytes(b: &[u8]) -> Option<Guid> {
+    let arr: [u8; 16] = b.get(..16)?.try_into().unwrap();
+    Some(Guid::from_bytes(arr))
 }
 
 pub fn parse_file(buf: &[u8], offset: u32, erase_polarity: u8, revision: u8) -> Result<FfsNode, ParserError> {
@@ -966,9 +963,8 @@ pub fn parse_file(buf: &[u8], offset: u32, erase_polarity: u8, revision: u8) -> 
     let large = is_large_ffs(&buf[off..]);
     let hdr_len = if large { 32 } else { 24 };
     if off + hdr_len > buf.len() { return Err(ParserError::EndOfBuffer); }
-    let guid = guid_from_bytes(&buf[off..off+16]).map_err(|_| ParserError::InvalidHeader("guid".into()))?;
-    let ftype = buf[off+16];
-    let attributes = buf[off+17];
+    let guid = guid_from_bytes(&buf[off..off+16]).ok_or_else(|| ParserError::InvalidHeader("guid".into()))?;
+    let ftype = buf[off+18];
     let size = ffs_file_size(&buf[off..]);
     let total = size as usize;
     if off + total > buf.len() { return Err(ParserError::EndOfBuffer); }
