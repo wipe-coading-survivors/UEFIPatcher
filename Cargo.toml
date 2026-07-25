@@ -1,0 +1,36 @@
+[workspace]
+members = ["crates/uefi-proto", "crates/uefi-common", "crates/uefi-engine", "crates/uefi-cli"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+# UEFI-specific
+uguid = { version = "2.2", features = ["serde"] }
+r-efi = "7.0"
+binrw = "0.15"
+object = { version = "0.39", default-features = false, features = ["read_core", "pe"] }
+lzma-rs = "0.3"
+# gRPC / async
+tonic = "0.12"
+prost = "0.13"
+tokio = { version = "1", features = ["full"] }
+# Storage
+rusqlite = { version = "0.31", features = ["bundled"] }
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+# Utility
+uuid = { version = "1", features = ["v4"] }
+anyhow = "1"
+thiserror = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+directories = "5"
+nix = { version = "0.29", features = ["fs"] }
+num_enum = "0.7"

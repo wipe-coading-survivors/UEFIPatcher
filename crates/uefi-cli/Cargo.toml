@@ -1,0 +1,12 @@
+[package]
+name = "uefi-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+uefi-proto = { path = "../uefi-proto" }
+uefi-common = { path = "../uefi-common" }
+tonic.workspace = true
+tokio.workspace = true
+anyhow.workspace = true

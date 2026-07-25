@@ -1,0 +1,19 @@
+[package]
+name = "uefi-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+uefi-proto = { path = "../uefi-proto" }
+uguid.workspace = true
+r-efi.workspace = true
+binrw.workspace = true
+uuid.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+num_enum.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

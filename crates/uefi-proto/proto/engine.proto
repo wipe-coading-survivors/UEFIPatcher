@@ -1,0 +1,74 @@
+syntax = "proto3";
+package engine;
+
+service EngineService {
+  rpc CreateSession(CreateSessionRequest) returns (CreateSessionResponse);
+  rpc DestroySession(DestroySessionRequest) returns (Empty);
+  rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
+  rpc OpenImage(OpenImageRequest) returns (OpenImageResponse);
+  rpc DumpTree(DumpTreeRequest) returns (DumpTreeResponse);
+  rpc ListItems(ListItemsRequest) returns (ListItemsResponse);
+  rpc FindItem(FindItemRequest) returns (FindItemResponse);
+  rpc Insert(InsertRequest) returns (InsertResponse);
+  rpc Remove(RemoveRequest) returns (Empty);
+  rpc Replace(ReplaceRequest) returns (ReplaceResponse);
+  rpc Rebuild(RebuildRequest) returns (Empty);
+  rpc ExtractArtifact(ExtractArtifactRequest) returns (ExtractArtifactResponse);
+  rpc ExportArtifact(ExportArtifactRequest) returns (Empty);
+  rpc ImportArtifact(ImportArtifactRequest) returns (ImportArtifactResponse);
+  rpc ListArtifacts(ListArtifactsRequest) returns (ListArtifactsResponse);
+  rpc SetSetupItemVisibility(SetSetupItemVisibilityRequest) returns (Empty);
+  rpc SaveImage(SaveImageRequest) returns (Empty);
+}
+
+enum ImageMode { READ = 0; WRITE = 1; }
+enum InsertMode { INTO = 0; BEFORE = 1; AFTER = 2; }
+enum DumpFormat { TEXT = 0; TSV = 1; }
+
+message CreateSessionRequest { string name = 1; }
+message CreateSessionResponse { string session_id = 1; string token = 2; }
+message DestroySessionRequest { string session_id = 1; }
+message ListSessionsRequest {}
+message SessionInfo { string session_id = 1; string name = 2; int64 created_at = 3; int64 last_activity = 4; }
+message ListSessionsResponse { repeated SessionInfo sessions = 1; }
+
+message OpenImageRequest { string session_id = 1; string image_path = 2; ImageMode mode = 3; }
+message OpenImageResponse { string image_id = 1; string root_guid = 2; }
+
+message DumpTreeRequest { string image_id = 1; DumpFormat format = 2; }
+message DumpTreeResponse { string text = 1; }
+
+message ListItemsRequest { string image_id = 1; string filter = 2; }
+message Item { string path = 1; uint32 type = 2; uint32 subtype = 3; string guid = 4; uint64 offset = 5; uint64 size = 6; string name = 7; }
+message ListItemsResponse { repeated Item items = 1; }
+
+message FindItemRequest { string image_id = 1; string target = 2; }
+message FindItemResponse { string item_id = 1; }
+
+message InsertRequest { string image_id = 1; string target = 2; string ffs_path = 3; string artifact_id = 4; InsertMode mode = 5; }
+message InsertResponse { string item_id = 1; }
+
+message RemoveRequest { string image_id = 1; string target = 2; }
+
+message ReplaceRequest { string image_id = 1; string target = 2; string ffs_path = 3; string artifact_id = 4; bool body_only = 5; }
+message ReplaceResponse { string item_id = 1; }
+
+message RebuildRequest { string image_id = 1; string target = 2; }
+
+message ExtractArtifactRequest { string image_id = 1; string target = 2; bool body_only = 3; }
+message ExtractArtifactResponse { string artifact_id = 1; }
+
+message ExportArtifactRequest { string artifact_id = 1; string output_path = 2; }
+
+message ImportArtifactRequest { string session_id = 1; string file_path = 2; }
+message ImportArtifactResponse { string artifact_id = 1; }
+
+message ListArtifactsRequest { string session_id = 1; }
+message ArtifactInfo { string artifact_id = 1; string kind = 2; uint64 size = 3; int64 created_at = 4; string source = 5; }
+message ListArtifactsResponse { repeated ArtifactInfo artifacts = 1; }
+
+message SetSetupItemVisibilityRequest { string image_id = 1; string item_id = 2; bool visible = 3; }
+
+message SaveImageRequest { string image_id = 1; string output_path = 2; }
+
+message Empty {}

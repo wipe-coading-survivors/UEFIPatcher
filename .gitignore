@@ -26,3 +26,6 @@ session-ses_*.md
 
 # UEFIPatcher runtime data
 .uefipatcher
+
+# External reference repos (symlink refs -> ../refs/)
+/refs
