@@ -11,4 +11,5 @@ pub enum ParserError {
 }
 
 pub mod file;
+pub mod section;
 pub mod volume;

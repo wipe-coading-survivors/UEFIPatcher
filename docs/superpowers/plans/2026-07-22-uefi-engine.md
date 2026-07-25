@@ -1085,8 +1085,8 @@ pub fn parse_section(buf: &[u8], offset: u32) -> Result<FfsNode, ParserError> {
     let body = buf[off+hdr_len..off+size].to_vec();
     let parsing_data = match stype {
         EFI_SECTION_GUID_DEFINED if body.len() >= 20 => {
-            let guid = crate::parser::file::guid_from_bytes(&body[0..16]).map_err(|_| ParserError::InvalidHeader("guid".into()))?;
-            let data_offset = u16::from_le_bytes([body[16], body[17]]) as usize;
+            let guid = crate::parser::file::guid_from_bytes(&body[0..16]).ok_or_else(|| ParserError::InvalidHeader("guid".into()))?;
+            let _data_offset = u16::from_le_bytes([body[16], body[17]]) as usize;
             let _attributes = u16::from_le_bytes([body[18], body[19]]);
             ParsingData::GuidedSection(GuidedSectionParsingData { guid, dictionary_size: 0 })
         }
@@ -1102,13 +1102,9 @@ pub fn parse_section(buf: &[u8], offset: u32) -> Result<FfsNode, ParserError> {
         }
         _ => ParsingData::None,
     };
-    let mut children = vec![];
-    if stype == EFI_SECTION_COMPRESSION || stype == EFI_SECTION_GUID_DEFINED {
-        // Декомпрессия и рекурсивный парсинг — в Task 7 (decompress).
-        // Пока: children пустые, body as-is.
-    } else {
-        // leaf section
-    }
+    // Декомпрессия compressed/guided-секций и рекурсивный парсинг — в Task 7.
+    // Пока: children пустые, body as-is.
+    let children = vec![];
     Ok(FfsNode {
         guid: None,
         node_type: FfsType::Section,

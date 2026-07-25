@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 
+use uefi_engine::ffs::{EFI_SECTION_GUID_DEFINED, EFI_SECTION_PE32};
 use uefi_engine::parser::file::parse_file;
+use uefi_engine::parser::section::parse_sections;
 use uefi_engine::parser::volume::parse_volume;
 use uefi_engine::types::{FfsNode, FfsType, ParsingData};
 
@@ -162,4 +164,45 @@ fn real_image_parses_ffs_files() {
             "real_image FFS @ {fv_off:#x}: {n} straight FFS files (non-FFS body needs volume-body parser, Task 8)"
         );
     }
+}
+
+#[test]
+#[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
+fn real_image_parses_sections() {
+    let data = load_fw();
+
+    let mut total = 0usize;
+    let mut pe32 = 0usize;
+    let mut guided = 0usize;
+
+    for fv_off in [0x890000u32, 0xda0000u32] {
+        let vol = parse_volume(&data, fv_off).expect("FV");
+        let (erase, rev) = match &vol.parsing_data {
+            ParsingData::Volume(d) => (d.empty_byte, d.revision),
+            _ => unreachable!(),
+        };
+        for f in scan_ffs_files(&vol.body, erase, rev) {
+            if f.body.is_empty() {
+                continue;
+            }
+            for s in parse_sections(&f.body, 0) {
+                total += 1;
+                match s.subtype {
+                    EFI_SECTION_PE32 => pe32 += 1,
+                    EFI_SECTION_GUID_DEFINED => guided += 1,
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    eprintln!(
+        "real_image sections: total={total} pe32={pe32} guided={guided} (inner sections of compressed bodies need Task 7 decompression)"
+    );
+    assert!(total > 200, "expected many sections, got {total}");
+    assert!(
+        guided > 100,
+        "expected many GUID_DEFINED wrappers, got {guided}"
+    );
+    assert!(pe32 > 30, "expected PE32 DXE modules, got {pe32}");
 }
