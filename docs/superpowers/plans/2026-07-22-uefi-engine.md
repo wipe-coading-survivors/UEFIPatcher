@@ -635,16 +635,22 @@ pub const EFI_FVH_SIGNATURE: u32 = 0x4856465F;
 pub const EFI_FVB2_ERASE_POLARITY: u32 = 0x00000800;
 
 pub fn tiano_guid() -> Guid {
-    Guid::try_parse("a31280ad-0411-42b8-aa09-c484a2906fdc").unwrap()
+    Guid::try_parse("a31280ad-481e-41b6-95e8-127f4c984779").unwrap()
 }
 pub fn lzma_guid() -> Guid {
-    Guid::try_parse("ee4e5ace-8c72-4ae3-8bfc-e1f3c1a08c14").unwrap()
+    Guid::try_parse("ee4e5898-3914-4259-9d6e-dc7bd79403cf").unwrap()
+}
+pub fn lzma_hp_guid() -> Guid {
+    Guid::try_parse("0ed85e23-f253-413f-a03c-901987b04397").unwrap()
+}
+pub fn lzma_ms_guid() -> Guid {
+    Guid::try_parse("bd9921ea-ed91-404a-8b2f-b4d724747c8c").unwrap()
 }
 pub fn lzmaf86_guid() -> Guid {
-    Guid::try_parse("d42ae6bd-1352-4b12-95a0-c1d41df29e0c").unwrap()
+    Guid::try_parse("d42ae6bd-1352-4bfb-909a-ca72a6eae889").unwrap()
 }
 pub fn crc32_guid() -> Guid {
-    Guid::try_parse("fcdefeee-3598-4908-b337-78f59f8f1a8e").unwrap()
+    Guid::try_parse("fc1bcdb0-7d31-49aa-936a-a4600d9dd083").unwrap()
 }
 
 pub fn calculate_checksum8(data: &[u8]) -> u8 {
@@ -1170,6 +1176,11 @@ git commit -m "feat: add section parser (raw, pe32, guid-defined, compression st
   - `enum DecompressError { Unsupported, Corrupted }`
 - Алгоритмы: `EFI_NOT_COMPRESSED=0`, `EFI_STANDARD_COMPRESSION=1` (Tiano/LZSS), `EFI_LZMA_COMPRESSION=2`. Для GUIDed-секций алгоритм определяется по GUID: `TIANO_GUID` → Tiano, `LZMA_GUID`/`LZMAF86_GUID` → LZMA.
 - Референс: `../refs/UEFITool-ai-fork/common/ffsparser.cpp` `decompress`. Tiano — LZSS-вариант EDK2. LZMA — через `LzmaDecode`.
+
+> **NOTE (исправление плана, 2026-07-25):** исходный Task 7 содержал три дефекта, выявленные валидацией на реальном образе `refs/fw/HNX99TF_200525_original_E5C88C6F.bin`:
+> 1. **Неверные well-known GUIDs** в Task 3 (`ee4e5ace-...`, `a31280ad-0411-...` и т.д.) — выдуманные значения, не встречающиеся в реальном UEFI. На образе 0 совпадений. Исправлены на канонические EDK2 (`ee4e5898-3914-4259-9d6e-dc7bd79403cf` LZMA, `a31280ad-481e-41b6-95e8-127f4c984779` Tiano, `d42ae6bd-1352-4bfb-909a-ca72a6eae889` LZMAF86, `fc1bcdb0-7d31-49aa-936a-a4600d9dd083` CRC32) + добавлены LZMA_HP/LZMA_MS. После исправнения: 207 LZMA-секций в образе. Референс: `../refs/edk2/MdeModulePkg/Include/Guid/LzmaDecompress.h`, `../refs/UEFITool-ai-fork/common/ffs.cpp:190-200`.
+> 2. **Несуществующий API lzma-rs**: код `lzma_rs::lzma_decompressor().decompress(input, output, &props)` (3 аргумента, явные props) не компилируется — в lzma-rs 0.3 доступна только `lzma_rs::lzma_decompress(input: &mut BufRead, output: &mut Write)` без props. При этом UEFI LZMA-поток — это стандартный LZMA1 «alone» (5 байт props + 8 байт LE u64 uncompressed-size + данные), который lzma-rs читает целиком. Реализация: `lzma_rs::lzma_decompress(&mut Cursor::new(data), &mut output)`.
+> 3. **Отсутствовала декомпрессия GUIDed-секций**: Step 4 подключал только `EFI_SECTION_COMPRESSION`, но реальный образ использует исключительно GUIDed-секции с LZMA GUID (207 шт., 0 `EFI_SECTION_COMPRESSION`). Добавлена wiring-логика для `EFI_SECTION_GUID_DEFINED` по GUID (LZMA/Tiano) с извлечением payload из `body[data_offset-4..]` (DataOffset — из заголовка GUIDed-секции, `body[16..18]` LE u16; measured from section start incl. 4-байтный общий заголовок) и заполнением `dictionary_size` из props[1..5]. Результат: `real_image_decompresses_lzma_sections` — все 207 секций декомпрессируются, восстановлено 193 PE32-модуля.
 
 - [ ] **Step 1: Написать failing test для not-compressed**
 
