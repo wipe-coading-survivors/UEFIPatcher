@@ -731,7 +731,9 @@ git commit -m "feat: FFS structures and checksum helpers (wrapping arithmetic, r
 - Produces:
   - `pub fn parse_volume(buf: &[u8], offset: u32) -> Result<FfsNode, ParserError>`
   - `enum ParserError { InvalidHeader(String), UnknownType, EndOfBuffer }` (в `parser/mod.rs`)
-- Референс: `../refs/UEFITool-ai-fork/common/ffsparser.cpp` `parseVolumeHeader`/`parseVolumeBody`. Заголовок `EFI_FIRMWARE_VOLUME_HEADER` ищется по сигнатуре `_FVH` (offset 40-44). `erasePolarity` из `EFI_FVB2_ERASE_POLARITY`. `ffs_version` 2 или 3 по `FileSystemGuid`.
+- Референс: `../refs/UEFITool-ai-fork/common/ffsparser.cpp` `parseVolumeHeader`/`parseSectionBody`. Заголовок `EFI_FIRMWARE_VOLUME_HEADER` (layout — `../refs/UEFITool-ai-fork/common/ffs.h:99-111`, `EFI_FV_SIGNATURE_OFFSET = 0x28` — ffs.h:144). Канонические смещения: ZeroVector@0(16), FileSystemGuid@16(16), **FvLength@32(u64)**, Signature@40(u32, "_FVH"), **Attributes@44(u32)**, **HeaderLength@48(u16)**, Checksum@50(u16), ExtHeaderOffset@52(u16), Reserved@54(u8), **Revision@55(u8)**, BlockMap@56. `erasePolarity` из `EFI_FVB2_ERASE_POLARITY` (бит в Attributes). `ffs_version` 2 или 3 по `FileSystemGuid` (полная реализация — позже; в Task 4 — заглушка `ffs_version: 2`).
+
+> **NOTE (исправление плана, 2026-07-25):** исходный текст Step 1/Step 3 содержал ошибочные смещения полей FV-заголовка (`vol_size@20` как u32, `attributes@24`, `header_len@44`, `revision@48`). Они не соответствуют canonical `EFI_FIRMWARE_VOLUME_HEADER` из `ffs.h` и реальному `EFI_FV_SIGNATURE_OFFSET=0x28`. Тест-фикстура и реализация в исходном плане были согласованы между собой (оба ошибались одинаково), поэтому тест прошёл бы формально, но парсер не работал бы ни на одном реальном UEFI-образе (FvLength считывался бы из середины FileSystemGuid, HeaderLength — из Attributes и т.д.; при `[44]=0x48,[45]=0xFE` `header_len=0xFE48=65096` → выход за границы буфера → panic). Смещения исправлены на канонические ниже. Причина: см. `ffs.h:99-111` и EDK2 `MdePkg/Include/Pi/PiFirmwareVolume.h`.
 
 - [ ] **Step 1: Написать failing test с синтетическим volume**
 
@@ -766,25 +768,21 @@ pub use types::*;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ffs::EFI_FVH_SIGNATURE;
+    use crate::ffs::{EFI_FVB2_ERASE_POLARITY, EFI_FVH_SIGNATURE};
 
     fn make_minimal_volume() -> Vec<u8> {
         let mut buf = vec![0u8; 256];
-        let mut hdr = vec![0u8; 56];
-        hdr[0..16].copy_from_slice(&[0x00; 16]);
-        hdr[16..20].copy_from_slice(&0u32.to_le_bytes());
-        hdr[20..24].copy_from_slice(&256u32.to_le_bytes());
-        hdr[24..28].copy_from_slice(&0u32.to_le_bytes());
-        hdr[28..32].copy_from_slice(&0u32.to_le_bytes());
-        hdr[32..36].copy_from_slice(&0u32.to_le_bytes());
-        hdr[36..40].copy_from_slice(&0u32.to_le_bytes());
-        hdr[40..44].copy_from_slice(&EFI_FVH_SIGNATURE.to_le_bytes());
-        hdr[44] = 0x48;
-        hdr[45] = 0xFE;
-        hdr[46] = 0xFF;
-        hdr[47] = 0xFF;
-        hdr[48..56].copy_from_slice(&[0u8; 8]);
-        buf[0..56].copy_from_slice(&hdr);
+        // ZeroVector@0 и FileSystemGuid@16 — нули (минимальный синтетический volume)
+        // FvLength@32 (u64) = 256 — полный размер volume
+        buf[32..40].copy_from_slice(&256u64.to_le_bytes());
+        // Signature@40 (u32) = "_FVH"
+        buf[40..44].copy_from_slice(&EFI_FVH_SIGNATURE.to_le_bytes());
+        // Attributes@44 (u32) = EFI_FVB2_ERASE_POLARITY → empty_byte = 0xFF
+        buf[44..48].copy_from_slice(&EFI_FVB2_ERASE_POLARITY.to_le_bytes());
+        // HeaderLength@48 (u16) = 56 (sizeof EFI_FIRMWARE_VOLUME_HEADER без BlockMap)
+        buf[48..50].copy_from_slice(&56u16.to_le_bytes());
+        // Revision@55 (u8) = 2
+        buf[55] = 2;
         buf
     }
 
@@ -820,18 +818,27 @@ pub fn parse_volume(buf: &[u8], offset: u32) -> Result<FfsNode, ParserError> {
     if sig != EFI_FVH_SIGNATURE {
         return Err(ParserError::InvalidHeader(format!("bad FVH signature at {offset}")));
     }
-    let vol_size = u32::from_le_bytes([buf[off+20], buf[off+21], buf[off+22], buf[off+23]]);
-    let header_len = u16::from_le_bytes([buf[off+44], buf[off+45]]) as usize;
-    let attributes = u32::from_le_bytes([buf[off+24], buf[off+25], buf[off+26], buf[off+27]]);
+    let fv_length = u64::from_le_bytes([
+        buf[off+32], buf[off+33], buf[off+34], buf[off+35],
+        buf[off+36], buf[off+37], buf[off+38], buf[off+39],
+    ]);
+    let vol_size = fv_length as usize;
+    let header_len = u16::from_le_bytes([buf[off+48], buf[off+49]]) as usize;
+    let attributes = u32::from_le_bytes([buf[off+44], buf[off+45], buf[off+46], buf[off+47]]);
+    if header_len < 56 || vol_size < header_len || off + vol_size > buf.len() {
+        return Err(ParserError::InvalidHeader(format!(
+            "bad FV geometry at {offset}: header_len={header_len}, fv_length={fv_length}"
+        )));
+    }
     let empty_byte = if attributes & EFI_FVB2_ERASE_POLARITY != 0 { 0xFF } else { 0x00 };
     let header = buf[off..off+header_len].to_vec();
-    let body = buf[off+header_len..off+vol_size as usize].to_vec();
+    let body = buf[off+header_len..off+vol_size].to_vec();
     let parsing_data = ParsingData::Volume(VolumeParsingData {
         extended_header_guid: None,
-        alignment: 1 << (attributes & 0x1F),
+        alignment: 1u32 << (attributes & 0x1F),
         ffs_version: 2,
         empty_byte,
-        revision: buf[off+48],
+        revision: buf[off+55],
     });
     Ok(FfsNode {
         guid: None,
