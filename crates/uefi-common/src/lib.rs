@@ -1,4 +1,4 @@
-pub mod state;
 pub mod error;
-pub use state::*;
+pub mod state;
 pub use error::*;
+pub use state::*;
