@@ -3,7 +3,10 @@ use crate::types::*;
 use std::str::FromStr;
 
 pub fn parse_target(s: &str) -> Result<Target, ParserError> {
-    if !s.is_empty() && s.chars().all(|c| c.is_ascii_digit() || c == '/') && s.contains('/') {
+    if !s.is_empty()
+        && s.chars().next().is_some_and(|c| c.is_ascii_digit())
+        && s.chars().all(|c| c.is_ascii_digit() || c == '/')
+    {
         let path: Result<Vec<usize>, _> = s.split('/').map(|p| p.parse::<usize>()).collect();
         return path
             .map(Target::Path)
@@ -117,6 +120,12 @@ mod tests {
     fn parse_path_target() {
         let t = parse_target("0/2/207").unwrap();
         assert_eq!(t, Target::Path(vec![0, 2, 207]));
+    }
+
+    #[test]
+    fn parse_single_index_path_target() {
+        assert_eq!(parse_target("0").unwrap(), Target::Path(vec![0]));
+        assert_eq!(parse_target("7").unwrap(), Target::Path(vec![7]));
     }
 
     #[test]

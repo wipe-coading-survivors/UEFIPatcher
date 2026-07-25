@@ -6,7 +6,7 @@ use uefi_engine::parser::image::{dump_tree, list_items, parse_image};
 use uefi_engine::parser::section::parse_sections;
 use uefi_engine::parser::target::{find_item, parse_target};
 use uefi_engine::parser::volume::parse_volume;
-use uefi_engine::types::{FfsNode, FfsType, ParsingData};
+use uefi_engine::types::{Action, FfsNode, FfsType, ParsingData};
 
 fn fw_path() -> PathBuf {
     if let Ok(p) = std::env::var("UEFIPATCHER_TEST_FW") {
@@ -448,5 +448,66 @@ fn real_image_builder_round_trip() {
                 .filter(|s| s.subtype == EFI_SECTION_GUID_DEFINED)
                 .count())
             .sum::<usize>()
+    );
+}
+
+#[test]
+#[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
+fn real_image_ops_remove_last_file() {
+    use uefi_engine::builder::build_image;
+    use uefi_engine::ops::remove;
+    use uefi_engine::types::{ImageMode, Target};
+
+    let data = load_fw();
+    let main_len = u64::from_le_bytes(data[0x890000 + 32..0x890000 + 40].try_into().unwrap());
+    let slice = data[0x890000..0x890000 + main_len as usize].to_vec();
+
+    let mut img = parse_image(&slice, ImageMode::Read, "img1", "s1").unwrap();
+    let vol = &img.root.children[0];
+    let original_count = vol.children.len();
+    assert!(original_count > 1);
+
+    let last_idx = original_count - 1;
+    let removed_guid = vol.children[last_idx].guid;
+    let target = Target::Path(vec![0, last_idx]);
+    remove(&mut img.root, &target).unwrap();
+    assert_eq!(
+        img.root.children[0].children[last_idx].action,
+        Action::Remove
+    );
+    assert_eq!(img.root.action, Action::Rebuild);
+
+    let rebuilt = build_image(&img).expect("build after remove");
+    assert_eq!(
+        rebuilt.len(),
+        slice.len(),
+        "volume length must be preserved (size absorbed into free space)"
+    );
+
+    let re_img = parse_image(&rebuilt, ImageMode::Read, "img1", "s1").unwrap();
+    let new_count = re_img.root.children[0].children.len();
+    assert_eq!(
+        new_count,
+        original_count - 1,
+        "re-parsed volume must hold one fewer file"
+    );
+
+    if let Some(g) = removed_guid {
+        let still_present = re_img.root.children[0]
+            .children
+            .iter()
+            .any(|f| f.guid == Some(g));
+        assert!(
+            !still_present,
+            "removed file must not be present after rebuild"
+        );
+    }
+
+    let stable = build_image(&re_img).expect("stable rebuild");
+    assert_eq!(stable, rebuilt, "rebuild of re-parsed tree must be stable");
+
+    eprintln!(
+        "real_image ops: removed last file of {original_count}, rebuilt={} re-parsed files={new_count}, length preserved",
+        rebuilt.len()
     );
 }
