@@ -4,6 +4,7 @@ use uefi_engine::ffs::{EFI_SECTION_GUID_DEFINED, EFI_SECTION_PE32, is_lzma_guid}
 use uefi_engine::parser::file::parse_file;
 use uefi_engine::parser::image::{dump_tree, list_items, parse_image};
 use uefi_engine::parser::section::parse_sections;
+use uefi_engine::parser::target::{find_item, parse_target};
 use uefi_engine::parser::volume::parse_volume;
 use uefi_engine::types::{FfsNode, FfsType, ParsingData};
 
@@ -350,5 +351,56 @@ fn real_image_parse_image_full() {
         main.children.len(),
         guided,
         decompressed
+    );
+}
+
+#[test]
+#[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
+fn real_image_target_and_find_item() {
+    use uefi_engine::guid_to_upper_string;
+    use uefi_engine::types::{ImageMode, Target};
+
+    let data = load_fw();
+    let img = parse_image(&data, ImageMode::Read, "img1", "s1").expect("parse_image");
+
+    let main = img
+        .root
+        .children
+        .iter()
+        .find(|c| c.offset == 0x890000)
+        .expect("main FV");
+
+    let file = main
+        .children
+        .iter()
+        .find(|f| f.guid.is_some() && f.children.iter().any(|s| s.subtype == EFI_SECTION_PE32))
+        .expect("file with a PE32 section");
+    let file_guid = file.guid.unwrap();
+    let guid_str = guid_to_upper_string(&file_guid);
+    let expected_offset = file.offset;
+
+    let t_guid = parse_target(&guid_str).expect("parse guid target");
+    assert!(matches!(t_guid, Target::Guid(_)));
+    let found = find_item(&img.root, &t_guid).expect("find by guid");
+    assert_eq!(found.node_type, FfsType::File);
+    assert_eq!(found.offset, expected_offset);
+
+    let t_sec = parse_target(&format!("{guid_str}:0x10")).expect("parse guid:type target");
+    match &t_sec {
+        Target::GuidSection { section_type, .. } => assert_eq!(*section_type, 0x10),
+        other => panic!("expected GuidSection, got {other:?}"),
+    }
+    let section = find_item(&img.root, &t_sec).expect("find section by type");
+    assert_eq!(section.subtype, EFI_SECTION_PE32);
+
+    let t_path = parse_target("0/0").expect("parse path target");
+    assert!(matches!(t_path, Target::Path(_)));
+    let first_file = find_item(&img.root, &t_path).expect("find by path");
+    assert_eq!(first_file.node_type, FfsType::File);
+
+    assert!(parse_target("not-a-target").is_err());
+
+    eprintln!(
+        "real_image target: guid={guid_str} file_offset={expected_offset:#x} pe32_ok path_ok"
     );
 }
