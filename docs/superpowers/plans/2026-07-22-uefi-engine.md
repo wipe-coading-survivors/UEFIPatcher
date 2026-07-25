@@ -1308,6 +1308,11 @@ git commit -m "feat: add decompression (LZMA via lzma-rs, Tiano stub)"
   - `pub fn list_items(node: &FfsNode, filter: Option<&str>) -> Vec<Item>`
 - `parse_image` ищет сигнатуру `_FVH` через весь буфер, парсит все volumes, соединяет в один root `FfsType::Image`.
 
+> **NOTE (исправление плана, 2026-07-25):** исходный Task 8 содержал три дефекта, выявленные валидацией на реальном образе `refs/fw/HNX99TF_200525_original_E5C88C6F.bin`:
+> 1. **`vol_size` читался из неверного offset 20** (`u32::from_le_bytes(buf[off+20..off+24])`) — это середина `FileSystemGuid`. Канонический `FvLength` (u64) находится @32 (см. исправление Task 4). На реальном образе offset 20 даёт garbage `0x4f1c8a3d` вместо `0x40000` (FV @0x800000), что ломает весь обход образа (`off += vol_size` улетает за буфер). Исправление: `vol_size = vol.header.len() + vol.body.len()` — `parse_volume` уже хранит header `buf[off..off+header_len]` и body `buf[off+header_len..off+vol_size]`, поэтому их сумма == FvLength. Дополнительно: дублирующий `read` `vol_size` удалён.
+> 2. **Синтетический fixture `make_image_with_volume` сломан** — пишет `256u32` в offset 20 и не задаёт `FvLength@32`/`HeaderLength@48`/`Revision@55`, поэтому `parse_volume` (с каноническими offset'ами из Task 4) на нём падает. Fixture переписан под канонический `EFI_FIRMWARE_VOLUME_HEADER`.
+> 3. **`list_recursive` дублировал путь "0"** для root и первого ребёнка (`new_path = "0"` для root, и первый ребёнок тоже получал index-path "0"). Исправлено: root получает пустой путь `""`, дети — index-path `0/2/207` (консистентно с `Target::Path` из Task 9). `name` извлекается только для UI/VERSION-секций (UTF-16LE), а не `String::from_utf8_lossy(body)` (давало мусор для бинарных тел). `guid` выводится UPPERCASE через `guid_to_upper_string` (AGENTS.md).
+
 - [ ] **Step 1: Написать failing test**
 
 **Module-first rule:** добавить `pub mod image;` в `crates/uefi-engine/src/parser/mod.rs` (ДО запуска `cargo test` в Step 2).
@@ -1321,9 +1326,17 @@ mod tests {
 
     fn make_image_with_volume() -> Vec<u8> {
         let mut buf = vec![0xFFu8; 256];
+        // ZeroVector@0(16) и FileSystemGuid@16(16) — нули
+        // FvLength@32 (u64) = 256 — полный размер volume
+        buf[32..40].copy_from_slice(&256u64.to_le_bytes());
+        // Signature@40 (u32) = "_FVH"
         buf[40..44].copy_from_slice(&EFI_FVH_SIGNATURE.to_le_bytes());
-        buf[20..24].copy_from_slice(&256u32.to_le_bytes());
-        buf[44] = 0x48; buf[45] = 0xFE; buf[46] = 0xFF; buf[47] = 0xFF;
+        // Attributes@44 (u32) = EFI_FVB2_ERASE_POLARITY
+        buf[44..48].copy_from_slice(&EFI_FVB2_ERASE_POLARITY.to_le_bytes());
+        // HeaderLength@48 (u16) = 56
+        buf[48..50].copy_from_slice(&56u16.to_le_bytes());
+        // Revision@55 (u8) = 2
+        buf[55] = 2;
         buf
     }
 
@@ -1370,7 +1383,7 @@ pub fn parse_image(buf: &[u8], mode: ImageMode, image_id: &str, session_id: &str
         if sig != EFI_FVH_SIGNATURE { off += 16; continue; }
         match parse_volume(buf, off) {
             Ok(vol) => {
-                let vol_size = u32::from_le_bytes([buf[off as usize + 20], buf[off as usize + 21], buf[off as usize + 22], buf[off as usize + 23]]);
+                let vol_size = vol.header.len() + vol.body.len();
                 let mut vol_with_files = vol.clone();
                 let erase = if let ParsingData::Volume(vd) = &vol.parsing_data { vd.empty_byte } else { 0xFF };
                 let rev = if let ParsingData::Volume(vd) = &vol.parsing_data { vd.revision } else { 2 };
