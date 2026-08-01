@@ -8,7 +8,7 @@ use anyhow::Result;
 use uuid::Uuid;
 
 pub struct SessionManager {
-    db: Arc<Mutex<Db>>,
+    pub db: Arc<Mutex<Db>>,
     pub data_dir: PathBuf,
     pub ttl: Duration,
     pub gc_interval: Duration,

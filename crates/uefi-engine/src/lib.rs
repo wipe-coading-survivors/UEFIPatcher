@@ -3,6 +3,7 @@ pub mod decompress;
 pub mod ffs;
 pub mod ops;
 pub mod parser;
+pub mod rpc;
 pub mod session;
 pub mod setup;
 pub mod storage;
