@@ -84,6 +84,26 @@ pub fn find_item<'a>(root: &'a FfsNode, target: &Target) -> Result<&'a FfsNode, 
     }
 }
 
+pub fn find_item_mut<'a>(
+    root: &'a mut FfsNode,
+    target: &Target,
+) -> Result<&'a mut FfsNode, ParserError> {
+    match target {
+        Target::Path(indices) => {
+            let mut node = root;
+            for &i in indices {
+                node = node.children.get_mut(i).ok_or_else(|| {
+                    ParserError::InvalidHeader(format!("path index {i} not found"))
+                })?;
+            }
+            Ok(node)
+        }
+        _ => Err(ParserError::InvalidHeader(
+            "only path targets supported for mutable".into(),
+        )),
+    }
+}
+
 fn find_by_guid<'a>(node: &'a FfsNode, g: &Guid) -> Option<&'a FfsNode> {
     if node.guid == Some(*g) {
         return Some(node);
