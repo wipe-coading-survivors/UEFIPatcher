@@ -506,4 +506,55 @@ mod tests {
                 .any(|s| s.session_id == resp.session_id)
         );
     }
+
+    fn fixture_volume() -> Vec<u8> {
+        use crate::ffs::{EFI_FVB2_ERASE_POLARITY, EFI_FVH_SIGNATURE};
+        let mut buf = vec![0xFFu8; 256];
+        buf[32..40].copy_from_slice(&256u64.to_le_bytes());
+        buf[40..44].copy_from_slice(&EFI_FVH_SIGNATURE.to_le_bytes());
+        buf[44..48].copy_from_slice(&EFI_FVB2_ERASE_POLARITY.to_le_bytes());
+        buf[48..50].copy_from_slice(&56u16.to_le_bytes());
+        buf[55] = 2;
+        buf
+    }
+
+    #[tokio::test]
+    async fn rpc_open_save_round_trip() {
+        let (td, mut client) = setup().await;
+        let orig = td.path().join("orig.bin");
+        let out = td.path().join("out.bin");
+        std::fs::write(&orig, fixture_volume()).unwrap();
+        let session = client
+            .create_session(CreateSessionRequest::default())
+            .await
+            .unwrap()
+            .into_inner();
+        let opened = client
+            .open_image(OpenImageRequest {
+                session_id: session.session_id.clone(),
+                image_path: orig.to_string_lossy().to_string(),
+                mode: ImageMode::Read as i32,
+            })
+            .await
+            .unwrap()
+            .into_inner();
+        let dumped = client
+            .dump_tree(DumpTreeRequest {
+                image_id: opened.image_id.clone(),
+                format: 0,
+            })
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(!dumped.text.is_empty());
+        client
+            .save_image(SaveImageRequest {
+                image_id: opened.image_id,
+                output_path: out.to_string_lossy().to_string(),
+            })
+            .await
+            .unwrap();
+        let saved = std::fs::read(&out).unwrap();
+        assert_eq!(saved, fixture_volume());
+    }
 }
