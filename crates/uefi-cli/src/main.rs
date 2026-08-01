@@ -86,7 +86,7 @@ enum SessionCmd {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    let mut c = client::Client::connect(&cli.sock).await?;
+    let mut c = client::Client::connect(Some(&cli.sock), uefi_common::State::default()).await?;
     match cli.cmd {
         Cmd::Session {
             sub: SessionCmd::Create,

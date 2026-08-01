@@ -90,6 +90,14 @@ impl From<tonic::Status> for AppError {
     }
 }
 
+impl std::fmt::Display for AppError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} ({})", self.message, self.kind.as_str())
+    }
+}
+
+impl std::error::Error for AppError {}
+
 pub fn print_error(err: &AppError, format_json: bool) {
     if format_json {
         eprintln!(
