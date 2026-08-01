@@ -3,6 +3,7 @@ pub mod decompress;
 pub mod ffs;
 pub mod ops;
 pub mod parser;
+pub mod session;
 pub mod storage;
 pub mod types;
 pub use types::*;

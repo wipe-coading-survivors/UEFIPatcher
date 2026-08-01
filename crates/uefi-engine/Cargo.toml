@@ -16,6 +16,7 @@ thiserror.workspace = true
 tracing.workspace = true
 num_enum.workspace = true
 rusqlite.workspace = true
+tokio.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
