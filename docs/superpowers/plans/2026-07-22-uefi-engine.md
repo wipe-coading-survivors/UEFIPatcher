@@ -3284,17 +3284,18 @@ git commit -m "feat: add uefi-cli smoke CLI (session create/destroy + clap)"
 
 ---
 
-### Task 18: Контейнеризация (containerfile + fedora:44 + rust-builder)
+### Task 18: Контейнеризация (containerfile + fedora:44 + rust-builder + runtime-base)
 
 **Files:**
-- Create: `docker/rust-builder.containerfile`
-- Create: `docker/engine.containerfile`
+- Create: `docker/rust-builder.containerfile` (базовый образ всех Rust-сборок)
+- Create: `docker/runtime-base.containerfile` (базовый образ всех runtime-контейнеров, аналог rust-builder)
+- Create: `docker/engine.containerfile` (multi-stage: builder FROM rust-builder, runtime FROM runtime-base)
 - Create: `docker/docker-compose.yml`
-- Create: `docker/.dockerignore`
+- Create: `.dockerignore` (в КОРНЕ репо — dockerignore читается из корня build-context; `docker/.dockerignore` был бы no-op)
 
 **Interfaces:**
 - Consumes: workspace
-- Produces: образ `uefipatcher-engine` на базе `registry.fedoraproject.org/fedora:44`
+- Produces: образ `uefipatcher-engine`; runtime-стадия наследуется от `uefipatcher-runtime-base` (аналог rust-builder для сборок), а не напрямую от fedora:44
 
 - [ ] **Step 1: Создать rust-builder.containerfile (базовый образ для всех Rust-сборок)**
 
@@ -3305,7 +3306,15 @@ RUN dnf install -y rust cargo protobuf-compiler make gcc && dnf clean all
 WORKDIR /app
 ```
 
-- [ ] **Step 2: Создать engine.containerfile**
+- [ ] **Step 2: Создать runtime-base.containerfile (базовый образ для всех runtime-контейнеров, аналог rust-builder)**
+
+`docker/runtime-base.containerfile`:
+```dockerfile
+FROM registry.fedoraproject.org/fedora:44
+RUN dnf install -y ca-certificates sqlite-libs && dnf clean all
+```
+
+- [ ] **Step 3: Создать engine.containerfile (multi-stage, runtime FROM runtime-base)**
 
 `docker/engine.containerfile`:
 ```dockerfile
@@ -3314,8 +3323,7 @@ WORKDIR /app
 COPY . .
 RUN cargo build --release --bin engine -p uefi-engine
 
-FROM registry.fedoraproject.org/fedora:44
-RUN dnf install -y ca-certificates sqlite-libs && dnf clean all
+FROM uefipatcher-runtime-base
 COPY --from=builder /app/target/release/engine /usr/local/bin/uefi-engine
 VOLUME ["/data", "/run/uefipatcher"]
 ENV UEFIPATCHER_DATA=/data
@@ -3324,7 +3332,7 @@ ENV UEFIPATCHER_PURGE_ARTIFACTS=false
 ENTRYPOINT ["uefi-engine"]
 ```
 
-- [ ] **Step 3: Создать docker-compose.yml**
+- [ ] **Step 4: Создать docker-compose.yml**
 
 `docker/docker-compose.yml`:
 ```yaml
@@ -3348,26 +3356,41 @@ volumes:
   uefi-sock:
 ```
 
-- [ ] **Step 4: Создать .dockerignore**
+- [ ] **Step 5: Создать .dockerignore (в корне репо, НЕ в docker/)**
 
-`docker/.dockerignore`:
+`.dockerignore` (корень репо; build-context = корень, поэтому dockerignore обязан быть здесь):
 ```
 target/
 .git/
+.opencode/
 docs/
+refs/
+tests/
 *.md
 ```
 
-- [ ] **Step 5: Проверить валидность compose**
+> `refs/` — symlink наружу (`../refs/`); без исключения раздувает build-context. `docker/.dockerignore` не работает — dockerignore читается только из корня build-context.
 
-Run: `podman-compose -f docker/docker-compose.yml config`
-Expected: корректный вывод конфигурации
+- [ ] **Step 6: Проверить сборку (toolbox → podman-remote; compose-провайдер недоступен)**
 
-- [ ] **Step 6: Коммит**
+Run (в порядке зависимостей `FROM`):
+```bash
+podman-remote build -t uefipatcher-rust-builder -f docker/rust-builder.containerfile .
+podman-remote build -t uefipatcher-runtime-base -f docker/runtime-base.containerfile .
+podman-remote build -t uefipatcher-engine        -f docker/engine.containerfile .
+```
+Expected: 3 образа собраны. Проверить запуск:
+```bash
+podman-remote run --rm -d --name uefi-engine-test uefipatcher-engine
+podman-remote exec uefi-engine-test ls /run/uefipatcher/uefipatcher.sock /data/uefipatcher.db
+podman-remote stop uefi-engine-test
+```
+
+- [ ] **Step 7: Коммит**
 
 ```bash
-git add docker/
-git commit -m "feat: containerfile (fedora:44 + rust-builder), --purge-artifacts=false default"
+git add docker/ .dockerignore
+git commit -m "feat: containerization (fedora:44 + rust-builder + runtime-base; engine inherits runtime-base)"
 ```
 
 ---
@@ -3421,7 +3444,7 @@ git commit -m "chore: final checks — all tests pass, clippy clean, round-trip 
 - Engine binary (clap CLI, --purge-artifacts): Task 16 ✓
 - uefi-common (state.rs + error.rs скелет): Task 1 ✓
 - CLI-минимум (зависит от uefi-common): Task 17 ✓
-- Контейнеризация (containerfile + fedora:44 + rust-builder): Task 18 ✓
+- Контейнеризация (containerfile + fedora:44 + rust-builder + runtime-base; engine inherits runtime-base): Task 18 ✓
 - uguid (Display/FromStr/serde + UPPERCASE): Task 2 ✓
 - ffs.rs (wrapping arithmetic, correct offsets, ref ffs.rs): Task 3 ✓
 - Module-first rule: Global Constraints ✓ (mod объявляется до cargo test)
@@ -3432,7 +3455,7 @@ git commit -m "chore: final checks — all tests pass, clippy clean, round-trip 
 - Session name (CWD без symlink resolution через PWD): Tasks 12, 13, 15 ✓
 - --purge-artifacts (default false): Tasks 13, 16, 18 ✓
 - uefi-common в цикле 1: Task 1 ✓
-- Docker → containerfile + fedora:44 + rust-builder: Task 18 ✓
+- Docker → containerfile + fedora:44 + rust-builder + runtime-base: Task 18 ✓
 
 **Issue #2 покрытие:**
 - Guid → uguid: Task 2 ✓
