@@ -2576,7 +2576,10 @@ mod tests {
 
     #[test]
     fn unsuppress_makes_block_empty() {
-        let mut ifr = vec![0x0A, 0x82, 0x12, 0x06, 0x40, 0x01, 0x00, 0x29, 0x02];
+        // 0x12 opcode имеет длину 0x03 (3 байта: 12 03 40), чтобы алгоритм
+        // приземлился на End-опкод (29 02) по индексу 5. Длина 0x06 съела бы
+        // байт 0x29, и find_suppress_if_scopes ничего бы не нашёл.
+        let mut ifr = vec![0x0A, 0x82, 0x12, 0x03, 0x40, 0x29, 0x02];
         let scopes = ifr::find_suppress_if_scopes(&ifr);
         assert_eq!(scopes.len(), 1);
         ifr::unsuppress(&mut ifr, &scopes[0]);
@@ -2640,21 +2643,35 @@ pub fn unsuppress(ifr: &mut Vec<u8>, scope: &SuppressScope) {
 - [ ] **Step 4: Реализовать set_item_visibility в setup/mod.rs**
 
 Дополнить `crates/uefi-engine/src/setup/mod.rs`:
+
+**Важно (issue #3):** (а) `unsuppress` ДЕЛАЕТ элемент видимым (нейтрализует SuppressIf), поэтому вызывается при `visible == true`, а не `!visible` (референс UEFI-Editor scripts.ts:184 — `!suppression.active` → unsuppress). (б) `mark_rebuild_to_root_by_path` нужно вызывать с **полным путём** `&path`, а не `&[]`: Image/Root в build_node игнорирует action (всегда обходит children), а NoAction-предки (volume/file) эмитятся verbatim — изменение body глубокой section без каскада Rebuild теряется. Согласовано с ops.rs (insert/remove/replace передают `&path`).
+
 ```rust
 use crate::types::*;
 use crate::ops;
 
 pub fn set_item_visibility(image: &mut Image, item_id: &str, visible: bool) -> Result<(), SetupError> {
     let target = crate::parser::target::parse_target(item_id).map_err(|_| SetupError::NotFound)?;
-    let node = crate::parser::target::find_item_mut(&mut image.root, &target).map_err(|_| SetupError::NotFound)?;
-    if node.node_type != FfsType::Section { return Err(SetupError::NotASetupItem); }
-    if !visible {
-        if let Some(scope) = ifr::find_suppress_if_scopes(&node.body).into_iter().next() {
-            let mut body = node.body.clone();
-            ifr::unsuppress(&mut body, &scope);
-            node.body = body;
-            ops::mark_rebuild_to_root_by_path(&mut image.root, &[]);
+    let path = match &target {
+        Target::Path(p) => p.clone(),
+        _ => return Err(SetupError::NotFound),
+    };
+    let mut changed = false;
+    {
+        let node = crate::parser::target::find_item_mut(&mut image.root, &target)
+            .map_err(|_| SetupError::NotFound)?;
+        if node.node_type != FfsType::Section { return Err(SetupError::NotASetupItem); }
+        if visible {
+            if let Some(scope) = ifr::find_suppress_if_scopes(&node.body).into_iter().next() {
+                let mut body = node.body.clone();
+                ifr::unsuppress(&mut body, &scope);
+                node.body = body;
+                changed = true;
+            }
         }
+    }
+    if changed {
+        ops::mark_rebuild_to_root_by_path(&mut image.root, &path);
     }
     Ok(())
 }
