@@ -19,6 +19,9 @@ rusqlite.workspace = true
 tokio.workspace = true
 tonic.workspace = true
 tokio-stream = { version = "0.1", features = ["net"] }
+clap.workspace = true
+tracing-subscriber.workspace = true
+directories.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
