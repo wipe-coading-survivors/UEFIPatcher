@@ -2755,29 +2755,34 @@ mod tests {
     use tempfile::TempDir;
     use tonic::transport::Channel;
 
-    async fn setup() -> (TempDir, String, EngineServiceClient<Channel>) {
+    async fn setup() -> (TempDir, EngineServiceClient<Channel>) {
         let td = TempDir::new().unwrap();
         let sock = td.path().join("test.sock");
-        let db = Db::open_db(&td.path().join("db.sqlite")).unwrap();
+        let db = crate::storage::open_db(&td.path().join("db.sqlite")).unwrap();
         let sm = Arc::new(SessionManager::new(db, td.path().to_path_buf(), Duration::from_secs(864000), Duration::from_secs(3600), false));
         let images = Arc::new(Mutex::new(HashMap::new()));
         let server = EngineServer { sm, images, data_dir: td.path().to_path_buf() };
-        let sock2 = sock.clone();
+        let listener = tokio::net::UnixListener::bind(&sock).unwrap();
+        let incoming = tokio_stream::wrappers::UnixListenerStream::new(listener);
         tokio::spawn(async move {
-            let endpoint = Endpoint::from_unix(&sock2).unwrap();
             Server::builder().add_service(EngineServiceServer::new(server))
-                .serve_with_incoming(endpoint.connect_with_connector_override().await.unwrap()).await.unwrap();
+                .serve_with_incoming(incoming).await.unwrap();
         });
         tokio::time::sleep(Duration::from_millis(100)).await;
-        let client = Channel::from_shared(format!("unix://{}", sock.display())).unwrap()
-            .connect().await.unwrap();
-        (td, sock.to_string_lossy().into(), client)
+        let sock_str = sock.to_string_lossy().to_string();
+        let client = Endpoint::try_from("http://localhost").unwrap()
+            .connect_with_connector(tower::service_fn(move |_: http::Uri| {
+                let s = sock_str.clone();
+                async move { Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(tokio::net::UnixStream::connect(s).await?)) }
+            }))
+            .await.unwrap();
+        (td, EngineServiceClient::new(client))
     }
 
     #[tokio::test]
     async fn create_and_destroy_session() {
-        let (_td, _sock, mut client) = setup().await;
-        let resp = client.create_session(CreateSessionRequest {}).await.unwrap().into_inner();
+        let (_td, mut client) = setup().await;
+        let resp = client.create_session(CreateSessionRequest::default()).await.unwrap().into_inner();
         assert!(!resp.session_id.is_empty());
         client.destroy_session(DestroySessionRequest { session_id: resp.session_id }).await.unwrap();
     }
@@ -2791,6 +2796,14 @@ mod tests {
 tonic.workspace = true
 uefi-proto = { path = "../uefi-proto" }
 tokio = { workspace = true, features = ["full"] }
+tokio-stream = { version = "0.1", features = ["net"] }
+```
+
+[dev-dependencies] (для unix-сокет клиента в интеграционном тесте):
+```toml
+tower = { version = "0.4", features = ["util"] }   # service_fn
+hyper-util = { version = "0.1", features = ["tokio"] }  # TokioIo
+http = "1"   # Uri
 ```
 
 - [ ] **Step 3: Реализовать auth.rs**
@@ -2821,6 +2834,13 @@ pub fn check_auth<T>(req: &Request<T>, sm: &crate::session::SessionManager) -> R
 pub mod auth;
 pub mod server;
 ```
+
+> **fix vs буквального текста impl (реальное API):**
+> - `SessionManager.db` сделать `pub` (доступ из rpc); все `self.sm.db.*` обернуть в `.lock().unwrap()` (там `Arc<Mutex<Db>>`, не голый `Db`).
+> - в `extract_artifact` клонировать `session_id` ДО `drop(images)` — заимствовать `img.session_id` после drop MutexGuard нельзя.
+> - `ImageMode` импортировать явно `use crate::types::{Image, ImageMode};` (коллизия с proto-glob `uefi_proto::*`); `crate::ops::*` вызывать полным путём (коллизия имён с методами трейта EngineService).
+> - `CreateSessionRequest {}` → `CreateSessionRequest::default()` (prost требует все поля).
+> - `#[allow(clippy::result_large_err)]` на `check_auth` (tonic::Status ≈ 176 байт).
 
 `crates/uefi-engine/src/rpc/server.rs` (дополнить после теста):
 ```rust
@@ -3009,15 +3029,19 @@ pub fn serve(socket_path: &Path, db: Db, data_dir: PathBuf, ttl: Duration, gc_in
             images: Arc::new(Mutex::new(HashMap::new())),
             data_dir,
         };
-        let endpoint = Endpoint::from_unix(socket_path).map_err(|e| anyhow::anyhow!(e))?;
+        let _ = std::fs::remove_file(socket_path);
+        let listener = tokio::net::UnixListener::bind(socket_path).map_err(|e| anyhow::anyhow!(e))?;
+        let incoming = tokio_stream::wrappers::UnixListenerStream::new(listener);
         Server::builder()
             .add_service(EngineServiceServer::new(server))
-            .serve_with_incoming(endpoint.connect_with_connector_override().await.map_err(|e| anyhow::anyhow!(e))?)
+            .serve_with_incoming(incoming)
             .await
             .map_err(|e| anyhow::anyhow!(e))
     })
 }
 ```
+
+> **fix vs плана (serve/test):** в tonic 0.12 нет серверного `Endpoint::from_unix`/`connect_with_connector_override`. Серверная сторона над unix-сокетом — `tokio::net::UnixListener` + `tokio_stream::wrappers::UnixListenerStream` (`UnixStream: Connected`); клиентская — `Endpoint::connect_with_connector(service_fn + TokioIo(UnixStream))`. См. примечание ниже по остальным правкам.
 
 - [ ] **Step 5: Запустить тесты**
 
