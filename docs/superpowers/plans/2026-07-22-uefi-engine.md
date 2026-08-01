@@ -2382,12 +2382,12 @@ pub mod session;
 ```rust
 use std::path::PathBuf;
 use std::time::Duration;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use anyhow::Result;
 use crate::storage::{Db, SessionRow};
 
 pub struct SessionManager {
-    db: Arc<Db>,
+    db: Arc<Mutex<Db>>,
     pub data_dir: PathBuf,
     pub ttl: Duration,
     pub gc_interval: Duration,
@@ -2403,7 +2403,7 @@ mod tests {
         let td = TempDir::new().unwrap();
         let db = crate::storage::open_db(&td.path().join("s.db")).unwrap();
         let sm = SessionManager {
-            db: Arc::new(db),
+            db: Arc::new(Mutex::new(db)),
             data_dir: td.path().to_path_buf(),
             ttl: Duration::from_secs(1),
             gc_interval: Duration::from_millis(100),
@@ -2453,24 +2453,27 @@ Expected: FAIL
 - [ ] **Step 3: Реализовать SessionManager**
 
 Дополнить `crates/uefi-engine/src/session.rs`:
+
+**Важно (issue #2):** `rusqlite::Connection` — `Send`, но **`!Sync`** (rusqlite 0.31). `tokio::spawn` требует `F: Future + Send`, а `Arc<Db>: !Send` при `Db: !Sync`. Поэтому `db` **обязательно** оборачивается в `std::sync::Mutex`: поле `db: Arc<Mutex<Db>>` (это `Send + Sync`). `std::sync::Mutex` уместен — операции БД синхронные и короткие, lock не удерживается через `.await`.
+
 ```rust
 use uuid::Uuid;
 use std::fs;
 
 impl SessionManager {
     pub fn new(db: Db, data_dir: PathBuf, ttl: Duration, gc_interval: Duration, purge_artifacts: bool) -> Self {
-        Self { db: Arc::new(db), data_dir, ttl, gc_interval, purge_artifacts }
+        Self { db: Arc::new(Mutex::new(db)), data_dir, ttl, gc_interval, purge_artifacts }
     }
     pub fn create_session(&self, name: &str) -> Result<(String, String)> {
         let id = Uuid::new_v4().to_string();
         let token = Uuid::new_v4().to_string();
-        self.db.insert_session(&id, &token, name)?;
+        self.db.lock().unwrap().insert_session(&id, &token, name)?;
         let sess_dir = self.data_dir.join("sessions").join(&id);
         fs::create_dir_all(&sess_dir)?;
         Ok((id, token))
     }
     pub fn destroy_session(&self, id: &str, purge_files: bool) -> Result<()> {
-        self.db.delete_session_metadata(id)?;
+        self.db.lock().unwrap().delete_session_metadata(id)?;
         if purge_files {
             let sess_dir = self.data_dir.join("sessions").join(id);
             let _ = fs::remove_dir_all(&sess_dir);
@@ -2478,33 +2481,35 @@ impl SessionManager {
         Ok(())
     }
     pub fn list_sessions(&self) -> Result<Vec<SessionRow>> {
-        self.db.list_sessions()
+        self.db.lock().unwrap().list_sessions()
     }
     pub fn touch(&self, id: &str) -> Result<()> {
-        self.db.touch_session(id)
+        self.db.lock().unwrap().touch_session(id)
     }
     pub fn validate_token(&self, session_id: &str, token: &str) -> bool {
-        match self.db.get_session(session_id) {
+        match self.db.lock().unwrap().get_session(session_id) {
             Ok(Some(row)) => row.token == token,
             _ => false,
         }
     }
     pub fn spawn_gc(self: Arc<Self>) -> tokio::task::JoinHandle<()> {
         let interval = self.gc_interval;
-        let ttl = self.ttl;
+        let ttl_secs = self.ttl.as_secs() as i64;
         let purge = self.purge_artifacts;
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(interval);
             loop {
                 ticker.tick().await;
-                if let Ok(expired) = self.db.list_expired(ttl.as_secs() as i64) {
-                    for id in expired {
-                        let _ = self.destroy_session(&id, purge);
-                        if purge {
-                            tracing::info!("GC purged session {id} (files+metadata)");
-                        } else {
-                            tracing::info!("GC removed session {id} metadata (files preserved)");
-                        }
+                // Собираем expired ВНЕ последующего lock: destroy_session снова
+                // берёт lock, а std::sync::Mutex не реентерабелен -> deadlock,
+                // если держать guard в if let через всё тело цикла.
+                let expired = self.db.lock().unwrap().list_expired(ttl_secs).unwrap_or_default();
+                for id in expired {
+                    let _ = self.destroy_session(&id, purge);
+                    if purge {
+                        tracing::info!("GC purged session {id} (files+metadata)");
+                    } else {
+                        tracing::info!("GC removed session {id} metadata (files preserved)");
                     }
                 }
             }
