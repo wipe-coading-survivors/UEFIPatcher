@@ -1,0 +1,18 @@
+version: "3.8"
+services:
+  engine:
+    build:
+      context: ..
+      dockerfile: docker/engine.containerfile
+    volumes:
+      - uefi-data:/data
+      - uefi-sock:/run/uefipatcher
+    environment:
+      UEFIPATCHER_DATA: /data
+      UEFIPATCHER_SOCK: /run/uefipatcher/uefipatcher.sock
+      UEFIPATCHER_SESSION_TTL_SECS: "864000"
+      UEFIPATCHER_SESSION_GC_INTERVAL_SECS: "3600"
+      UEFIPATCHER_PURGE_ARTIFACTS: "false"
+volumes:
+  uefi-data:
+  uefi-sock:
