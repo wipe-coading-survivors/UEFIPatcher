@@ -1,4 +1,5 @@
 mod client;
+mod commands;
 mod output;
 
 use clap::{Parser, Subcommand};
