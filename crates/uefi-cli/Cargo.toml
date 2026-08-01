@@ -10,3 +10,10 @@ uefi-common = { path = "../uefi-common" }
 tonic.workspace = true
 tokio.workspace = true
 anyhow.workspace = true
+clap.workspace = true
+hyper-util = { version = "0.1", features = ["tokio"] }
+tower = { version = "0.4", features = ["util"] }
+http = "1"
+
+[dev-dependencies]
+assert_cmd = "2"
