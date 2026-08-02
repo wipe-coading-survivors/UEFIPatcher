@@ -393,6 +393,8 @@ git commit -m "feat(gateway): add gRPC client to engine (all EngineService metho
 ### Task 3: gateway/session.rs — cookie-маппинг и token map
 
 > ⚠️ **Порядок:** выполняется ПЕРЕД Task 2 (client.rs импортирует `crate::session::SessionMap`). См. дефект A в Task 2.
+>
+> ⚠️ **Дефект F (исправлен):** в axum-extra 0.9.6 модуль `cookie` находится по пути `axum_extra::extract::cookie` (НЕ `axum_extra::cookie`). Импорты: `use axum_extra::extract::cookie::{Cookie, SameSite};`. `CookieJar` остаётся `axum_extra::extract::CookieJar`.
 
 **Files:**
 - Create: `crates/uefi-gateway/src/session.rs`
@@ -413,7 +415,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use axum_extra::extract::CookieJar;
-use axum_extra::cookie::Cookie;
+use axum_extra::extract::cookie::{Cookie, SameSite};
 
 pub struct SessionMap {
     map: Arc<Mutex<HashMap<String, String>>>,
@@ -441,7 +443,7 @@ pub fn extract_session_id(jar: &CookieJar) -> Option<String> {
 pub fn make_session_cookie(session_id: &str) -> Cookie<'static> {
     Cookie::build(("uefipatcher_session", session_id.to_string()))
         .http_only(true)
-        .same_site(axum_extra::cookie::SameSite::Strict)
+        .same_site(SameSite::Strict)
         .path("/")
         .build()
 }
@@ -449,7 +451,7 @@ pub fn make_session_cookie(session_id: &str) -> Cookie<'static> {
 pub fn make_image_cookie(image_id: &str) -> Cookie<'static> {
     Cookie::build(("uefipatcher_image", image_id.to_string()))
         .http_only(true)
-        .same_site(axum_extra::cookie::SameSite::Strict)
+        .same_site(SameSite::Strict)
         .path("/")
         .build()
 }
