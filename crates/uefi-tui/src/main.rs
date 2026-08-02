@@ -1,23 +1,17 @@
-#![allow(dead_code)]
-
-mod app;
-mod commands;
-mod input;
-mod theme;
-mod ui;
-
 use std::io::stdout;
 use std::time::Duration;
 
-use app::{App, Mode};
 use clap::Parser;
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use input::AppEvent;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
+use uefi_tui::app::{App, Mode};
+use uefi_tui::commands;
+use uefi_tui::input::{self, AppEvent};
+use uefi_tui::ui;
 
 #[derive(Parser)]
 #[command(name = "uefi-tui", version, about = "UEFIPatcher TUI")]

@@ -20,3 +20,5 @@ http = "1"
 [dev-dependencies]
 tempfile = "3"
 assert_cmd = "2"
+uuid.workspace = true
+tokio-stream = { version = "0.1", features = ["net"] }
