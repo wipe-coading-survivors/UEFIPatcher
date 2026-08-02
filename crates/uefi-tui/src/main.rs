@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 mod app;
+mod commands;
 mod input;
 mod theme;
 mod ui;
