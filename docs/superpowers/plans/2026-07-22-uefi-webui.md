@@ -232,24 +232,35 @@ git commit -m "feat(gateway): scaffold uefi-gateway (axum, config, health, error
 
 ### Task 2: gateway/client.rs — gRPC-клиент к движку
 
+> ⚠️ **Дефекты (исправлены в плане):**
+> - **A (зависимость):** `client.rs` импортирует `crate::session::SessionMap` (Task 3). Сначала выполни Task 3 (session.rs), затем этот task.
+> - **B (unix-сокет):** `Endpoint::from_shared("unix://...")` НЕ работает в tonic 0.12. Использовать connector-override через `tower::service_fn` + `UnixStream` (как `uefi-cli/src/client.rs:30-39`, фикс cycle 3 `4a8ef43`).
+> - **C (несуществующий RPC):** `add_setup_form_set` ссылается на `AddSetupFormSetRequest/Response` — этих типов **нет в proto** (добавляются в cycle 6 Task 7, ещё не выполнен). Метод отложен до cycle 6.
+> - **D (dead_code):** `EngineClient`/`SessionMap` не используются до Task 4. Добавить crate-level `#![allow(dead_code)]` в main.rs, удалить в Task 4.
+> - **E (deps):** для connector-override нужны `hyper-util` (tokio), `http`, `tower = "0.4"` (вместо 0.5 — tonic 0.12/axum 0.7 используют tower 0.4). Дополнить `Cargo.toml`.
+
 **Files:**
 - Create: `crates/uefi-gateway/src/client.rs`
 - Modify: `crates/uefi-gateway/src/main.rs`
+- Modify: `crates/uefi-gateway/Cargo.toml` (deps для connector-override)
 
 **Interfaces:**
 - Consumes: `uefi-proto`, `tonic`, `config::Config`
 - Produces:
   - `pub struct EngineClient { inner: EngineServiceClient<Channel> }`
   - `pub async fn connect(sock_path: &Path) -> Result<EngineClient>`
-  - Методы-обёртки для всех RPC (с metadata auth): `create_session(name)`, `destroy_session`, `list_sessions`, `open_image`, `dump_tree`, `list_items`, `find_item`, `insert`, `remove`, `replace`, `rebuild`, `set_setup_visibility`, `save_image`, `add_setup_form_set`, `extract_artifact`, `export_artifact`, `import_artifact`, `list_artifacts`
+  - Методы-обёртки для всех RPC (с metadata auth): `create_session(name)`, `destroy_session`, `list_sessions`, `open_image`, `dump_tree`, `list_items`, `find_item`, `insert`, `remove`, `replace`, `rebuild`, `set_setup_visibility`, `save_image`, `extract_artifact`, `export_artifact`, `import_artifact`, `list_artifacts`. (`add_setup_form_set` отложен до cycle 6 — нет proto RPC)
 
 - [ ] **Step 1: Реализовать client.rs**
 
 `crates/uefi-gateway/src/client.rs`:
 ```rust
 use std::path::Path;
+use http::Uri;
+use hyper_util::rt::TokioIo;
 use tonic::transport::{Channel, Endpoint};
 use tonic::Request;
+use tower::service_fn;
 use uefi_proto::engine_service_client::EngineServiceClient;
 use uefi_proto::*;
 use crate::session::SessionMap;
@@ -260,9 +271,20 @@ pub struct EngineClient {
 
 impl EngineClient {
     pub async fn connect(sock_path: &Path) -> anyhow::Result<Self> {
-        let url = format!("unix://{}", sock_path.display());
-        let ch = Endpoint::from_shared(url)?.connect().await?;
-        Ok(Self { inner: EngineServiceClient::new(ch) })
+        let sock_str = sock_path.display().to_string();
+        let channel = Endpoint::try_from("http://localhost")?
+            .connect_with_connector(service_fn(move |_: Uri| {
+                let s = sock_str.clone();
+                async move {
+                    Ok::<_, std::io::Error>(TokioIo::new(
+                        tokio::net::UnixStream::connect(s).await?,
+                    ))
+                }
+            }))
+            .await?;
+        Ok(Self {
+            inner: EngineServiceClient::new(channel),
+        })
     }
 
     fn auth_req<T>(sessions: &SessionMap, session_id: &str, body: T) -> Result<Request<T>, tonic::Status> {
@@ -329,10 +351,7 @@ impl EngineClient {
         self.inner.save_image(Self::auth_req(sessions, session_id, req)?).await?;
         Ok(())
     }
-    pub async fn add_setup_form_set(&mut self, sessions: &SessionMap, session_id: &str, image_id: &str, schema_json: &str, target_ffs_guid: &str) -> anyhow::Result<AddSetupFormSetResponse> {
-        let req = AddSetupFormSetRequest { image_id: image_id.into(), schema_json: schema_json.into(), target_ffs_guid: target_ffs_guid.into() };
-        Ok(self.inner.add_setup_form_set(Self::auth_req(sessions, session_id, req)?).await?.into_inner())
-    }
+    // add_setup_form_set отложен до cycle 6 (Task 7 добавляет AddSetupFormSet RPC в proto)
     pub async fn extract_artifact(&mut self, sessions: &SessionMap, session_id: &str, image_id: &str, target: &str, body_only: bool) -> anyhow::Result<String> {
         let req = ExtractArtifactRequest { image_id: image_id.into(), target: target.into(), body_only };
         Ok(self.inner.extract_artifact(Self::auth_req(sessions, session_id, req)?).await?.into_inner().artifact_id)
@@ -355,9 +374,14 @@ impl EngineClient {
 
 - [ ] **Step 2: Подключить в main.rs**
 
-`crates/uefi-gateway/src/main.rs`: добавить `mod client;`
+`crates/uefi-gateway/src/main.rs`: добавить `#![allow(dead_code)]` (crate-level, удалить в Task 4), `mod client;` и `mod session;` (session — prerequisite из Task 3). Также обновить `Cargo.toml`: добавить `hyper-util = { version = "0.1", features = ["tokio"] }`, `http = "1"`, заменить `tower = "0.5"` → `tower = { version = "0.4", features = ["util"] }`.
 
-- [ ] **Step 3: Коммит**
+- [ ] **Step 3: Проверить сборку + clippy**
+
+Run: `cargo build -p uefi-gateway && cargo clippy -p uefi-gateway -- -D warnings`
+Expected: компиляция без ошибок/предупреждений (модули dead_code до Task 4 — подавлены `#![allow(dead_code)]`)
+
+- [ ] **Step 4: Коммит**
 
 ```bash
 git add crates/uefi-gateway/src/client.rs crates/uefi-gateway/src/main.rs
@@ -367,6 +391,8 @@ git commit -m "feat(gateway): add gRPC client to engine (all EngineService metho
 ---
 
 ### Task 3: gateway/session.rs — cookie-маппинг и token map
+
+> ⚠️ **Порядок:** выполняется ПЕРЕД Task 2 (client.rs импортирует `crate::session::SessionMap`). См. дефект A в Task 2.
 
 **Files:**
 - Create: `crates/uefi-gateway/src/session.rs`
