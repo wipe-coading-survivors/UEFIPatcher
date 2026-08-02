@@ -1,14 +1,15 @@
 #![allow(dead_code)]
 
 mod app;
+mod input;
 mod theme;
 
 use clap::Parser;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
+use input::AppEvent;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use std::io::stdout;
@@ -29,18 +30,14 @@ fn main() -> anyhow::Result<()> {
     let mut app = app::App::new();
     loop {
         terminal.draw(|f| render_placeholder(f, &app))?;
-        if event::poll(std::time::Duration::from_millis(100))?
-            && let Event::Key(k) = event::read()?
-        {
-            if k.kind != KeyEventKind::Press {
-                continue;
-            }
-            match k.code {
-                KeyCode::Char('q') => app.quit = true,
-                KeyCode::Char('j') => app.cursor_down(),
-                KeyCode::Char('k') => app.cursor_up(),
-                _ => {}
-            }
+        let Some(ev) = input::poll_event(std::time::Duration::from_millis(100)) else {
+            continue;
+        };
+        match ev {
+            AppEvent::Key('j') | AppEvent::Down => app.cursor_down(),
+            AppEvent::Key('k') | AppEvent::Up => app.cursor_up(),
+            AppEvent::Quit => app.quit = true,
+            _ => {}
         }
         if app.quit {
             break;
