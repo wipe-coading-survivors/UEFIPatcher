@@ -1,0 +1,19 @@
+[package]
+name = "uefi-tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+uefi-proto = { path = "../uefi-proto" }
+uefi-common = { path = "../uefi-common" }
+ratatui = "0.28"
+crossterm = "0.28"
+tonic.workspace = true
+tokio.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+assert_cmd = "2"

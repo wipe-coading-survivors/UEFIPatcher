@@ -1,5 +1,11 @@
 [workspace]
-members = ["crates/uefi-proto", "crates/uefi-common", "crates/uefi-engine", "crates/uefi-cli"]
+members = [
+    "crates/uefi-proto",
+    "crates/uefi-common",
+    "crates/uefi-engine",
+    "crates/uefi-cli",
+    "crates/uefi-tui",
+]
 resolver = "2"
 
 [workspace.package]
