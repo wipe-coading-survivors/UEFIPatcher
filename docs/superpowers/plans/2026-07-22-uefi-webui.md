@@ -459,10 +459,6 @@ pub fn make_image_cookie(image_id: &str) -> Cookie<'static> {
         .path("/")
         .build()
 }
-
-pub fn extract_image_id(jar: &CookieJar) -> Option<String> {
-    jar.get("uefipatcher_image").map(|c| c.value().to_string())
-}
 ```
 
 - [ ] **Step 2: Подключить в main.rs**
@@ -479,6 +475,12 @@ git commit -m "feat(gateway): add session module (cookie mapping, in-memory toke
 ---
 
 ### Task 4: gateway/routes/ — REST эндпоинты (session, image, edit, setup, upload)
+
+> ⚠️ **Дефекты (исправлены в плане):**
+> - **I (Query-тип):** `items` handler использовал `Query<serde_json::Map<...>>` — хрупко/несовместимо с `serde_urlencoded`. Заменить на структуру `ItemsQuery { filter: Option<String> }`.
+> - **C⁻ (наследник defect C):** route `/add-formset` + `setup::add_formset` вызывают `add_setup_form_set` (отложен в Task 2 до cycle 6). Убрать route и handler.
+> - **J (dead_code):** `session::extract_image_id` не используется ни одним route (image_id берётся из URL `Path`, не из cookie). Удалить из session.rs.
+> - **D⁻ (cleanup):** убрать `#![allow(dead_code)]` из main.rs (модули теперь wired) и per-item `#[allow(dead_code)]` из config.rs (`sock_path` теперь читается) и error.rs (`AppError` теперь используется).
 
 **Files:**
 - Create: `crates/uefi-gateway/src/routes/mod.rs`
@@ -533,7 +535,6 @@ pub fn router(state: AppState) -> axum::Router {
         .route("/api/v1/image/:id/rebuild", axum::routing::post(edit::rebuild))
         .route("/api/v1/image/:id/set-visibility", axum::routing::post(setup::set_visibility))
         .route("/api/v1/image/:id/setup-items", axum::routing::get(setup::list_items))
-        .route("/api/v1/image/:id/add-formset", axum::routing::post(setup::add_formset))
         .route("/api/v1/image/:id/extract", axum::routing::post(artifact::extract))
         .route("/api/v1/artifact/:id/export", axum::routing::post(artifact::export))
         .route("/api/v1/artifact/import", axum::routing::post(artifact::import))
@@ -623,9 +624,12 @@ pub async fn dump(State(state): State<AppState>, jar: CookieJar, Path(id): Path<
     Ok(Json(json!({ "text": text })))
 }
 
-pub async fn items(State(state): State<AppState>, jar: CookieJar, Path(id): Path<String>, Query(q): Query<serde_json::Map<String, serde_json::Value>>) -> Result<Json<Value>, AppError> {
+#[derive(Deserialize)]
+pub struct ItemsQuery { pub filter: Option<String> }
+
+pub async fn items(State(state): State<AppState>, jar: CookieJar, Path(id): Path<String>, Query(q): Query<ItemsQuery>) -> Result<Json<Value>, AppError> {
     let sid = extract_session_id(&jar).ok_or(AppError::Auth)?;
-    let filter = q.get("filter").and_then(|v| v.as_str()).unwrap_or("");
+    let filter = q.filter.as_deref().unwrap_or("");
     let mut c = state.client.lock().await;
     let items = c.list_items(&state.sessions, &sid, &id, filter).await.map_err(AppError::from)?;
     Ok(Json(json!({ "items": items })))
@@ -728,15 +732,7 @@ pub async fn list_items(State(state): State<AppState>, jar: CookieJar, Path(id):
     let setup: Vec<_> = items.into_iter().filter(|i| i.r#type == 67).collect();
     Ok(Json(json!({ "items": setup })))
 }
-
-#[derive(Deserialize)]
-pub struct AddFormSetBody { pub schema_json: String, pub target_ffs_guid: String }
-pub async fn add_formset(State(state): State<AppState>, jar: CookieJar, Path(id): Path<String>, Json(body): Json<AddFormSetBody>) -> Result<Json<Value>, AppError> {
-    let sid = extract_session_id(&jar).ok_or(AppError::Auth)?;
-    let mut c = state.client.lock().await;
-    let r = c.add_setup_form_set(&state.sessions, &sid, &id, &body.schema_json, &body.target_ffs_guid).await.map_err(AppError::from)?;
-    Ok(Json(json!({ "new_ffs_id": r.new_ffs_id, "inserted_form_ids": r.inserted_form_ids, "string_ids": r.string_ids })))
-}
+// add_formset отложен до cycle 6 (add_setup_form_set defer, defect C)
 ```
 
 `crates/uefi-gateway/src/routes/upload.rs`:
