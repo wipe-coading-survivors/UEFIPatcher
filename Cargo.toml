@@ -5,6 +5,7 @@ members = [
     "crates/uefi-engine",
     "crates/uefi-cli",
     "crates/uefi-tui",
+    "crates/uefi-gateway",
 ]
 resolver = "2"
 
