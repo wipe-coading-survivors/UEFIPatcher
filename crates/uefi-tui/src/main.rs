@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 mod app;
+mod theme;
 
 use clap::Parser;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
