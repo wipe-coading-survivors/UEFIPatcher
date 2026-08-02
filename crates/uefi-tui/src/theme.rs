@@ -19,22 +19,21 @@ pub const SECTION_COMPRESSION: u8 = 0x01;
 pub const SECTION_UI: u8 = 0x15;
 pub const SECTION_RAW: u8 = 0x19;
 
-#[allow(clippy::match_same_arms)]
 pub fn type_icon(node_type: u8, subtype: u8) -> &'static str {
     match node_type {
-        TYPE_IMAGE => "",
-        TYPE_VOLUME => "",
-        TYPE_FILE => "",
+        TYPE_IMAGE => "\u{F2DB}",
+        TYPE_VOLUME => "\u{F1C0}",
+        TYPE_FILE => "\u{F15B}",
         TYPE_SECTION => match subtype {
-            SECTION_PE32 => "",
-            SECTION_GUID_DEFINED => "",
-            SECTION_COMPRESSION => "",
-            SECTION_UI => "",
-            SECTION_RAW => "",
-            _ => "",
+            SECTION_PE32 => "\u{F1C9}",
+            SECTION_GUID_DEFINED => "\u{F023}",
+            SECTION_COMPRESSION => "\u{F1C6}",
+            SECTION_UI => "\u{F031}",
+            SECTION_RAW => "\u{EAE8}",
+            _ => "\u{F016}",
         },
-        TYPE_PADDING => "",
-        TYPE_FREESPACE => "",
+        TYPE_PADDING => "\u{EB7D}",
+        TYPE_FREESPACE => "\u{F10C}",
         _ => "?",
     }
 }
@@ -76,17 +75,27 @@ mod tests {
 
     #[test]
     fn icon_for_volume() {
-        assert_eq!(type_icon(TYPE_VOLUME, 0), "");
+        assert_eq!(type_icon(TYPE_VOLUME, 0), "\u{F1C0}");
     }
 
     #[test]
     fn icon_for_section_pe32() {
-        assert_eq!(type_icon(TYPE_SECTION, SECTION_PE32), "");
+        assert_eq!(type_icon(TYPE_SECTION, SECTION_PE32), "\u{F1C9}");
     }
 
     #[test]
     fn icon_for_unknown_type() {
         assert_eq!(type_icon(99, 0), "?");
+    }
+
+    #[test]
+    fn icons_are_distinct_per_type() {
+        assert_ne!(type_icon(TYPE_IMAGE, 0), type_icon(TYPE_VOLUME, 0));
+        assert_ne!(type_icon(TYPE_FILE, 0), type_icon(TYPE_PADDING, 0));
+        assert_ne!(
+            type_icon(TYPE_SECTION, SECTION_PE32),
+            type_icon(TYPE_SECTION, SECTION_COMPRESSION)
+        );
     }
 
     #[test]
