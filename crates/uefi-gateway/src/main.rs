@@ -1,5 +1,8 @@
+#![allow(dead_code)]
+
 mod config;
 mod error;
+mod session;
 
 use axum::Json;
 use axum::routing::get;
