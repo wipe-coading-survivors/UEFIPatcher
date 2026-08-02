@@ -3,6 +3,7 @@
 mod app;
 mod input;
 mod theme;
+mod ui;
 
 use clap::Parser;
 use crossterm::execute;
@@ -29,7 +30,7 @@ fn main() -> anyhow::Result<()> {
     let mut terminal = Terminal::new(backend)?;
     let mut app = app::App::new();
     loop {
-        terminal.draw(|f| render_placeholder(f, &app))?;
+        terminal.draw(|f| render(f, &app))?;
         let Some(ev) = input::poll_event(std::time::Duration::from_millis(100)) else {
             continue;
         };
@@ -48,15 +49,7 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn render_placeholder(f: &mut ratatui::Frame, app: &app::App) {
-    use ratatui::widgets::{Block, Borders, Paragraph};
-    let area = f.area();
-    let p = Paragraph::new(format!(
-        "UEFI TUI — mode={:?} cursor={} tree={}",
-        app.mode,
-        app.cursor,
-        app.tree.len()
-    ))
-    .block(Block::default().borders(Borders::ALL).title("Placeholder"));
-    f.render_widget(p, area);
+fn render(f: &mut ratatui::Frame, app: &app::App) {
+    ui::render(f, app);
+    ui::help::render(f, app);
 }

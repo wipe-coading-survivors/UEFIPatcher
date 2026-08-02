@@ -27,6 +27,7 @@ pub struct App {
     pub status_msg: String,
     pub image_loaded: bool,
     pub quit: bool,
+    pub show_help: bool,
 }
 
 impl App {
@@ -40,6 +41,7 @@ impl App {
             status_msg: "Welcome. Press : for commands, ? for help".into(),
             image_loaded: false,
             quit: false,
+            show_help: false,
         }
     }
 
