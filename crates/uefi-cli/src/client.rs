@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use http::Uri;
 use hyper_util::rt::TokioIo;
 use tonic::Request;

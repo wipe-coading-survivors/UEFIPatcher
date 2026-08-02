@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use uefi_common::error::{AppError, ErrKind};
 use uefi_proto::{Item, SessionInfo};
 
