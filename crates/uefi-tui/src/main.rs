@@ -6,6 +6,10 @@ mod input;
 mod theme;
 mod ui;
 
+use std::io::stdout;
+use std::time::Duration;
+
+use app::{App, Mode};
 use clap::Parser;
 use crossterm::execute;
 use crossterm::terminal::{
@@ -14,7 +18,6 @@ use crossterm::terminal::{
 use input::AppEvent;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use std::io::stdout;
 
 #[derive(Parser)]
 #[command(name = "uefi-tui", version, about = "UEFIPatcher TUI")]
@@ -23,23 +26,34 @@ struct Cli {
     sock: Option<String>,
 }
 
-fn main() -> anyhow::Result<()> {
-    let _cli = Cli::parse();
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let cli = Cli::parse();
+    let state = uefi_common::read_state().unwrap_or_default();
+    let mut client = match commands::connect(cli.sock.as_deref(), state.clone()).await {
+        Ok(c) => Some(c),
+        Err(e) => {
+            eprintln!("warning: cannot connect to engine: {e}");
+            None
+        }
+    };
     enable_raw_mode()?;
     execute!(stdout(), EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout());
     let mut terminal = Terminal::new(backend)?;
-    let mut app = app::App::new();
+    let mut app = App::new();
     loop {
-        terminal.draw(|f| render(f, &app))?;
-        let Some(ev) = input::poll_event(std::time::Duration::from_millis(100)) else {
+        terminal.draw(|f| {
+            ui::render(f, &app);
+            ui::help::render(f, &app);
+        })?;
+        let Some(ev) = input::poll_event(Duration::from_millis(100)) else {
             continue;
         };
-        match ev {
-            AppEvent::Key('j') | AppEvent::Down => app.cursor_down(),
-            AppEvent::Key('k') | AppEvent::Up => app.cursor_up(),
-            AppEvent::Quit => app.quit = true,
-            _ => {}
+        match app.mode {
+            Mode::Normal => handle_normal(&mut app, &ev),
+            Mode::Command => handle_command(&mut app, &ev, &mut client).await,
+            Mode::Insert => handle_insert(&mut app, &ev),
         }
         if app.quit {
             break;
@@ -50,7 +64,43 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn render(f: &mut ratatui::Frame, app: &app::App) {
-    ui::render(f, app);
-    ui::help::render(f, app);
+fn handle_normal(app: &mut App, ev: &AppEvent) {
+    match ev {
+        AppEvent::Key('j') | AppEvent::Down => app.cursor_down(),
+        AppEvent::Key('k') | AppEvent::Up => app.cursor_up(),
+        AppEvent::Key(':') => app.enter_command_mode(),
+        AppEvent::Key('?') => app.show_help = !app.show_help,
+        AppEvent::Key('q') => app.quit = true,
+        AppEvent::Quit => app.quit = true,
+        _ => {}
+    }
+}
+
+async fn handle_command(app: &mut App, ev: &AppEvent, client: &mut Option<commands::Client>) {
+    match ev {
+        AppEvent::Key(c) => app.cmdline.push(*c),
+        AppEvent::Enter => {
+            let cmd = app.cmdline.clone();
+            if let Some(c) = client {
+                match commands::execute_command(app, &cmd, c).await {
+                    Ok(_) => {}
+                    Err(e) => app.status_msg = format!("error: {e}"),
+                }
+            } else {
+                app.status_msg = "no engine connection".into();
+            }
+            app.exit_to_normal();
+        }
+        AppEvent::Esc => app.exit_to_normal(),
+        AppEvent::Backspace => {
+            app.cmdline.pop();
+        }
+        _ => {}
+    }
+}
+
+fn handle_insert(app: &mut App, ev: &AppEvent) {
+    if ev == &AppEvent::Esc {
+        app.exit_to_normal();
+    }
 }
