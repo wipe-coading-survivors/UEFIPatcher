@@ -129,6 +129,7 @@ use anyhow::Result;
 
 pub struct Config {
     pub listen: SocketAddr,
+    #[allow(dead_code)] // consumed in Task 2 (client::EngineClient::connect); remove then
     pub sock_path: PathBuf,
 }
 
@@ -152,6 +153,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
 #[derive(Debug)]
+#[allow(dead_code)] // consumed in Task 4 (routes); remove then
 pub enum AppError {
     Auth,
     NotFound(String),
@@ -191,7 +193,7 @@ impl From<tonic::Status> for AppError {
 mod config;
 mod error;
 
-use axum::routing::{get, post};
+use axum::routing::get;
 use axum::Json;
 use serde_json::{json, Value};
 use tower_http::cors::CorsLayer;
@@ -216,6 +218,8 @@ async fn health() -> Json<Value> {
 
 Run: `cargo build -p uefi-gateway`
 Expected: компиляция без ошибок
+
+> **Note (clippy):** AGENTS.md rule 9 требует `cargo clippy -p uefi-gateway -- -D warnings`. В Task 1 `Config::sock_path` и `AppError` ещё не используются (потребуются в Task 2 и Task 4 соответственно), поэтому на них временно навешан `#[allow(dead_code)]` — удалить эти атрибуты при выполнении Task 2 (sock_path) и Task 4 (AppError). Аналогично `use axum::routing::get` без `post` (post понадобится в Task 4 — вернуть импорт тогда).
 
 - [ ] **Step 7: Коммит**
 
