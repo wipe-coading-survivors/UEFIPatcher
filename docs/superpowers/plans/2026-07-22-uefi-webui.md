@@ -239,6 +239,7 @@ git commit -m "feat(gateway): scaffold uefi-gateway (axum, config, health, error
 > - **D (dead_code):** `EngineClient`/`SessionMap` не используются до Task 4. Добавить crate-level `#![allow(dead_code)]` в main.rs, удалить в Task 4.
 > - **E (deps):** для connector-override нужны `hyper-util` (tokio), `http`, `tower = "0.4"` (вместо 0.5 — tonic 0.12/axum 0.7 используют tower 0.4). Дополнить `Cargo.toml`.
 > - **G (async):** `auth_req` вызывает `sessions.get_token()` (async, tokio Mutex) — `auth_req` должна быть `async fn`, а все call sites `Self::auth_req(...).await?`.
+> - **H (clippy):** `insert`/`replace` имеют 8 аргументов → `clippy::too_many_arguments`. Добавить `#[allow(clippy::too_many_arguments)]` (дизайн sessions-per-call неизбежен для multi-session).
 
 **Files:**
 - Create: `crates/uefi-gateway/src/client.rs`
@@ -324,6 +325,7 @@ impl EngineClient {
         let req = FindItemRequest { image_id: image_id.into(), target: target.into() };
         Ok(self.inner.find_item(Self::auth_req(sessions, session_id, req).await?).await?.into_inner().item_id)
     }
+    #[allow(clippy::too_many_arguments)]
     pub async fn insert(&mut self, sessions: &SessionMap, session_id: &str, image_id: &str, target: &str, ffs_path: &str, artifact_id: &str, mode: i32) -> anyhow::Result<String> {
         let req = InsertRequest { image_id: image_id.into(), target: target.into(), ffs_path: ffs_path.into(), artifact_id: artifact_id.into(), mode };
         Ok(self.inner.insert(Self::auth_req(sessions, session_id, req).await?).await?.into_inner().item_id)
@@ -333,6 +335,7 @@ impl EngineClient {
         self.inner.remove(Self::auth_req(sessions, session_id, req).await?).await?;
         Ok(())
     }
+    #[allow(clippy::too_many_arguments)]
     pub async fn replace(&mut self, sessions: &SessionMap, session_id: &str, image_id: &str, target: &str, data_path: &str, artifact_id: &str, body_only: bool) -> anyhow::Result<String> {
         let req = ReplaceRequest { image_id: image_id.into(), target: target.into(), ffs_path: data_path.into(), artifact_id: artifact_id.into(), body_only };
         Ok(self.inner.replace(Self::auth_req(sessions, session_id, req).await?).await?.into_inner().item_id)
