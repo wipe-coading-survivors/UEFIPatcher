@@ -46,7 +46,7 @@
 | `crates/uefi-gateway/src/routes/setup.rs` | /api/v1/image/:id/{set-visibility,setup-items,add-formset} |
 | `crates/uefi-gateway/src/routes/upload.rs` | /api/v1/image/upload, /api/v1/image/:id/download |
 | `crates/uefi-gateway/src/routes/artifact.rs` | /api/v1/image/:id/extract, /api/v1/artifact/{export,import}, /api/v1/artifacts |
-| `crates/uefi-gateway/src/ws.rs` | WebSocket streaming dump |
+| `crates/uefi-gateway/src/routes/ws.rs` | WebSocket streaming dump |
 | `crates/uefi-gateway/tests/mock_server.rs` | mock EngineService |
 | `crates/uefi-gateway/tests/integration.rs` | integration-тесты |
 | `webui/package.json` | SvelteKit project |
@@ -884,12 +884,14 @@ git commit -m "feat(gateway): add REST routes (session/image/edit/setup/upload/d
 ### Task 5: gateway/ws.rs — WebSocket для streaming dump
 
 **Files:**
-- Create: `crates/uefi-gateway/src/ws.rs`
+- Create: `crates/uefi-gateway/src/routes/ws.rs`
 - Modify: `crates/uefi-gateway/src/routes/mod.rs` (добавить WS route)
+
+> ⚠️ **Дефект N (исправлен):** путь к файлу был `crates/uefi-gateway/src/ws.rs`, но код использует `use super::AppState;` (только валиден, если файл — sibling `routes/mod.rs`) и Step 2 добавляет `pub mod ws;` в `routes/mod.rs` (резолвится только если файл — `src/routes/ws.rs`). Путь исправлен на `src/routes/ws.rs`; код и Step 2 корректны.
 
 - [ ] **Step 1: Реализовать ws.rs**
 
-`crates/uefi-gateway/src/ws.rs`:
+`crates/uefi-gateway/src/routes/ws.rs`:
 ```rust
 use axum::extract::ws::{WebSocket, WebSocketUpgrade, Message};
 use axum::extract::{Path, State, Query};
@@ -938,7 +940,7 @@ async fn handle_ws(mut socket: WebSocket, state: AppState, sid: String, image_id
 - [ ] **Step 3: Коммит**
 
 ```bash
-git add crates/uefi-gateway/src/ws.rs crates/uefi-gateway/src/routes/mod.rs
+git add crates/uefi-gateway/src/routes/ws.rs crates/uefi-gateway/src/routes/mod.rs
 git commit -m "feat(gateway): add WebSocket endpoint for streaming dump"
 ```
 
