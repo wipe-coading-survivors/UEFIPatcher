@@ -926,7 +926,7 @@ async fn handle_ws(mut socket: WebSocket, state: AppState, sid: String, image_id
             let _ = socket.send(Message::Text(format!("error: {e}"))).await;
         }
     }
-    let _ = socket.close(None).await;
+    let _ = socket.close().await;
 }
 ```
 
