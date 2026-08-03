@@ -1100,6 +1100,8 @@ cd webui && npm create svelte@latest . -- --template skeleton --types typescript
 ```
 (или вручную создать файлы ниже)
 
+> **Note (defects V/W/X/Y):** выявлено при реализации. **(X)** `@sveltejs/vite-plugin-svelte@^4.0.0` имеет peer `vite@^5.0.0`, конфликтует с `vite@^6.0.0` из плана (`npm install` → ERESOLVE) → `^5.0.0`. **(Y)** типы Vite/Kit (`Buffer`, `http`, `node:fs`, namespace `NodeJS`) требуют `@types/node` → добавить `"@types/node": "^22.0.0"` в `devDependencies` (иначе svelte-check сообщает ~40 ошибок в `node_modules`). **(V)** `sveltekit()` экспортируется из `@sveltejs/kit/vite`, НЕ из `@sveltejs/vite-plugin-svelte` (там только `svelte`/`vitePreprocess`) — неверный импорт даёт SyntaxError `does not provide an export named 'sveltekit'`. **(W)** в Svelte 5 `children` это `Snippet`, рендер через `{@render children()}`, а не `{$children}` (svelte-check: «Cannot use 'children' as a store»). Правки внесены в Step 2/4/9 ниже.
+
 - [ ] **Step 2: package.json**
 
 `webui/package.json`:
@@ -1118,11 +1120,12 @@ cd webui && npm create svelte@latest . -- --template skeleton --types typescript
   "devDependencies": {
     "@sveltejs/adapter-static": "^3.0.0",
     "@sveltejs/kit": "^2.0.0",
-    "@sveltejs/vite-plugin-svelte": "^4.0.0",
+    "@sveltejs/vite-plugin-svelte": "^5.0.0",
     "svelte": "^5.0.0",
     "svelte-check": "^4.0.0",
     "typescript": "^5.5.0",
-    "vite": "^6.0.0"
+    "vite": "^6.0.0",
+    "@types/node": "^22.0.0"
   }
 }
 ```
@@ -1146,7 +1149,7 @@ export default {
 
 `webui/vite.config.ts`:
 ```typescript
-import { sveltekit } from '@sveltejs/vite-plugin-svelte';
+import { sveltekit } from '@sveltejs/kit/vite';
 import { defineConfig } from 'vite';
 
 export default defineConfig({
@@ -1321,7 +1324,7 @@ export async function addFormSet(imageId: string, schemaJson: string, targetFfsG
         <span>Session: {$sessionStore.slice(0, 8)}...</span>
     {/if}
 </header>
-<main>{$children}</main>
+<main>{@render children()}</main>
 ```
 
 `webui/src/routes/+page.svelte`:
