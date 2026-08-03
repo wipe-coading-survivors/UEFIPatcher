@@ -1,4 +1,4 @@
-FROM registry.fedoraproject.org/fedora:44 AS builder
+FROM uefipatcher-rust-builder AS builder
 RUN dnf install -y nodejs npm && dnf clean all
 WORKDIR /app
 COPY webui/package*.json ./
