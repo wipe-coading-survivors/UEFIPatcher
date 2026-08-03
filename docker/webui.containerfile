@@ -1,4 +1,4 @@
-FROM uefipatcher-rust-builder AS builder
+FROM uefipatcher-runtime-base AS builder
 RUN dnf install -y nodejs npm && dnf clean all
 WORKDIR /app
 COPY webui/package*.json ./
