@@ -948,51 +948,108 @@ git commit -m "feat(gateway): add WebSocket endpoint for streaming dump"
 
 ### Task 6: Mock-сервер и integration-тесты gateway
 
+> ⚠️ **Дефекты (исправлены в плане):**
+> - **P (lib+bin split, наследник cycle-3 fix `014fc58`):** integration-тест вызывает `uefi_gateway::main_inner()`, но `uefi-gateway` — binary-only crate (только `src/main.rs`). Items бинарного crate'а НЕ импортируются из integration-тестов через `crate_name::item`. План "добавить `main_inner` в main.rs" недостаточен. Нужно создать `src/lib.rs` с модулями + `pub async fn main_inner()`, а `main.rs` сделать тонкой обёрткой `uefi_gateway::main_inner().await` (как `uefi-tui`: lib.rs+main.rs).
+> - **Q (unused import):** `use std::path::Path;` в integration.rs не используется → `cargo clippy -- -D warnings` / rustc fail. Убрать.
+> - **R (edition 2024):** workspace edition = 2024, где `std::env::set_var` стал `unsafe fn`. План-код `std::env::set_var(...)` без `unsafe {}` НЕ компилируется.
+> - **S (parallel port collision):** оба `#[tokio::test]` биндят фиксированный `127.0.0.1:18080` + глобально мутируют env → `Address already in use` и race при параллельном запуске (`cargo test` дефолтит на N потоков). Фикс: тест биндит `TcpListener::bind("127.0.0.1:0")` сам (OS выдаёт свободный порт), передаёт listener в `serve(listener, sock)` — нет env, нет коллизии. `#[tokio::test(flavor = "multi_thread")]` по образцу cycle-2/3 (`014fc58`).
+> - **T (missing dev-dep):** mock_server.rs использует `tokio_stream::wrappers::UnixListenerStream`, но в dev-deps gateway его нет. Добавить `tokio-stream = { version = "0.1", features = ["net"] }` (как `uefi-cli/Cargo.toml`).
+> - **Решение R+S:** добавить `pub async fn serve(listener: TcpListener, sock_path: &Path) -> Result<()>` в lib.rs (тест-friendly), `main_inner` делегирует в `serve` после чтения env и bind'а своего listener'а.
+
 **Files:**
 - Create: `crates/uefi-gateway/tests/mock_server.rs`
 - Create: `crates/uefi-gateway/tests/integration.rs`
+- Create: `crates/uefi-gateway/src/lib.rs` (defect P: lib+bin split для доступности `uefi_gateway::*` из integration-тестов)
+- Modify: `crates/uefi-gateway/src/main.rs` (тонкая обёртка над lib::main_inner)
+- Modify: `crates/uefi-gateway/Cargo.toml` (defect T: dev-dep `tokio-stream`)
 
 - [ ] **Step 1: Создать mock_server.rs (копия из uefi-cli/uefi-tUI)**
 
 `crates/uefi-gateway/tests/mock_server.rs` — копировать `crates/uefi-cli/tests/mock_server.rs` (MockEngine с заглушками EngineService, `start_mock(sock)`).
 
-- [ ] **Step 2: Написать integration-тесты**
+> **Note (defect T):** mock_server использует `tokio_stream::wrappers::UnixListenerStream`. Добавить в `crates/uefi-gateway/Cargo.toml → [dev-dependencies]`: `tokio-stream = { version = "0.1", features = ["net"] }` (остальные deps — `tonic`/`tokio`/`uefi-proto`/`uuid`/`hyper-util`/`http`/`tower` — уже в `[dependencies]`, доступны в тестах).
 
-`crates/uefi-gateway/tests/integration.rs`:
+- [ ] **Step 2: lib.rs (lib+bin split) + main.rs thin wrapper**
+
+`crates/uefi-gateway/src/lib.rs` (defect P: делает модули и entry-point доступными из integration-тестов; defect R+S: `serve(listener, sock_path)` — тест-friendly API, нет env):
+```rust
+pub mod client;
+pub mod config;
+pub mod error;
+pub mod routes;
+pub mod session;
+
+use std::path::Path;
+use std::sync::Arc;
+
+use tower_http::cors::CorsLayer;
+
+pub async fn serve(
+    listener: tokio::net::TcpListener,
+    sock_path: &Path,
+) -> anyhow::Result<()> {
+    let engine = client::EngineClient::connect(sock_path).await?;
+    let state = routes::AppState {
+        client: Arc::new(tokio::sync::Mutex::new(engine)),
+        sessions: Arc::new(session::SessionMap::new()),
+    };
+    let app = routes::router(state).layer(CorsLayer::very_permissive());
+    axum::serve(listener, app).await?;
+    Ok(())
+}
+
+pub async fn main_inner() -> anyhow::Result<()> {
+    let cfg = config::load_config()?;
+    let listener = tokio::net::TcpListener::bind(cfg.listen).await?;
+    serve(listener, &cfg.sock_path).await
+}
+```
+
+`crates/uefi-gateway/src/main.rs` (тонкая обёртка, делегирует в lib):
+```rust
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    uefi_gateway::main_inner().await
+}
+```
+
+- [ ] **Step 3: Написать integration-тесты**
+
+`crates/uefi-gateway/tests/integration.rs` (defects Q+R+S: нет `use std::path::Path`; нет `env::set_var` — вместо этого `serve(listener, &sock)` с port 0; `flavor = "multi_thread"`):
 ```rust
 mod mock_server;
 
+use std::time::Duration;
+
 use reqwest::StatusCode;
 use serde_json::json;
-use std::path::Path;
 use tempfile::TempDir;
 
 async fn setup_gateway() -> (TempDir, String) {
     let td = TempDir::new().unwrap();
     let sock = td.path().join("test.sock");
     mock_server::start_mock(&sock).await;
-    std::env::set_var("UEFIPATCHER_SOCK", &sock);
-    std::env::set_var("UEFIPATCHER_GATEWAY_LISTEN", "127.0.0.1:18080");
-    let listen = "127.0.0.1:18080".to_string();
-    tokio::spawn(async {
-        let _ = uefi_gateway::main_inner().await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let _ = uefi_gateway::serve(listener, &sock).await;
     });
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    (td, listen)
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    (td, format!("http://{addr}"))
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn health() {
-    let (_td, listen) = setup_gateway().await;
-    let resp = reqwest::get(format!("http://{listen}/api/v1/health")).await.unwrap();
+    let (_td, base) = setup_gateway().await;
+    let resp = reqwest::get(format!("{base}/api/v1/health")).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn create_session_and_list() {
-    let (_td, listen) = setup_gateway().await;
+    let (_td, base) = setup_gateway().await;
     let client = reqwest::Client::new();
-    let resp = client.post(format!("http://{listen}/api/v1/session"))
+    let resp = client.post(format!("{base}/api/v1/session"))
         .json(&json!({}))
         .send().await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -1001,39 +1058,22 @@ async fn create_session_and_list() {
     let body: serde_json::Value = resp.json().await.unwrap();
     assert!(body["session_id"].as_str().is_some());
 
-    let resp = client.get(format!("http://{listen}/api/v1/sessions"))
+    let resp = client.get(format!("{base}/api/v1/sessions"))
         .header("cookie", "uefipatcher_session=".to_string() + body["session_id"].as_str().unwrap())
         .send().await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 }
 ```
 
-Добавить в `crates/uefi-gateway/src/main.rs`:
-```rust
-pub async fn main_inner() -> anyhow::Result<()> {
-    let cfg = config::load_config()?;
-    let engine = client::EngineClient::connect(&cfg.sock_path).await?;
-    let state = routes::AppState {
-        client: Arc::new(tokio::sync::Mutex::new(engine)),
-        sessions: Arc::new(session::SessionMap::new()),
-    };
-    let app = routes::router(state).layer(CorsLayer::very_permissive());
-    let listener = tokio::net::TcpListener::bind(cfg.listen).await?;
-    axum::serve(listener, app).await?;
-    Ok(())
-}
-```
-И в `main()` просто вызвать `main_inner().await`.
-
-- [ ] **Step 3: Запустить integration-тесты**
+- [ ] **Step 4: Запустить integration-тесты**
 
 Run: `cargo test -p uefi-gateway --test integration`
-Expected: PASS
+Expected: PASS (2 теста: health, create_session_and_list)
 
-- [ ] **Step 4: Коммит**
+- [ ] **Step 5: Коммит**
 
 ```bash
-git add crates/uefi-gateway/tests/ crates/uefi-gateway/src/main.rs
+git add crates/uefi-gateway/tests/ crates/uefi-gateway/src/lib.rs crates/uefi-gateway/src/main.rs crates/uefi-gateway/Cargo.toml
 git commit -m "test(gateway): add mock server and integration tests (health, session flow)"
 ```
 
