@@ -482,6 +482,8 @@ git commit -m "feat(gateway): add session module (cookie mapping, in-memory toke
 > - **J (dead_code):** `session::extract_image_id` не используется ни одним route (image_id берётся из URL `Path`, не из cookie). Удалить из session.rs.
 > - **D⁻ (cleanup):** убрать `#![allow(dead_code)]` из main.rs (модули теперь wired) и per-item `#[allow(dead_code)]` из config.rs (`sock_path` теперь читается) и error.rs (`AppError` теперь используется).
 > - **K (тип ошибки client):** RPC-методы client (кроме `connect`) возвращают `anyhow::Result<T>`, но routes вызывают `.map_err(AppError::from)` — а `AppError` имеет только `From<tonic::Status>`. Изменить возврат RPC-методов на `Result<T, tonic::Status>` (сохраняет gRPC-код маппинг 401/404/400). `connect` остаётся `anyhow::Result` (io-ошибки, только в main). Routes `create`/`list` тоже использовать `AppError::from` (не `Internal(e.to_string())`).
+> - **L (json!):** `json!({ "path": path.display() })` — `path::Display` не реализует `Serialize`. Использовать `path.display().to_string()`.
+> - **M (clippy let_underscore_future):** `let _ = tokio::fs::remove_file(&out_path);` не await-ит Future (и НЕ удаляет файл — баг). Исправить: `let _ = tokio::fs::remove_file(&out_path).await;`.
 
 **Files:**
 - Create: `crates/uefi-gateway/src/routes/mod.rs`
@@ -758,7 +760,7 @@ pub async fn upload(State(_state): State<AppState>, _jar: CookieJar, mut multipa
             let id = Uuid::new_v4();
             let path = PathBuf::from(format!("/tmp/uefipatcher-upload-{id}.bin"));
             tokio::fs::write(&path, &data).await.map_err(|e| AppError::Internal(e.to_string()))?;
-            return Ok(Json(json!({ "path": path.display() })));
+            return Ok(Json(json!({ "path": path.display().to_string() })));
         }
     }
     Err(AppError::BadRequest("no file field in multipart".into()))
@@ -770,7 +772,7 @@ pub async fn download(State(state): State<AppState>, jar: CookieJar, Path(id): P
     let mut c = state.client.lock().await;
     c.save_image(&state.sessions, &sid, &id, &out_path).await.map_err(AppError::from)?;
     let data = tokio::fs::read(&out_path).await.map_err(|e| AppError::Internal(e.to_string()))?;
-    let _ = tokio::fs::remove_file(&out_path);
+    let _ = tokio::fs::remove_file(&out_path).await;
     Ok(Response::builder()
         .header(header::CONTENT_TYPE, "application/octet-stream")
         .header(header::CONTENT_DISPOSITION, "attachment; filename=\"patched.bin\"")
