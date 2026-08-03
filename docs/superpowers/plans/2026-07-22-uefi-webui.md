@@ -1437,13 +1437,15 @@ git commit -m "feat(webui): scaffold SvelteKit (api.ts, stores, layout, upload p
     {#if node}
         <h3>Details</h3>
         <table>
-            <tr><td>Path</td><td>{node.path}</td></tr>
-            <tr><td>Type</td><td>{node.type}</td></tr>
-            <tr><td>Subtype</td><td>0x{node.subtype.toString(16)}</td></tr>
-            <tr><td>GUID</td><td>{node.guid || '(none)'}</td></tr>
-            <tr><td>Offset</td><td>0x{node.offset.toString(16)}</td></tr>
-            <tr><td>Size</td><td>0x{node.size.toString(16)}</td></tr>
-            <tr><td>Name</td><td>{node.name}</td></tr>
+            <tbody>
+                <tr><td>Path</td><td>{node.path}</td></tr>
+                <tr><td>Type</td><td>{node.type}</td></tr>
+                <tr><td>Subtype</td><td>0x{node.subtype.toString(16)}</td></tr>
+                <tr><td>GUID</td><td>{node.guid || '(none)'}</td></tr>
+                <tr><td>Offset</td><td>0x{node.offset.toString(16)}</td></tr>
+                <tr><td>Size</td><td>0x{node.size.toString(16)}</td></tr>
+                <tr><td>Name</td><td>{node.name}</td></tr>
+            </tbody>
         </table>
     {:else}
         <p>Select a node from the tree</p>
