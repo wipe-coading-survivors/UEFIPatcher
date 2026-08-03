@@ -45,7 +45,3 @@ pub fn make_image_cookie(image_id: &str) -> Cookie<'static> {
         .path("/")
         .build()
 }
-
-pub fn extract_image_id(jar: &CookieJar) -> Option<String> {
-    jar.get("uefipatcher_image").map(|c| c.value().to_string())
-}

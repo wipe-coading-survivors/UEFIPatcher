@@ -4,7 +4,6 @@ use std::path::PathBuf;
 
 pub struct Config {
     pub listen: SocketAddr,
-    #[allow(dead_code)]
     pub sock_path: PathBuf,
 }
 

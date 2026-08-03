@@ -46,7 +46,7 @@ impl EngineClient {
         Ok(req)
     }
 
-    pub async fn create_session(&mut self, name: &str) -> anyhow::Result<(String, String)> {
+    pub async fn create_session(&mut self, name: &str) -> Result<(String, String), tonic::Status> {
         let r = self
             .inner
             .create_session(CreateSessionRequest { name: name.into() })
@@ -54,7 +54,7 @@ impl EngineClient {
             .into_inner();
         Ok((r.session_id, r.token))
     }
-    pub async fn destroy_session(&mut self, id: &str) -> anyhow::Result<()> {
+    pub async fn destroy_session(&mut self, id: &str) -> Result<(), tonic::Status> {
         self.inner
             .destroy_session(DestroySessionRequest {
                 session_id: id.into(),
@@ -62,7 +62,7 @@ impl EngineClient {
             .await?;
         Ok(())
     }
-    pub async fn list_sessions(&mut self) -> anyhow::Result<Vec<SessionInfo>> {
+    pub async fn list_sessions(&mut self) -> Result<Vec<SessionInfo>, tonic::Status> {
         Ok(self
             .inner
             .list_sessions(ListSessionsRequest {})
@@ -76,7 +76,7 @@ impl EngineClient {
         session_id: &str,
         path: &str,
         mode: i32,
-    ) -> anyhow::Result<OpenImageResponse> {
+    ) -> Result<OpenImageResponse, tonic::Status> {
         let req = OpenImageRequest {
             session_id: session_id.into(),
             image_path: path.into(),
@@ -94,7 +94,7 @@ impl EngineClient {
         session_id: &str,
         image_id: &str,
         format: i32,
-    ) -> anyhow::Result<String> {
+    ) -> Result<String, tonic::Status> {
         let req = DumpTreeRequest {
             image_id: image_id.into(),
             format,
@@ -112,7 +112,7 @@ impl EngineClient {
         session_id: &str,
         image_id: &str,
         filter: &str,
-    ) -> anyhow::Result<Vec<Item>> {
+    ) -> Result<Vec<Item>, tonic::Status> {
         let req = ListItemsRequest {
             image_id: image_id.into(),
             filter: filter.into(),
@@ -130,7 +130,7 @@ impl EngineClient {
         session_id: &str,
         image_id: &str,
         target: &str,
-    ) -> anyhow::Result<String> {
+    ) -> Result<String, tonic::Status> {
         let req = FindItemRequest {
             image_id: image_id.into(),
             target: target.into(),
@@ -152,7 +152,7 @@ impl EngineClient {
         ffs_path: &str,
         artifact_id: &str,
         mode: i32,
-    ) -> anyhow::Result<String> {
+    ) -> Result<String, tonic::Status> {
         let req = InsertRequest {
             image_id: image_id.into(),
             target: target.into(),
@@ -173,7 +173,7 @@ impl EngineClient {
         session_id: &str,
         image_id: &str,
         target: &str,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), tonic::Status> {
         let req = RemoveRequest {
             image_id: image_id.into(),
             target: target.into(),
@@ -193,7 +193,7 @@ impl EngineClient {
         data_path: &str,
         artifact_id: &str,
         body_only: bool,
-    ) -> anyhow::Result<String> {
+    ) -> Result<String, tonic::Status> {
         let req = ReplaceRequest {
             image_id: image_id.into(),
             target: target.into(),
@@ -214,7 +214,7 @@ impl EngineClient {
         session_id: &str,
         image_id: &str,
         target: &str,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), tonic::Status> {
         let req = RebuildRequest {
             image_id: image_id.into(),
             target: target.into(),
@@ -231,7 +231,7 @@ impl EngineClient {
         image_id: &str,
         item_id: &str,
         visible: bool,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), tonic::Status> {
         let req = SetSetupItemVisibilityRequest {
             image_id: image_id.into(),
             item_id: item_id.into(),
@@ -248,7 +248,7 @@ impl EngineClient {
         session_id: &str,
         image_id: &str,
         output_path: &str,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), tonic::Status> {
         let req = SaveImageRequest {
             image_id: image_id.into(),
             output_path: output_path.into(),
@@ -265,7 +265,7 @@ impl EngineClient {
         image_id: &str,
         target: &str,
         body_only: bool,
-    ) -> anyhow::Result<String> {
+    ) -> Result<String, tonic::Status> {
         let req = ExtractArtifactRequest {
             image_id: image_id.into(),
             target: target.into(),
@@ -284,7 +284,7 @@ impl EngineClient {
         session_id: &str,
         artifact_id: &str,
         output_path: &str,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), tonic::Status> {
         let req = ExportArtifactRequest {
             artifact_id: artifact_id.into(),
             output_path: output_path.into(),
@@ -299,7 +299,7 @@ impl EngineClient {
         sessions: &SessionMap,
         session_id: &str,
         file_path: &str,
-    ) -> anyhow::Result<String> {
+    ) -> Result<String, tonic::Status> {
         let req = ImportArtifactRequest {
             session_id: session_id.into(),
             file_path: file_path.into(),
@@ -315,7 +315,7 @@ impl EngineClient {
         &mut self,
         sessions: &SessionMap,
         session_id: &str,
-    ) -> anyhow::Result<Vec<ArtifactInfo>> {
+    ) -> Result<Vec<ArtifactInfo>, tonic::Status> {
         let req = ListArtifactsRequest {
             session_id: session_id.into(),
         };
