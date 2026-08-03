@@ -24,7 +24,7 @@
 - WebSocket: `/api/v1/image/:id/dump/ws` — streaming dump.
 - Кодстайл Rust: `cargo fmt`, `cargo clippy -- -D warnings`. Кодстайл TS: `eslint`, `prettier`, `svelte-check`.
 - Без комментариев в коде.
-- Docker: `docker/gateway.containerfile`, `docker/webui.containerfile` (на базе `docker/rust-builder.containerfile` из цикла 1, `registry.fedoraproject.org/fedora:44`), обновить `docker/docker-compose.yml`.
+- Docker: `docker/gateway.containerfile`, `docker/webui.containerfile` (на базе `docker/rust-builder.containerfile` из цикла 1, `registry.fedoraproject.org/fedora:44`), `docker/webui-nginx.conf`, обновить `docker/docker-compose.yml`. Runtime-каскад повторяет cycle 1: builder → `uefipatcher-rust-builder`, runtime → `uefipatcher-runtime-base`. Альтернатива compose — `docker/uefipatcher-pod.yaml` (Kubernetes Pod manifest для `podman-remote kube play`, см. AGENTS.md rule 12).
 
 ---
 
@@ -63,9 +63,11 @@
 | `webui/src/lib/stores.ts` | svelte stores |
 | `webui/src/lib/Tree.svelte` | tree-view компонент |
 | `webui/src/lib/Details.svelte` | details panel |
-| `docker/gateway.containerfile` | gateway образ (на базе rust-builder.containerfile, fedora:44) |
-| `docker/webui.containerfile` | webui образ (fedora:44 + nginx/static) |
+| `docker/gateway.containerfile` | gateway образ (билдер `uefipatcher-rust-builder`, runtime `uefipatcher-runtime-base`) |
+| `docker/webui.containerfile` | webui образ (билдер + runtime на базе `uefipatcher-runtime-base`, nginx) |
+| `docker/webui-nginx.conf` | nginx конфиг (listen 3000, proxy `/api/v1/` → gateway:8080) |
 | `docker/docker-compose.yml` | engine + gateway + webui |
+| `docker/uefipatcher-pod.yaml` | альтернатива docker-compose для `podman-remote kube play` (AGENTS.md rule 12) |
 
 ---
 
@@ -1655,11 +1657,18 @@ git commit -m "feat(webui): add setup page (visibility toggle + add-formset)"
 - Create: `docker/gateway.containerfile`
 - Create: `docker/webui.containerfile`
 - Create: `docker/webui-nginx.conf`
+- Create: `docker/uefipatcher-pod.yaml` (альтернатива docker-compose для `podman-remote kube play`, AGENTS.md rule 12)
 - Modify: `docker/docker-compose.yml`
 
-> **Note:** Rust-сборки переиспользуют общий `docker/rust-builder.containerfile` (создан в Цикле 1, Task 18: `registry.fedoraproject.org/fedora:44` + `rust`/`cargo`/`protobuf-compiler`). Перед сборкой gateway образ нужно собрать базовый образ: `podman build -f docker/rust-builder.containerfile -t uefipatcher-rust-builder ..`
+> **Note:** Rust-сборки переиспользуют общие базовые образы из Цикла 1: builder-стадия — от `docker/rust-builder.containerfile` (создан в Цикле 1, Task 18: `registry.fedoraproject.org/fedora:44` + `rust`/`cargo`/`protobuf-compiler`), runtime-стадия — от `docker/runtime-base.containerfile` (`registry.fedoraproject.org/fedora:44` + `ca-certificates` + `sqlite-libs`). Перед сборкой gateway/webui нужно собрать базовые образы: `podman-remote build -f docker/rust-builder.containerfile -t uefipatcher-rust-builder .` и `podman-remote build -f docker/runtime-base.containerfile -t uefipatcher-runtime-base .`
 
 - [ ] **Step 1: gateway.containerfile**
+
+> ⚠️ **Дефекты (исправлены в плане, post-implementation sync):**
+> - **CC (runtime base):** runtime-стадия `FROM registry.fedoraproject.org/fedora:44` + `dnf install ca-certificates` дублировала `docker/runtime-base.containerfile` (cycle 1). Заменена на `FROM uefipatcher-runtime-base` для единой цепочки базовых образов (как уже сделано в `engine.containerfile`). Рекомендация AGENTS.md: все runtime-стадии наследуются от `uefipatcher-runtime-base`.
+> - **DD (unprivileged port):** nginx `listen 80` + `EXPOSE 80` + compose `ports: "3000:80"` — привилегированный порт 80 внутри контейнера это плохой тон (нужен root/CAP_NET_BIND_SERVICE если запускать от non-root user; неожиданный port-remap усложняет отладку). Заменено на симметричный `listen 3000` + `EXPOSE 3000` + `ports: "3000:3000"` — тот же порт внутри и снаружи.
+> - **EE (podman-remote alt):** добавлен `docker/uefipatcher-pod.yaml` (Kubernetes Pod manifest) как альтернатива docker-compose для `podman-remote kube play` согласно AGENTS.md rule 12 (внутри контейнера предпочитается podman-remote).
+> - **FF (webui builder base):** webui builder-стадия `FROM registry.fedoraproject.org/fedora:44 AS builder` заменена на `FROM uefipatcher-runtime-base AS builder` (cycle-1 reuse). Builder не требует rust/cargo из rust-builder, хватает dnf для `npm install`.
 
 `docker/gateway.containerfile`:
 ```dockerfile
@@ -1669,8 +1678,7 @@ WORKDIR /app
 COPY . .
 RUN cargo build --release -p uefi-gateway
 
-FROM registry.fedoraproject.org/fedora:44
-RUN dnf install -y ca-certificates && dnf clean all
+FROM uefipatcher-runtime-base
 COPY --from=builder /app/target/release/uefi-gateway /usr/local/bin/
 ENV UEFIPATCHER_GATEWAY_LISTEN=0.0.0.0:8080
 EXPOSE 8080
@@ -1681,7 +1689,7 @@ ENTRYPOINT ["uefi-gateway"]
 
 `docker/webui.containerfile`:
 ```dockerfile
-FROM registry.fedoraproject.org/fedora:44 AS builder
+FROM uefipatcher-runtime-base AS builder
 RUN dnf install -y nodejs npm && dnf clean all
 WORKDIR /app
 COPY webui/package*.json ./
@@ -1689,18 +1697,18 @@ RUN npm install
 COPY webui/ .
 RUN npm run build
 
-FROM registry.fedoraproject.org/fedora:44
+FROM uefipatcher-runtime-base
 RUN dnf install -y nginx && dnf clean all
 COPY --from=builder /app/build /usr/share/nginx/html
 COPY docker/webui-nginx.conf /etc/nginx/conf.d/default.conf
-EXPOSE 80
+EXPOSE 3000
 ENTRYPOINT ["nginx", "-g", "daemon off;"]
 ```
 
-`docker/webui-nginx.conf`:
+`docker/webui-nginx.conf` (defect DD: `listen 3000`, не `80` — unprivileged port):
 ```nginx
 server {
-    listen 80;
+    listen 3000;
     root /usr/share/nginx/html;
     location / {
         try_files $uri $uri/ /index.html;
@@ -1750,7 +1758,7 @@ services:
       context: ..
       dockerfile: docker/webui.containerfile
     ports:
-      - "3000:80"
+      - "3000:3000"
     depends_on:
       - gateway
 volumes:
@@ -1758,16 +1766,75 @@ volumes:
   uefi-sock:
 ```
 
-- [ ] **Step 4: Проверить валидность compose**
+> **Note (defect DD):** webui `ports: "3000:3000"` (не `"3000:80"`) — симметричный маппинг: nginx слушает 3000 внутри (см. `webui-nginx.conf`) и 3000 публикуется наружу.
+
+- [ ] **Step 4: uefipatcher-pod.yaml (альтернатива docker-compose)**
+
+`docker/uefipatcher-pod.yaml` (defect EE: Kubernetes Pod manifest для `podman-remote kube play`, AGENTS.md rule 12 — предпочтительный runtime внутри containerenv):
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: uefipatcher-pod
+  labels:
+    app: uefipatcher
+spec:
+  containers:
+    - name: engine
+      image: uefipatcher-engine:latest
+      env:
+        - name: UEFIPATCHER_DATA
+          value: /data
+        - name: UEFIPATCHER_SOCK
+          value: /run/uefipatcher/uefipatcher.sock
+        - name: UEFIPATCHER_SESSION_TTL_SECS
+          value: "864000"
+        - name: UEFIPATCHER_SESSION_GC_INTERVAL_SECS
+          value: "3600"
+        - name: UEFIPATCHER_PURGE_ARTIFACTS
+          value: "false"
+      volumeMounts:
+        - name: uefi-data
+          mountPath: /data
+        - name: uefi-sock
+          mountPath: /run/uefipatcher
+    - name: gateway
+      image: uefipatcher-gateway:latest
+      env:
+        - name: UEFIPATCHER_SOCK
+          value: /run/uefipatcher/uefipatcher.sock
+        - name: UEFIPATCHER_GATEWAY_LISTEN
+          value: 0.0.0.0:8080
+      ports:
+        - containerPort: 8080
+      volumeMounts:
+        - name: uefi-sock
+          mountPath: /run/uefipatcher
+    - name: webui
+      image: uefipatcher-webui:latest
+      ports:
+        - containerPort: 3000
+  volumes:
+    - name: uefi-data
+      emptyDir: {}
+    - name: uefi-sock
+      emptyDir: {}
+```
+
+> **Note:** Pod использует заранее собранные образы `uefipatcher-{engine,gateway,webui}:latest` (их нужно собрать через `podman-remote build` или загрузить в registry перед `kube play`). Все три контейнера делят один Pod → один network namespace → webuinginx `proxy_pass http://gateway:8080` резолвится через localhost-петлю Pod'а. Volume `uefi-sock` (emptyDir) расшаривает unix-сокет между engine и gateway.
+
+- [ ] **Step 5: Проверить валидность compose и pod-манифеста**
 
 Run: `podman-compose -f docker/docker-compose.yml config` (или `docker compose -f docker/docker-compose.yml config`)
 Expected: корректный вывод
 
-- [ ] **Step 5: Коммит**
+Альтернативно (AGENTS.md rule 12, если `/run/.containerenv` существует): `python3 -c "import yaml; yaml.safe_load(open('docker/uefipatcher-pod.yaml'))"` для синтаксической проверки Kubernetes-манифеста; полный запуск: `podman-remote kube play docker/uefipatcher-pod.yaml`.
+
+- [ ] **Step 6: Коммит**
 
 ```bash
 git add docker/
-git commit -m "feat: add gateway.containerfile, webui.containerfile (rust-builder + fedora:44), update docker-compose"
+git commit -m "feat: add gateway/webui containerfiles (rust-builder + runtime-base), nginx, compose + pod.yaml alternative"
 ```
 
 ---
@@ -1820,7 +1887,7 @@ git commit -m "chore: final checks — all tests pass, clippy clean, svelte-chec
 - Tree + Details компоненты: Task 8 ✓
 - Image page (tree + ops + save/download): Task 9 ✓
 - Setup page (visibility + add-formset): Task 10 ✓
-- Docker (gateway + webui + compose, fedora:44 + rust-builder.containerfile): Task 11 ✓
+- Docker (gateway + webui + compose + pod.yaml; runtime-base + nginx :3000): Task 11 ✓
 - Тесты (gateway integration + svelte-check): Tasks 6, 12 ✓
 - `/api/v1/` versioning: все routes Tasks 4-5 ✓
 - CORS: Task 1 (CorsLayer) ✓
