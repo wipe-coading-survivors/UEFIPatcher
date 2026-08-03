@@ -8,6 +8,12 @@ pub struct SessionMap {
     map: Arc<Mutex<HashMap<String, String>>>,
 }
 
+impl Default for SessionMap {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SessionMap {
     pub fn new() -> Self {
         Self {
