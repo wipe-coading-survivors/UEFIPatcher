@@ -1571,6 +1571,8 @@ git commit -m "feat(webui): add image page (tree + details + operations + save/d
 
 ### Task 10: webui/setup/+page.svelte — setup (видимость + add-formset)
 
+> ⚠️ **Дефект BB (исправлен):** `placeholder='{"formset_guid":"...","forms":[...]}'` — Svelte парсит `{...}` внутри значений атрибутов как template-выражения **всегда**, даже в одиночных кавычках. Это даёт `expected_token }` (https://svelte.dev/e/expected_token) на `npm run check`. Фикс: использовать expression-форму атрибута `placeholder={'...'}` — тогда JSON-строка парсится как JS-строка внутри Svelte-выражения, без двусмысленности.
+
 **Files:**
 - Create: `webui/src/routes/setup/+page.svelte`
 
@@ -1623,7 +1625,7 @@ git commit -m "feat(webui): add image page (tree + details + operations + save/d
     </section>
     <section>
         <h3>Add FormSet (JSON schema)</h3>
-        <textarea bind:value={schemaText} rows="15" cols="60" placeholder='{"formset_guid":"...","title":"...","forms":[...]}'></textarea>
+        <textarea bind:value={schemaText} rows="15" cols="60" placeholder={'{"formset_guid":"...","title":"...","forms":[...]}'}></textarea>
         <br />
         <button onclick={doAddFormSet}>Add FormSet</button>
     </section>
