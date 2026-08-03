@@ -481,6 +481,7 @@ git commit -m "feat(gateway): add session module (cookie mapping, in-memory toke
 > - **C⁻ (наследник defect C):** route `/add-formset` + `setup::add_formset` вызывают `add_setup_form_set` (отложен в Task 2 до cycle 6). Убрать route и handler.
 > - **J (dead_code):** `session::extract_image_id` не используется ни одним route (image_id берётся из URL `Path`, не из cookie). Удалить из session.rs.
 > - **D⁻ (cleanup):** убрать `#![allow(dead_code)]` из main.rs (модули теперь wired) и per-item `#[allow(dead_code)]` из config.rs (`sock_path` теперь читается) и error.rs (`AppError` теперь используется).
+> - **K (тип ошибки client):** RPC-методы client (кроме `connect`) возвращают `anyhow::Result<T>`, но routes вызывают `.map_err(AppError::from)` — а `AppError` имеет только `From<tonic::Status>`. Изменить возврат RPC-методов на `Result<T, tonic::Status>` (сохраняет gRPC-код маппинг 401/404/400). `connect` остаётся `anyhow::Result` (io-ошибки, только в main). Routes `create`/`list` тоже использовать `AppError::from` (не `Internal(e.to_string())`).
 
 **Files:**
 - Create: `crates/uefi-gateway/src/routes/mod.rs`
