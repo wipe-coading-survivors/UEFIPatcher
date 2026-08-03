@@ -968,7 +968,7 @@ git commit -m "feat(gateway): add WebSocket endpoint for streaming dump"
 
 `crates/uefi-gateway/tests/mock_server.rs` — копировать `crates/uefi-cli/tests/mock_server.rs` (MockEngine с заглушками EngineService, `start_mock(sock)`).
 
-> **Note (defect T):** mock_server использует `tokio_stream::wrappers::UnixListenerStream`. Добавить в `crates/uefi-gateway/Cargo.toml → [dev-dependencies]`: `tokio-stream = { version = "0.1", features = ["net"] }` (остальные deps — `tonic`/`tokio`/`uefi-proto`/`uuid`/`hyper-util`/`http`/`tower` — уже в `[dependencies]`, доступны в тестах).
+> **Note (defects T+U):** mock_server использует `tokio_stream::wrappers::UnixListenerStream` → добавить в `[dev-dependencies]` `tokio-stream = { version = "0.1", features = ["net"] }`. Также integration-тест вызывает `resp.cookies()` (gated за feature `cookies` в reqwest 0.12) → обновить dev-dep reqwest: `reqwest = { version = "0.12", features = ["json", "multipart", "cookies"] }`. Остальные deps — `tonic`/`tokio`/`uefi-proto`/`uuid`/`hyper-util`/`http`/`tower` — уже в `[dependencies]`, доступны в тестах.
 
 - [ ] **Step 2: lib.rs (lib+bin split) + main.rs thin wrapper**
 
