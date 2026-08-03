@@ -954,6 +954,7 @@ git commit -m "feat(gateway): add WebSocket endpoint for streaming dump"
 > - **R (edition 2024):** workspace edition = 2024, где `std::env::set_var` стал `unsafe fn`. План-код `std::env::set_var(...)` без `unsafe {}` НЕ компилируется.
 > - **S (parallel port collision):** оба `#[tokio::test]` биндят фиксированный `127.0.0.1:18080` + глобально мутируют env → `Address already in use` и race при параллельном запуске (`cargo test` дефолтит на N потоков). Фикс: тест биндит `TcpListener::bind("127.0.0.1:0")` сам (OS выдаёт свободный порт), передаёт listener в `serve(listener, sock)` — нет env, нет коллизии. `#[tokio::test(flavor = "multi_thread")]` по образцу cycle-2/3 (`014fc58`).
 > - **T (missing dev-dep):** mock_server.rs использует `tokio_stream::wrappers::UnixListenerStream`, но в dev-deps gateway его нет. Добавить `tokio-stream = { version = "0.1", features = ["net"] }` (как `uefi-cli/Cargo.toml`).
+> - **U (reqwest feature):** integration-тест вызывает `resp.cookies()`, но этот метод в reqwest 0.12 gated за feature `cookies` (`#[cfg(feature = "cookies")] pub fn cookies(...)` в `async_impl/response.rs`), а в dev-deps gateway включены только `json`+`multipart`. Добавить `cookies` в features dev-deps reqwest.
 > - **Решение R+S:** добавить `pub async fn serve(listener: TcpListener, sock_path: &Path) -> Result<()>` в lib.rs (тест-friendly), `main_inner` делегирует в `serve` после чтения env и bind'а своего listener'а.
 
 **Files:**
