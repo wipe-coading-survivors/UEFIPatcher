@@ -6,7 +6,7 @@ RUN npm install
 COPY webui/ .
 RUN npm run build
 
-FROM registry.fedoraproject.org/fedora:44
+FROM uefipatcher-runtime-base
 RUN dnf install -y nginx && dnf clean all
 COPY --from=builder /app/build /usr/share/nginx/html
 COPY docker/webui-nginx.conf /etc/nginx/conf.d/default.conf

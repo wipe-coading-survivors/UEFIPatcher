@@ -4,7 +4,7 @@ WORKDIR /app
 COPY . .
 RUN cargo build --release -p uefi-gateway
 
-FROM registry.fedoraproject.org/fedora:44
+FROM uefipatcher-runtime-base
 RUN dnf install -y ca-certificates && dnf clean all
 COPY --from=builder /app/target/release/uefi-gateway /usr/local/bin/
 ENV UEFIPATCHER_GATEWAY_LISTEN=0.0.0.0:8080
