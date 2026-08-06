@@ -1471,14 +1471,14 @@ pub fn add_setup_formset(image: &mut Image, schema: &schema::FormSetSchema, targ
     }
     let string_ids = string_pack::add_strings(image, target_ffs_guid, &strings)?;
     let ifr_bytes = build_ifr(schema, &string_ids)?;
-    let strpkg_idx = find_string_package_section(image, target_ffs_guid)?;
-    let strpkg_bytes = image.root.children[0].children[strpkg_idx.0].children[strpkg_idx.1].body.clone();
+    let (sp_vi, sp_fi, sp_si) = find_string_package_section(image, target_ffs_guid)?;
+    let strpkg_bytes = image.root.children[sp_vi].children[sp_fi].children[sp_si].body.clone();
     let ffs_bytes = ffs_assembler::assemble_ffs(&ifr_bytes, &strpkg_bytes, &new_ffs_guid)?;
     let (form_ids, questions) = extract_form_ids_and_questions(schema);
     let setupdata_guid = schema.setupdata_guid.as_ref().and_then(|s| s.parse().ok());
     let amitse_guid = schema.amitse_guid.as_ref().and_then(|s| s.parse().ok());
     ami_patcher::patch_ami(image, &formset_guid, &form_ids, &questions, setupdata_guid.as_ref(), amitse_guid.as_ref())?;
-    let target = crate::parser::target::Target::Path(vec![0]);
+    let target = Target::Path(vec![0]);
     ops::insert(&mut image.root, &target, &ffs_bytes, ops::InsertMode::Into)
         .map_err(|e| SetupAdvancedError::FfsAssemblyError(e.to_string()))?;
     Ok(AddSetupResult { new_ffs_guid, inserted_form_ids: form_ids, string_ids })
@@ -1530,7 +1530,7 @@ fn build_ifr(schema: &schema::FormSetSchema, string_ids: &HashMap<String, u16>) 
 
 fn emit_item(b: &mut IfrBuilder, item: &schema::ItemSchema, string_ids: &HashMap<String, u16>) {
     let display_flags = |d: schema::DisplayMode| -> u8 {
-        match d { schema::DisplayMode::IntDec => 0x00, schema::DisplayMode::UintDec => 0x10, schema::DisplayMode::UintHex => 0x20 }
+        match d { schema::DisplayMode::IntDec => IFR_DISPLAY_INT_DEC, schema::DisplayMode::UintDec => IFR_DISPLAY_UINT_DEC, schema::DisplayMode::UintHex => IFR_DISPLAY_UINT_HEX }
     };
     match item {
         schema::ItemSchema::OneOf(o) => {
@@ -1540,8 +1540,8 @@ fn emit_item(b: &mut IfrBuilder, item: &schema::ItemSchema, string_ids: &HashMap
                 let tid = string_ids[&opt.text];
                 let mut flags = 0u8;
                 match opt.default {
-                    Some(schema::DefaultClass::Optimized) => flags |= 0x10,
-                    Some(schema::DefaultClass::Failsafe) => flags |= 0x20,
+                    Some(schema::DefaultClass::Optimized) => flags |= IFR_OPTION_DEFAULT,
+                    Some(schema::DefaultClass::Failsafe) => flags |= IFR_OPTION_DEFAULT_MFG,
                     None => {}
                 }
                 b.emit_one_of_option(tid, flags, o.size - 1, opt.value, o.size);
@@ -1556,8 +1556,10 @@ fn emit_item(b: &mut IfrBuilder, item: &schema::ItemSchema, string_ids: &HashMap
         }
         schema::ItemSchema::CheckBox(c) => {
             let pid = string_ids[&c.prompt]; let hid = string_ids[&c.help];
-            b.emit_check_box(pid, hid, c.question_id, c.var_store_id, c.var_offset, 0);
-            if let Some(v) = c.defaults.optimized { if v != 0 { b.emit_check_box_default(true); } }
+            let mut cbflags = 0u8;
+            if c.defaults.optimized.unwrap_or(0) != 0 { cbflags |= IFR_CHECKBOX_DEFAULT; }
+            if c.defaults.failsafe.unwrap_or(0) != 0 { cbflags |= IFR_CHECKBOX_DEFAULT_MFG; }
+            b.emit_check_box(pid, hid, c.question_id, c.var_store_id, c.var_offset, cbflags);
             b.emit_end();
         }
         schema::ItemSchema::Numeric(n) => {
@@ -1610,12 +1612,12 @@ fn extract_question(item: &schema::ItemSchema) -> Option<(u16, Option<u16>, u8, 
     }
 }
 
-fn find_string_package_section(image: &Image, ffs_guid: Option<&Guid>) -> Result<(usize, usize), SetupAdvancedError> {
+fn find_string_package_section(image: &Image, ffs_guid: Option<&Guid>) -> Result<(usize, usize, usize), SetupAdvancedError> {
     for (vi, vol) in image.root.children.iter().enumerate() {
         for (fi, file) in vol.children.iter().enumerate() {
             if let Some(g) = ffs_guid { if file.guid != Some(*g) { continue; } }
-            for (_si, sec) in file.children.iter().enumerate() {
-                if string_pack::is_string_package(&sec.body) { return Ok((vi, fi)); }
+            for (si, sec) in file.children.iter().enumerate() {
+                if string_pack::is_string_package(&sec.body) { return Ok((vi, fi, si)); }
             }
         }
     }
@@ -1623,13 +1625,15 @@ fn find_string_package_section(image: &Image, ffs_guid: Option<&Guid>) -> Result
 }
 ```
 
-Добавить в `ifr_builder.rs`:
+Добавить в `ifr_builder.rs` рядом с существующими `pub use r_efi::hii::*` алиасами реэкспорт флаг-констант (используются координатором; r_efi::hii их экспортирует):
 ```rust
-impl IfrBuilder {
-    pub fn emit_check_box_default(&mut self, _standard: bool) {
-        self.buf.push(0x01);
-    }
-}
+pub use r_efi::hii::IFR_CHECKBOX_DEFAULT;
+pub use r_efi::hii::IFR_CHECKBOX_DEFAULT_MFG;
+pub use r_efi::hii::IFR_DISPLAY_INT_DEC;
+pub use r_efi::hii::IFR_DISPLAY_UINT_DEC;
+pub use r_efi::hii::IFR_DISPLAY_UINT_HEX;
+pub use r_efi::hii::IFR_OPTION_DEFAULT;
+pub use r_efi::hii::IFR_OPTION_DEFAULT_MFG;
 ```
 
 - [ ] **Step 2: Запустить компиляцию**
