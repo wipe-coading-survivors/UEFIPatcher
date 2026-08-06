@@ -652,47 +652,85 @@ git commit -m "feat(setup_advanced): add IFR builder (FormSet/Form/VarStore/OneO
 - Create: `crates/uefi-engine/src/setup_advanced/string_pack.rs`
 
 **Interfaces:**
-- Consumes: `types::*` (Image, FfsNode, Guid), `parser::target::find_item`
+- Consumes: `types::*` (Image, FfsNode, Guid, Action), `ops::mark_rebuild_to_root_by_path`, `r_efi::hii::PACKAGE_STRINGS`
 - Produces:
   - `pub fn add_strings(image: &mut Image, ffs_guid: Option<&Guid>, strings: &[String]) -> Result<HashMap<String, u16>, SetupAdvancedError>`
-  - Поиск String-пакета: по GUID FFS (если передан) → авто-поиск (первый FFS с HII String Package)
-  - Парсинг: извлечение существующих StringId → `max_string_id`
-  - Добавление: alloc новых StringId (от max+1), запись SIBT-блоков
-  - Пересборка: обновление Length заголовка, пересчёт checksum
+  - Поиск String-пакета: по GUID FFS (если передан) → авто-поиск (первый FFS с HII String Package). Возвращает путь `(volume_idx, file_idx, section_idx)` — пакет живёт в теле **Section**-узла (`file.children[si].body`, см. parser/section.rs:64-78, setup/mod.rs:67), не в теле File-узла.
+  - Парсинг: max StringId выводится сканированием SIBT-блоков (StringId 1-базированные, последовательные, продвигаются SKIP-блоками) — фиксированного поля «max string id» в `EFI_HII_STRING_PACKAGE_HDR` нет (edk2 UefiInternalFormRepresentation.h:337-344: bytes 4-7 = HdrSize, 8-11 = StringInfoOffset).
+  - Добавление: alloc новых StringId (от max+1), запись валидных `SIBT_STRING_SCSU (0x10)` блоков (`0x10` + SCSU-байты + `0x00`) **перед** существующим `SIBT_END (0x00)` маркером. StringId не пишется инлайн — он неявный/последовательный (edk2 UefiInternalFormRepresentation.h:353-364).
+  - Пересборка: обновление 3-байтного `Length` (bytes 0-2) заголовка пакета `EFI_HII_PACKAGE_HEADER` (length:24+type:8, edk2 UefiInternalFormRepresentation.h:56-60). Поля checksum у отдельного HII-пакета нет. После правки тела Section вызывается `ops::mark_rebuild_to_root_by_path` для каскадного Rebuild File/Volume.
   - Возврат: маппинг текст→StringId
+  - Детектор пакета: `pub fn is_string_package(body) -> bool` (`body[3] == r_efi::hii::PACKAGE_STRINGS`, тип пакета в 4-м байте битового поля). SIBT-коды локальные (`const SIBT_*`), т.к. r_efi их не экспортирует.
 
 - [ ] **Step 1: Написать failing test**
 
 `crates/uefi-engine/src/setup_advanced/string_pack.rs`:
 ```rust
 use std::collections::HashMap;
+
+use crate::ops;
 use crate::types::*;
 use super::SetupAdvancedError;
 
-pub fn add_strings(image: &mut Image, ffs_guid: Option<&Guid>, strings: &[String]) -> Result<HashMap<String, u16>, SetupAdvancedError> {
-    let (ffs_idx, section_idx) = find_string_package(image, ffs_guid)?;
-    let node = &mut image.root.children[ffs_idx].children[section_idx];
-    let max_id = parse_max_string_id(&node.body);
-    let mut mapping = HashMap::new();
-    let mut next_id = max_id + 1;
-    for s in strings {
-        mapping.insert(s.clone(), next_id);
-        append_string_to_package(&mut node.body, next_id, s);
-        next_id += 1;
-    }
-    update_package_header(&mut node.body);
+pub use r_efi::hii::PACKAGE_STRINGS;
+
+const SIBT_END: u8 = 0x00;
+const SIBT_STRING_SCSU: u8 = 0x10;
+const SIBT_STRING_SCSU_FONT: u8 = 0x11;
+const SIBT_STRINGS_SCSU: u8 = 0x12;
+const SIBT_STRINGS_SCSU_FONT: u8 = 0x13;
+const SIBT_STRING_UCS2: u8 = 0x14;
+const SIBT_STRING_UCS2_FONT: u8 = 0x15;
+const SIBT_STRINGS_UCS2: u8 = 0x16;
+const SIBT_STRINGS_UCS2_FONT: u8 = 0x17;
+const SIBT_DUPLICATE: u8 = 0x20;
+const SIBT_SKIP2: u8 = 0x21;
+const SIBT_SKIP1: u8 = 0x22;
+
+const PACKAGE_HEADER_LEN: usize = 4;
+const STRING_INFO_OFFSET_POS: usize = 8;
+
+pub fn add_strings(
+    image: &mut Image,
+    ffs_guid: Option<&Guid>,
+    strings: &[String],
+) -> Result<HashMap<String, u16>, SetupAdvancedError> {
+    let (vi, fi, si) = find_string_package(image, ffs_guid)?;
+    let path = vec![vi, fi, si];
+    let body = &mut image.root.children[vi].children[fi].children[si].body;
+    let mapping = add_strings_to_body(body, strings);
+    ops::mark_rebuild_to_root_by_path(&mut image.root, &path);
     Ok(mapping)
 }
 
-fn find_string_package(image: &Image, ffs_guid: Option<&Guid>) -> Result<(usize, usize), SetupAdvancedError> {
+fn add_strings_to_body(body: &mut Vec<u8>, strings: &[String]) -> HashMap<String, u16> {
+    let sibt_start = string_info_offset(body);
+    let (mut max_id, mut end_pos) = scan_sibt(body, sibt_start);
+    let mut mapping = HashMap::new();
+    for s in strings {
+        let new_id = max_id.wrapping_add(1);
+        max_id = new_id;
+        mapping.insert(s.clone(), new_id);
+        end_pos = append_scsu_string(body, end_pos, s);
+    }
+    update_package_length(body);
+    mapping
+}
+
+fn find_string_package(
+    image: &Image,
+    ffs_guid: Option<&Guid>,
+) -> Result<(usize, usize, usize), SetupAdvancedError> {
     for (vi, vol) in image.root.children.iter().enumerate() {
         for (fi, file) in vol.children.iter().enumerate() {
             if let Some(g) = ffs_guid {
-                if file.guid != Some(*g) { continue; }
+                if file.guid != Some(*g) {
+                    continue;
+                }
             }
-            for (_si, sec) in file.children.iter().enumerate() {
+            for (si, sec) in file.children.iter().enumerate() {
                 if is_string_package(&sec.body) {
-                    return Ok((vi, fi));
+                    return Ok((vi, fi, si));
                 }
             }
         }
@@ -700,63 +738,284 @@ fn find_string_package(image: &Image, ffs_guid: Option<&Guid>) -> Result<(usize,
     Err(SetupAdvancedError::StringPackageNotFound)
 }
 
-fn is_string_package(body: &[u8]) -> bool {
-    body.len() >= 4 && body[3] == 0x04
+pub fn is_string_package(body: &[u8]) -> bool {
+    body.len() >= PACKAGE_HEADER_LEN && body[3] == PACKAGE_STRINGS
 }
 
-fn parse_max_string_id(body: &[u8]) -> u16 {
-    if body.len() < 6 { return 0; }
-    u16::from_le_bytes([body[4], body[5]])
+fn string_info_offset(body: &[u8]) -> usize {
+    if body.len() >= STRING_INFO_OFFSET_POS + 4 {
+        let off = u32::from_le_bytes([
+            body[STRING_INFO_OFFSET_POS],
+            body[STRING_INFO_OFFSET_POS + 1],
+            body[STRING_INFO_OFFSET_POS + 2],
+            body[STRING_INFO_OFFSET_POS + 3],
+        ]) as usize;
+        if off >= PACKAGE_HEADER_LEN && off < body.len() {
+            return off;
+        }
+    }
+    PACKAGE_HEADER_LEN
 }
 
-fn append_string_to_package(body: &mut Vec<u8>, string_id: u16, text: &str) {
-    body.push(0x00);
-    body.push(0x01);
-    body.extend_from_slice(&string_id.to_le_bytes());
-    body.extend_from_slice(text.as_bytes());
-    body.push(0x00);
+fn scan_sibt(body: &[u8], start: usize) -> (u16, usize) {
+    let mut pos = start;
+    let mut next_id: u16 = 1;
+    let mut max_id: u16 = 0;
+    while pos < body.len() {
+        match body[pos] {
+            SIBT_END => return (max_id, pos),
+            SIBT_STRING_SCSU => {
+                max_id = next_id;
+                next_id = next_id.wrapping_add(1);
+                pos = skip_scsu(body, pos + 1);
+            }
+            SIBT_STRING_SCSU_FONT => {
+                max_id = next_id;
+                next_id = next_id.wrapping_add(1);
+                pos = skip_scsu(body, pos + 2);
+            }
+            SIBT_STRINGS_SCSU => {
+                let (ids, p) = read_u16_count(body, pos + 1);
+                pos = p;
+                for _ in 0..ids {
+                    max_id = next_id;
+                    next_id = next_id.wrapping_add(1);
+                    pos = skip_scsu(body, pos);
+                }
+            }
+            SIBT_STRINGS_SCSU_FONT => {
+                let (ids, p) = read_u16_count(body, pos + 2);
+                pos = p;
+                for _ in 0..ids {
+                    max_id = next_id;
+                    next_id = next_id.wrapping_add(1);
+                    pos = skip_scsu(body, pos);
+                }
+            }
+            SIBT_STRING_UCS2 => {
+                max_id = next_id;
+                next_id = next_id.wrapping_add(1);
+                pos = skip_ucs2(body, pos + 1);
+            }
+            SIBT_STRING_UCS2_FONT => {
+                max_id = next_id;
+                next_id = next_id.wrapping_add(1);
+                pos = skip_ucs2(body, pos + 2);
+            }
+            SIBT_STRINGS_UCS2 => {
+                let (ids, p) = read_u16_count(body, pos + 1);
+                pos = p;
+                for _ in 0..ids {
+                    max_id = next_id;
+                    next_id = next_id.wrapping_add(1);
+                    pos = skip_ucs2(body, pos);
+                }
+            }
+            SIBT_STRINGS_UCS2_FONT => {
+                let (ids, p) = read_u16_count(body, pos + 2);
+                pos = p;
+                for _ in 0..ids {
+                    max_id = next_id;
+                    next_id = next_id.wrapping_add(1);
+                    pos = skip_ucs2(body, pos);
+                }
+            }
+            SIBT_DUPLICATE => {
+                max_id = next_id;
+                next_id = next_id.wrapping_add(1);
+                pos += 1 + 2;
+            }
+            SIBT_SKIP2 => {
+                let (c, p) = read_u16_count(body, pos + 1);
+                next_id = next_id.wrapping_add(c);
+                pos = p;
+            }
+            SIBT_SKIP1 => {
+                let count = body.get(pos + 1).copied().unwrap_or(0);
+                next_id = next_id.wrapping_add(count as u16);
+                pos += 2;
+            }
+            _ => break,
+        }
+    }
+    (max_id, body.len())
 }
 
-fn update_package_header(body: &mut Vec<u8>) {
+fn skip_scsu(body: &[u8], start: usize) -> usize {
+    let mut p = start;
+    while p < body.len() {
+        if body[p] == 0 {
+            return p + 1;
+        }
+        p += 1;
+    }
+    p
+}
+
+fn skip_ucs2(body: &[u8], start: usize) -> usize {
+    let mut p = start;
+    while p + 1 < body.len() {
+        if body[p] == 0 && body[p + 1] == 0 {
+            return p + 2;
+        }
+        p += 2;
+    }
+    body.len()
+}
+
+fn read_u16_count(body: &[u8], pos: usize) -> (u16, usize) {
+    if pos + 2 > body.len() {
+        return (0, body.len());
+    }
+    let c = u16::from_le_bytes([body[pos], body[pos + 1]]);
+    (c, pos + 2)
+}
+
+fn append_scsu_string(body: &mut Vec<u8>, end_pos: usize, text: &str) -> usize {
+    let block = build_scsu_block(text);
+    body.splice(end_pos..end_pos, block.iter().copied());
+    end_pos + block.len()
+}
+
+fn build_scsu_block(text: &str) -> Vec<u8> {
+    let mut block = Vec::with_capacity(1 + text.len() + 1);
+    block.push(SIBT_STRING_SCSU);
+    block.extend_from_slice(text.as_bytes());
+    block.push(0x00);
+    block
+}
+
+fn update_package_length(body: &mut Vec<u8>) {
     let len = body.len() as u32;
-    body[0..4].copy_from_slice(&len.to_le_bytes());
-    let max_id = parse_max_string_id(body);
-    let _ = max_id;
+    body[0] = (len & 0xFF) as u8;
+    body[1] = ((len >> 8) & 0xFF) as u8;
+    body[2] = ((len >> 16) & 0xFF) as u8;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn make_minimal_string_package() -> Vec<u8> {
-        let mut buf = vec![0u8; 6];
-        buf[3] = 0x04;
-        buf[0..4].copy_from_slice(&6u32.to_le_bytes());
-        buf[4..6].copy_from_slice(&0u16.to_le_bytes());
+    fn make_string_package(existing: &[&str]) -> Vec<u8> {
+        let sibt_start = 12u32;
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&[0u8; 3]);
+        buf.push(PACKAGE_STRINGS);
+        buf.extend_from_slice(&sibt_start.to_le_bytes());
+        buf.extend_from_slice(&sibt_start.to_le_bytes());
+        for s in existing {
+            buf.push(SIBT_STRING_SCSU);
+            buf.extend_from_slice(s.as_bytes());
+            buf.push(0x00);
+        }
+        buf.push(SIBT_END);
+        let len = buf.len() as u32;
+        buf[0] = (len & 0xFF) as u8;
+        buf[1] = ((len >> 8) & 0xFF) as u8;
+        buf[2] = ((len >> 16) & 0xFF) as u8;
         buf
     }
 
-    #[test]
-    fn parse_max_id_empty() {
-        let pkg = make_minimal_string_package();
-        assert_eq!(parse_max_string_id(&pkg), 0);
+    fn mk_node(node_type: FfsType, body: Vec<u8>, children: Vec<FfsNode>) -> FfsNode {
+        FfsNode {
+            guid: None,
+            node_type,
+            subtype: 0,
+            offset: 0,
+            header: vec![],
+            body,
+            tail: vec![],
+            children,
+            action: Action::NoAction,
+            parsing_data: ParsingData::None,
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        }
     }
 
-    #[test]
-    fn append_string_increases_size() {
-        let mut pkg = make_minimal_string_package();
-        let len_before = pkg.len();
-        append_string_to_package(&mut pkg, 1, "hello");
-        assert!(pkg.len() > len_before);
-        assert_eq!(&pkg[len_before+2..len_before+4], &1u16.to_le_bytes());
-        assert_eq!(&pkg[len_before+4..len_before+9], b"hello");
+    fn make_image(pkg_body: Vec<u8>) -> Image {
+        let section = mk_node(FfsType::Section, pkg_body, vec![]);
+        let file = mk_node(FfsType::File, vec![], vec![section]);
+        let volume = mk_node(FfsType::Volume, vec![], vec![file]);
+        let root = mk_node(FfsType::Image, vec![], vec![volume]);
+        Image {
+            image_id: "img".into(),
+            session_id: "s".into(),
+            root,
+            mode: ImageMode::Write,
+        }
     }
 
     #[test]
     fn is_string_package_detects() {
-        let pkg = make_minimal_string_package();
+        let pkg = make_string_package(&[]);
         assert!(is_string_package(&pkg));
         assert!(!is_string_package(&[0x00, 0x00, 0x00, 0x02]));
+    }
+
+    #[test]
+    fn add_strings_to_body_assigns_sequential_ids() {
+        let mut pkg = make_string_package(&["first", "second"]);
+        let mapping = add_strings_to_body(&mut pkg, &["a".to_string(), "b".to_string()]);
+        assert_eq!(mapping["a"], 3);
+        assert_eq!(mapping["b"], 4);
+    }
+
+    #[test]
+    fn add_strings_to_body_writes_scsu_block_before_end() {
+        let mut pkg = make_string_package(&["first"]);
+        let end_pos_before = pkg.len() - 1;
+        assert_eq!(pkg[end_pos_before], SIBT_END);
+        add_strings_to_body(&mut pkg, &["new".to_string()]);
+        assert_eq!(pkg[end_pos_before], SIBT_STRING_SCSU);
+        assert_eq!(&pkg[end_pos_before + 1..end_pos_before + 4], b"new");
+        assert_eq!(pkg[end_pos_before + 4], 0x00);
+        assert_eq!(*pkg.last().unwrap(), SIBT_END);
+    }
+
+    #[test]
+    fn add_strings_to_body_updates_length() {
+        let mut pkg = make_string_package(&[]);
+        let len_before = pkg.len();
+        add_strings_to_body(&mut pkg, &["hello".to_string()]);
+        let stored = pkg[0] as u32 | ((pkg[1] as u32) << 8) | ((pkg[2] as u32) << 16);
+        assert_eq!(stored as usize, pkg.len());
+        assert!(pkg.len() > len_before);
+    }
+
+    #[test]
+    fn add_strings_skips_skip_blocks_in_id_counting() {
+        let mut pkg = make_string_package(&["first"]);
+        // insert a SIBT_SKIP2 (0x21) + count=5 before SIBT_END
+        let end = pkg.len() - 1;
+        pkg.splice(end..end, [SIBT_SKIP2, 0x05, 0x00]);
+        let mapping = add_strings_to_body(&mut pkg, &["after".to_string()]);
+        assert_eq!(mapping["after"], 7);
+    }
+
+    #[test]
+    fn add_strings_on_image_mutates_section_and_marks_rebuild() {
+        let pkg = make_string_package(&["first", "second"]);
+        let mut image = make_image(pkg);
+        let mapping = add_strings(&mut image, None, &["x".to_string()]).unwrap();
+        assert_eq!(mapping["x"], 3);
+        let section = &image.root.children[0].children[0].children[0];
+        let stored = section.body[0] as u32
+            | ((section.body[1] as u32) << 8)
+            | ((section.body[2] as u32) << 16);
+        assert_eq!(stored as usize, section.body.len());
+        assert_eq!(section.action, Action::Rebuild);
+        assert_eq!(image.root.children[0].children[0].action, Action::Rebuild);
+    }
+
+    #[test]
+    fn add_strings_returns_error_when_no_package() {
+        let mut image = make_image(vec![0x00, 0x00, 0x00, 0x02]);
+        assert!(matches!(
+            add_strings(&mut image, None, &["x".to_string()]),
+            Err(SetupAdvancedError::StringPackageNotFound)
+        ));
     }
 }
 ```
@@ -1228,17 +1487,12 @@ fn find_string_package_section(image: &Image, ffs_guid: Option<&Guid>) -> Result
         for (fi, file) in vol.children.iter().enumerate() {
             if let Some(g) = ffs_guid { if file.guid != Some(*g) { continue; } }
             for (_si, sec) in file.children.iter().enumerate() {
-                if string_pack::is_string_package_pub(&sec.body) { return Ok((vi, fi)); }
+                if string_pack::is_string_package(&sec.body) { return Ok((vi, fi)); }
             }
         }
     }
     Err(SetupAdvancedError::StringPackageNotFound)
 }
-```
-
-Добавить в `string_pack.rs`:
-```rust
-pub fn is_string_package_pub(body: &[u8]) -> bool { is_string_package(body) }
 ```
 
 Добавить в `ifr_builder.rs`:
