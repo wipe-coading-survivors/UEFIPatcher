@@ -668,9 +668,9 @@ git commit -m "feat(setup_advanced): add IFR builder (FormSet/Form/VarStore/OneO
 ```rust
 use std::collections::HashMap;
 
+use super::SetupAdvancedError;
 use crate::ops;
 use crate::types::*;
-use super::SetupAdvancedError;
 
 pub use r_efi::hii::PACKAGE_STRINGS;
 
@@ -723,10 +723,10 @@ fn find_string_package(
 ) -> Result<(usize, usize, usize), SetupAdvancedError> {
     for (vi, vol) in image.root.children.iter().enumerate() {
         for (fi, file) in vol.children.iter().enumerate() {
-            if let Some(g) = ffs_guid {
-                if file.guid != Some(*g) {
-                    continue;
-                }
+            if let Some(g) = ffs_guid
+                && file.guid != Some(*g)
+            {
+                continue;
             }
             for (si, sec) in file.children.iter().enumerate() {
                 if is_string_package(&sec.body) {
@@ -875,7 +875,7 @@ fn build_scsu_block(text: &str) -> Vec<u8> {
     block
 }
 
-fn update_package_length(body: &mut Vec<u8>) {
+fn update_package_length(body: &mut [u8]) {
     let len = body.len() as u32;
     body[0] = (len & 0xFF) as u8;
     body[1] = ((len >> 8) & 0xFF) as u8;
