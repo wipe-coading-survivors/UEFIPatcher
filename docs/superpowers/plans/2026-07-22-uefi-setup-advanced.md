@@ -1151,7 +1151,7 @@ fn ucs2_body_to_string(body: &[u8]) -> String {
 }
 
 fn has_question_id_markers(body: &[u8]) -> bool {
-    body.len() >= AMI_RECORD_SIZE && body.len() % AMI_RECORD_SIZE == 0
+    body.len() >= AMI_RECORD_SIZE && body.len().is_multiple_of(AMI_RECORD_SIZE)
 }
 
 fn find_formset_marker_position(body: &[u8], marker: &[u8]) -> Option<usize> {
