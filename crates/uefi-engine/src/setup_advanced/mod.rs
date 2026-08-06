@@ -1,5 +1,6 @@
 pub mod ifr_builder;
 pub mod schema;
+pub mod string_pack;
 
 use thiserror::Error;
 
