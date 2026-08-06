@@ -1,3 +1,4 @@
+pub mod ifr_builder;
 pub mod schema;
 
 use thiserror::Error;
