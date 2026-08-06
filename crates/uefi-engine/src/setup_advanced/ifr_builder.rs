@@ -24,6 +24,14 @@ pub use r_efi::hii::IFR_TYPE_NUM_SIZE_32 as TYPE_NUM_SIZE_32;
 pub use r_efi::hii::IFR_TYPE_NUM_SIZE_64 as TYPE_NUM_SIZE_64;
 pub use r_efi::hii::IFR_TYPE_STRING as TYPE_STRING;
 
+pub use r_efi::hii::IFR_CHECKBOX_DEFAULT;
+pub use r_efi::hii::IFR_CHECKBOX_DEFAULT_MFG;
+pub use r_efi::hii::IFR_DISPLAY_INT_DEC;
+pub use r_efi::hii::IFR_DISPLAY_UINT_DEC;
+pub use r_efi::hii::IFR_DISPLAY_UINT_HEX;
+pub use r_efi::hii::IFR_OPTION_DEFAULT;
+pub use r_efi::hii::IFR_OPTION_DEFAULT_MFG;
+
 pub const DEFAULT_ID_STANDARD: u16 = 0x0000;
 pub const DEFAULT_ID_MANUFACTURING: u16 = 0x0001;
 
