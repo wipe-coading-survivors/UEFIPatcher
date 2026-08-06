@@ -376,36 +376,29 @@ git commit -m "feat(setup_advanced): add JSON schema (FormSet/Form/Item/Defaults
 use crate::types::Guid;
 use std::str::FromStr;
 
-// NOTE: вместо ручных констант предпочтительно использовать `r_efi::hii::*`:
-//   IFR_FORM_SET_OP, IFR_FORM_OP, IFR_END_OP, IFR_VARSTORE_OP, IFR_VARSTORE_EFI_OP,
-//   IFR_DEFAULT_STORE_OP, IFR_ONE_OF_OP, IFR_ONE_OF_OPTION_OP, IFR_CHECKBOX_OP,
-//   IFR_NUMERIC_OP, IFR_REF_OP, IFR_TEXT_OP, IFR_STRING_OP, IFR_ACTION_OP,
-//   IFR_ORDERED_LIST_OP, IFR_DEFAULT_OP.
-// Локальные алиасы ниже оставлены для совместимости с остальным кодом плана;
-// при реализации можно заменить на `pub use r_efi::hii::IFR_FORM_SET_OP as OP_FORM_SET;` и т.д.
-pub const OP_FORM_SET: u8 = 0x0E;
-pub const OP_FORM: u8 = 0x01;
-pub const OP_END: u8 = 0x29;
-pub const OP_VARSTORE: u8 = 0x24;
-pub const OP_VARSTORE_EFI: u8 = 0x26;
-pub const OP_DEFAULT_STORE: u8 = 0x5C;
-pub const OP_ONE_OF: u8 = 0x05;
-pub const OP_ONE_OF_OPTION: u8 = 0x09;
-pub const OP_CHECKBOX: u8 = 0x06;
-pub const OP_NUMERIC: u8 = 0x07;
-pub const OP_REF: u8 = 0x0F;
-pub const OP_TEXT: u8 = 0x03;
-pub const OP_STRING: u8 = 0x1C;
-pub const OP_ACTION: u8 = 0x0C;
-pub const OP_ORDERED_LIST: u8 = 0x23;
-pub const OP_DEFAULT: u8 = 0x5B;
+pub use r_efi::hii::IFR_FORM_SET_OP as OP_FORM_SET;
+pub use r_efi::hii::IFR_FORM_OP as OP_FORM;
+pub use r_efi::hii::IFR_END_OP as OP_END;
+pub use r_efi::hii::IFR_VARSTORE_OP as OP_VARSTORE;
+pub use r_efi::hii::IFR_VARSTORE_EFI_OP as OP_VARSTORE_EFI;
+pub use r_efi::hii::IFR_DEFAULTSTORE_OP as OP_DEFAULT_STORE;
+pub use r_efi::hii::IFR_ONE_OF_OP as OP_ONE_OF;
+pub use r_efi::hii::IFR_ONE_OF_OPTION_OP as OP_ONE_OF_OPTION;
+pub use r_efi::hii::IFR_CHECKBOX_OP as OP_CHECKBOX;
+pub use r_efi::hii::IFR_NUMERIC_OP as OP_NUMERIC;
+pub use r_efi::hii::IFR_REF_OP as OP_REF;
+pub use r_efi::hii::IFR_TEXT_OP as OP_TEXT;
+pub use r_efi::hii::IFR_STRING_OP as OP_STRING;
+pub use r_efi::hii::IFR_ACTION_OP as OP_ACTION;
+pub use r_efi::hii::IFR_ORDERED_LIST_OP as OP_ORDERED_LIST;
+pub use r_efi::hii::IFR_DEFAULT_OP as OP_DEFAULT;
 
-pub const TYPE_NUM_SIZE_8: u8 = 0x00;
-pub const TYPE_NUM_SIZE_16: u8 = 0x01;
-pub const TYPE_NUM_SIZE_32: u8 = 0x02;
-pub const TYPE_NUM_SIZE_64: u8 = 0x03;
-pub const TYPE_BOOLEAN: u8 = 0x04;
-pub const TYPE_STRING: u8 = 0x07;
+pub use r_efi::hii::IFR_TYPE_NUM_SIZE_8 as TYPE_NUM_SIZE_8;
+pub use r_efi::hii::IFR_TYPE_NUM_SIZE_16 as TYPE_NUM_SIZE_16;
+pub use r_efi::hii::IFR_TYPE_NUM_SIZE_32 as TYPE_NUM_SIZE_32;
+pub use r_efi::hii::IFR_TYPE_NUM_SIZE_64 as TYPE_NUM_SIZE_64;
+pub use r_efi::hii::IFR_TYPE_BOOLEAN as TYPE_BOOLEAN;
+pub use r_efi::hii::IFR_TYPE_STRING as TYPE_STRING;
 
 pub const DEFAULT_ID_STANDARD: u16 = 0x0000;
 pub const DEFAULT_ID_MANUFACTURING: u16 = 0x0001;
@@ -427,7 +420,7 @@ impl IfrBuilder {
 
     pub fn emit_form_set(&mut self, guid: &Guid, title_id: u16, help_id: u16, class_guids: &[Guid]) {
         let flags = class_guids.len() as u8 & 0x03;
-        self.write_header(OP_FORM_SET, true, 20 + 16 * class_guids.len());
+        self.write_header(OP_FORM_SET, true, 21 + 16 * class_guids.len());
         self.buf.extend_from_slice(&guid_to_bytes(guid));
         self.buf.extend_from_slice(&title_id.to_le_bytes());
         self.buf.extend_from_slice(&help_id.to_le_bytes());
@@ -460,7 +453,7 @@ impl IfrBuilder {
     }
 
     pub fn emit_one_of(&mut self, prompt_id: u16, help_id: u16, qid: u16, vsid: u16, voff: u16, flags: u8, size: u8) {
-        self.write_header(OP_ONE_OF, true, 13);
+        self.write_header(OP_ONE_OF, true, 12 + 3 * size as usize);
         self.buf.extend_from_slice(&prompt_id.to_le_bytes());
         self.buf.extend_from_slice(&help_id.to_le_bytes());
         self.buf.extend_from_slice(&qid.to_le_bytes());
@@ -496,7 +489,7 @@ impl IfrBuilder {
     }
 
     pub fn emit_numeric(&mut self, prompt_id: u16, help_id: u16, qid: u16, vsid: u16, voff: u16, flags: u8, size: u8, min: u64, max: u64, step: u64) {
-        self.write_header(OP_NUMERIC, true, 13);
+        self.write_header(OP_NUMERIC, true, 12 + 3 * size as usize);
         self.buf.extend_from_slice(&prompt_id.to_le_bytes());
         self.buf.extend_from_slice(&help_id.to_le_bytes());
         self.buf.extend_from_slice(&qid.to_le_bytes());
@@ -574,7 +567,7 @@ mod tests {
         b.emit_form_set(&g, 1, 2, &[]);
         let buf = b.build();
         assert_eq!(buf[0], OP_FORM_SET);
-        assert_eq!(buf[1] & 0x7F, 22);
+        assert_eq!(buf[1] & 0x7F, 23);
         assert_eq!(buf[1] & 0x80, 0x80);
         assert_eq!(&buf[2..18], &guid_to_bytes(&g));
         assert_eq!(u16::from_le_bytes([buf[18], buf[19]]), 1);
@@ -606,10 +599,10 @@ mod tests {
         b.emit_var_store(1, &g, 256, "MyVar");
         let buf = b.build();
         assert_eq!(buf[0], OP_VARSTORE);
-        assert_eq!(u16::from_le_bytes([buf[20], buf[21]]), 1);
-        assert_eq!(u16::from_le_bytes([buf[22], buf[23]]), 256);
-        assert_eq!(&buf[24..29], b"MyVar");
-        assert_eq!(buf[29], 0);
+        assert_eq!(u16::from_le_bytes([buf[18], buf[19]]), 1);
+        assert_eq!(u16::from_le_bytes([buf[20], buf[21]]), 256);
+        assert_eq!(&buf[22..27], b"MyVar");
+        assert_eq!(buf[27], 0);
     }
 
     #[test]
