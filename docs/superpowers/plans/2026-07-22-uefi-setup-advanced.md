@@ -1297,55 +1297,69 @@ git commit -m "feat(setup_advanced): add AMI patcher (setupdataBin records + ami
 
 **Files:**
 - Create: `crates/uefi-engine/src/setup_advanced/ffs_assembler.rs`
+- Modify: `crates/uefi-engine/src/ffs.rs` (add `EFI_FV_FILETYPE_RAW` — r_efi не экспортирует FFS file-type константы)
 
 **Interfaces:**
-- Consumes: `types::*`, `ffs::*` (checksums, header helpers)
+- Consumes: `types::Guid`, `ffs::*` (checksums, header helpers, section constants)
 - Produces:
   - `pub fn assemble_ffs(ifr_bytes: &[u8], string_package_bytes: &[u8], file_guid: &Guid) -> Result<Vec<u8>, SetupAdvancedError>`
-  - Сборка: FFSv2-заголовок (24 байта) + секции (EFI_SECTION_RAW с IFR + EFI_SECTION_RAW с String-пакетом)
-  - Пересчёт checksum, size
+  - Сборка: FFSv2-заголовок (24 байта, layout `EFI_FFS_FILE_HEADER` из UEFITool ffs.h:270-277: Name@0, IntegrityCheck@16-17, Type@18, Attributes@19, Size@20-22, State@23) + секции (EFI_SECTION_RAW с IFR + EFI_SECTION_RAW с String-пакетом)
+  - Пересчёт Header checksum8 (byte 16), size (byte 20-22). r_efi не экспортирует FFS file-type константы → `EFI_FV_FILETYPE_RAW=0x01` определяется в `crate::ffs` (refs/UEFITool-ai-fork/common/ffs.h).
 
-- [ ] **Step 1: Написать failing test**
+- [ ] **Step 1: Добавить константу типа FFS-файла в ffs.rs**
+
+`crates/uefi-engine/src/ffs.rs` — рядом с `EFI_SECTION_*`:
+```rust
+pub const EFI_FV_FILETYPE_RAW: u8 = 0x01; // refs/UEFITool-ai-fork/common/ffs.h
+```
+
+- [ ] **Step 2: Написать failing test**
 
 `crates/uefi-engine/src/setup_advanced/ffs_assembler.rs`:
 ```rust
-use crate::types::*;
 use crate::ffs::*;
+use crate::types::Guid;
+
 use super::SetupAdvancedError;
 
-pub fn assemble_ffs(ifr_bytes: &[u8], string_package_bytes: &[u8], file_guid: &Guid) -> Result<Vec<u8>, SetupAdvancedError> {
+const FFS_HEADER_SIZE: usize = 24;
+
+pub fn assemble_ffs(
+    ifr_bytes: &[u8],
+    string_package_bytes: &[u8],
+    file_guid: &Guid,
+) -> Result<Vec<u8>, SetupAdvancedError> {
     let mut body = Vec::new();
     emit_raw_section(&mut body, ifr_bytes);
     emit_raw_section(&mut body, string_package_bytes);
-    let total = 24 + body.len();
-    let mut header = vec![0u8; 24];
-    header[0..16].copy_from_slice(&guid_to_bytes(file_guid));
-    header[16] = 0x01;
-    header[17] = 0x00;
+    let total = FFS_HEADER_SIZE + body.len();
+    let mut header = vec![0u8; FFS_HEADER_SIZE];
+    header[0..16].copy_from_slice(&file_guid.to_bytes());
+    header[18] = EFI_FV_FILETYPE_RAW;
+    header[19] = 0x00;
     let size_b = size_to_uint24(total as u32);
-    header[20] = size_b[0]; header[21] = size_b[1]; header[22] = size_b[2];
-    let cs = calculate_checksum8(&header[0..23]);
-    header[23] = cs;
+    header[20] = size_b[0];
+    header[21] = size_b[1];
+    header[22] = size_b[2];
+    header[16] = calculate_checksum8(&header);
     let mut ffs = Vec::with_capacity(total);
     ffs.extend_from_slice(&header);
     ffs.extend_from_slice(&body);
     Ok(ffs)
 }
 
-// NOTE: дубликат `guid_to_bytes` из ifr_builder.rs — при реализации вынести в общий
-// хелпер (например, в `crate::types`) и переиспользовать; `uguid::Guid::to_bytes()` уже даёт [u8;16].
-fn guid_to_bytes(g: &Guid) -> [u8; 16] {
-    g.to_bytes()
-}
-
 fn emit_raw_section(out: &mut Vec<u8>, data: &[u8]) {
     let total = 4 + data.len();
     let size_b = size_to_uint24(total as u32);
-    out.push(size_b[0]); out.push(size_b[1]); out.push(size_b[2]);
+    out.push(size_b[0]);
+    out.push(size_b[1]);
+    out.push(size_b[2]);
     out.push(EFI_SECTION_RAW);
     out.extend_from_slice(data);
     let aligned = (out.len() + 3) & !3;
-    while out.len() < aligned { out.push(0x00); }
+    while out.len() < aligned {
+        out.push(0x00);
+    }
 }
 
 #[cfg(test)]
@@ -1360,10 +1374,10 @@ mod tests {
         let strpkg = vec![0x06, 0x00, 0x00, 0x00, 0x04];
         let ffs = assemble_ffs(&ifr, &strpkg, &g).unwrap();
         assert!(ffs.len() > 24);
-        assert_eq!(&ffs[0..16], &guid_to_bytes(&g));
-        assert_eq!(ffs[16], 0x01);
-        let cs = calculate_checksum8(&ffs[0..23]);
-        assert_eq!(ffs[23], cs);
+        assert_eq!(&ffs[0..16], &g.to_bytes());
+        assert_eq!(ffs[18], EFI_FV_FILETYPE_RAW);
+        let sum: u8 = ffs[0..24].iter().fold(0u8, |a, &b| a.wrapping_add(b));
+        assert_eq!(sum, 0);
     }
 
     #[test]
@@ -1374,20 +1388,32 @@ mod tests {
         let size = uint24_to_u32([ffs[20], ffs[21], ffs[22]]) as usize;
         assert_eq!(size, ffs.len());
     }
+
+    #[test]
+    fn assemble_ffs_round_trips_through_parser() {
+        let g = Guid::from_str("5C60F367-A505-419A-859E-2A4FF6CA6FE5").unwrap();
+        let ifr = vec![0x29, 0x02];
+        let ffs = assemble_ffs(&ifr, &[], &g).unwrap();
+        let node = crate::parser::file::parse_file(&ffs, 0, 0xFF, 2).unwrap();
+        assert_eq!(node.guid, Some(g));
+        assert_eq!(node.subtype, EFI_FV_FILETYPE_RAW);
+        assert_eq!(node.header.len(), 24);
+        assert_eq!(node.body.len(), ffs.len() - 24);
+    }
 }
 ```
 
-- [ ] **Step 2: Подключить в mod.rs и запустить тесты**
+- [ ] **Step 3: Подключить в mod.rs и запустить тесты**
 
 `crates/uefi-engine/src/setup_advanced/mod.rs`: добавить `pub mod ffs_assembler;`
 
 Run: `cargo test -p uefi-engine setup_advanced::ffs_assembler`
 Expected: PASS
 
-- [ ] **Step 3: Коммит**
+- [ ] **Step 4: Коммит**
 
 ```bash
-git add crates/uefi-engine/src/setup_advanced/ffs_assembler.rs crates/uefi-engine/src/setup_advanced/mod.rs
+git add crates/uefi-engine/src/setup_advanced/ffs_assembler.rs crates/uefi-engine/src/setup_advanced/mod.rs crates/uefi-engine/src/ffs.rs
 git commit -m "feat(setup_advanced): add FFS assembler (header + RAW sections + checksum)"
 ```
 
