@@ -1264,7 +1264,10 @@ mod tests {
 
     #[test]
     fn patch_ami_returns_error_when_files_not_found() {
-        let mut image = make_image_named(vec![], vec![]);
+        let other = mk_node(FfsType::File, vec![0xAB], vec![ui_section("Other")]);
+        let volume = mk_node(FfsType::Volume, vec![], vec![other]);
+        let root = mk_node(FfsType::Image, vec![], vec![volume]);
+        let mut image = Image { image_id: "img".into(), session_id: "s".into(), root, mode: ImageMode::Write };
         let formset_guid: Guid = "A1B2C3D4-E5F6-7890-ABCD-EF1234567890".parse().unwrap();
         assert!(matches!(
             patch_ami(&mut image, &formset_guid, &[], &[], None, None),
