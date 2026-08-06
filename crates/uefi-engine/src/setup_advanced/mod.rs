@@ -1,4 +1,5 @@
 pub mod ami_patcher;
+pub mod ffs_assembler;
 pub mod ifr_builder;
 pub mod schema;
 pub mod string_pack;

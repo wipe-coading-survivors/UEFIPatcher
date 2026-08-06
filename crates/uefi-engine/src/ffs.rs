@@ -11,6 +11,8 @@ pub const EFI_SECTION_FREEFORM_SUBTYPE_GUID: u8 = 0x18;
 pub const EFI_SECTION_RAW: u8 = 0x19;
 pub const EFI_SECTION_DEPEX: u8 = 0x1C;
 
+pub const EFI_FV_FILETYPE_RAW: u8 = 0x01;
+
 pub const EFI_FVH_SIGNATURE: u32 = 0x4856465F;
 pub const EFI_FVB2_ERASE_POLARITY: u32 = 0x00000800;
 
