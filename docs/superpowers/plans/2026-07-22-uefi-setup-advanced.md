@@ -656,7 +656,7 @@ git commit -m "feat(setup_advanced): add IFR builder (FormSet/Form/VarStore/OneO
 - Produces:
   - `pub fn add_strings(image: &mut Image, ffs_guid: Option<&Guid>, strings: &[String]) -> Result<HashMap<String, u16>, SetupAdvancedError>`
   - Поиск String-пакета: по GUID FFS (если передан) → авто-поиск (первый FFS с HII String Package). Возвращает путь `(volume_idx, file_idx, section_idx)` — пакет живёт в теле **Section**-узла (`file.children[si].body`, см. parser/section.rs:64-78, setup/mod.rs:67), не в теле File-узла.
-  - Парсинг: max StringId выводится сканированием SIBT-блоков (StringId 1-базированные, последовательные, продвигаются SKIP-блоками) — фиксированного поля «max string id» в `EFI_HII_STRING_PACKAGE_HDR` нет (edk2 UefiInternalFormRepresentation.h:337-344: bytes 4-7 = HdrSize, 8-11 = StringInfoOffset).
+  - Парсинг: следующий свободный StringId выводится сканированием SIBT-блоков (StringId 1-базированные, последовательные, счётчик продвигается SKIP-блоками) — фиксированного поля «max string id» в `EFI_HII_STRING_PACKAGE_HDR` нет (edk2 UefiInternalFormRepresentation.h:337-344: bytes 4-7 = HdrSize, 8-11 = StringInfoOffset).
   - Добавление: alloc новых StringId (от max+1), запись валидных `SIBT_STRING_SCSU (0x10)` блоков (`0x10` + SCSU-байты + `0x00`) **перед** существующим `SIBT_END (0x00)` маркером. StringId не пишется инлайн — он неявный/последовательный (edk2 UefiInternalFormRepresentation.h:353-364).
   - Пересборка: обновление 3-байтного `Length` (bytes 0-2) заголовка пакета `EFI_HII_PACKAGE_HEADER` (length:24+type:8, edk2 UefiInternalFormRepresentation.h:56-60). Поля checksum у отдельного HII-пакета нет. После правки тела Section вызывается `ops::mark_rebuild_to_root_by_path` для каскадного Rebuild File/Volume.
   - Возврат: маппинг текст→StringId
@@ -705,11 +705,11 @@ pub fn add_strings(
 
 fn add_strings_to_body(body: &mut Vec<u8>, strings: &[String]) -> HashMap<String, u16> {
     let sibt_start = string_info_offset(body);
-    let (mut max_id, mut end_pos) = scan_sibt(body, sibt_start);
+    let (mut next_id, mut end_pos) = scan_sibt(body, sibt_start);
     let mut mapping = HashMap::new();
     for s in strings {
-        let new_id = max_id.wrapping_add(1);
-        max_id = new_id;
+        let new_id = next_id;
+        next_id = next_id.wrapping_add(1);
         mapping.insert(s.clone(), new_id);
         end_pos = append_scsu_string(body, end_pos, s);
     }
@@ -760,17 +760,14 @@ fn string_info_offset(body: &[u8]) -> usize {
 fn scan_sibt(body: &[u8], start: usize) -> (u16, usize) {
     let mut pos = start;
     let mut next_id: u16 = 1;
-    let mut max_id: u16 = 0;
     while pos < body.len() {
         match body[pos] {
-            SIBT_END => return (max_id, pos),
+            SIBT_END => return (next_id, pos),
             SIBT_STRING_SCSU => {
-                max_id = next_id;
                 next_id = next_id.wrapping_add(1);
                 pos = skip_scsu(body, pos + 1);
             }
             SIBT_STRING_SCSU_FONT => {
-                max_id = next_id;
                 next_id = next_id.wrapping_add(1);
                 pos = skip_scsu(body, pos + 2);
             }
@@ -778,7 +775,6 @@ fn scan_sibt(body: &[u8], start: usize) -> (u16, usize) {
                 let (ids, p) = read_u16_count(body, pos + 1);
                 pos = p;
                 for _ in 0..ids {
-                    max_id = next_id;
                     next_id = next_id.wrapping_add(1);
                     pos = skip_scsu(body, pos);
                 }
@@ -787,18 +783,15 @@ fn scan_sibt(body: &[u8], start: usize) -> (u16, usize) {
                 let (ids, p) = read_u16_count(body, pos + 2);
                 pos = p;
                 for _ in 0..ids {
-                    max_id = next_id;
                     next_id = next_id.wrapping_add(1);
                     pos = skip_scsu(body, pos);
                 }
             }
             SIBT_STRING_UCS2 => {
-                max_id = next_id;
                 next_id = next_id.wrapping_add(1);
                 pos = skip_ucs2(body, pos + 1);
             }
             SIBT_STRING_UCS2_FONT => {
-                max_id = next_id;
                 next_id = next_id.wrapping_add(1);
                 pos = skip_ucs2(body, pos + 2);
             }
@@ -806,7 +799,6 @@ fn scan_sibt(body: &[u8], start: usize) -> (u16, usize) {
                 let (ids, p) = read_u16_count(body, pos + 1);
                 pos = p;
                 for _ in 0..ids {
-                    max_id = next_id;
                     next_id = next_id.wrapping_add(1);
                     pos = skip_ucs2(body, pos);
                 }
@@ -815,13 +807,11 @@ fn scan_sibt(body: &[u8], start: usize) -> (u16, usize) {
                 let (ids, p) = read_u16_count(body, pos + 2);
                 pos = p;
                 for _ in 0..ids {
-                    max_id = next_id;
                     next_id = next_id.wrapping_add(1);
                     pos = skip_ucs2(body, pos);
                 }
             }
             SIBT_DUPLICATE => {
-                max_id = next_id;
                 next_id = next_id.wrapping_add(1);
                 pos += 1 + 2;
             }
@@ -838,7 +828,7 @@ fn scan_sibt(body: &[u8], start: usize) -> (u16, usize) {
             _ => break,
         }
     }
-    (max_id, body.len())
+    (next_id, body.len())
 }
 
 fn skip_scsu(body: &[u8], start: usize) -> usize {
