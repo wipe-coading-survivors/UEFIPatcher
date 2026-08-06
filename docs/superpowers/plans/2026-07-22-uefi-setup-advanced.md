@@ -1453,7 +1453,7 @@ pub struct AddSetupResult {
 }
 
 pub fn add_setup_formset(image: &mut Image, schema: &schema::FormSetSchema, target_ffs_guid: Option<&Guid>) -> Result<AddSetupResult, SetupAdvancedError> {
-    let formset_guid: Guid = schema.formset_guid.parse().map_err(|e| SetupAdvancedError::InvalidSchema(e.to_string()))?;
+    let formset_guid: Guid = Guid::try_parse(&schema.formset_guid).map_err(|e| SetupAdvancedError::InvalidSchema(e.to_string()))?;
     let new_ffs_guid = Guid::try_parse(&format!(
         "{:08X}-BEEF-1234-8000-000000000001",
         0xB00B0000 + image.root.children.len() as u32,
@@ -1502,13 +1502,13 @@ fn collect_item_strings(item: &schema::ItemSchema, strings: &mut Vec<String>) {
 
 fn build_ifr(schema: &schema::FormSetSchema, string_ids: &HashMap<String, u16>) -> Result<Vec<u8>, SetupAdvancedError> {
     let mut b = IfrBuilder::new();
-    let formset_guid: Guid = schema.formset_guid.parse().map_err(|e| SetupAdvancedError::InvalidSchema(e.to_string()))?;
+    let formset_guid: Guid = Guid::try_parse(&schema.formset_guid).map_err(|e| SetupAdvancedError::InvalidSchema(e.to_string()))?;
     let title_id = string_ids[&schema.title];
     let help_id = string_ids[&schema.help];
     let class_guids: Vec<Guid> = schema.class_guids.iter().filter_map(|s| s.parse().ok()).collect();
     b.emit_form_set(&formset_guid, title_id, help_id, &class_guids);
     for vs in &schema.varstores {
-        let g: Guid = vs.guid.parse().map_err(|e| SetupAdvancedError::InvalidSchema(e.to_string()))?;
+        let g: Guid = Guid::try_parse(&vs.guid).map_err(|e| SetupAdvancedError::InvalidSchema(e.to_string()))?;
         let name_id = string_ids[&vs.name];
         b.emit_var_store(vs.id, &g, vs.size, &vs.name);
         let _ = name_id;
@@ -1698,7 +1698,7 @@ async fn add_setup_form_set(&self, req: Request<AddSetupFormSetRequest>) -> RpcR
     let target_guid: Option<crate::types::Guid> = if r.target_ffs_guid.is_empty() {
         None
     } else {
-        Some(r.target_ffs_guid.parse().map_err(|e| Status::invalid_argument(e.to_string()))?)
+        Some(Guid::try_parse(&r.target_ffs_guid).map_err(|e| Status::invalid_argument(e.to_string()))?)
     };
     let mut images = self.images.lock().await;
     let img = images.get_mut(&r.image_id).ok_or_else(|| Status::not_found("image not found"))?;
