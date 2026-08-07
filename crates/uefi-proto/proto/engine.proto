@@ -19,6 +19,7 @@ service EngineService {
   rpc ListArtifacts(ListArtifactsRequest) returns (ListArtifactsResponse);
   rpc SetSetupItemVisibility(SetSetupItemVisibilityRequest) returns (Empty);
   rpc SaveImage(SaveImageRequest) returns (Empty);
+  rpc AddSetupFormSet(AddSetupFormSetRequest) returns (AddSetupFormSetResponse);
 }
 
 enum ImageMode { READ = 0; WRITE = 1; }
@@ -70,5 +71,17 @@ message ListArtifactsResponse { repeated ArtifactInfo artifacts = 1; }
 message SetSetupItemVisibilityRequest { string image_id = 1; string item_id = 2; bool visible = 3; }
 
 message SaveImageRequest { string image_id = 1; string output_path = 2; }
+
+message AddSetupFormSetRequest {
+  string image_id = 1;
+  string schema_json = 2;
+  string target_ffs_guid = 3;
+}
+
+message AddSetupFormSetResponse {
+  string new_ffs_id = 1;
+  repeated uint32 inserted_form_ids = 2;
+  map<string, uint32> string_ids = 3;
+}
 
 message Empty {}

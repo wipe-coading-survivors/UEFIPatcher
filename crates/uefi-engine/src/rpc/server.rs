@@ -16,7 +16,7 @@ use crate::parser::image::{dump_tree, list_items, parse_image};
 use crate::parser::target::{find_item, parse_target};
 use crate::session::SessionManager;
 use crate::storage::Db;
-use crate::types::{Image, ImageMode};
+use crate::types::{Guid, Image, ImageMode};
 
 pub struct EngineServer {
     pub sm: Arc<SessionManager>,
@@ -378,6 +378,54 @@ impl EngineService for EngineServer {
             crate::builder::build_image(img).map_err(|e| Status::internal(e.to_string()))?;
         fs::write(&r.output_path, &bytes).map_err(|e| Status::internal(e.to_string()))?;
         Ok(Response::new(Empty {}))
+    }
+
+    async fn add_setup_form_set(
+        &self,
+        req: Request<AddSetupFormSetRequest>,
+    ) -> RpcResult<AddSetupFormSetResponse> {
+        let r = req.into_inner();
+        let schema = crate::setup_advanced::schema::parse_schema(&r.schema_json)
+            .map_err(|e| Status::invalid_argument(e.to_string()))?;
+        let target_guid: Option<Guid> = if r.target_ffs_guid.is_empty() {
+            None
+        } else {
+            Some(
+                Guid::try_parse(&r.target_ffs_guid)
+                    .map_err(|e| Status::invalid_argument(e.to_string()))?,
+            )
+        };
+        let mut images = self.images.lock().await;
+        let img = images
+            .get_mut(&r.image_id)
+            .ok_or_else(|| Status::not_found("image not found"))?;
+        let result = crate::setup_advanced::add_setup_formset(img, &schema, target_guid.as_ref())
+            .map_err(|e| match e {
+            crate::setup_advanced::SetupAdvancedError::InvalidSchema(s) => {
+                Status::invalid_argument(s)
+            }
+            crate::setup_advanced::SetupAdvancedError::StringPackageNotFound => {
+                Status::not_found("string package not found")
+            }
+            crate::setup_advanced::SetupAdvancedError::AmiFilesNotFound => {
+                Status::not_found("AMI setupdataBin/amitseSct not found")
+            }
+            crate::setup_advanced::SetupAdvancedError::IfrBuildError(s) => Status::internal(s),
+            crate::setup_advanced::SetupAdvancedError::FfsAssemblyError(s) => Status::internal(s),
+        })?;
+        Ok(Response::new(AddSetupFormSetResponse {
+            new_ffs_id: result.new_ffs_guid.to_string(),
+            inserted_form_ids: result
+                .inserted_form_ids
+                .into_iter()
+                .map(|f| f as u32)
+                .collect(),
+            string_ids: result
+                .string_ids
+                .into_iter()
+                .map(|(k, v)| (k, v as u32))
+                .collect(),
+        }))
     }
 }
 
