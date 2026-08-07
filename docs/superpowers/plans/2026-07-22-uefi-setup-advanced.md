@@ -1689,13 +1689,18 @@ Expected: компиляция, типы `AddSetupFormSetRequest`/`AddSetupFormS
 
 - [ ] **Step 3: Реализовать метод в server.rs**
 
+Обновить импорт в `crates/uefi-engine/src/rpc/server.rs` (добавить `Guid` — без него вызов `Guid::try_parse` ниже не компилируется E0433, т.к. существующий импорт лишь `use crate::types::{Image, ImageMode};`):
+```rust
+use crate::types::{Guid, Image, ImageMode};
+```
+
 Добавить в `impl EngineService for EngineServer` в `crates/uefi-engine/src/rpc/server.rs`:
 ```rust
 async fn add_setup_form_set(&self, req: Request<AddSetupFormSetRequest>) -> RpcResult<AddSetupFormSetResponse> {
     let r = req.into_inner();
     let schema = crate::setup_advanced::schema::parse_schema(&r.schema_json)
         .map_err(|e| Status::invalid_argument(e.to_string()))?;
-    let target_guid: Option<crate::types::Guid> = if r.target_ffs_guid.is_empty() {
+    let target_guid: Option<Guid> = if r.target_ffs_guid.is_empty() {
         None
     } else {
         Some(Guid::try_parse(&r.target_ffs_guid).map_err(|e| Status::invalid_argument(e.to_string()))?)
