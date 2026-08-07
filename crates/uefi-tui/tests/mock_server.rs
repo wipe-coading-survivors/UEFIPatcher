@@ -153,6 +153,16 @@ impl EngineService for MockEngine {
     ) -> Result<Response<ListArtifactsResponse>, Status> {
         Ok(Response::new(ListArtifactsResponse { artifacts: vec![] }))
     }
+    async fn add_setup_form_set(
+        &self,
+        _req: Request<AddSetupFormSetRequest>,
+    ) -> Result<Response<AddSetupFormSetResponse>, Status> {
+        Ok(Response::new(AddSetupFormSetResponse {
+            new_ffs_id: "mock".into(),
+            inserted_form_ids: vec![],
+            string_ids: std::collections::HashMap::new(),
+        }))
+    }
 }
 
 pub async fn start_mock(sock: &Path) -> JoinHandle<()> {
