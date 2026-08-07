@@ -1723,15 +1723,36 @@ async fn add_setup_form_set(&self, req: Request<AddSetupFormSetRequest>) -> RpcR
 }
 ```
 
-- [ ] **Step 4: Запустить компиляцию и тесты**
+- [ ] **Step 4: Запустить компиляцию и тесты uefi-engine**
 
 Run: `cargo build -p uefi-engine && cargo test -p uefi-engine`
 Expected: PASS
 
-- [ ] **Step 5: Коммит**
+- [ ] **Step 5: Обновить downstream mock-серверы (uefi-cli, uefi-tui, uefi-gateway)**
+
+Шаг 4 не ловит дефект: расширение trait `EngineService` новым методом требует его реализации во ВСЕХ impl-блоках, иначе `cargo test --all` падает с E0046 "not all trait items implemented, missing: `add_setup_form_set`". Кроме серверного impl в `crates/uefi-engine/src/rpc/server.rs` (Step 3), trait реализуют mock-серверы в test-крейтах: `crates/uefi-cli/tests/mock_server.rs`, `crates/uefi-tui/tests/mock_server.rs`, `crates/uefi-gateway/tests/mock_server.rs` (определены в планах циклов 2/3/5+7). Каждый нужно дополнить stub-реализацией нового метода.
+
+В каждый из трёх файлов добавить в `impl EngineService for MockEngine` (перед закрывающей `}` блока impl) stub:
+```rust
+    async fn add_setup_form_set(
+        &self,
+        _req: Request<AddSetupFormSetRequest>,
+    ) -> Result<Response<AddSetupFormSetResponse>, Status> {
+        Ok(Response::new(AddSetupFormSetResponse {
+            new_ffs_id: "mock".into(),
+            inserted_form_ids: vec![],
+            string_ids: std::collections::HashMap::new(),
+        }))
+    }
+```
+
+Run: `cargo test --all`
+Expected: PASS (все крейты компилируются)
+
+- [ ] **Step 6: Коммит**
 
 ```bash
-git add crates/uefi-proto/proto/engine.proto crates/uefi-engine/src/rpc/server.rs
+git add crates/uefi-proto/proto/engine.proto crates/uefi-engine/src/rpc/server.rs crates/uefi-cli/tests/mock_server.rs crates/uefi-tui/tests/mock_server.rs crates/uefi-gateway/tests/mock_server.rs
 git commit -m "feat(setup_advanced): add gRPC AddSetupFormSet method to EngineService"
 ```
 
