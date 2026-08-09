@@ -10,6 +10,7 @@ toml.workspace = true
 directories.workspace = true
 thiserror.workspace = true
 tonic.workspace = true
+num_enum.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
