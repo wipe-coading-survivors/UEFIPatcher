@@ -135,9 +135,30 @@ impl EngineService for EngineServer {
 
     async fn search_items(
         &self,
-        _req: Request<SearchItemsRequest>,
+        req: Request<SearchItemsRequest>,
     ) -> RpcResult<SearchItemsResponse> {
-        Ok(Response::new(SearchItemsResponse { items: vec![] }))
+        let r = req.into_inner();
+        let images = self.images.lock().await;
+        let img = images
+            .get(&r.image_id)
+            .ok_or_else(|| Status::not_found("image not found"))?;
+        let modes: Vec<uefi_common::search::SearchMode> = r
+            .modes
+            .iter()
+            .map(|m| match m {
+                0 => uefi_common::search::SearchMode::Name,
+                1 => uefi_common::search::SearchMode::Utf8,
+                2 => uefi_common::search::SearchMode::Utf16Le,
+                _ => uefi_common::search::SearchMode::Bytes,
+            })
+            .collect();
+        let limit = if r.limit == 0 {
+            usize::MAX
+        } else {
+            r.limit as usize
+        };
+        let items = crate::parser::image::search(&img.root, &r.query, &modes, limit);
+        Ok(Response::new(SearchItemsResponse { items }))
     }
 
     async fn find_item(&self, req: Request<FindItemRequest>) -> RpcResult<FindItemResponse> {

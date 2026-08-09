@@ -167,6 +167,86 @@ fn list_recursive(node: &FfsNode, path: &str, items: &mut Vec<Item>, filter: Opt
     }
 }
 
+pub fn search(
+    root: &FfsNode,
+    query: &str,
+    modes: &[uefi_common::search::SearchMode],
+    limit: usize,
+) -> Vec<Item> {
+    let mut out = vec![];
+    if modes.is_empty() || limit == 0 {
+        return out;
+    }
+    let mut path = String::new();
+    search_recursive(root, &mut path, query, modes, limit, &mut out);
+    out
+}
+
+fn search_recursive(
+    node: &FfsNode,
+    path: &mut String,
+    query: &str,
+    modes: &[uefi_common::search::SearchMode],
+    limit: usize,
+    out: &mut Vec<Item>,
+) {
+    if out.len() >= limit {
+        return;
+    }
+    if node.node_type == FfsType::Section && section_matches(node, query, modes) {
+        let name = node_name(node);
+        out.push(Item {
+            path: path.clone(),
+            r#type: node.node_type as u32,
+            subtype: node.subtype as u32,
+            guid: node
+                .guid
+                .map(|g| crate::guid_to_upper_string(&g))
+                .unwrap_or_default(),
+            offset: node.offset as u64,
+            size: (node.header.len() + node.body.len() + node.tail.len()) as u64,
+            name,
+        });
+        if out.len() >= limit {
+            return;
+        }
+    }
+    let saved_len = path.len();
+    for (i, child) in node.children.iter().enumerate() {
+        if !path.is_empty() {
+            path.push('/');
+        }
+        path.push_str(&i.to_string());
+        search_recursive(child, path, query, modes, limit, out);
+        path.truncate(saved_len);
+        if out.len() >= limit {
+            return;
+        }
+    }
+}
+
+fn section_matches(node: &FfsNode, query: &str, modes: &[uefi_common::search::SearchMode]) -> bool {
+    let name = node_name(node);
+    for &m in modes {
+        let hit = match m {
+            uefi_common::search::SearchMode::Name => uefi_common::search::match_name(&name, query),
+            uefi_common::search::SearchMode::Utf8 => {
+                uefi_common::search::find_utf8(&node.body, query.as_bytes())
+            }
+            uefi_common::search::SearchMode::Utf16Le => {
+                uefi_common::search::find_utf16le(&node.body, query)
+            }
+            uefi_common::search::SearchMode::Bytes => uefi_common::search::parse_hex_pattern(query)
+                .map(|p| uefi_common::search::find_utf8(&node.body, &p))
+                .unwrap_or(false),
+        };
+        if hit {
+            return true;
+        }
+    }
+    false
+}
+
 fn node_name(node: &FfsNode) -> String {
     match node.node_type {
         FfsType::Section
@@ -327,5 +407,163 @@ mod tests {
             .chain(std::iter::once(0))
             .flat_map(|u| u.to_le_bytes())
             .collect()
+    }
+
+    #[test]
+    fn search_finds_section_by_name_mode() {
+        let ui_section = FfsNode {
+            guid: None,
+            node_type: FfsType::Section,
+            subtype: EFI_SECTION_UI,
+            offset: 100,
+            header: vec![0; 4],
+            body: encode_utf16le_null("Setup"),
+            tail: vec![],
+            children: vec![],
+            action: Action::NoAction,
+            parsing_data: ParsingData::None,
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        };
+        let root = FfsNode {
+            guid: None,
+            node_type: FfsType::Image,
+            subtype: 0,
+            offset: 0,
+            header: vec![],
+            body: vec![],
+            tail: vec![],
+            children: vec![ui_section],
+            action: Action::NoAction,
+            parsing_data: ParsingData::None,
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        };
+        let res = search(&root, "set", &[uefi_common::search::SearchMode::Name], 100);
+        assert_eq!(res.len(), 1);
+        assert_eq!(res[0].subtype, EFI_SECTION_UI as u32);
+        assert_eq!(res[0].name, "Setup");
+    }
+
+    #[test]
+    fn search_finds_section_by_utf8_body() {
+        let raw_section = FfsNode {
+            guid: None,
+            node_type: FfsType::Section,
+            subtype: EFI_SECTION_RAW,
+            offset: 0,
+            header: vec![0; 4],
+            body: b"Hello World".to_vec(),
+            tail: vec![],
+            children: vec![],
+            action: Action::NoAction,
+            parsing_data: ParsingData::None,
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        };
+        let root = FfsNode {
+            guid: None,
+            node_type: FfsType::Image,
+            subtype: 0,
+            offset: 0,
+            header: vec![],
+            body: vec![],
+            tail: vec![],
+            children: vec![raw_section],
+            action: Action::NoAction,
+            parsing_data: ParsingData::None,
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        };
+        let res = search(
+            &root,
+            "World",
+            &[uefi_common::search::SearchMode::Utf8],
+            100,
+        );
+        assert_eq!(res.len(), 1);
+    }
+
+    #[test]
+    fn search_limit_truncates_results() {
+        let sections: Vec<FfsNode> = (0..5)
+            .map(|_| FfsNode {
+                guid: None,
+                node_type: FfsType::Section,
+                subtype: EFI_SECTION_RAW,
+                offset: 0,
+                header: vec![0; 4],
+                body: b"needle".to_vec(),
+                tail: vec![],
+                children: vec![],
+                action: Action::NoAction,
+                parsing_data: ParsingData::None,
+                fixed: false,
+                compressed: false,
+                alignment_bytes: vec![],
+            })
+            .collect();
+        let root = FfsNode {
+            guid: None,
+            node_type: FfsType::Image,
+            subtype: 0,
+            offset: 0,
+            header: vec![],
+            body: vec![],
+            tail: vec![],
+            children: sections,
+            action: Action::NoAction,
+            parsing_data: ParsingData::None,
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        };
+        let res = search(&root, "needle", &[uefi_common::search::SearchMode::Utf8], 3);
+        assert_eq!(res.len(), 3);
+    }
+
+    #[test]
+    fn search_skips_non_section_nodes() {
+        let file = FfsNode {
+            guid: None,
+            node_type: FfsType::File,
+            subtype: 0x01,
+            offset: 0,
+            header: vec![0; 24],
+            body: b"needle".to_vec(),
+            tail: vec![],
+            children: vec![],
+            action: Action::NoAction,
+            parsing_data: ParsingData::None,
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        };
+        let root = FfsNode {
+            guid: None,
+            node_type: FfsType::Image,
+            subtype: 0,
+            offset: 0,
+            header: vec![],
+            body: vec![],
+            tail: vec![],
+            children: vec![file],
+            action: Action::NoAction,
+            parsing_data: ParsingData::None,
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        };
+        let res = search(
+            &root,
+            "needle",
+            &[uefi_common::search::SearchMode::Utf8],
+            100,
+        );
+        assert_eq!(res.len(), 0, "search must skip File nodes");
     }
 }
