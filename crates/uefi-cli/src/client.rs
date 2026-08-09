@@ -132,6 +132,27 @@ impl Client {
             .items)
     }
 
+    pub async fn search_items(
+        &mut self,
+        image_id: &str,
+        query: &str,
+        modes: &[i32],
+        limit: u32,
+    ) -> Result<Vec<Item>, AppError> {
+        let req = SearchItemsRequest {
+            image_id: image_id.into(),
+            query: query.into(),
+            modes: modes.to_vec(),
+            limit,
+        };
+        Ok(self
+            .inner
+            .search_items(auth_req(&self.state, req))
+            .await?
+            .into_inner()
+            .items)
+    }
+
     pub async fn find_item(&mut self, image_id: &str, target: &str) -> Result<String, AppError> {
         let req = FindItemRequest {
             image_id: image_id.into(),

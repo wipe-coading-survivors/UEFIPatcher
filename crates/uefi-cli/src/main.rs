@@ -70,6 +70,13 @@ enum ImageCmd {
     Find {
         target: String,
     },
+    Search {
+        query: String,
+        #[arg(long, value_enum, num_args = 0.., default_values_t = vec![SearchModeCli::Name])]
+        mode: Vec<SearchModeCli>,
+        #[arg(long, default_value = "100")]
+        limit: u32,
+    },
     Save {
         output: String,
     },
@@ -126,6 +133,14 @@ enum SetupCmd {
     ListItems,
 }
 
+#[derive(clap::ValueEnum, Clone, Debug)]
+enum SearchModeCli {
+    Name,
+    Utf8,
+    Utf16,
+    Bytes,
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -164,6 +179,18 @@ async fn dispatch(cli: &Cli, format: output::OutputFormat) -> Result<(), error::
                 commands::image::list(filter.as_deref(), sock, format).await
             }
             ImageCmd::Find { target } => commands::image::find(target, sock, format).await,
+            ImageCmd::Search { query, mode, limit } => {
+                let modes: Vec<i32> = mode
+                    .iter()
+                    .map(|m| match m {
+                        SearchModeCli::Name => uefi_proto::SearchMode::Name as i32,
+                        SearchModeCli::Utf8 => uefi_proto::SearchMode::Utf8 as i32,
+                        SearchModeCli::Utf16 => uefi_proto::SearchMode::Utf16 as i32,
+                        SearchModeCli::Bytes => uefi_proto::SearchMode::Bytes as i32,
+                    })
+                    .collect();
+                commands::image::search(query, &modes, *limit, sock, format).await
+            }
             ImageCmd::Save { output } => commands::image::save(output, sock, format).await,
             ImageCmd::Extract { target, body_only } => {
                 commands::image::extract(target, *body_only, sock, format).await

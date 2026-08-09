@@ -88,6 +88,21 @@ pub async fn find(
     Ok(())
 }
 
+pub async fn search(
+    query: &str,
+    modes: &[i32],
+    limit: u32,
+    cli_sock: Option<&str>,
+    format: OutputFormat,
+) -> Result<(), AppError> {
+    let st = state::require_state()?;
+    let mut client = Client::connect(cli_sock, st).await?;
+    let image_id = client.active_image()?;
+    let items = client.search_items(&image_id, query, modes, limit).await?;
+    crate::output::print_items(&items, format);
+    Ok(())
+}
+
 pub async fn save(
     output: &str,
     cli_sock: Option<&str>,

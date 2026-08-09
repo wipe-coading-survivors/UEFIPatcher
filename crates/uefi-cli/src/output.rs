@@ -37,9 +37,25 @@ pub fn print_items(items: &[Item], format: OutputFormat) {
         }
         OutputFormat::Text => {
             for it in items {
+                let node = uefi_common::names::node_type_name(it.r#type);
+                let sub_name = match it.r#type {
+                    66 => uefi_common::names::file_type_name_or_raw(it.subtype as u8),
+                    67 => uefi_common::names::section_type_name_or_raw(it.subtype as u8),
+                    _ => String::new(),
+                };
+                let sub_part = if sub_name.is_empty() {
+                    String::new()
+                } else {
+                    format!("({sub_name})")
+                };
+                let name_part = if it.name.is_empty() {
+                    String::new()
+                } else {
+                    format!(" name={}", it.name)
+                };
                 println!(
-                    "{}  type={} subtype={:02X} guid={} offset={} size={} name={}",
-                    it.path, it.r#type, it.subtype, it.guid, it.offset, it.size, it.name
+                    "{}  {}{sub_part} type={} subtype={:02X} guid={} off={} size={}{name_part}",
+                    it.path, node, it.r#type, it.subtype, it.guid, it.offset, it.size,
                 );
             }
         }
