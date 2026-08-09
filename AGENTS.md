@@ -40,7 +40,7 @@ UEFIPatcher — многокомпонентное приложение для �
 | Крейт | Назначение |
 |-------|-----------|
 | `uguid` | `Guid` — Display (`to_ascii_hex_lower`), FromStr (`try_parse`), serde. UPPERCASE wrapper: `g.to_string().to_ascii_uppercase()`. Не использовать struct literal с data1/data2/data3/data4 — их нет в uguid. |
-| `r-efi` | UEFI типы: `r_efi::hii::*` (IFR-структуры: IfrFormSet, IfrForm, IfrCheckbox, IfrNumeric, IfrOneOf, IfrDefault, IfrVarstoreEfi, IfrEnd, etc.), opcode-константы (IFR_FORM_SET_OP, etc.). НЕ определять свои IFR-структуры. |
+| `r-efi` | UEFI runtime + HII типы: `r_efi::hii::*` (IFR-структуры: IfrFormSet, IfrForm, IfrCheckbox, IfrNumeric, IfrOneOf, IfrDefault, IfrVarstoreEfi, IfrEnd, etc.), opcode-константы (IFR_FORM_SET_OP, etc.). НЕ определять свои IFR-структуры. ВАЖНО: r-efi 7.0 НЕ содержит PI-констант (EFI_SECTION_*, EFI_FV_FILETYPE_*, EFI_FVH_SIGNATURE, EFI_FVB2_*) — они в `uefi-common::pi`. |
 | `binrw` | `#[brw]`-макросы для декларативного описания binary-структур (FFS/section/FV заголовки). НЕ читать байты вручную по offset. |
 | `object` | PE32 parsing (features: read_core, pe) для PEI/DXE модулей. |
 | `lzma-rs` | LZMA декомпрессия compressed-секций. |
