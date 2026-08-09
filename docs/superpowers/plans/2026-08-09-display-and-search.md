@@ -725,7 +725,7 @@ mod tests {
         let body: Vec<u8> = "AB".encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
         assert!(find_utf16le(&body, "AB"));
         assert!(!find_utf16le(&body, "AC"));
-        assert!(find_utf16le(b"", ""));
+        assert!(!find_utf16le(b"", ""));
     }
 
     #[test]
