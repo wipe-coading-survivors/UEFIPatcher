@@ -133,6 +133,13 @@ impl EngineService for EngineServer {
         Ok(Response::new(ListItemsResponse { items }))
     }
 
+    async fn search_items(
+        &self,
+        _req: Request<SearchItemsRequest>,
+    ) -> RpcResult<SearchItemsResponse> {
+        Ok(Response::new(SearchItemsResponse { items: vec![] }))
+    }
+
     async fn find_item(&self, req: Request<FindItemRequest>) -> RpcResult<FindItemResponse> {
         let r = req.into_inner();
         let images = self.images.lock().await;

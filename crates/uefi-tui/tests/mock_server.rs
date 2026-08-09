@@ -86,6 +86,12 @@ impl EngineService for MockEngine {
             }],
         }))
     }
+    async fn search_items(
+        &self,
+        _req: Request<SearchItemsRequest>,
+    ) -> Result<Response<SearchItemsResponse>, Status> {
+        Ok(Response::new(SearchItemsResponse { items: vec![] }))
+    }
     async fn find_item(
         &self,
         req: Request<FindItemRequest>,

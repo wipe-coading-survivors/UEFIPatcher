@@ -8,6 +8,7 @@ service EngineService {
   rpc OpenImage(OpenImageRequest) returns (OpenImageResponse);
   rpc DumpTree(DumpTreeRequest) returns (DumpTreeResponse);
   rpc ListItems(ListItemsRequest) returns (ListItemsResponse);
+  rpc SearchItems(SearchItemsRequest) returns (SearchItemsResponse);
   rpc FindItem(FindItemRequest) returns (FindItemResponse);
   rpc Insert(InsertRequest) returns (InsertResponse);
   rpc Remove(RemoveRequest) returns (Empty);
@@ -25,6 +26,7 @@ service EngineService {
 enum ImageMode { READ = 0; WRITE = 1; }
 enum InsertMode { INTO = 0; BEFORE = 1; AFTER = 2; }
 enum DumpFormat { TEXT = 0; TSV = 1; }
+enum SearchMode { NAME = 0; UTF8 = 1; UTF16 = 2; BYTES = 3; }
 
 message CreateSessionRequest { string name = 1; }
 message CreateSessionResponse { string session_id = 1; string token = 2; }
@@ -42,6 +44,9 @@ message DumpTreeResponse { string text = 1; }
 message ListItemsRequest { string image_id = 1; string filter = 2; }
 message Item { string path = 1; uint32 type = 2; uint32 subtype = 3; string guid = 4; uint64 offset = 5; uint64 size = 6; string name = 7; }
 message ListItemsResponse { repeated Item items = 1; }
+
+message SearchItemsRequest { string image_id = 1; string query = 2; repeated SearchMode modes = 3; uint32 limit = 4; }
+message SearchItemsResponse { repeated Item items = 1; }
 
 message FindItemRequest { string image_id = 1; string target = 2; }
 message FindItemResponse { string item_id = 1; }
