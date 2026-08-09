@@ -175,25 +175,40 @@ fn list_recursive(node: &FfsNode, path: &str, items: &mut Vec<Item>, filter: Opt
 }
 
 fn node_name(node: &FfsNode) -> String {
-    if node.subtype == EFI_SECTION_UI || node.subtype == EFI_SECTION_VERSION {
-        let text: Vec<u16> = node
-            .body
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes([c[0], c[1]]))
-            .take_while(|&c| c != 0)
-            .collect();
-        String::from_utf16_lossy(&text)
-            .trim_end_matches('\u{0}')
-            .to_string()
-    } else {
-        String::new()
+    match node.node_type {
+        FfsType::Section
+            if node.subtype == EFI_SECTION_UI || node.subtype == EFI_SECTION_VERSION =>
+        {
+            decode_utf16le_body(&node.body)
+        }
+        FfsType::File => {
+            for child in &node.children {
+                if child.node_type == FfsType::Section && child.subtype == EFI_SECTION_UI {
+                    return decode_utf16le_body(&child.body);
+                }
+            }
+            String::new()
+        }
+        _ => String::new(),
     }
+}
+
+fn decode_utf16le_body(body: &[u8]) -> String {
+    let text: Vec<u16> = body
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .take_while(|&c| c != 0)
+        .collect();
+    String::from_utf16_lossy(&text)
+        .trim_end_matches('\u{0}')
+        .to_string()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ffs::EFI_FVH_SIGNATURE;
+    use crate::ffs::{EFI_FVH_SIGNATURE, EFI_SECTION_RAW, EFI_SECTION_UI};
+    use crate::types::{Action, FfsNode, FfsType, ParsingData};
 
     fn make_image_with_volume() -> Vec<u8> {
         let mut buf = vec![0xFFu8; 256];
@@ -242,5 +257,82 @@ mod tests {
         let img = parse_image(&[], ImageMode::Read, "img1", "s1").unwrap();
         assert_eq!(img.root.node_type, FfsType::Image);
         assert!(img.root.children.is_empty());
+    }
+
+    #[test]
+    fn node_name_lifts_ui_for_ffs_file() {
+        let ui_section = FfsNode {
+            guid: None,
+            node_type: FfsType::Section,
+            subtype: EFI_SECTION_UI,
+            offset: 0,
+            header: vec![0; 4],
+            body: encode_utf16le_null("Setup"),
+            tail: vec![],
+            children: vec![],
+            action: Action::NoAction,
+            parsing_data: ParsingData::None,
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        };
+        let file = FfsNode {
+            guid: None,
+            node_type: FfsType::File,
+            subtype: 0x07,
+            offset: 0,
+            header: vec![0; 24],
+            body: vec![],
+            tail: vec![],
+            children: vec![ui_section],
+            action: Action::NoAction,
+            parsing_data: ParsingData::None,
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        };
+        assert_eq!(node_name(&file), "Setup");
+    }
+
+    #[test]
+    fn node_name_empty_for_ffs_without_ui_child() {
+        let raw_section = FfsNode {
+            guid: None,
+            node_type: FfsType::Section,
+            subtype: EFI_SECTION_RAW,
+            offset: 0,
+            header: vec![0; 4],
+            body: vec![0xAA; 4],
+            tail: vec![],
+            children: vec![],
+            action: Action::NoAction,
+            parsing_data: ParsingData::None,
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        };
+        let file = FfsNode {
+            guid: None,
+            node_type: FfsType::File,
+            subtype: 0x01,
+            offset: 0,
+            header: vec![0; 24],
+            body: vec![],
+            tail: vec![],
+            children: vec![raw_section],
+            action: Action::NoAction,
+            parsing_data: ParsingData::None,
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        };
+        assert_eq!(node_name(&file), "");
+    }
+
+    fn encode_utf16le_null(s: &str) -> Vec<u8> {
+        s.encode_utf16()
+            .chain(std::iter::once(0))
+            .flat_map(|u| u.to_le_bytes())
+            .collect()
     }
 }
