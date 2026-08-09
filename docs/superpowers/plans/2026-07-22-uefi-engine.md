@@ -534,7 +534,7 @@ git commit -m "feat: base types using uguid::Guid, FfsNode, Image, Target"
 **Interfaces:**
 - Consumes: `types::*`
 - Produces:
-  - Константы типов секций: `EFI_SECTION_COMPRESSION=0x01`, `EFI_SECTION_GUID_DEFINED=0x02`, `EFI_SECTION_PE32=0x10`, `EFI_SECTION_RAW=0x19`, `EFI_SECTION_UI=0x15`, `EFI_SECTION_VERSION=0x16`, `EFI_SECTION_FV_IMAGE=0x17`, `EFI_SECTION_FREEFORM_SUBTYPE_GUID=0x18`, `EFI_SECTION_DEPEX=0x1C`, `EFI_SECTION_TE=0x12`
+  - Константы типов секций: `EFI_SECTION_COMPRESSION=0x01`, `EFI_SECTION_GUID_DEFINED=0x02`, `EFI_SECTION_PE32=0x10`, `EFI_SECTION_RAW=0x19`, `EFI_SECTION_UI=0x15`, `EFI_SECTION_VERSION=0x14` (FIXME legacy bug: plan originally said 0x16 but per EDK2 ffs.h:481 EFI_SECTION_VERSION=0x14 and EFI_SECTION_COMPATIBILITY16=0x16 — value 0x16 was COMPATIBILITY16 mislabelled as VERSION; corrected in cycle 6 Task 6 by mapping to uefi_common::pi::SectionType::Version which carries the right 0x14), `EFI_SECTION_FV_IMAGE=0x17`, `EFI_SECTION_FREEFORM_SUBTYPE_GUID=0x18`, `EFI_SECTION_DEPEX=0x1C`, `EFI_SECTION_TE=0x12`
   - Константы: `EFI_FVH_SIGNATURE = 0x4856465F` ("_FVH"), `EFI_FVB2_ERASE_POLARITY = 0x00000800`
   - Константы GUID-ов: `TIANO_GUID`, `LZMA_GUID`, `LZMAF86_GUID`, `CRC32_GUID`
   - Структуры-парсеры: `parse_ffs_file_header(buf, offset) -> (size, guid, type, revision, attributes)`, `parse_section_header(buf, offset) -> (size, type)`
@@ -625,7 +625,7 @@ pub const EFI_SECTION_GUID_DEFINED: u8 = 0x02;
 pub const EFI_SECTION_PE32: u8 = 0x10;
 pub const EFI_SECTION_TE: u8 = 0x12;
 pub const EFI_SECTION_UI: u8 = 0x15;
-pub const EFI_SECTION_VERSION: u8 = 0x16;
+pub const EFI_SECTION_VERSION: u8 = 0x14; // FIXME legacy bug: was 0x16 (COMPATIBILITY16) — EDK2 ffs.h:481 says EFI_SECTION_VERSION=0x14; fixed in cycle 6 Task 6 via SectionType::Version enum
 pub const EFI_SECTION_FV_IMAGE: u8 = 0x17;
 pub const EFI_SECTION_FREEFORM_SUBTYPE_GUID: u8 = 0x18;
 pub const EFI_SECTION_RAW: u8 = 0x19;
