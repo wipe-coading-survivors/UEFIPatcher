@@ -675,7 +675,7 @@ pub fn find_utf16le(body: &[u8], query: &str) -> bool {
 
 pub fn parse_hex_pattern(s: &str) -> Option<Vec<u8>> {
     let cleaned: String = s.chars().filter(|c| !c.is_whitespace()).collect();
-    if cleaned.is_empty() || cleaned.len() % 2 != 0 {
+    if cleaned.is_empty() || !cleaned.len().is_multiple_of(2) {
         return None;
     }
     let mut out = Vec::with_capacity(cleaned.len() / 2);
