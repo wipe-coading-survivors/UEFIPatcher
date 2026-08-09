@@ -547,7 +547,7 @@ mod tests {
         let out = format_tree(&rows);
         assert!(out.contains("Image subtype=00"));
         assert!(out.contains("  Volume subtype=00"));
-        assert!(out.contains("    File(DXE driver) subtype=07 name=Setup"));
+        assert!(out.contains("    File(DXE driver) subtype=07 guid= off=0 size=0 name=Setup"));
         assert!(out.contains("      Section(UI) subtype=15"));
     }
 
