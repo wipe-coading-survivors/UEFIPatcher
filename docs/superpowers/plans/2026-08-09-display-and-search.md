@@ -451,7 +451,7 @@ fn depth(path: &str) -> usize {
     if path.is_empty() {
         0
     } else {
-        path.matches('/').count()
+        path.matches('/').count() + 1
     }
 }
 
@@ -583,11 +583,11 @@ mod tests {
     }
 
     #[test]
-    fn depth_counts_slashes() {
+    fn depth_returns_tree_level() {
         assert_eq!(depth(""), 0);
-        assert_eq!(depth("0"), 0);
-        assert_eq!(depth("0/1"), 1);
-        assert_eq!(depth("0/1/2/3"), 3);
+        assert_eq!(depth("0"), 1);
+        assert_eq!(depth("0/1"), 2);
+        assert_eq!(depth("0/1/2/3"), 4);
     }
 }
 ```
