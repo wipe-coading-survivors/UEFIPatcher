@@ -4,6 +4,7 @@ use super::section::parse_sections;
 use super::volume::parse_volume;
 use crate::ffs::*;
 use crate::types::*;
+use uefi_common::format::{TreeRow, format_tree};
 use uefi_proto::{DumpFormat, Item};
 
 const FVH_SCAN_STEP: usize = 16;
@@ -103,42 +104,34 @@ fn parse_volume_files(body: &[u8], body_start: usize, erase: u8, rev: u8) -> Vec
 }
 
 pub fn dump_tree(root: &FfsNode, format: DumpFormat) -> String {
-    let mut out = String::new();
-    dump_recursive(root, "", &mut out, format);
-    out
-}
-
-fn dump_recursive(node: &FfsNode, path: &str, out: &mut String, fmt: DumpFormat) {
-    let guid_str = node
-        .guid
-        .map(|g| crate::guid_to_upper_string(&g))
-        .unwrap_or_default();
-    let total = node.header.len() + node.body.len() + node.tail.len();
-    match fmt {
+    match format {
         DumpFormat::Text => {
-            out.push_str(&format!(
-                "{path} {:?} subtype={:02X} guid={guid_str} hdr={} body={} children={}\n",
-                node.node_type,
-                node.subtype,
-                node.header.len(),
-                node.body.len(),
-                node.children.len()
-            ));
+            let items = list_items(root, None);
+            let rows: Vec<TreeRow> = items
+                .iter()
+                .map(|it| TreeRow {
+                    path: it.path.clone(),
+                    type_: it.r#type,
+                    subtype: it.subtype as u8,
+                    guid: it.guid.clone(),
+                    offset: it.offset,
+                    size: it.size,
+                    name: it.name.clone(),
+                })
+                .collect();
+            format_tree(&rows)
         }
         DumpFormat::Tsv => {
-            out.push_str(&format!(
-                "{path}\t{}\t{:02X}\t{guid_str}\t{}\t{total}\n",
-                node.node_type as u32, node.subtype, node.offset,
-            ));
+            let items = list_items(root, None);
+            let mut out = String::from("path\ttype\tsubtype\tguid\toffset\tsize\tname\n");
+            for it in items {
+                out.push_str(&format!(
+                    "{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                    it.path, it.r#type, it.subtype, it.guid, it.offset, it.size, it.name,
+                ));
+            }
+            out
         }
-    }
-    for (i, child) in node.children.iter().enumerate() {
-        let p = if path.is_empty() {
-            i.to_string()
-        } else {
-            format!("{path}/{i}")
-        };
-        dump_recursive(child, &p, out, fmt);
     }
 }
 
