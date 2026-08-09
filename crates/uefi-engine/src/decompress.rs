@@ -9,15 +9,13 @@ pub enum DecompressError {
     Corrupted,
 }
 
-pub const EFI_NOT_COMPRESSED: u8 = 0;
-pub const EFI_STANDARD_COMPRESSION: u8 = 1;
-pub const EFI_LZMA_COMPRESSION: u8 = 2;
+pub use uefi_common::pi::CompressionType;
 
 pub fn decompress(data: &[u8], algorithm: u8) -> Result<Vec<u8>, DecompressError> {
     match algorithm {
-        EFI_NOT_COMPRESSED => Ok(data.to_vec()),
-        EFI_STANDARD_COMPRESSION => decompress_tiano(data),
-        EFI_LZMA_COMPRESSION => decompress_lzma(data),
+        0 => Ok(data.to_vec()),
+        1 => decompress_tiano(data),
+        2 => decompress_lzma(data),
         _ => Err(DecompressError::Unsupported),
     }
 }
@@ -51,7 +49,7 @@ mod tests {
     #[test]
     fn decompress_not_compressed() {
         let data = vec![0x01, 0x02, 0x03];
-        assert_eq!(decompress(&data, EFI_NOT_COMPRESSED).unwrap(), data);
+        assert_eq!(decompress(&data, 0).unwrap(), data);
     }
 
     #[test]
@@ -62,7 +60,7 @@ mod tests {
     #[test]
     fn decompress_tiano_unsupported_in_cycle1() {
         assert!(matches!(
-            decompress(&[0; 16], EFI_STANDARD_COMPRESSION),
+            decompress(&[0; 16], 1),
             Err(DecompressError::Unsupported)
         ));
     }
@@ -74,7 +72,7 @@ mod tests {
             include_bytes!("../../../tests/fixtures/lzma_guided_section.decompressed.bin");
         let data_offset = u16::from_le_bytes([section[20], section[21]]) as usize;
         let payload = &section[data_offset..];
-        let out = decompress(payload, EFI_LZMA_COMPRESSION).expect("LZMA decode");
+        let out = decompress(payload, 2).expect("LZMA decode");
         assert_eq!(out.len(), expected.len());
         assert_eq!(out.as_slice(), &expected[..]);
         let dict = lzma_dictionary_size(payload);

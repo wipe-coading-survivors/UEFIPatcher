@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 uefi-proto = { path = "../uefi-proto" }
+uefi-common = { path = "../uefi-common" }
 uguid.workspace = true
 r-efi.workspace = true
 binrw.workspace = true

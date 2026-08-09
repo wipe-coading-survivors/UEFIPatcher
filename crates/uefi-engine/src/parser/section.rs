@@ -1,5 +1,5 @@
 use super::ParserError;
-use crate::decompress::{self, EFI_LZMA_COMPRESSION, EFI_STANDARD_COMPRESSION};
+use crate::decompress;
 use crate::ffs::*;
 use crate::types::*;
 
@@ -85,9 +85,9 @@ fn guided_payload(body: &[u8], data_offset: usize) -> Option<&[u8]> {
 
 fn guided_algorithm(guid: &Guid) -> Option<u8> {
     if is_lzma_guid(guid) {
-        Some(EFI_LZMA_COMPRESSION)
+        Some(uefi_common::pi::CompressionType::Lzma as u8)
     } else if is_tiano_guid(guid) {
-        Some(EFI_STANDARD_COMPRESSION)
+        Some(uefi_common::pi::CompressionType::Standard as u8)
     } else {
         None
     }

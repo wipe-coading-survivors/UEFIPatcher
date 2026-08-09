@@ -1,20 +1,20 @@
 use crate::types::Guid;
 
-pub const EFI_SECTION_COMPRESSION: u8 = 0x01;
-pub const EFI_SECTION_GUID_DEFINED: u8 = 0x02;
-pub const EFI_SECTION_PE32: u8 = 0x10;
-pub const EFI_SECTION_TE: u8 = 0x12;
-pub const EFI_SECTION_UI: u8 = 0x15;
-pub const EFI_SECTION_VERSION: u8 = 0x16;
-pub const EFI_SECTION_FV_IMAGE: u8 = 0x17;
-pub const EFI_SECTION_FREEFORM_SUBTYPE_GUID: u8 = 0x18;
-pub const EFI_SECTION_RAW: u8 = 0x19;
-pub const EFI_SECTION_DEPEX: u8 = 0x1C;
+pub use uefi_common::pi::{EFI_FVB2_ERASE_POLARITY, EFI_FVH_SIGNATURE};
 
-pub const EFI_FV_FILETYPE_RAW: u8 = 0x01;
+pub const EFI_SECTION_COMPRESSION: u8 = uefi_common::pi::SectionType::Compression as u8;
+pub const EFI_SECTION_GUID_DEFINED: u8 = uefi_common::pi::SectionType::GuidDefined as u8;
+pub const EFI_SECTION_PE32: u8 = uefi_common::pi::SectionType::Pe32 as u8;
+pub const EFI_SECTION_TE: u8 = uefi_common::pi::SectionType::Te as u8;
+pub const EFI_SECTION_UI: u8 = uefi_common::pi::SectionType::UserInterface as u8;
+pub const EFI_SECTION_VERSION: u8 = uefi_common::pi::SectionType::Version as u8;
+pub const EFI_SECTION_FV_IMAGE: u8 = uefi_common::pi::SectionType::FirmwareVolumeImage as u8;
+pub const EFI_SECTION_FREEFORM_SUBTYPE_GUID: u8 =
+    uefi_common::pi::SectionType::FreeformSubtypeGuid as u8;
+pub const EFI_SECTION_RAW: u8 = uefi_common::pi::SectionType::Raw as u8;
+pub const EFI_SECTION_DEPEX: u8 = uefi_common::pi::SectionType::MmDepex as u8;
 
-pub const EFI_FVH_SIGNATURE: u32 = 0x4856465F;
-pub const EFI_FVB2_ERASE_POLARITY: u32 = 0x00000800;
+pub const EFI_FV_FILETYPE_RAW: u8 = uefi_common::pi::FileType::Raw as u8;
 
 pub fn tiano_guid() -> Guid {
     Guid::try_parse("a31280ad-481e-41b6-95e8-127f4c984779").unwrap()
