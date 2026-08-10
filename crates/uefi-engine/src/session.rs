@@ -143,4 +143,18 @@ mod tests {
         sm.destroy_session(&id, true).unwrap();
         assert!(!sess_dir.exists(), "files must be removed when purge=true");
     }
+
+    #[test]
+    fn destroy_with_purge_removes_images_dir() {
+        let (td, sm) = sm();
+        let (id, _) = sm.create_session("n").unwrap();
+        let img_dir = td.path().join("sessions").join(&id).join("images");
+        std::fs::create_dir_all(&img_dir).unwrap();
+        std::fs::write(img_dir.join("img1.bin"), b"data").unwrap();
+        sm.destroy_session(&id, true).unwrap();
+        assert!(
+            !img_dir.exists(),
+            "images/ dir must be removed when purge=true"
+        );
+    }
 }

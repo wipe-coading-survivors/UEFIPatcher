@@ -15,8 +15,8 @@ use uefi_proto::*;
 use crate::parser::image::{list_items, parse_image};
 use crate::parser::target::{find_item, parse_target};
 use crate::session::SessionManager;
-use crate::storage::image::{atomic_write, read_image_file, remove_image_file, store_image_file};
 use crate::storage::Db;
+use crate::storage::image::{atomic_write, read_image_file, remove_image_file, store_image_file};
 use crate::types::{Guid, Image, ImageMode};
 
 pub struct EngineServer {
@@ -34,8 +34,8 @@ impl EngineServer {
             let img = images
                 .get(image_id)
                 .ok_or_else(|| Status::not_found("image not found"))?;
-            let bytes = crate::builder::build_image(img)
-                .map_err(|e| Status::internal(e.to_string()))?;
+            let bytes =
+                crate::builder::build_image(img).map_err(|e| Status::internal(e.to_string()))?;
             (bytes, img.session_id.clone())
         };
         let path = self
@@ -108,10 +108,7 @@ impl EngineService for EngineServer {
         }))
     }
 
-    async fn session_destroy(
-        &self,
-        req: Request<SessionDestroyRequest>,
-    ) -> RpcResult<Empty> {
+    async fn session_destroy(&self, req: Request<SessionDestroyRequest>) -> RpcResult<Empty> {
         let r = req.into_inner();
         self.sm
             .destroy_session(&r.session_id, self.sm.purge_artifacts)
@@ -140,10 +137,7 @@ impl EngineService for EngineServer {
         }))
     }
 
-    async fn image_open(
-        &self,
-        req: Request<ImageOpenRequest>,
-    ) -> RpcResult<ImageOpenResponse> {
+    async fn image_open(&self, req: Request<ImageOpenRequest>) -> RpcResult<ImageOpenResponse> {
         let r = req.into_inner();
         let mode = match r.mode {
             0 => ImageMode::Read,
@@ -213,10 +207,7 @@ impl EngineService for EngineServer {
         Ok(Response::new(Empty {}))
     }
 
-    async fn images_list(
-        &self,
-        req: Request<ImagesListRequest>,
-    ) -> RpcResult<ImagesListResponse> {
+    async fn images_list(&self, req: Request<ImagesListRequest>) -> RpcResult<ImagesListResponse> {
         let r = req.into_inner();
         let rows = self
             .sm
@@ -331,8 +322,7 @@ impl EngineService for EngineServer {
             let img_slot = images
                 .get_mut(&r.image_id)
                 .ok_or_else(|| Status::not_found("image not found"))?;
-            let t =
-                parse_target(&r.target).map_err(|e| Status::invalid_argument(e.to_string()))?;
+            let t = parse_target(&r.target).map_err(|e| Status::invalid_argument(e.to_string()))?;
             let mode = match r.mode {
                 0 => crate::ops::InsertMode::Into,
                 1 => crate::ops::InsertMode::Before,
@@ -347,10 +337,7 @@ impl EngineService for EngineServer {
         Ok(Response::new(ImageNodeResponse { item_id: r.target }))
     }
 
-    async fn image_node_remove(
-        &self,
-        req: Request<ImageNodeRemoveRequest>,
-    ) -> RpcResult<Empty> {
+    async fn image_node_remove(&self, req: Request<ImageNodeRemoveRequest>) -> RpcResult<Empty> {
         let r = req.into_inner();
         let img = self.get_or_load_image(&r.image_id).await?;
         {
@@ -358,8 +345,7 @@ impl EngineService for EngineServer {
             let img_slot = images
                 .get_mut(&r.image_id)
                 .ok_or_else(|| Status::not_found("image not found"))?;
-            let t =
-                parse_target(&r.target).map_err(|e| Status::invalid_argument(e.to_string()))?;
+            let t = parse_target(&r.target).map_err(|e| Status::invalid_argument(e.to_string()))?;
             crate::ops::remove(&mut img_slot.root, &t)
                 .map_err(|e| Status::internal(e.to_string()))?;
         }
@@ -393,8 +379,7 @@ impl EngineService for EngineServer {
             let img_slot = images
                 .get_mut(&r.image_id)
                 .ok_or_else(|| Status::not_found("image not found"))?;
-            let t =
-                parse_target(&r.target).map_err(|e| Status::invalid_argument(e.to_string()))?;
+            let t = parse_target(&r.target).map_err(|e| Status::invalid_argument(e.to_string()))?;
             crate::ops::replace(&mut img_slot.root, &t, &data, r.body_only)
                 .map_err(|e| Status::internal(e.to_string()))?;
         }
@@ -403,10 +388,7 @@ impl EngineService for EngineServer {
         Ok(Response::new(ImageNodeResponse { item_id: r.target }))
     }
 
-    async fn image_node_rebuild(
-        &self,
-        req: Request<ImageNodeRebuildRequest>,
-    ) -> RpcResult<Empty> {
+    async fn image_node_rebuild(&self, req: Request<ImageNodeRebuildRequest>) -> RpcResult<Empty> {
         let r = req.into_inner();
         let img = self.get_or_load_image(&r.image_id).await?;
         {
@@ -414,8 +396,7 @@ impl EngineService for EngineServer {
             let img_slot = images
                 .get_mut(&r.image_id)
                 .ok_or_else(|| Status::not_found("image not found"))?;
-            let t =
-                parse_target(&r.target).map_err(|e| Status::invalid_argument(e.to_string()))?;
+            let t = parse_target(&r.target).map_err(|e| Status::invalid_argument(e.to_string()))?;
             crate::ops::rebuild(&mut img_slot.root, &t)
                 .map_err(|e| Status::internal(e.to_string()))?;
         }
@@ -474,10 +455,7 @@ impl EngineService for EngineServer {
         Ok(Response::new(ImageNodeExtractResponse { artifact_id }))
     }
 
-    async fn artifact_export(
-        &self,
-        req: Request<ArtifactExportRequest>,
-    ) -> RpcResult<Empty> {
+    async fn artifact_export(&self, req: Request<ArtifactExportRequest>) -> RpcResult<Empty> {
         let r = req.into_inner();
         let art = self
             .sm
@@ -580,14 +558,18 @@ impl EngineService for EngineServer {
         &self,
         _req: Request<SetupListFormsRequest>,
     ) -> RpcResult<SetupListFormsResponse> {
-        Err(Status::unimplemented("SetupListForms not implemented (Plan B)"))
+        Err(Status::unimplemented(
+            "SetupListForms not implemented (Plan B)",
+        ))
     }
 
     async fn setup_list_strings(
         &self,
         _req: Request<SetupListStringsRequest>,
     ) -> RpcResult<SetupListStringsResponse> {
-        Err(Status::unimplemented("SetupListStrings not implemented (Plan B)"))
+        Err(Status::unimplemented(
+            "SetupListStrings not implemented (Plan B)",
+        ))
     }
 
     async fn image_save(&self, req: Request<ImageSaveRequest>) -> RpcResult<Empty> {
