@@ -12,14 +12,6 @@ pub struct TreeRow {
     pub name: String,
 }
 
-fn depth(path: &str) -> usize {
-    if path.is_empty() {
-        0
-    } else {
-        path.matches('/').count() + 1
-    }
-}
-
 fn subtype_name_for(type_: u32, subtype: u8) -> String {
     match type_ {
         66 => file_type_name_or_raw(subtype),
@@ -31,7 +23,6 @@ fn subtype_name_for(type_: u32, subtype: u8) -> String {
 pub fn format_tree(rows: &[TreeRow]) -> String {
     let mut out = String::new();
     for r in rows {
-        let indent = "  ".repeat(depth(&r.path));
         let node_label = node_type_name(r.type_);
         let sub = subtype_name_for(r.type_, r.subtype);
         let sub_part = if sub.is_empty() {
@@ -45,8 +36,8 @@ pub fn format_tree(rows: &[TreeRow]) -> String {
             format!(" name={}", r.name)
         };
         out.push_str(&format!(
-            "{indent}{}{sub_part} subtype={:02X} guid={} off={} size={}{name_part}\n",
-            node_label, r.subtype, r.guid, r.offset, r.size,
+            "{}  {}{sub_part} type={} subtype={:02X} guid={} off={} size={}{name_part}\n",
+            r.path, node_label, r.type_, r.subtype, r.guid, r.offset, r.size,
         ));
     }
     out
@@ -114,17 +105,19 @@ mod tests {
             row("0/0/0", 67, 0x15, ""),
         ];
         let out = format_tree(&rows);
-        assert!(out.contains("Image subtype=00"));
-        assert!(out.contains("  Volume subtype=00"));
-        assert!(out.contains("    File(DXE driver) subtype=07 guid= off=0 size=0 name=Setup"));
-        assert!(out.contains("      Section(UI) subtype=15"));
+        assert!(out.contains("Image type=62 subtype=00"));
+        assert!(out.contains("0  Volume type=65 subtype=00"));
+        assert!(
+            out.contains("0/0  File(DXE driver) type=66 subtype=07 guid= off=0 size=0 name=Setup")
+        );
+        assert!(out.contains("0/0/0  Section(UI) type=67 subtype=15"));
     }
 
     #[test]
     fn format_tree_skips_subtype_name_for_non_file_section() {
         let rows = vec![row("0", 65, 0x42, "")];
         let out = format_tree(&rows);
-        assert!(out.contains("Volume subtype=42"));
+        assert!(out.contains("Volume type=65 subtype=42"));
         assert!(!out.contains("Volume("));
     }
 
@@ -149,13 +142,5 @@ mod tests {
     fn format_legend_empty_when_no_file_or_section() {
         let rows = vec![row("", 62, 0, ""), row("0", 65, 0, "")];
         assert_eq!(format_legend(&rows), "");
-    }
-
-    #[test]
-    fn depth_returns_tree_level() {
-        assert_eq!(depth(""), 0);
-        assert_eq!(depth("0"), 1);
-        assert_eq!(depth("0/1"), 2);
-        assert_eq!(depth("0/1/2/3"), 4);
     }
 }
