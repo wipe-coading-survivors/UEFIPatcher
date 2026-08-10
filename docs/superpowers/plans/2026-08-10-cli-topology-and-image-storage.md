@@ -906,6 +906,24 @@ For each rename: update the `async fn` name, parameter type, return type, and an
 
 Remove the two methods from `impl EngineService`. Also remove the imports `dump_tree` from `use crate::parser::image::{dump_tree, list_items, parse_image};` (keep `list_items` and `parse_image`). Same for any `find_item` references — but note `find_item` from `parser::target` is still used by other handlers (insert/replace/extract), so do NOT remove that import.
 
+- [ ] **Step 4b.3: Migrate `parser/image.rs` to new proto (`Item` → `Node`; delete `dump_tree`)**
+
+Task 3 renamed `uefi_proto::Item` → `uefi_proto::Node` and removed `uefi_proto::DumpFormat` entirely.
+`crates/uefi-engine/src/parser/image.rs` still imports both and uses `Item` in `list_items`,
+`list_recursive`, `search`, `search_recursive`. It must be migrated in this subtask or the
+engine will not compile at Step 4d's first compile-check. Concretely:
+
+- Change `use uefi_proto::{DumpFormat, Item};` → `use uefi_proto::Node;`
+- Change `Vec<Item>` → `Vec<Node>`, `&mut Vec<Item>` → `&mut Vec<Node>`, `Item { ... }` → `Node { ... }`
+  in: `list_items`, `list_recursive`, `search`, `search_recursive`.
+- Delete the `pub fn dump_tree(...) { ... }` function (originally scheduled under 4g.1; moved here
+  because it depends on the now-removed `DumpFormat` type).
+- Delete the `dump_tree_text` test in `parser/image.rs`'s `mod tests` (calls `dump_tree` +
+  references `DumpFormat::Text`).
+
+`tests/real_image.rs` calls `list_items(...)` and reads `.r#type` / `.name` — `Node` has the
+same field names, so no changes are required there.
+
 ### Subtask 4c: Add new handler stubs (image_close, images_list, image_status, setup_list_forms, setup_list_strings)
 
 - [ ] **Step 4c.1: Implement `image_close` (full — destroys image on server)**
@@ -1156,13 +1174,17 @@ async fn write_through_persists_mutation_to_disk() {
 
 ### Subtask 4g: Delete dead code + cleanup + green
 
-- [ ] **Step 4g.1: Delete `dump_tree` and `DumpFormat` from `parser/image.rs`**
+- [ ] **Step 4g.1: Verify `dump_tree` and `DumpFormat` are gone from `parser/image.rs`**
 
-In `crates/uefi-engine/src/parser/image.rs`, remove:
-- `pub enum DumpFormat { ... }` (if present)
-- `pub fn dump_tree(...) { ... }` (the function body)
+`dump_tree` (function) + `DumpFormat` import were already deleted in Step 4b.3 (they had to go
+before the engine's first compile at 4d, because Task 3 removed `DumpFormat` from `uefi-proto`).
+Verify nothing references them:
 
-Keep `list_items`, `search`, `parse_image`, and other functions. Verify with: `rg 'dump_tree|DumpFormat' crates/uefi-engine/src/` — should return nothing (after Task 6/7 also clean their sides).
+```
+rg 'dump_tree|DumpFormat' crates/uefi-engine/src/  # should return nothing
+```
+
+If any references survived, delete them here.
 
 - [ ] **Step 4g.2: Extend `SessionManager::destroy_session` to clean images/ dir**
 
