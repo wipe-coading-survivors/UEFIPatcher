@@ -152,7 +152,30 @@ impl EngineService for EngineServer {
         };
         let bytes = fs::read(&r.path).map_err(|e| Status::not_found(e.to_string()))?;
         let image_id = Uuid::new_v4().to_string();
+        let name = if r.name.is_empty() {
+            std::path::Path::new(&r.path)
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default()
+        } else {
+            r.name.clone()
+        };
         let img = parse_image(&bytes, mode, &image_id, &r.session_id)
+            .map_err(|e| Status::internal(e.to_string()))?;
+        store_image_file(&self.data_dir, &r.session_id, &image_id, &bytes)
+            .map_err(|e| Status::internal(e.to_string()))?;
+        self.sm
+            .db
+            .lock()
+            .unwrap()
+            .insert_image(
+                &image_id,
+                &r.session_id,
+                &name,
+                &r.path,
+                r.mode as i64,
+                bytes.len() as i64,
+            )
             .map_err(|e| Status::internal(e.to_string()))?;
         let root_guid = img
             .root
@@ -164,7 +187,7 @@ impl EngineService for EngineServer {
         Ok(Response::new(ImageOpenResponse {
             image_id,
             root_guid,
-            name: String::new(),
+            name,
         }))
     }
 
