@@ -16,7 +16,7 @@ use crate::parser::image::{list_items, parse_image};
 use crate::parser::target::{find_item, parse_target};
 use crate::session::SessionManager;
 use crate::storage::image::{atomic_write, read_image_file, remove_image_file, store_image_file};
-use crate::storage::{Db, ImageRow};
+use crate::storage::Db;
 use crate::types::{Guid, Image, ImageMode};
 
 pub struct EngineServer {
@@ -165,6 +165,82 @@ impl EngineService for EngineServer {
             image_id,
             root_guid,
             name: String::new(),
+        }))
+    }
+
+    async fn image_close(&self, req: Request<ImageCloseRequest>) -> RpcResult<Empty> {
+        let r = req.into_inner();
+        let row = self
+            .sm
+            .db
+            .lock()
+            .unwrap()
+            .get_image(&r.image_id)
+            .map_err(|e| Status::internal(e.to_string()))?
+            .ok_or_else(|| Status::not_found("image not found"))?;
+        self.sm
+            .db
+            .lock()
+            .unwrap()
+            .delete_image(&r.image_id)
+            .map_err(|e| Status::internal(e.to_string()))?;
+        remove_image_file(&self.data_dir, &row.session_id, &r.image_id)
+            .map_err(|e| Status::internal(e.to_string()))?;
+        self.images.lock().await.remove(&r.image_id);
+        Ok(Response::new(Empty {}))
+    }
+
+    async fn images_list(
+        &self,
+        req: Request<ImagesListRequest>,
+    ) -> RpcResult<ImagesListResponse> {
+        let r = req.into_inner();
+        let rows = self
+            .sm
+            .db
+            .lock()
+            .unwrap()
+            .list_images(&r.session_id)
+            .map_err(|e| Status::internal(e.to_string()))?;
+        Ok(Response::new(ImagesListResponse {
+            images: rows
+                .into_iter()
+                .map(|r| ImageInfo {
+                    image_id: r.id,
+                    name: r.name,
+                    path: r.path,
+                    mode: r.mode as i32,
+                    size: r.size as u64,
+                    created_at: r.created_at,
+                    last_activity: r.last_activity,
+                })
+                .collect(),
+        }))
+    }
+
+    async fn image_status(
+        &self,
+        req: Request<ImageStatusRequest>,
+    ) -> RpcResult<ImageStatusResponse> {
+        let r = req.into_inner();
+        let row = self
+            .sm
+            .db
+            .lock()
+            .unwrap()
+            .get_image(&r.image_id)
+            .map_err(|e| Status::internal(e.to_string()))?
+            .ok_or_else(|| Status::not_found("image not found"))?;
+        Ok(Response::new(ImageStatusResponse {
+            info: Some(ImageInfo {
+                image_id: row.id,
+                name: row.name,
+                path: row.path,
+                mode: row.mode as i32,
+                size: row.size as u64,
+                created_at: row.created_at,
+                last_activity: row.last_activity,
+            }),
         }))
     }
 
@@ -449,6 +525,20 @@ impl EngineService for EngineServer {
         crate::setup::set_item_visibility(img, &r.item_id, r.visible)
             .map_err(|e| Status::internal(e.to_string()))?;
         Ok(Response::new(Empty {}))
+    }
+
+    async fn setup_list_forms(
+        &self,
+        _req: Request<SetupListFormsRequest>,
+    ) -> RpcResult<SetupListFormsResponse> {
+        Err(Status::unimplemented("SetupListForms not implemented (Plan B)"))
+    }
+
+    async fn setup_list_strings(
+        &self,
+        _req: Request<SetupListStringsRequest>,
+    ) -> RpcResult<SetupListStringsResponse> {
+        Err(Status::unimplemented("SetupListStrings not implemented (Plan B)"))
     }
 
     async fn image_save(&self, req: Request<ImageSaveRequest>) -> RpcResult<Empty> {
