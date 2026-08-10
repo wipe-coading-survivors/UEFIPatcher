@@ -26,8 +26,10 @@
 4. **Удаление deprecated-кода:** `DumpTree` RPC + `DumpFormat` enum + `parser::image::dump_tree` + `FindItem` + мёртвые stub'ы в mock-тестах.
 5. **UX-чистка:** ValueEnum для `--format`/`--mode`; `--name` у `session init` и `image open`; `about:` для всех подкоманд; `ArgGroup` для `--file|--artifact` у `node insert/replace`.
 
-## Non-goals (перенесены в План B)
+## Non-goals (перенесены в следующие циклы)
 
+- **`ImageUpload` RPC** — для docker-развертывания (где client FS != server FS). Сегодня `OpenImage` читает файл с серверной FS, что ломает CLI/TUI при работе через docker. Эквивалент для текстовых клиентов будет добавлен отдельным циклом (см. `TODO.md`).
+- **Глубокая миграция TUI/Gateway/WebUI** — в Плане A только механический rename для компилируемости; локальный tree-рендер в TUI, новые маршруты Gateway и WebUI fix делаются отдельным циклом.
 - **Реализация IFR form/string extraction** (`SetupListForms` / `SetupListStrings` движения). В Плане A заводим stub'ы RPC, возвращающие `UNIMPLEMENTED`. Полная реализация (включая слияние с `setup_advanced/`) — отдельный spec.
 - **Сериализация parsed `FfsNode`** — не делаем; персистим только bytes, re-parse по необходимости.
 - **Пагинация `ImageNodesList`** — YAGNI; возврат всех nodes как сегодня.
@@ -46,7 +48,7 @@ uefi-cli
 │     switch <image_id>
 │     close [<image_id>]                # default: active; destroy на сервере (row + bytes + in-memory) +
 │                                       # чистит .uefipatcher если image_id == active
-│     save <output_path>                # export: copy из data_dir в пользовательский путь
+│     save <output_path>                # export: build_image из in-memory, не copy из data_dir
 │     list                              # ImagesList: образы текущей сессии
 │     status                            # active image_id + метаданные с сервера (валидация)
 ├── node                                # все операции — над active image (из .uefipatcher)
@@ -369,22 +371,38 @@ Mutation handler'ы берут `Arc::clone` через `get_or_load_image`, за
 
 ### uefi-tui
 
-- `commands.rs`: выкинуть `dump_tree`-вызов и `parse_tree_dump`, заменить на `image_nodes_list` + локальный рендер через `uefi-common::format` (см. spec `2026-08-09-display-and-search`).
-- Все client-методы → rename.
+**План A (механический rename, только чтобы компилировалось):**
+
+- `commands.rs`, все остальные файлы: rename client-методов под новые RPC (`client.dump_tree(...)` → `client.image_nodes_list(...)`, и т.д.).
+- TUI оставляет нынешний text-parse-парсинг `parse_tree_dump` как есть (он ещё продолжает работать — `image_nodes_list` возвращает те же `Item`-данные; TUI просто трактует их как плоский список).
 - Stub'ы в mock-тестах обновить.
+- **Без** bugfix-ов, **без** локального tree-рендера через `uefi-common::format`.
+
+**TODO (отдельный цикл, см. `TODO.md` «TUI: migration + bugfix»):**
+
+- Выкинуть text-parse `parse_tree_dump`, заменить на локальный tree-рендер через `uefi-common::format` (см. spec `2026-08-09-display-and-search`, TODO в `commands.rs:191`).
+- Fix существующих TUI-багов.
 
 ### uefi-gateway
 
+**План A (механический rename, только чтобы компилировалось):**
+
 - `client.rs`: rename всех методов под новые RPC.
-- `routes/image.rs`: rename маршрутов: `/api/v1/image/:id/dump` → `/api/v1/image/:id/nodes`; удалить `/api/v1/image/:id/dump` и `/api/v1/image/:id/dump/ws`.
-- `routes/mod.rs`: update таблицы маршрутов; добавить `/api/v1/images` (ImagesList), `/api/v1/image/:id/forms`, `/api/v1/image/:id/strings`.
+- `routes/image.rs`: rename handler-функций для совместимости с новыми RPC; старые маршруты (`/dump`, `/items`) сохраняются, но внутри дёргают новые client-методы. **Без** добавления новых маршрутов.
+- Stub'ы в mock-тестах обновить.
+- `routes/upload.rs`, `routes/ws.rs`: без изменений.
+
+**TODO (отдельный цикл вместе с WebUI, см. `TODO.md` «Gateway + WebUI rework»):**
+
+- Полный rework маршрутов: `/dump` → `/nodes`; удалить `/dump/ws`; добавить `/api/v1/images` (ImagesList), `/api/v1/image/:id/forms`, `/api/v1/image/:id/strings`, `/api/v1/image/:id/status`, `DELETE /api/v1/image/:id` (ImageClose).
 - `routes/setup.rs`: добавить `forms`, `strings` handlers.
-- `routes/upload.rs`: без изменений.
-- `routes/ws.rs`: удалить (только dump_ws там был).
+- `routes/ws.rs`: удалить или переделать.
 
 ### WebUI
 
-- Обновить все fetch-вызовы под новые маршруты (`image Nodes list`, `images list`, `forms list`, `strings list`).
+**План A:** WebUI сейчас в поломанном состоянии. Если компилируется — минимально обновить fetch-вызовы под новые client-имена (только чтобы не выпадать из сборки). Если нет — оставить как есть и явным образом отметить в TODO.
+
+**TODO (отдельный цикл, см. `TODO.md` «Gateway + WebUI rework»):** полный fix и миграция на новые маршруты/имена.
 
 ## UX cleanups (включены в План A)
 
@@ -399,8 +417,8 @@ Mutation handler'ы берут `Arc::clone` через `get_or_load_image`, за
 ## Migration strategy
 
 Breaking change, all-in-one coordinated update (всё в одном repo):
-1. Пройти по плану A последовательно (TDD per task), правя proto → uefi-engine → uefi-common → uefi-cli → uefi-tui → uefi-gateway → WebUI.
-2. После каждого шага — `cargo test --all`, `cargo clippy --all -- -D warnings`, `cargo fmt --all -- --check`.
+1. Пройти по плану A последовательно (TDD per task), правя proto → uefi-engine → uefi-common → uefi-cli (полная реализация) → uefi-tui → uefi-gateway → WebUI (механический rename для компилируемости).
+2. После каждого шага — `cargo test --all`, `cargo clippy --all -- -D warnings`, `cargo fmt --all -- --check`. Workspace всегда в зелёном состоянии.
 3. Один финальный squash-or-multi-commit по плану; критично что все клиенты компилируются вместе (нет stale-клиентов с разнонаправленными proto-именами).
 
 ## Risks & open questions
@@ -415,5 +433,9 @@ Breaking change, all-in-one coordinated update (всё в одном repo):
 
 ## Decomposition
 
-- **План A (этот spec → план):** CLI topology + proto rename + image storage (write-through) + UX cleanups + миграция всех клиентов на новые RPC + stub'ы setup forms/strings.
-- **План B (отдельный spec, future):** IFR form/string extraction — реализация `SetupListForms`/`SetupListStrings` движком + слияние с `setup_advanced/`. Завести запись в `TODO.md` со ссылкой на baseline-коммит для onboarding.
+- **План A (этот spec → план):** CLI topology + proto rename + image storage (write-through) + UX cleanups + **полная** миграция CLI/uefi-common + **механический** rename в TUI/Gateway/WebUI (только для компилируемости) + stub'ы setup forms/strings.
+- **Смена цикла (см. `TODO.md`):**
+  - **ImageUpload RPC** — для docker-развертывания (client FS != server FS). Сегодня `OpenImage` читает файл с серверной FS; для CLI/TUI нужен `ImageUpload` (байты напрямую), как в WebUI/Gateway multipart-эндпоинте.
+  - **TUI migration + bugfix** — выкинуть `parse_tree_dump`, локальный tree-рендер через `uefi-common::format`, fix существующих TUI-багов.
+  - **Gateway + WebUI rework** — новый routes (`/nodes`, `/forms`, `/strings`, `/status`, `DELETE /image/:id`), WebUI полный fix.
+  - **План B:** IFR form/string extraction — реализация `SetupListForms`/`SetupListStrings` движком + слияние с `setup_advanced/`. Baseline-коммит для onboarding: `0470553bcc579af0eb72075533bc2c73f77d543f`.

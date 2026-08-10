@@ -108,3 +108,56 @@ Gateway уже мигрируют на `ListItems` (см. spec
   ami_patcher,ffs_assembler,ifr_builder,string_pack}.rs`. Решить структуру
   импортов и更新ть `lib.rs`.
 * [ ] **Подключить CLI/TUI/Gateway/WebUI** на реальные данные вместо stub'ов.
+
+## ImageUpload RPC (docker-развертывание)
+
+`ImageOpen` читает файл с **серверной FS** по пути (`OpenImageRequest.path`).
+В docker-развертывании (где client FS != server FS) это ломается: CLI/TUI
+передают путь из своей FS, которого нет на сервере. WebUI/Gateway решают
+это через `/api/v1/image/upload` (multipart → `/tmp/<uuid>.bin` →
+`image open /tmp/...`), но это двухшаговый hack.
+
+* [ ] **Добавить `ImageUpload` RPC** — принимает байты напрямую
+  (`bytes: bytes`, `session_id`, `name`, `mode`), persist'ит в data_dir,
+  парсит, возвращает `image_id`. Аналог `ImageOpen`, но без round-trip
+  через серверную FS.
+* [ ] **CLI: `image upload <local-path> [--name <n>] [--mode ...]`** —
+  читает файл локально, шлёт байты через `ImageUpload`. Для docker-use-case.
+* [ ] **TUI: `:upload PATH`** — аналог для интерактивного режима.
+* [ ] **Gateway: переиспользовать multipart-эндпоинт `/api/v1/image/upload`**
+  и дёргать новый `ImageUpload` RPC вместо текущего tmp-file workflow.
+* [ ] **Server: переиспользовать `flush_image`/storage logic** — вынести
+  общую часть `ImageOpen`/`ImageUpload` в helper.
+
+## TUI: migration + bugfix (после Плана A)
+
+План A (спека `2026-08-10-cli-topology-and-image-storage-design.md`)
+мигрирует TUI **механически** — только rename client-методов под новые
+RPC, чтобы workspace компилировался. Глубокая работа — отдельным циклом:
+
+* [ ] **Выкинуть `parse_tree_dump`** (`crates/uefi-tui/src/commands.rs:191`)
+  — текстовый парсинг flat-списка, теряет subtype, читает `subtype=07` как
+  name (см. TODO в файле). Заменить на локальный tree-рендер через
+  `uefi-common::format` (`format_tree` + `format_legend`).
+* [ ] **TUI: убрать зависимость от DumpTree-формата** — сегодня
+  `app.tree` строится из текста; переключить на структурированные
+  `Item`-данные из `image_nodes_list`.
+* [ ] **Fix существующих TUI-багов** — провести ревизию после миграции.
+
+## Gateway + WebUI rework (после Плана A)
+
+План A мигрирует Gateway **механически** (rename client-методов, старые
+маршруты сохраняются, но внутри дёргают новые RPC). WebUI сейчас в
+поломанном состоянии — если компилируется, минимально обновить fetch-имена;
+если нет — оставить и явным образом зафиксировать. Полный rework —
+отдельным циклом:
+
+* [ ] **Gateway: новые маршруты** — `/api/v1/image/:id/dump` → `/nodes`;
+  удалить `/dump` и `/dump/ws`; добавить `/api/v1/images` (ImagesList),
+  `/api/v1/image/:id/forms`, `/api/v1/image/:id/strings`,
+  `/api/v1/image/:id/status`, `DELETE /api/v1/image/:id` (ImageClose).
+* [ ] **Gateway: `routes/setup.rs`** — добавить `forms`, `strings` handlers.
+* [ ] **Gateway: `routes/ws.rs`** — удалить или переделать (сегодня только
+  `dump_ws`).
+* [ ] **WebUI: полный fix** — обновить все fetch-вызовы под новые маршруты,
+  подключить forms/strings listing, починить существующие баги.
