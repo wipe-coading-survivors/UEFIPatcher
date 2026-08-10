@@ -1161,7 +1161,7 @@ async fn write_through_persists_mutation_to_disk() {
 
     client.image_node_rebuild(ImageNodeRebuildRequest {
         image_id: opened.image_id.clone(),
-        target: "/0".into(),
+        target: "0".into(),
     }).await.unwrap();
 
     let after = std::fs::read(&img_path).unwrap();
