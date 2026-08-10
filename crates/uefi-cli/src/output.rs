@@ -149,6 +149,13 @@ pub fn print_strings(strings: &[StringInfo], format: OutputFormat) {
     }
 }
 
+pub fn print_node_id(item_id: &str, format: OutputFormat) {
+    match format {
+        OutputFormat::Json => println!("{{\"item_id\":\"{item_id}\"}}"),
+        _ => println!("{item_id}"),
+    }
+}
+
 #[allow(dead_code)]
 pub fn print_text(text: &str) {
     print!("{text}");
