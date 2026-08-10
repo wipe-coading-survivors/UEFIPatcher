@@ -1,4 +1,5 @@
 pub mod artifact;
+pub mod image;
 pub mod schema;
 
 use anyhow::Result;
