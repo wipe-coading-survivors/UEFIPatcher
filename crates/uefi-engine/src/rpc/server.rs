@@ -15,7 +15,8 @@ use uefi_proto::*;
 use crate::parser::image::{dump_tree, list_items, parse_image};
 use crate::parser::target::{find_item, parse_target};
 use crate::session::SessionManager;
-use crate::storage::Db;
+use crate::storage::image::{atomic_write, read_image_file, remove_image_file, store_image_file};
+use crate::storage::{Db, ImageRow};
 use crate::types::{Guid, Image, ImageMode};
 
 pub struct EngineServer {
@@ -25,6 +26,65 @@ pub struct EngineServer {
 }
 
 type RpcResult<T> = std::result::Result<Response<T>, Status>;
+
+impl EngineServer {
+    async fn flush_image(&self, image_id: &str) -> Result<(), Status> {
+        let (bytes, session_id) = {
+            let images = self.images.lock().await;
+            let img = images
+                .get(image_id)
+                .ok_or_else(|| Status::not_found("image not found"))?;
+            let bytes = crate::builder::build_image(img)
+                .map_err(|e| Status::internal(e.to_string()))?;
+            (bytes, img.session_id.clone())
+        };
+        let path = self
+            .data_dir
+            .join("sessions")
+            .join(&session_id)
+            .join("images")
+            .join(format!("{image_id}.bin"));
+        atomic_write(&path, &bytes).map_err(|e| Status::internal(e.to_string()))?;
+        self.sm
+            .db
+            .lock()
+            .unwrap()
+            .touch_image(image_id)
+            .map_err(|e| Status::internal(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn get_or_load_image(&self, image_id: &str) -> Result<Image, Status> {
+        {
+            let images = self.images.lock().await;
+            if let Some(img) = images.get(image_id) {
+                return Ok(img.clone());
+            }
+        }
+        let row = self
+            .sm
+            .db
+            .lock()
+            .unwrap()
+            .get_image(image_id)
+            .map_err(|e| Status::internal(e.to_string()))?
+            .ok_or_else(|| Status::not_found("image not found"))?;
+        let bytes = read_image_file(&self.data_dir, &row.session_id, image_id)
+            .map_err(|e| Status::internal(e.to_string()))?;
+        let mode = if row.mode == 1 {
+            ImageMode::Write
+        } else {
+            ImageMode::Read
+        };
+        let img = crate::parser::image::parse_image(&bytes, mode, image_id, &row.session_id)
+            .map_err(|e| Status::internal(e.to_string()))?;
+        self.images
+            .lock()
+            .await
+            .insert(image_id.into(), img.clone());
+        Ok(img)
+    }
+}
 
 #[tonic::async_trait]
 impl EngineService for EngineServer {
@@ -545,14 +605,14 @@ mod tests {
     async fn create_and_destroy_session() {
         let (_td, mut client) = setup().await;
         let resp = client
-            .create_session(CreateSessionRequest::default())
+            .session_create(SessionCreateRequest::default())
             .await
             .unwrap()
             .into_inner();
         assert!(!resp.session_id.is_empty());
         assert!(!resp.token.is_empty());
         client
-            .destroy_session(DestroySessionRequest {
+            .session_destroy(SessionDestroyRequest {
                 session_id: resp.session_id,
             })
             .await
@@ -563,12 +623,12 @@ mod tests {
     async fn create_and_list_sessions() {
         let (_td, mut client) = setup().await;
         let resp = client
-            .create_session(CreateSessionRequest::default())
+            .session_create(SessionCreateRequest::default())
             .await
             .unwrap()
             .into_inner();
         let list = client
-            .list_sessions(ListSessionsRequest {})
+            .sessions_list(SessionsListRequest {})
             .await
             .unwrap()
             .into_inner();
@@ -591,42 +651,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rpc_open_save_round_trip() {
+    async fn flush_image_writes_bytes_to_data_dir() {
         let (td, mut client) = setup().await;
         let orig = td.path().join("orig.bin");
-        let out = td.path().join("out.bin");
         std::fs::write(&orig, fixture_volume()).unwrap();
         let session = client
-            .create_session(CreateSessionRequest::default())
+            .session_create(SessionCreateRequest::default())
             .await
             .unwrap()
             .into_inner();
         let opened = client
-            .open_image(OpenImageRequest {
+            .image_open(ImageOpenRequest {
                 session_id: session.session_id.clone(),
-                image_path: orig.to_string_lossy().to_string(),
+                path: orig.to_string_lossy().to_string(),
                 mode: ImageMode::Read as i32,
+                name: "test.bin".into(),
             })
             .await
             .unwrap()
             .into_inner();
-        let dumped = client
-            .dump_tree(DumpTreeRequest {
-                image_id: opened.image_id.clone(),
-                format: 0,
-            })
-            .await
-            .unwrap()
-            .into_inner();
-        assert!(!dumped.text.is_empty());
-        client
-            .save_image(SaveImageRequest {
-                image_id: opened.image_id,
-                output_path: out.to_string_lossy().to_string(),
-            })
-            .await
-            .unwrap();
-        let saved = std::fs::read(&out).unwrap();
+        let img_path = td
+            .path()
+            .join("sessions")
+            .join(&session.session_id)
+            .join("images")
+            .join(format!("{}.bin", opened.image_id));
+        assert!(img_path.exists(), "image bytes must be persisted on open");
+        let saved = std::fs::read(&img_path).unwrap();
         assert_eq!(saved, fixture_volume());
     }
 }
