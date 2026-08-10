@@ -1722,7 +1722,9 @@ git commit -m "feat(uefi-cli): text format with symbolic type names; add search 
 **Interfaces:**
 - Consumes: `uefi_engine::parser::image::{list_items, search}`, `uefi_engine::types::ImageMode`, `uefi_common::search::SearchMode`
 
-- [ ] **Step 1: Расширить `real_image_parse_image_full` — assert FFS с name="Setup"**
+- [ ] **Step 1: Расширить `real_image_parse_image_full` — assert FFS с lifted UI-именем**
+
+> **План-дефект (rule 11):** В исходном плане здесь стояла проверка `i.name == "Setup"`, но на реальном образце HNX99TF UI-секция файла Setup обёрнута LZMA-compressed GUID_DEFINED-секцией (т.е. UI не прямой потомок FFS-файла, а вложен на глубину 2+). Task 7 реализует lift только по прямым детям (`image.rs:257-264`), поэтому `node_name` для FFS-файла Setup возвращает пустую строку. Поиск `real_image_search_finds_setup_by_name` (ниже) корректно находит вложенную UI-секцию, т.к. `search_recursive` обходит всё поддерево. Для проверки lift нужно имя файла, у которого UI-секция — прямой потомок: на этом образце это PEI-модули из PEI-FV (`PeiCore`, `WdtPei`, `CpuPei`, …). Используем `PeiCore` (PEI Foundation — присутствует практически в любом BIOS).
 
 В `crates/uefi-engine/tests/real_image.rs`, в `real_image_parse_image_full` (строки 277-355) заменить блок с dump_tree (строки 337-346) на:
 ```rust
@@ -1735,8 +1737,8 @@ git commit -m "feat(uefi-cli): text format with symbolic type names; add search 
     assert!(
         items
             .iter()
-            .any(|i| i.r#type == FfsType::File as u32 && i.name == "Setup"),
-        "expected an FFS file named 'Setup' (UI section lifted), got names: {:?}",
+            .any(|i| i.r#type == FfsType::File as u32 && i.name == "PeiCore"),
+        "expected an FFS file named 'PeiCore' (UI section lifted), got names: {:?}",
         items
             .iter()
             .filter(|i| i.r#type == FfsType::File as u32 && !i.name.is_empty())
