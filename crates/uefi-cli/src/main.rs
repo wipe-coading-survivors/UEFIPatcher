@@ -12,10 +12,48 @@ use uefi_common::error;
 struct Cli {
     #[arg(long, env = "UEFIPATCHER_SOCK")]
     sock: Option<String>,
-    #[arg(long, default_value = "json")]
-    format: String,
+    #[arg(long, default_value = "text", value_enum)]
+    format: OutputFormatCli,
     #[command(subcommand)]
     cmd: Cmd,
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+enum OutputFormatCli {
+    Json,
+    Text,
+    Tsv,
+}
+
+impl From<OutputFormatCli> for output::OutputFormat {
+    fn from(c: OutputFormatCli) -> Self {
+        match c {
+            OutputFormatCli::Json => output::OutputFormat::Json,
+            OutputFormatCli::Text => output::OutputFormat::Text,
+            OutputFormatCli::Tsv => output::OutputFormat::Tsv,
+        }
+    }
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+enum ImageModeCli {
+    Read,
+    Write,
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+enum InsertModeCli {
+    Into,
+    Before,
+    After,
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+enum SearchModeCli {
+    Name,
+    Utf8,
+    Utf16,
+    Bytes,
 }
 
 #[derive(Subcommand)]
@@ -28,9 +66,13 @@ enum Cmd {
         #[command(subcommand)]
         sub: ImageCmd,
     },
-    Edit {
+    Node {
         #[command(subcommand)]
-        sub: EditCmd,
+        sub: NodeCmd,
+    },
+    Artifact {
+        #[command(subcommand)]
+        sub: ArtifactCmd,
     },
     Setup {
         #[command(subcommand)]
@@ -42,6 +84,8 @@ enum Cmd {
 enum SessionCmd {
     Init {
         #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
         force: bool,
     },
     List,
@@ -52,20 +96,31 @@ enum SessionCmd {
 enum ImageCmd {
     Open {
         path: String,
-        #[arg(long, default_value = "read")]
-        mode: String,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long, value_enum, default_value_t = ImageModeCli::Read)]
+        mode: ImageModeCli,
     },
     Switch {
         image_id: String,
     },
-    Close,
-    Dump,
+    Close {
+        image_id: Option<String>,
+    },
+    Save {
+        output: String,
+    },
+    List,
+    Status,
+}
+
+#[derive(Subcommand)]
+enum NodeCmd {
     List {
         #[arg(long)]
         filter: Option<String>,
-    },
-    Find {
-        target: String,
+        #[arg(long)]
+        tree: bool,
     },
     Search {
         query: String,
@@ -74,80 +129,82 @@ enum ImageCmd {
         #[arg(long, default_value = "100")]
         limit: u32,
     },
-    Save {
-        output: String,
-    },
-    Extract {
-        target: String,
-        #[arg(long)]
-        body_only: bool,
-    },
-    Export {
-        artifact_id: String,
-        output_path: Option<String>,
-    },
-    Import {
-        file_path: String,
-    },
-    Artifacts,
-}
-
-#[derive(Subcommand)]
-enum EditCmd {
     Insert {
         target: String,
-        ffs: String,
-        #[arg(long)]
-        from_artifact: Option<String>,
-        #[arg(long, default_value = "into")]
-        mode: String,
+        #[arg(long, group = "source")]
+        file: Option<String>,
+        #[arg(long, group = "source")]
+        artifact: Option<String>,
+        #[arg(long, value_enum, default_value_t = InsertModeCli::Into)]
+        mode: InsertModeCli,
     },
     Remove {
         target: String,
     },
     Replace {
         target: String,
-        data: String,
-        #[arg(long)]
-        from_artifact: Option<String>,
+        #[arg(long, group = "source")]
+        file: Option<String>,
+        #[arg(long, group = "source")]
+        artifact: Option<String>,
         #[arg(long)]
         body_only: bool,
     },
     Rebuild {
         target: String,
     },
+    Extract {
+        target: String,
+        #[arg(long)]
+        body_only: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum ArtifactCmd {
+    List,
+    Import {
+        path: String,
+    },
+    Export {
+        artifact_id: String,
+        output_path: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
 enum SetupCmd {
+    Form {
+        #[command(subcommand)]
+        sub: SetupFormCmd,
+    },
+    String {
+        #[command(subcommand)]
+        sub: SetupStringCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum SetupFormCmd {
+    List,
     SetVisibility {
-        item_id: String,
+        form_id: String,
         #[arg(long, conflicts_with = "hidden")]
         visible: bool,
         #[arg(long)]
         hidden: bool,
     },
-    ListItems,
 }
 
-#[derive(clap::ValueEnum, Clone, Debug)]
-enum SearchModeCli {
-    Name,
-    Utf8,
-    Utf16,
-    Bytes,
+#[derive(Subcommand)]
+enum SetupStringCmd {
+    List,
 }
 
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
-    let format = match output::parse_format(&cli.format) {
-        Ok(f) => f,
-        Err(e) => {
-            error::print_error(&e, false);
-            return ExitCode::from(1);
-        }
-    };
+    let format: output::OutputFormat = cli.format.into();
     let json_err = matches!(format, output::OutputFormat::Json);
     let result = dispatch(&cli, format).await;
     match result {
@@ -163,20 +220,33 @@ async fn dispatch(cli: &Cli, format: output::OutputFormat) -> Result<(), error::
     let sock = cli.sock.as_deref();
     match &cli.cmd {
         Cmd::Session { sub } => match sub {
-            SessionCmd::Init { force } => commands::session::init(sock, *force, format).await,
+            SessionCmd::Init { name, force } => {
+                commands::session::init(name.as_deref(), sock, *force, format).await
+            }
             SessionCmd::List => commands::session::list(sock, format).await,
             SessionCmd::Destroy => commands::session::destroy(sock, format).await,
         },
         Cmd::Image { sub } => match sub {
-            ImageCmd::Open { path, mode } => commands::image::open(path, mode, sock, format).await,
-            ImageCmd::Switch { image_id } => commands::image::switch(image_id, format).await,
-            ImageCmd::Close => commands::image::close(format).await,
-            ImageCmd::Dump => commands::image::dump(sock, format).await,
-            ImageCmd::List { filter } => {
-                commands::image::list(filter.as_deref(), sock, format).await
+            ImageCmd::Open { path, name, mode } => {
+                let mode_i = match mode {
+                    ImageModeCli::Read => 0,
+                    ImageModeCli::Write => 1,
+                };
+                commands::image::open(path, name.as_deref(), mode_i, sock, format).await
             }
-            ImageCmd::Find { target } => commands::image::find(target, sock, format).await,
-            ImageCmd::Search { query, mode, limit } => {
+            ImageCmd::Switch { image_id } => commands::image::switch(image_id, format).await,
+            ImageCmd::Close { image_id } => {
+                commands::image::close(image_id.as_deref(), sock, format).await
+            }
+            ImageCmd::Save { output } => commands::image::save(output, sock, format).await,
+            ImageCmd::List => commands::image::list(sock, format).await,
+            ImageCmd::Status => commands::image::status(sock, format).await,
+        },
+        Cmd::Node { sub } => match sub {
+            NodeCmd::List { filter, tree } => {
+                commands::node::list(filter.as_deref(), *tree, sock, format).await
+            }
+            NodeCmd::Search { query, mode, limit } => {
                 let modes: Vec<i32> = mode
                     .iter()
                     .map(|m| match m {
@@ -186,60 +256,74 @@ async fn dispatch(cli: &Cli, format: output::OutputFormat) -> Result<(), error::
                         SearchModeCli::Bytes => uefi_proto::SearchMode::Bytes as i32,
                     })
                     .collect();
-                commands::image::search(query, &modes, *limit, sock, format).await
+                commands::node::search(query, &modes, *limit, sock, format).await
             }
-            ImageCmd::Save { output } => commands::image::save(output, sock, format).await,
-            ImageCmd::Extract { target, body_only } => {
-                commands::image::extract(target, *body_only, sock, format).await
-            }
-            ImageCmd::Export {
-                artifact_id,
-                output_path,
-            } => commands::image::export(artifact_id, output_path.as_deref(), sock, format).await,
-            ImageCmd::Import { file_path } => {
-                commands::image::import(file_path, sock, format).await
-            }
-            ImageCmd::Artifacts => commands::image::artifacts(sock, format).await,
-        },
-        Cmd::Edit { sub } => match sub {
-            EditCmd::Insert {
+            NodeCmd::Insert {
                 target,
-                ffs,
-                from_artifact,
+                file,
+                artifact,
                 mode,
             } => {
-                commands::edit::insert(target, ffs, from_artifact.as_deref(), mode, sock, format)
-                    .await
+                let mode_s = match mode {
+                    InsertModeCli::Into => "into",
+                    InsertModeCli::Before => "before",
+                    InsertModeCli::After => "after",
+                };
+                commands::node::insert(
+                    target,
+                    file.as_deref(),
+                    artifact.as_deref(),
+                    mode_s,
+                    sock,
+                    format,
+                )
+                .await
             }
-            EditCmd::Remove { target } => commands::edit::remove(target, sock, format).await,
-            EditCmd::Replace {
+            NodeCmd::Remove { target } => commands::node::remove(target, sock, format).await,
+            NodeCmd::Replace {
                 target,
-                data,
-                from_artifact,
+                file,
+                artifact,
                 body_only,
             } => {
-                commands::edit::replace(
+                commands::node::replace(
                     target,
-                    data,
-                    from_artifact.as_deref(),
+                    file.as_deref(),
+                    artifact.as_deref(),
                     *body_only,
                     sock,
                     format,
                 )
                 .await
             }
-            EditCmd::Rebuild { target } => commands::edit::rebuild(target, sock, format).await,
+            NodeCmd::Rebuild { target } => commands::node::rebuild(target, sock, format).await,
+            NodeCmd::Extract { target, body_only } => {
+                commands::node::extract(target, *body_only, sock, format).await
+            }
+        },
+        Cmd::Artifact { sub } => match sub {
+            ArtifactCmd::List => commands::artifact::list(sock, format).await,
+            ArtifactCmd::Import { path } => commands::artifact::import(path, sock, format).await,
+            ArtifactCmd::Export {
+                artifact_id,
+                output_path,
+            } => commands::artifact::export(artifact_id, output_path.as_deref(), sock, format).await,
         },
         Cmd::Setup { sub } => match sub {
-            SetupCmd::SetVisibility {
-                item_id,
-                visible,
-                hidden,
-            } => {
-                let vis = if *hidden { false } else { *visible };
-                commands::setup::set_visibility(item_id, vis, sock, format).await
-            }
-            SetupCmd::ListItems => commands::setup::list_items(sock, format).await,
+            SetupCmd::Form { sub } => match sub {
+                SetupFormCmd::List => commands::setup::form_list(sock, format).await,
+                SetupFormCmd::SetVisibility {
+                    form_id,
+                    visible,
+                    hidden,
+                } => {
+                    let vis = if *hidden { false } else { *visible };
+                    commands::setup::form_set_visibility(form_id, vis, sock, format).await
+                }
+            },
+            SetupCmd::String { sub } => match sub {
+                SetupStringCmd::List => commands::setup::string_list(sock, format).await,
+            },
         },
     }
 }
