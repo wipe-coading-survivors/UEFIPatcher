@@ -174,11 +174,12 @@ pub fn search(
     limit: usize,
 ) -> Vec<Item> {
     let mut out = vec![];
-    if modes.is_empty() || limit == 0 {
+    if modes.is_empty() {
         return out;
     }
+    let effective_limit = if limit == 0 { usize::MAX } else { limit };
     let mut path = String::new();
-    search_recursive(root, &mut path, query, modes, limit, &mut out);
+    search_recursive(root, &mut path, query, modes, effective_limit, &mut out);
     out
 }
 
@@ -524,6 +525,44 @@ mod tests {
         };
         let res = search(&root, "needle", &[uefi_common::search::SearchMode::Utf8], 3);
         assert_eq!(res.len(), 3);
+    }
+
+    #[test]
+    fn search_limit_zero_returns_all() {
+        let sections: Vec<FfsNode> = (0..3)
+            .map(|_| FfsNode {
+                guid: None,
+                node_type: FfsType::Section,
+                subtype: EFI_SECTION_RAW,
+                offset: 0,
+                header: vec![0; 4],
+                body: b"needle".to_vec(),
+                tail: vec![],
+                children: vec![],
+                action: Action::NoAction,
+                parsing_data: ParsingData::None,
+                fixed: false,
+                compressed: false,
+                alignment_bytes: vec![],
+            })
+            .collect();
+        let root = FfsNode {
+            guid: None,
+            node_type: FfsType::Image,
+            subtype: 0,
+            offset: 0,
+            header: vec![],
+            body: vec![],
+            tail: vec![],
+            children: sections,
+            action: Action::NoAction,
+            parsing_data: ParsingData::None,
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        };
+        let res = search(&root, "needle", &[uefi_common::search::SearchMode::Utf8], 0);
+        assert_eq!(res.len(), 3, "limit=0 must mean no limit");
     }
 
     #[test]

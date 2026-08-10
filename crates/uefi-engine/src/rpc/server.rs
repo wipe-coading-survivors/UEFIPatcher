@@ -152,11 +152,7 @@ impl EngineService for EngineServer {
                 _ => uefi_common::search::SearchMode::Bytes,
             })
             .collect();
-        let limit = if r.limit == 0 {
-            usize::MAX
-        } else {
-            r.limit as usize
-        };
+        let limit = r.limit as usize;
         let items = crate::parser::image::search(&img.root, &r.query, &modes, limit);
         Ok(Response::new(SearchItemsResponse { items }))
     }
