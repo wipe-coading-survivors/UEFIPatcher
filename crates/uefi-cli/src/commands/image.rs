@@ -49,16 +49,28 @@ pub async fn close(format: OutputFormat) -> Result<(), AppError> {
 }
 
 pub async fn dump(
-    format_name: &str,
+    _format_name: &str,
     cli_sock: Option<&str>,
     _format: OutputFormat,
 ) -> Result<(), AppError> {
     let st = state::require_state()?;
     let mut client = Client::connect(cli_sock, st).await?;
     let image_id = client.active_image()?;
-    let fmt_i: i32 = if format_name == "tsv" { 1 } else { 0 };
-    let text = client.dump_tree(&image_id, fmt_i).await?;
-    crate::output::print_text(&text);
+    let items = client.list_items(&image_id, None).await?;
+    let rows: Vec<uefi_common::format::TreeRow> = items
+        .iter()
+        .map(|it| uefi_common::format::TreeRow {
+            path: it.path.clone(),
+            type_: it.r#type,
+            subtype: it.subtype as u8,
+            guid: it.guid.clone(),
+            offset: it.offset,
+            size: it.size,
+            name: it.name.clone(),
+        })
+        .collect();
+    eprint!("{}", uefi_common::format::format_legend(&rows));
+    print!("{}", uefi_common::format::format_tree(&rows));
     Ok(())
 }
 

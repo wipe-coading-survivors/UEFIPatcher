@@ -102,6 +102,7 @@ impl Client {
         Ok((r.image_id, r.root_guid))
     }
 
+    #[allow(dead_code)]
     pub async fn dump_tree(&mut self, image_id: &str, format: i32) -> Result<String, AppError> {
         let req = DumpTreeRequest {
             image_id: image_id.into(),

@@ -91,6 +91,7 @@ pub fn print_find(item_id: &str, format: OutputFormat) {
     }
 }
 
+#[allow(dead_code)]
 pub fn print_text(text: &str) {
     print!("{text}");
 }
