@@ -188,6 +188,7 @@ pub async fn execute_command(
     }
 }
 
+// TODO(2026-08-09): migrate to list_items RPC — current text-parser drops subtype, parses "File"/"Volume" as int (always 0), and reads "subtype=07" as name. See docs/superpowers/specs/2026-08-09-display-and-search-design.md
 fn parse_tree_dump(text: &str) -> Vec<crate::app::TreeNode> {
     text.lines()
         .filter_map(|line| {
