@@ -1257,10 +1257,15 @@ Spec: docs/superpowers/specs/2026-08-10-cli-topology-and-image-storage-design.md
 - Modify: `crates/uefi-cli/src/commands/session.rs` — add `--name`
 - Modify: `crates/uefi-cli/src/commands/setup.rs` — new form/string subcommand structure
 - Delete: `crates/uefi-cli/src/commands/edit.rs`
+- Modify: `crates/uefi-cli/tests/mock_server.rs` — migrate MockEngine to new proto (rename all trait methods to noun-first + rename message types); add stubs for new RPCs (image_close, images_list, image_status, setup_list_forms, setup_list_strings, setup_form_set_add); delete dump_tree/find_item/add_setup_form_set stubs
+- Modify: `crates/uefi-cli/tests/cli_integration.rs` — rewrite flows to new topology (image open/list/status/close; node list; remove image dump/find)
+- Modify: `crates/uefi-cli/tests/e2e.rs` — rewrite edit→node, setup set-visibility→setup form set-visibility
 
 **Interfaces:**
 - Consumes: new `uefi_proto` types (Task 3)
 - Produces: CLI with 5 top-level commands (session/image/node/artifact/setup)
+
+> **Defect (rule 11):** The original Task 5 `Files` list omitted `crates/uefi-cli/tests/`. Step 5f.1 requires `cargo test -p uefi-cli` to PASS, but `tests/mock_server.rs`, `tests/cli_integration.rs`, `tests/e2e.rs` reference the old proto names (`create_session`, `OpenImageRequest`, `dump_tree`, `Item`, `FindItemRequest`, `SetSetupItemVisibilityRequest`, etc.) and the old command topology (`image dump`, `image find`, `image close` w/o arg, `edit insert/remove`, `setup set-visibility`). They fail to compile after the Task 3 rename, so the test migration is part of Task 5 (handled in Step 5f.0 below).
 
 This task is large; decomposed into 6 subtasks (5a–5f). Commit after each subtask.
 
@@ -2106,6 +2111,49 @@ async fn dispatch(cli: &Cli, format: output::OutputFormat) -> Result<(), error::
 ```
 
 ### Subtask 5f: Build + test uefi-cli
+
+- [ ] **Step 5f.0: Migrate `tests/` to new proto + topology (rule 11 fix)**
+
+The three files under `crates/uefi-cli/tests/` still use the pre-Task-3 proto names and pre-Task-5 command topology. They must be migrated in the same task as the `src/` rewrite, otherwise `cargo test -p uefi-cli` (Step 5f.1) cannot compile. There is no verbatim code for these in the brief — the implementer writes the migration following the rename map from 5b.1 and the topology from 5e.1.
+
+`tests/mock_server.rs` — `MockEngine` must implement all 22 trait methods of the new `EngineService` trait (E0046 otherwise). Apply the rename map:
+- `create_session`→`session_create` (`CreateSessionRequest`→`SessionCreateRequest`, `CreateSessionResponse`→`SessionCreateResponse`)
+- `destroy_session`→`session_destroy` (`DestroySessionRequest`→`SessionDestroyRequest`)
+- `list_sessions`→`sessions_list` (`ListSessionsRequest`→`SessionsListRequest`, `ListSessionsResponse`→`SessionsListResponse`; `SessionInfo` now also has a `name` field — set `String::new()`)
+- `open_image`→`image_open` (`OpenImageRequest`→`ImageOpenRequest` with fields `session_id`/`path`/`mode`/`name`; `OpenImageResponse`→`ImageOpenResponse` now has 3 fields: `image_id`, `root_guid`, `name`)
+- **delete** `dump_tree` (RPC removed) — remove the `DumpTreeRequest`/`DumpTreeResponse` stub entirely
+- `list_items`→`image_nodes_list` (`ListItemsRequest`→`ImageNodesListRequest`, `ListItemsResponse`→`ImageNodesResponse`; `Item`→`Node`, response field `items`→`nodes`)
+- `search_items`→`image_nodes_search` (`SearchItemsRequest`→`ImageNodesSearchRequest`, `SearchItemsResponse`→`ImageNodesResponse`)
+- **delete** `find_item` (RPC removed)
+- `insert`→`image_node_insert` (`InsertRequest`→`ImageNodeInsertRequest`, `InsertResponse`→`ImageNodeResponse`)
+- `remove`→`image_node_remove` (`RemoveRequest`→`ImageNodeRemoveRequest`)
+- `replace`→`image_node_replace` (`ReplaceRequest`→`ImageNodeReplaceRequest`, `ReplaceResponse`→`ImageNodeResponse`)
+- `rebuild`→`image_node_rebuild` (`RebuildRequest`→`ImageNodeRebuildRequest`)
+- `extract_artifact`→`image_node_extract` (`ExtractArtifactRequest`→`ImageNodeExtractRequest`, `ExtractArtifactResponse`→`ImageNodeExtractResponse`)
+- `export_artifact`→`artifact_export` (`ExportArtifactRequest`→`ArtifactExportRequest`)
+- `import_artifact`→`artifact_import` (`ImportArtifactRequest`→`ArtifactImportRequest`, field `file_path`→`path`; `ImportArtifactResponse`→`ArtifactImportResponse`)
+- `list_artifacts`→`artifacts_list` (`ListArtifactsRequest`→`ArtifactsListRequest`, `ListArtifactsResponse`→`ArtifactsListResponse`; `ArtifactInfo` now also has `source` field — set `String::new()`)
+- `set_setup_item_visibility`→`setup_set_form_visibility` (`SetSetupItemVisibilityRequest`→`SetupSetFormVisibilityRequest`; field `item_id` unchanged)
+- `save_image`→`image_save` (`SaveImageRequest`→`ImageSaveRequest`)
+- **delete** `add_setup_form_set` → replace with `setup_form_set_add` (`AddSetupFormSetRequest`→`SetupFormSetAddRequest`, `AddSetupFormSetResponse`→`SetupFormSetAddResponse`) — required because the trait method was renamed in proto
+- **add new stubs**: `image_close` (`ImageCloseRequest`→`Empty`), `images_list` (`ImagesListRequest`→`ImagesListResponse` with `images: vec![]`), `image_status` (`ImageStatusRequest`→`ImageStatusResponse` with `info: None`), `setup_list_forms` (`SetupListFormsRequest`→`SetupListFormsResponse` with `forms: vec![]`), `setup_list_strings` (`SetupListStringsRequest`→`SetupListStringsResponse` with `strings: vec![]`)
+
+The `mock_roundtrip` unit test at the bottom of `mock_server.rs` must also be updated (it calls `client.create_session(CreateSessionRequest{...})` → rename to `session_create(SessionCreateRequest{...})`).
+
+`tests/cli_integration.rs` — rewrite `full_flow` to the new topology:
+- `image open /dev/null --mode read` still works (mode is now a ValueEnum, "read" maps to `ImageModeCli::Read`)
+- replace `image dump` with `node list` (or `image status`)
+- replace `image list` (old node-list-on-active-image) with `node list`; add `image list` (new: list open images in session) and `image status` if desired
+- replace `image find 0` with `node search 0` (search replaced find)
+- `image close` now takes an optional `image_id` arg (defaults to active); keep `image close` with no arg (closes active)
+- `no_state_errors`: replace `image dump` (gone) with `node list` — still expects failure with code 3 (State) when no `.uefipatcher` state
+
+`tests/e2e.rs` — rewrite `edit_flow`:
+- `edit insert 0 /dev/null --mode before` → `node insert 0 --file /dev/null --mode before`
+- `edit remove 0` → `node remove 0`
+- `setup set-visibility 0 --visible` → `setup form set-visibility 0 --visible`
+- `image save /dev/null` unchanged (still valid)
+- `image open --mode write` still works
 
 - [ ] **Step 5f.1: Run cargo test for uefi-cli**
 
