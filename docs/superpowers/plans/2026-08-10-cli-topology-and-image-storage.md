@@ -511,6 +511,7 @@ Spec: docs/superpowers/specs/2026-08-10-cli-topology-and-image-storage-design.md
 
 **Files:**
 - Modify: `crates/uefi-proto/proto/engine.proto` — full rewrite
+- Modify: `crates/uefi-proto/build.rs` — rename `engine.Item` → `engine.Node`; add serde derives for new message types consumed as JSON by CLI/gateway (`engine.ImageInfo`, `engine.FormInfo`, `engine.StringInfo`)
 
 **Interfaces:**
 - Consumes: nothing (this is the contract source)
@@ -703,6 +704,24 @@ message SetupFormSetAddResponse {
 message Empty {}
 ```
 
+- [ ] **Step 1b: Update `build.rs` serde derives for renamed + new message types**
+
+In `crates/uefi-proto/build.rs`, the existing `.message_attribute("engine.Item", ...)` is now a silent no-op (`Item` renamed to `Node`). Rename it and add serde derives for the new message types that Task 5 (`output.rs`) and Task 7 (gateway JSON) will serialize:
+
+```rust
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    tonic_build::configure()
+        .message_attribute("engine.Node", "#[derive(serde::Serialize)]")
+        .message_attribute("engine.ImageInfo", "#[derive(serde::Serialize)]")
+        .message_attribute("engine.FormInfo", "#[derive(serde::Serialize)]")
+        .message_attribute("engine.StringInfo", "#[derive(serde::Serialize)]")
+        .message_attribute("engine.SessionInfo", "#[derive(serde::Serialize)]")
+        .message_attribute("engine.ArtifactInfo", "#[derive(serde::Serialize)]")
+        .compile_protos(&["proto/engine.proto"], &["proto"])?;
+    Ok(())
+}
+```
+
 - [ ] **Step 2: Verify uefi-proto builds**
 
 Run: `cargo build -p uefi-proto`
@@ -716,7 +735,7 @@ Expected: FAIL — engine/CLI/TUI/Gateway reference old RPC names (`open_image`,
 - [ ] **Step 4: Commit**
 
 ```bash
-git add crates/uefi-proto/proto/engine.proto
+git add crates/uefi-proto/proto/engine.proto crates/uefi-proto/build.rs
 git commit -m "feat!(uefi-proto): rename all RPC to noun-first + new image/setup RPCs (Plan A Task 3)
 
 BREAKING CHANGE: full proto rename to noun-first convention.
