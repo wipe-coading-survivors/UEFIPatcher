@@ -272,10 +272,7 @@ impl EngineService for EngineServer {
         req: Request<ImageNodesListRequest>,
     ) -> RpcResult<ImageNodesResponse> {
         let r = req.into_inner();
-        let images = self.images.lock().await;
-        let img = images
-            .get(&r.image_id)
-            .ok_or_else(|| Status::not_found("image not found"))?;
+        let img = self.get_or_load_image(&r.image_id).await?;
         let nodes = list_items(
             &img.root,
             if r.filter.is_empty() {
@@ -284,6 +281,7 @@ impl EngineService for EngineServer {
                 Some(&r.filter)
             },
         );
+        let _ = self.sm.touch(&img.session_id);
         Ok(Response::new(ImageNodesResponse { nodes }))
     }
 
@@ -292,10 +290,7 @@ impl EngineService for EngineServer {
         req: Request<ImageNodesSearchRequest>,
     ) -> RpcResult<ImageNodesResponse> {
         let r = req.into_inner();
-        let images = self.images.lock().await;
-        let img = images
-            .get(&r.image_id)
-            .ok_or_else(|| Status::not_found("image not found"))?;
+        let img = self.get_or_load_image(&r.image_id).await?;
         let modes: Vec<uefi_common::search::SearchMode> = r
             .modes
             .iter()
