@@ -48,11 +48,7 @@ pub async fn close(format: OutputFormat) -> Result<(), AppError> {
     Ok(())
 }
 
-pub async fn dump(
-    _format_name: &str,
-    cli_sock: Option<&str>,
-    format: OutputFormat,
-) -> Result<(), AppError> {
+pub async fn dump(cli_sock: Option<&str>, format: OutputFormat) -> Result<(), AppError> {
     let st = state::require_state()?;
     let mut client = Client::connect(cli_sock, st).await?;
     let image_id = client.active_image()?;

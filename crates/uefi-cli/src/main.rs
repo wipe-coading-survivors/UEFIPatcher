@@ -59,10 +59,7 @@ enum ImageCmd {
         image_id: String,
     },
     Close,
-    Dump {
-        #[arg(long, default_value = "text")]
-        format: String,
-    },
+    Dump,
     List {
         #[arg(long)]
         filter: Option<String>,
@@ -174,7 +171,7 @@ async fn dispatch(cli: &Cli, format: output::OutputFormat) -> Result<(), error::
             ImageCmd::Open { path, mode } => commands::image::open(path, mode, sock, format).await,
             ImageCmd::Switch { image_id } => commands::image::switch(image_id, format).await,
             ImageCmd::Close => commands::image::close(format).await,
-            ImageCmd::Dump { format: dfmt } => commands::image::dump(dfmt, sock, format).await,
+            ImageCmd::Dump => commands::image::dump(sock, format).await,
             ImageCmd::List { filter } => {
                 commands::image::list(filter.as_deref(), sock, format).await
             }
