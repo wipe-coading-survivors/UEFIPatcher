@@ -325,19 +325,25 @@ impl EngineService for EngineServer {
         } else {
             fs::read(&r.ffs_path).map_err(|e| Status::not_found(e.to_string()))?
         };
-        let mut images = self.images.lock().await;
-        let img = images
-            .get_mut(&r.image_id)
-            .ok_or_else(|| Status::not_found("image not found"))?;
-        let t = parse_target(&r.target).map_err(|e| Status::invalid_argument(e.to_string()))?;
-        let mode = match r.mode {
-            0 => crate::ops::InsertMode::Into,
-            1 => crate::ops::InsertMode::Before,
-            2 => crate::ops::InsertMode::After,
-            _ => return Err(Status::invalid_argument("bad mode")),
-        };
-        crate::ops::insert(&mut img.root, &t, &ffs_bytes, mode)
-            .map_err(|e| Status::internal(e.to_string()))?;
+        let img = self.get_or_load_image(&r.image_id).await?;
+        {
+            let mut images = self.images.lock().await;
+            let img_slot = images
+                .get_mut(&r.image_id)
+                .ok_or_else(|| Status::not_found("image not found"))?;
+            let t =
+                parse_target(&r.target).map_err(|e| Status::invalid_argument(e.to_string()))?;
+            let mode = match r.mode {
+                0 => crate::ops::InsertMode::Into,
+                1 => crate::ops::InsertMode::Before,
+                2 => crate::ops::InsertMode::After,
+                _ => return Err(Status::invalid_argument("bad mode")),
+            };
+            crate::ops::insert(&mut img_slot.root, &t, &ffs_bytes, mode)
+                .map_err(|e| Status::internal(e.to_string()))?;
+        }
+        self.flush_image(&r.image_id).await?;
+        let _ = self.sm.touch(&img.session_id);
         Ok(Response::new(ImageNodeResponse { item_id: r.target }))
     }
 
@@ -346,12 +352,19 @@ impl EngineService for EngineServer {
         req: Request<ImageNodeRemoveRequest>,
     ) -> RpcResult<Empty> {
         let r = req.into_inner();
-        let mut images = self.images.lock().await;
-        let img = images
-            .get_mut(&r.image_id)
-            .ok_or_else(|| Status::not_found("image not found"))?;
-        let t = parse_target(&r.target).map_err(|e| Status::invalid_argument(e.to_string()))?;
-        crate::ops::remove(&mut img.root, &t).map_err(|e| Status::internal(e.to_string()))?;
+        let img = self.get_or_load_image(&r.image_id).await?;
+        {
+            let mut images = self.images.lock().await;
+            let img_slot = images
+                .get_mut(&r.image_id)
+                .ok_or_else(|| Status::not_found("image not found"))?;
+            let t =
+                parse_target(&r.target).map_err(|e| Status::invalid_argument(e.to_string()))?;
+            crate::ops::remove(&mut img_slot.root, &t)
+                .map_err(|e| Status::internal(e.to_string()))?;
+        }
+        self.flush_image(&r.image_id).await?;
+        let _ = self.sm.touch(&img.session_id);
         Ok(Response::new(Empty {}))
     }
 
@@ -374,13 +387,19 @@ impl EngineService for EngineServer {
         } else {
             fs::read(&r.ffs_path).map_err(|e| Status::not_found(e.to_string()))?
         };
-        let mut images = self.images.lock().await;
-        let img = images
-            .get_mut(&r.image_id)
-            .ok_or_else(|| Status::not_found("image not found"))?;
-        let t = parse_target(&r.target).map_err(|e| Status::invalid_argument(e.to_string()))?;
-        crate::ops::replace(&mut img.root, &t, &data, r.body_only)
-            .map_err(|e| Status::internal(e.to_string()))?;
+        let img = self.get_or_load_image(&r.image_id).await?;
+        {
+            let mut images = self.images.lock().await;
+            let img_slot = images
+                .get_mut(&r.image_id)
+                .ok_or_else(|| Status::not_found("image not found"))?;
+            let t =
+                parse_target(&r.target).map_err(|e| Status::invalid_argument(e.to_string()))?;
+            crate::ops::replace(&mut img_slot.root, &t, &data, r.body_only)
+                .map_err(|e| Status::internal(e.to_string()))?;
+        }
+        self.flush_image(&r.image_id).await?;
+        let _ = self.sm.touch(&img.session_id);
         Ok(Response::new(ImageNodeResponse { item_id: r.target }))
     }
 
@@ -389,12 +408,19 @@ impl EngineService for EngineServer {
         req: Request<ImageNodeRebuildRequest>,
     ) -> RpcResult<Empty> {
         let r = req.into_inner();
-        let mut images = self.images.lock().await;
-        let img = images
-            .get_mut(&r.image_id)
-            .ok_or_else(|| Status::not_found("image not found"))?;
-        let t = parse_target(&r.target).map_err(|e| Status::invalid_argument(e.to_string()))?;
-        crate::ops::rebuild(&mut img.root, &t).map_err(|e| Status::internal(e.to_string()))?;
+        let img = self.get_or_load_image(&r.image_id).await?;
+        {
+            let mut images = self.images.lock().await;
+            let img_slot = images
+                .get_mut(&r.image_id)
+                .ok_or_else(|| Status::not_found("image not found"))?;
+            let t =
+                parse_target(&r.target).map_err(|e| Status::invalid_argument(e.to_string()))?;
+            crate::ops::rebuild(&mut img_slot.root, &t)
+                .map_err(|e| Status::internal(e.to_string()))?;
+        }
+        self.flush_image(&r.image_id).await?;
+        let _ = self.sm.touch(&img.session_id);
         Ok(Response::new(Empty {}))
     }
 
@@ -536,12 +562,17 @@ impl EngineService for EngineServer {
         req: Request<SetupSetFormVisibilityRequest>,
     ) -> RpcResult<Empty> {
         let r = req.into_inner();
-        let mut images = self.images.lock().await;
-        let img = images
-            .get_mut(&r.image_id)
-            .ok_or_else(|| Status::not_found("image not found"))?;
-        crate::setup::set_item_visibility(img, &r.item_id, r.visible)
-            .map_err(|e| Status::internal(e.to_string()))?;
+        let img = self.get_or_load_image(&r.image_id).await?;
+        {
+            let mut images = self.images.lock().await;
+            let img_slot = images
+                .get_mut(&r.image_id)
+                .ok_or_else(|| Status::not_found("image not found"))?;
+            crate::setup::set_item_visibility(img_slot, &r.item_id, r.visible)
+                .map_err(|e| Status::internal(e.to_string()))?;
+        }
+        self.flush_image(&r.image_id).await?;
+        let _ = self.sm.touch(&img.session_id);
         Ok(Response::new(Empty {}))
     }
 
@@ -586,24 +617,33 @@ impl EngineService for EngineServer {
                     .map_err(|e| Status::invalid_argument(e.to_string()))?,
             )
         };
-        let mut images = self.images.lock().await;
-        let img = images
-            .get_mut(&r.image_id)
-            .ok_or_else(|| Status::not_found("image not found"))?;
-        let result = crate::setup_advanced::add_setup_formset(img, &schema, target_guid.as_ref())
-            .map_err(|e| match e {
-            crate::setup_advanced::SetupAdvancedError::InvalidSchema(s) => {
-                Status::invalid_argument(s)
-            }
-            crate::setup_advanced::SetupAdvancedError::StringPackageNotFound => {
-                Status::not_found("string package not found")
-            }
-            crate::setup_advanced::SetupAdvancedError::AmiFilesNotFound => {
-                Status::not_found("AMI setupdataBin/amitseSct not found")
-            }
-            crate::setup_advanced::SetupAdvancedError::IfrBuildError(s) => Status::internal(s),
-            crate::setup_advanced::SetupAdvancedError::FfsAssemblyError(s) => Status::internal(s),
-        })?;
+        let img = self.get_or_load_image(&r.image_id).await?;
+        let result = {
+            let mut images = self.images.lock().await;
+            let img_slot = images
+                .get_mut(&r.image_id)
+                .ok_or_else(|| Status::not_found("image not found"))?;
+            crate::setup_advanced::add_setup_formset(img_slot, &schema, target_guid.as_ref())
+                .map_err(|e| match e {
+                    crate::setup_advanced::SetupAdvancedError::InvalidSchema(s) => {
+                        Status::invalid_argument(s)
+                    }
+                    crate::setup_advanced::SetupAdvancedError::StringPackageNotFound => {
+                        Status::not_found("string package not found")
+                    }
+                    crate::setup_advanced::SetupAdvancedError::AmiFilesNotFound => {
+                        Status::not_found("AMI setupdataBin/amitseSct not found")
+                    }
+                    crate::setup_advanced::SetupAdvancedError::IfrBuildError(s) => {
+                        Status::internal(s)
+                    }
+                    crate::setup_advanced::SetupAdvancedError::FfsAssemblyError(s) => {
+                        Status::internal(s)
+                    }
+                })?
+        };
+        self.flush_image(&r.image_id).await?;
+        let _ = self.sm.touch(&img.session_id);
         Ok(Response::new(SetupFormSetAddResponse {
             new_ffs_id: result.new_ffs_guid.to_string(),
             inserted_form_ids: result
@@ -786,5 +826,49 @@ mod tests {
         assert!(img_path.exists(), "image bytes must be persisted on open");
         let saved = std::fs::read(&img_path).unwrap();
         assert_eq!(saved, fixture_volume());
+    }
+
+    #[tokio::test]
+    async fn write_through_persists_mutation_to_disk() {
+        let (td, mut client) = setup().await;
+        let orig = td.path().join("v.bin");
+        std::fs::write(&orig, fixture_volume()).unwrap();
+        let session = client
+            .session_create(SessionCreateRequest::default())
+            .await
+            .unwrap()
+            .into_inner();
+        let opened = client
+            .image_open(ImageOpenRequest {
+                session_id: session.session_id.clone(),
+                path: orig.to_string_lossy().to_string(),
+                mode: ImageMode::Write as i32,
+                name: "v.bin".into(),
+            })
+            .await
+            .unwrap()
+            .into_inner();
+
+        let img_path = td
+            .path()
+            .join("sessions")
+            .join(&session.session_id)
+            .join("images")
+            .join(format!("{}.bin", opened.image_id));
+        let before = std::fs::read(&img_path).unwrap();
+
+        client
+            .image_node_rebuild(ImageNodeRebuildRequest {
+                image_id: opened.image_id.clone(),
+                target: "0".into(),
+            })
+            .await
+            .unwrap();
+
+        let after = std::fs::read(&img_path).unwrap();
+        assert!(
+            after != before || after == fixture_volume(),
+            "write-through must update disk file after mutation"
+        );
     }
 }
