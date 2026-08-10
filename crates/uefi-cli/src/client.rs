@@ -52,81 +52,119 @@ impl Client {
         })
     }
 
-    pub async fn create_session(&mut self, name: &str) -> Result<(String, String), AppError> {
+    pub async fn session_create(&mut self, name: &str) -> Result<(String, String), AppError> {
         let r = self
             .inner
-            .create_session(CreateSessionRequest { name: name.into() })
+            .session_create(SessionCreateRequest { name: name.into() })
             .await?
             .into_inner();
         Ok((r.session_id, r.token))
     }
 
-    pub async fn destroy_session(&mut self, id: &str) -> Result<(), AppError> {
+    pub async fn session_destroy(&mut self, id: &str) -> Result<(), AppError> {
         self.inner
-            .destroy_session(DestroySessionRequest {
+            .session_destroy(SessionDestroyRequest {
                 session_id: id.into(),
             })
             .await?;
         Ok(())
     }
 
-    pub async fn list_sessions(&mut self) -> Result<Vec<SessionInfo>, AppError> {
+    pub async fn sessions_list(&mut self) -> Result<Vec<SessionInfo>, AppError> {
         Ok(self
             .inner
-            .list_sessions(ListSessionsRequest {})
+            .sessions_list(SessionsListRequest {})
             .await?
             .into_inner()
             .sessions)
     }
 
-    pub async fn open_image(
+    pub async fn image_open(
         &mut self,
         path: &str,
+        name: &str,
         mode: i32,
-    ) -> Result<(String, String), AppError> {
+    ) -> Result<(String, String, String), AppError> {
         let sid = self
             .state
             .session_id
             .clone()
             .ok_or_else(|| AppError::new(ErrKind::StateMissing, "no session"))?;
-        let req = OpenImageRequest {
+        let req = ImageOpenRequest {
             session_id: sid,
-            image_path: path.into(),
+            path: path.into(),
             mode,
+            name: name.into(),
         };
         let r = self
             .inner
-            .open_image(auth_req(&self.state, req))
+            .image_open(auth_req(&self.state, req))
             .await?
             .into_inner();
-        Ok((r.image_id, r.root_guid))
+        Ok((r.image_id, r.root_guid, r.name))
     }
 
-    pub async fn list_items(
+    pub async fn image_close(&mut self, image_id: &str) -> Result<(), AppError> {
+        let req = ImageCloseRequest {
+            image_id: image_id.into(),
+        };
+        self.inner.image_close(auth_req(&self.state, req)).await?;
+        Ok(())
+    }
+
+    pub async fn images_list(&mut self) -> Result<Vec<ImageInfo>, AppError> {
+        let sid = self
+            .state
+            .session_id
+            .clone()
+            .ok_or_else(|| AppError::new(ErrKind::StateMissing, "no session"))?;
+        let req = ImagesListRequest { session_id: sid };
+        Ok(self
+            .inner
+            .images_list(auth_req(&self.state, req))
+            .await?
+            .into_inner()
+            .images)
+    }
+
+    pub async fn image_status(&mut self, image_id: &str) -> Result<ImageInfo, AppError> {
+        let req = ImageStatusRequest {
+            image_id: image_id.into(),
+        };
+        Ok(self
+            .inner
+            .image_status(auth_req(&self.state, req))
+            .await?
+            .into_inner()
+            .info
+            .unwrap())
+    }
+
+    pub async fn image_nodes_list(
         &mut self,
         image_id: &str,
         filter: Option<&str>,
-    ) -> Result<Vec<Item>, AppError> {
-        let req = ListItemsRequest {
+    ) -> Result<Vec<Node>, AppError> {
+        let req = ImageNodesListRequest {
             image_id: image_id.into(),
             filter: filter.unwrap_or("").into(),
         };
         Ok(self
             .inner
-            .list_items(auth_req(&self.state, req))
+            .image_nodes_list(auth_req(&self.state, req))
             .await?
             .into_inner()
-            .items)
+            .nodes)
     }
 
-    pub async fn search_items(
+    pub async fn image_nodes_search(
         &mut self,
         image_id: &str,
         query: &str,
         modes: &[i32],
         limit: u32,
-    ) -> Result<Vec<Item>, AppError> {
-        let req = SearchItemsRequest {
+    ) -> Result<Vec<Node>, AppError> {
+        let req = ImageNodesSearchRequest {
             image_id: image_id.into(),
             query: query.into(),
             modes: modes.to_vec(),
@@ -134,26 +172,13 @@ impl Client {
         };
         Ok(self
             .inner
-            .search_items(auth_req(&self.state, req))
+            .image_nodes_search(auth_req(&self.state, req))
             .await?
             .into_inner()
-            .items)
+            .nodes)
     }
 
-    pub async fn find_item(&mut self, image_id: &str, target: &str) -> Result<String, AppError> {
-        let req = FindItemRequest {
-            image_id: image_id.into(),
-            target: target.into(),
-        };
-        Ok(self
-            .inner
-            .find_item(auth_req(&self.state, req))
-            .await?
-            .into_inner()
-            .item_id)
-    }
-
-    pub async fn insert(
+    pub async fn image_node_insert(
         &mut self,
         image_id: &str,
         target: &str,
@@ -161,7 +186,7 @@ impl Client {
         artifact_id: &str,
         mode: i32,
     ) -> Result<String, AppError> {
-        let req = InsertRequest {
+        let req = ImageNodeInsertRequest {
             image_id: image_id.into(),
             target: target.into(),
             ffs_path: ffs_path.into(),
@@ -170,143 +195,174 @@ impl Client {
         };
         Ok(self
             .inner
-            .insert(auth_req(&self.state, req))
+            .image_node_insert(auth_req(&self.state, req))
             .await?
             .into_inner()
             .item_id)
     }
 
-    pub async fn remove(&mut self, image_id: &str, target: &str) -> Result<(), AppError> {
-        let req = RemoveRequest {
+    pub async fn image_node_remove(&mut self, image_id: &str, target: &str) -> Result<(), AppError> {
+        let req = ImageNodeRemoveRequest {
             image_id: image_id.into(),
             target: target.into(),
         };
-        self.inner.remove(auth_req(&self.state, req)).await?;
+        self.inner
+            .image_node_remove(auth_req(&self.state, req))
+            .await?;
         Ok(())
     }
 
-    pub async fn replace(
+    pub async fn image_node_replace(
         &mut self,
         image_id: &str,
         target: &str,
-        data_path: &str,
+        ffs_path: &str,
         artifact_id: &str,
         body_only: bool,
     ) -> Result<String, AppError> {
-        let req = ReplaceRequest {
+        let req = ImageNodeReplaceRequest {
             image_id: image_id.into(),
             target: target.into(),
-            ffs_path: data_path.into(),
+            ffs_path: ffs_path.into(),
             artifact_id: artifact_id.into(),
             body_only,
         };
         Ok(self
             .inner
-            .replace(auth_req(&self.state, req))
+            .image_node_replace(auth_req(&self.state, req))
             .await?
             .into_inner()
             .item_id)
     }
 
-    pub async fn rebuild(&mut self, image_id: &str, target: &str) -> Result<(), AppError> {
-        let req = RebuildRequest {
+    pub async fn image_node_rebuild(&mut self, image_id: &str, target: &str) -> Result<(), AppError> {
+        let req = ImageNodeRebuildRequest {
             image_id: image_id.into(),
             target: target.into(),
         };
-        self.inner.rebuild(auth_req(&self.state, req)).await?;
+        self.inner
+            .image_node_rebuild(auth_req(&self.state, req))
+            .await?;
         Ok(())
     }
 
-    pub async fn set_setup_visibility(
+    pub async fn image_node_extract(
+        &mut self,
+        image_id: &str,
+        target: &str,
+        body_only: bool,
+    ) -> Result<String, AppError> {
+        let req = ImageNodeExtractRequest {
+            image_id: image_id.into(),
+            target: target.into(),
+            body_only,
+        };
+        Ok(self
+            .inner
+            .image_node_extract(auth_req(&self.state, req))
+            .await?
+            .into_inner()
+            .artifact_id)
+    }
+
+    pub async fn setup_list_forms(&mut self, image_id: &str) -> Result<Vec<FormInfo>, AppError> {
+        let req = SetupListFormsRequest {
+            image_id: image_id.into(),
+        };
+        Ok(self
+            .inner
+            .setup_list_forms(auth_req(&self.state, req))
+            .await?
+            .into_inner()
+            .forms)
+    }
+
+    pub async fn setup_list_strings(
+        &mut self,
+        image_id: &str,
+    ) -> Result<Vec<StringInfo>, AppError> {
+        let req = SetupListStringsRequest {
+            image_id: image_id.into(),
+        };
+        Ok(self
+            .inner
+            .setup_list_strings(auth_req(&self.state, req))
+            .await?
+            .into_inner()
+            .strings)
+    }
+
+    pub async fn setup_set_form_visibility(
         &mut self,
         image_id: &str,
         item_id: &str,
         visible: bool,
     ) -> Result<(), AppError> {
-        let req = SetSetupItemVisibilityRequest {
+        let req = SetupSetFormVisibilityRequest {
             image_id: image_id.into(),
             item_id: item_id.into(),
             visible,
         };
         self.inner
-            .set_setup_item_visibility(auth_req(&self.state, req))
+            .setup_set_form_visibility(auth_req(&self.state, req))
             .await?;
         Ok(())
     }
 
-    pub async fn save_image(&mut self, image_id: &str, output_path: &str) -> Result<(), AppError> {
-        let req = SaveImageRequest {
+    pub async fn image_save(&mut self, image_id: &str, output_path: &str) -> Result<(), AppError> {
+        let req = ImageSaveRequest {
             image_id: image_id.into(),
             output_path: output_path.into(),
         };
-        self.inner.save_image(auth_req(&self.state, req)).await?;
+        self.inner.image_save(auth_req(&self.state, req)).await?;
         Ok(())
     }
 
-    pub async fn extract_artifact(
-        &mut self,
-        image_id: &str,
-        target: &str,
-        body_only: bool,
-    ) -> Result<String, AppError> {
-        let req = ExtractArtifactRequest {
-            image_id: image_id.into(),
-            target: target.into(),
-            body_only,
+    pub async fn artifacts_list(&mut self) -> Result<Vec<ArtifactInfo>, AppError> {
+        let sid = self
+            .state
+            .session_id
+            .clone()
+            .ok_or_else(|| AppError::new(ErrKind::StateMissing, "no session"))?;
+        let req = ArtifactsListRequest { session_id: sid };
+        Ok(self
+            .inner
+            .artifacts_list(auth_req(&self.state, req))
+            .await?
+            .into_inner()
+            .artifacts)
+    }
+
+    pub async fn artifact_import(&mut self, path: &str) -> Result<String, AppError> {
+        let sid = self
+            .state
+            .session_id
+            .clone()
+            .ok_or_else(|| AppError::new(ErrKind::StateMissing, "no session"))?;
+        let req = ArtifactImportRequest {
+            session_id: sid,
+            path: path.into(),
         };
         Ok(self
             .inner
-            .extract_artifact(auth_req(&self.state, req))
+            .artifact_import(auth_req(&self.state, req))
             .await?
             .into_inner()
             .artifact_id)
     }
 
-    pub async fn export_artifact(
+    pub async fn artifact_export(
         &mut self,
         artifact_id: &str,
         output_path: &str,
     ) -> Result<(), AppError> {
-        let req = ExportArtifactRequest {
+        let req = ArtifactExportRequest {
             artifact_id: artifact_id.into(),
             output_path: output_path.into(),
         };
         self.inner
-            .export_artifact(auth_req(&self.state, req))
+            .artifact_export(auth_req(&self.state, req))
             .await?;
         Ok(())
-    }
-
-    pub async fn import_artifact(&mut self, file_path: &str) -> Result<String, AppError> {
-        let sid = self
-            .state
-            .session_id
-            .clone()
-            .ok_or_else(|| AppError::new(ErrKind::StateMissing, "no session"))?;
-        let req = ImportArtifactRequest {
-            session_id: sid,
-            file_path: file_path.into(),
-        };
-        Ok(self
-            .inner
-            .import_artifact(auth_req(&self.state, req))
-            .await?
-            .into_inner()
-            .artifact_id)
-    }
-
-    pub async fn list_artifacts(&mut self) -> Result<Vec<ArtifactInfo>, AppError> {
-        let sid = self
-            .state
-            .session_id
-            .clone()
-            .ok_or_else(|| AppError::new(ErrKind::StateMissing, "no session"))?;
-        let req = ListArtifactsRequest { session_id: sid };
-        Ok(self
-            .inner
-            .list_artifacts(auth_req(&self.state, req))
-            .await?
-            .into_inner()
-            .artifacts)
     }
 }
