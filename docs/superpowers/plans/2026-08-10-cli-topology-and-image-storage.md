@@ -2045,7 +2045,7 @@ async fn dispatch(cli: &Cli, format: output::OutputFormat) -> Result<(), error::
     match &cli.cmd {
         Cmd::Session { sub } => match sub {
             SessionCmd::Init { name, force } => {
-                commands::session::init(name.as_deref(), *force, sock, format).await
+                commands::session::init(name.as_deref(), sock, *force, format).await
             }
             SessionCmd::List => commands::session::list(sock, format).await,
             SessionCmd::Destroy => commands::session::destroy(sock, format).await,
