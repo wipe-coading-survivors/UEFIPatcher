@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use uefi_engine::ffs::{EFI_SECTION_GUID_DEFINED, EFI_SECTION_PE32, is_lzma_guid};
 use uefi_engine::parser::file::parse_file;
-use uefi_engine::parser::image::{dump_tree, list_items, parse_image};
+use uefi_engine::parser::image::{list_items, parse_image, search};
 use uefi_engine::parser::section::parse_sections;
 use uefi_engine::parser::target::{find_item, parse_target};
 use uefi_engine::parser::volume::parse_volume;
@@ -276,7 +276,6 @@ fn real_image_decompresses_lzma_sections() {
 #[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
 fn real_image_parse_image_full() {
     use uefi_engine::types::ImageMode;
-    use uefi_proto::DumpFormat;
 
     let data = load_fw();
     let img = parse_image(&data, ImageMode::Read, "img1", "s1").expect("parse_image");
@@ -334,23 +333,36 @@ fn real_image_parse_image_full() {
         "all guided sections in main FV must decompress"
     );
 
-    let tree = dump_tree(&img.root, DumpFormat::Text);
-    assert!(tree.contains("Image"));
-    assert!(tree.contains("Volume"));
-    assert!(tree.contains("File"));
     let items = list_items(&img.root, None);
     assert!(
         items.len() > 1000,
         "expected many list items, got {}",
         items.len()
     );
+    assert!(
+        items
+            .iter()
+            .any(|i| i.r#type == FfsType::File as u32 && i.name == "PeiCore"),
+        "expected an FFS file named 'PeiCore' (UI section lifted), got names: {:?}",
+        items
+            .iter()
+            .filter(|i| i.r#type == FfsType::File as u32 && !i.name.is_empty())
+            .map(|i| &i.name)
+            .take(10)
+            .collect::<Vec<_>>()
+    );
 
     eprintln!(
-        "real_image parse_image: {} top-level volumes, main FV files={}, guided={}, decompressed={}",
+        "real_image parse_image: {} top-level volumes, main FV files={}, guided={}, decompressed={}, items={}, named_files={}",
         img.root.children.len(),
         main.children.len(),
         guided,
-        decompressed
+        decompressed,
+        items.len(),
+        items
+            .iter()
+            .filter(|i| i.r#type == FfsType::File as u32 && !i.name.is_empty())
+            .count(),
     );
 }
 
@@ -509,5 +521,42 @@ fn real_image_ops_remove_last_file() {
     eprintln!(
         "real_image ops: removed last file of {original_count}, rebuilt={} re-parsed files={new_count}, length preserved",
         rebuilt.len()
+    );
+}
+
+#[test]
+#[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
+fn real_image_search_finds_setup_by_name() {
+    use uefi_common::search::SearchMode;
+    use uefi_engine::types::ImageMode;
+
+    let data = load_fw();
+    let img = parse_image(&data, ImageMode::Read, "img1", "s1").expect("parse_image");
+
+    let matches = search(&img.root, "setup", &[SearchMode::Name], 50);
+    assert!(
+        matches
+            .iter()
+            .any(|m| m.name == "Setup" && m.r#type == FfsType::Section as u32),
+        "expected to find UI section 'Setup' by name; got {} matches: {:?}",
+        matches.len(),
+        matches.iter().map(|m| &m.name).take(5).collect::<Vec<_>>(),
+    );
+}
+
+#[test]
+#[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
+fn real_image_search_finds_utf8_string_in_pe32() {
+    use uefi_common::search::SearchMode;
+    use uefi_engine::types::ImageMode;
+
+    let data = load_fw();
+    let img = parse_image(&data, ImageMode::Read, "img1", "s1").expect("parse_image");
+
+    let matches = search(&img.root, ".reloc", &[SearchMode::Utf8], 50);
+    assert!(
+        matches.len() >= 5,
+        "expected multiple PE32 sections containing '.reloc' string, got {}",
+        matches.len()
     );
 }
