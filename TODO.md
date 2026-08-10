@@ -81,3 +81,30 @@ Gateway уже мигрируют на `ListItems` (см. spec
   `list-items` через дефис, `list` без. Привести к единому стилю
   (clap конвертирует `list_items` → `list-items` автоматически, но
   исходник стоит унифицировать).
+
+## План B: IFR forms/strings extraction + слияние с setup_advanced
+
+Спека `2026-08-10-cli-topology-and-image-storage-design.md` (План A)
+заводит stub'ы RPC `SetupListForms` / `SetupListStrings`, возвращающие
+`UNIMPLEMENTED`. Полная реализация — План B: парсинг IFR-форм (FFS-секций
+с IFR-байткодом) и string-package'ей, слияние модуля `setup_advanced/` с
+`setup/` в одну согласованную иерархию.
+
+**Baseline-коммит для onboarding** (где найти актуальный на момент
+написания код `setup_advanced/` и `setup/`):
+`0470553bcc579af0eb72075533bc2c73f77d543f` —
+`crates/uefi-engine/src/setup_advanced/{mod,ffs_assembler,ifr_builder,ami_patcher,schema,string_pack}.rs`
+и `crates/uefi-engine/src/setup/{mod,ifr}.rs`. Если код переехал/удалён —
+искать через `git log --all -- crates/uefi-engine/src/setup_advanced/`.
+
+* [ ] **Реализовать `SetupListForms`** — обход FFS-секций с IFR-байткодом,
+  извлечение FormSet GUID, FormId, title-string-id, состояния visibility
+  (через `find_suppress_if_scopes`). Возвращает `Vec<FormInfo>`.
+* [ ] **Реализовать `SetupListStrings`** — чтение string-package'ей через
+  `setup_advanced/string_pack.rs`, возврат `Vec<StringInfo>` с language /
+  string_id / text.
+* [ ] **Слить `setup_advanced/` с `setup/`** — общая иерархия
+  `crates/uefi-engine/src/setup/{mod,ifr,forms,strings,schema,
+  ami_patcher,ffs_assembler,ifr_builder,string_pack}.rs`. Решить структуру
+  импортов и更新ть `lib.rs`.
+* [ ] **Подключить CLI/TUI/Gateway/WebUI** на реальные данные вместо stub'ов.
