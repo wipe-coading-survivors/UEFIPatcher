@@ -4,8 +4,7 @@ use super::section::parse_sections;
 use super::volume::parse_volume;
 use crate::ffs::*;
 use crate::types::*;
-use uefi_common::format::{TreeRow, format_tree};
-use uefi_proto::{DumpFormat, Item};
+use uefi_proto::Node;
 
 const FVH_SCAN_STEP: usize = 16;
 const FFS_ALIGN: usize = 8;
@@ -103,48 +102,16 @@ fn parse_volume_files(body: &[u8], body_start: usize, erase: u8, rev: u8) -> Vec
     files
 }
 
-pub fn dump_tree(root: &FfsNode, format: DumpFormat) -> String {
-    match format {
-        DumpFormat::Text => {
-            let items = list_items(root, None);
-            let rows: Vec<TreeRow> = items
-                .iter()
-                .map(|it| TreeRow {
-                    path: it.path.clone(),
-                    type_: it.r#type,
-                    subtype: it.subtype as u8,
-                    guid: it.guid.clone(),
-                    offset: it.offset,
-                    size: it.size,
-                    name: it.name.clone(),
-                })
-                .collect();
-            format_tree(&rows)
-        }
-        DumpFormat::Tsv => {
-            let items = list_items(root, None);
-            let mut out = String::from("path\ttype\tsubtype\tguid\toffset\tsize\tname\n");
-            for it in items {
-                out.push_str(&format!(
-                    "{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
-                    it.path, it.r#type, it.subtype, it.guid, it.offset, it.size, it.name,
-                ));
-            }
-            out
-        }
-    }
-}
-
-pub fn list_items(root: &FfsNode, filter: Option<&str>) -> Vec<Item> {
+pub fn list_items(root: &FfsNode, filter: Option<&str>) -> Vec<Node> {
     let mut items = vec![];
     list_recursive(root, "", &mut items, filter);
     items
 }
 
-fn list_recursive(node: &FfsNode, path: &str, items: &mut Vec<Item>, filter: Option<&str>) {
+fn list_recursive(node: &FfsNode, path: &str, items: &mut Vec<Node>, filter: Option<&str>) {
     let name = node_name(node);
     if filter.is_none_or(|f| name.contains(f) || path.contains(f)) {
-        items.push(Item {
+        items.push(Node {
             path: path.to_string(),
             r#type: node.node_type as u32,
             subtype: node.subtype as u32,
@@ -172,7 +139,7 @@ pub fn search(
     query: &str,
     modes: &[uefi_common::search::SearchMode],
     limit: usize,
-) -> Vec<Item> {
+) -> Vec<Node> {
     let mut out = vec![];
     if modes.is_empty() {
         return out;
@@ -189,14 +156,14 @@ fn search_recursive(
     query: &str,
     modes: &[uefi_common::search::SearchMode],
     limit: usize,
-    out: &mut Vec<Item>,
+    out: &mut Vec<Node>,
 ) {
     if out.len() >= limit {
         return;
     }
     if node.node_type == FfsType::Section && section_matches(node, query, modes) {
         let name = node_name(node);
-        out.push(Item {
+        out.push(Node {
             path: path.clone(),
             r#type: node.node_type as u32,
             subtype: node.subtype as u32,
@@ -302,15 +269,6 @@ mod tests {
         assert!(!img.root.children.is_empty());
         assert_eq!(img.root.children[0].node_type, FfsType::Volume);
         assert_eq!(img.root.children[0].offset, 0);
-    }
-
-    #[test]
-    fn dump_tree_text() {
-        let buf = make_image_with_volume();
-        let img = parse_image(&buf, ImageMode::Read, "img1", "s1").unwrap();
-        let s = dump_tree(&img.root, DumpFormat::Text);
-        assert!(s.contains("Image"));
-        assert!(s.contains("Volume"));
     }
 
     #[test]

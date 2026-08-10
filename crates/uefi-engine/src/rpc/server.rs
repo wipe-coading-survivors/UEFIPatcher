@@ -12,7 +12,7 @@ use uuid::Uuid;
 use uefi_proto::engine_service_server::{EngineService, EngineServiceServer};
 use uefi_proto::*;
 
-use crate::parser::image::{dump_tree, list_items, parse_image};
+use crate::parser::image::{list_items, parse_image};
 use crate::parser::target::{find_item, parse_target};
 use crate::session::SessionManager;
 use crate::storage::image::{atomic_write, read_image_file, remove_image_file, store_image_file};
@@ -88,10 +88,10 @@ impl EngineServer {
 
 #[tonic::async_trait]
 impl EngineService for EngineServer {
-    async fn create_session(
+    async fn session_create(
         &self,
-        req: Request<CreateSessionRequest>,
-    ) -> RpcResult<CreateSessionResponse> {
+        req: Request<SessionCreateRequest>,
+    ) -> RpcResult<SessionCreateResponse> {
         let r = req.into_inner();
         let name = if r.name.is_empty() {
             std::env::var("PWD").unwrap_or_default()
@@ -102,13 +102,16 @@ impl EngineService for EngineServer {
             .sm
             .create_session(&name)
             .map_err(|e| Status::internal(e.to_string()))?;
-        Ok(Response::new(CreateSessionResponse {
+        Ok(Response::new(SessionCreateResponse {
             session_id: id,
             token: tok,
         }))
     }
 
-    async fn destroy_session(&self, req: Request<DestroySessionRequest>) -> RpcResult<Empty> {
+    async fn session_destroy(
+        &self,
+        req: Request<SessionDestroyRequest>,
+    ) -> RpcResult<Empty> {
         let r = req.into_inner();
         self.sm
             .destroy_session(&r.session_id, self.sm.purge_artifacts)
@@ -116,15 +119,15 @@ impl EngineService for EngineServer {
         Ok(Response::new(Empty {}))
     }
 
-    async fn list_sessions(
+    async fn sessions_list(
         &self,
-        _req: Request<ListSessionsRequest>,
-    ) -> RpcResult<ListSessionsResponse> {
+        _req: Request<SessionsListRequest>,
+    ) -> RpcResult<SessionsListResponse> {
         let rows = self
             .sm
             .list_sessions()
             .map_err(|e| Status::internal(e.to_string()))?;
-        Ok(Response::new(ListSessionsResponse {
+        Ok(Response::new(SessionsListResponse {
             sessions: rows
                 .into_iter()
                 .map(|r| SessionInfo {
@@ -137,14 +140,17 @@ impl EngineService for EngineServer {
         }))
     }
 
-    async fn open_image(&self, req: Request<OpenImageRequest>) -> RpcResult<OpenImageResponse> {
+    async fn image_open(
+        &self,
+        req: Request<ImageOpenRequest>,
+    ) -> RpcResult<ImageOpenResponse> {
         let r = req.into_inner();
         let mode = match r.mode {
             0 => ImageMode::Read,
             1 => ImageMode::Write,
             _ => return Err(Status::invalid_argument("bad mode")),
         };
-        let bytes = fs::read(&r.image_path).map_err(|e| Status::not_found(e.to_string()))?;
+        let bytes = fs::read(&r.path).map_err(|e| Status::not_found(e.to_string()))?;
         let image_id = Uuid::new_v4().to_string();
         let img = parse_image(&bytes, mode, &image_id, &r.session_id)
             .map_err(|e| Status::internal(e.to_string()))?;
@@ -155,34 +161,23 @@ impl EngineService for EngineServer {
             .unwrap_or_default();
         self.images.lock().await.insert(image_id.clone(), img);
         let _ = self.sm.touch(&r.session_id);
-        Ok(Response::new(OpenImageResponse {
+        Ok(Response::new(ImageOpenResponse {
             image_id,
             root_guid,
+            name: String::new(),
         }))
     }
 
-    async fn dump_tree(&self, req: Request<DumpTreeRequest>) -> RpcResult<DumpTreeResponse> {
+    async fn image_nodes_list(
+        &self,
+        req: Request<ImageNodesListRequest>,
+    ) -> RpcResult<ImageNodesResponse> {
         let r = req.into_inner();
         let images = self.images.lock().await;
         let img = images
             .get(&r.image_id)
             .ok_or_else(|| Status::not_found("image not found"))?;
-        let format = match r.format {
-            0 => uefi_proto::DumpFormat::Text,
-            1 => uefi_proto::DumpFormat::Tsv,
-            _ => return Err(Status::invalid_argument("bad format")),
-        };
-        let text = dump_tree(&img.root, format);
-        Ok(Response::new(DumpTreeResponse { text }))
-    }
-
-    async fn list_items(&self, req: Request<ListItemsRequest>) -> RpcResult<ListItemsResponse> {
-        let r = req.into_inner();
-        let images = self.images.lock().await;
-        let img = images
-            .get(&r.image_id)
-            .ok_or_else(|| Status::not_found("image not found"))?;
-        let items = list_items(
+        let nodes = list_items(
             &img.root,
             if r.filter.is_empty() {
                 None
@@ -190,13 +185,13 @@ impl EngineService for EngineServer {
                 Some(&r.filter)
             },
         );
-        Ok(Response::new(ListItemsResponse { items }))
+        Ok(Response::new(ImageNodesResponse { nodes }))
     }
 
-    async fn search_items(
+    async fn image_nodes_search(
         &self,
-        req: Request<SearchItemsRequest>,
-    ) -> RpcResult<SearchItemsResponse> {
+        req: Request<ImageNodesSearchRequest>,
+    ) -> RpcResult<ImageNodesResponse> {
         let r = req.into_inner();
         let images = self.images.lock().await;
         let img = images
@@ -213,22 +208,14 @@ impl EngineService for EngineServer {
             })
             .collect();
         let limit = r.limit as usize;
-        let items = crate::parser::image::search(&img.root, &r.query, &modes, limit);
-        Ok(Response::new(SearchItemsResponse { items }))
+        let nodes = crate::parser::image::search(&img.root, &r.query, &modes, limit);
+        Ok(Response::new(ImageNodesResponse { nodes }))
     }
 
-    async fn find_item(&self, req: Request<FindItemRequest>) -> RpcResult<FindItemResponse> {
-        let r = req.into_inner();
-        let images = self.images.lock().await;
-        let img = images
-            .get(&r.image_id)
-            .ok_or_else(|| Status::not_found("image not found"))?;
-        let t = parse_target(&r.target).map_err(|e| Status::invalid_argument(e.to_string()))?;
-        let _ = find_item(&img.root, &t).map_err(|e| Status::not_found(e.to_string()))?;
-        Ok(Response::new(FindItemResponse { item_id: r.target }))
-    }
-
-    async fn insert(&self, req: Request<InsertRequest>) -> RpcResult<InsertResponse> {
+    async fn image_node_insert(
+        &self,
+        req: Request<ImageNodeInsertRequest>,
+    ) -> RpcResult<ImageNodeResponse> {
         let r = req.into_inner();
         let ffs_bytes = if !r.artifact_id.is_empty() {
             let art = self
@@ -257,10 +244,13 @@ impl EngineService for EngineServer {
         };
         crate::ops::insert(&mut img.root, &t, &ffs_bytes, mode)
             .map_err(|e| Status::internal(e.to_string()))?;
-        Ok(Response::new(InsertResponse { item_id: r.target }))
+        Ok(Response::new(ImageNodeResponse { item_id: r.target }))
     }
 
-    async fn remove(&self, req: Request<RemoveRequest>) -> RpcResult<Empty> {
+    async fn image_node_remove(
+        &self,
+        req: Request<ImageNodeRemoveRequest>,
+    ) -> RpcResult<Empty> {
         let r = req.into_inner();
         let mut images = self.images.lock().await;
         let img = images
@@ -271,7 +261,10 @@ impl EngineService for EngineServer {
         Ok(Response::new(Empty {}))
     }
 
-    async fn replace(&self, req: Request<ReplaceRequest>) -> RpcResult<ReplaceResponse> {
+    async fn image_node_replace(
+        &self,
+        req: Request<ImageNodeReplaceRequest>,
+    ) -> RpcResult<ImageNodeResponse> {
         let r = req.into_inner();
         let data = if !r.artifact_id.is_empty() {
             let art = self
@@ -294,10 +287,13 @@ impl EngineService for EngineServer {
         let t = parse_target(&r.target).map_err(|e| Status::invalid_argument(e.to_string()))?;
         crate::ops::replace(&mut img.root, &t, &data, r.body_only)
             .map_err(|e| Status::internal(e.to_string()))?;
-        Ok(Response::new(ReplaceResponse { item_id: r.target }))
+        Ok(Response::new(ImageNodeResponse { item_id: r.target }))
     }
 
-    async fn rebuild(&self, req: Request<RebuildRequest>) -> RpcResult<Empty> {
+    async fn image_node_rebuild(
+        &self,
+        req: Request<ImageNodeRebuildRequest>,
+    ) -> RpcResult<Empty> {
         let r = req.into_inner();
         let mut images = self.images.lock().await;
         let img = images
@@ -308,10 +304,10 @@ impl EngineService for EngineServer {
         Ok(Response::new(Empty {}))
     }
 
-    async fn extract_artifact(
+    async fn image_node_extract(
         &self,
-        req: Request<ExtractArtifactRequest>,
-    ) -> RpcResult<ExtractArtifactResponse> {
+        req: Request<ImageNodeExtractRequest>,
+    ) -> RpcResult<ImageNodeExtractResponse> {
         let r = req.into_inner();
         let (session_id, bytes) = {
             let images = self.images.lock().await;
@@ -355,10 +351,13 @@ impl EngineService for EngineServer {
                 &source,
             )
             .map_err(|e| Status::internal(e.to_string()))?;
-        Ok(Response::new(ExtractArtifactResponse { artifact_id }))
+        Ok(Response::new(ImageNodeExtractResponse { artifact_id }))
     }
 
-    async fn export_artifact(&self, req: Request<ExportArtifactRequest>) -> RpcResult<Empty> {
+    async fn artifact_export(
+        &self,
+        req: Request<ArtifactExportRequest>,
+    ) -> RpcResult<Empty> {
         let r = req.into_inner();
         let art = self
             .sm
@@ -378,12 +377,12 @@ impl EngineService for EngineServer {
         Ok(Response::new(Empty {}))
     }
 
-    async fn import_artifact(
+    async fn artifact_import(
         &self,
-        req: Request<ImportArtifactRequest>,
-    ) -> RpcResult<ImportArtifactResponse> {
+        req: Request<ArtifactImportRequest>,
+    ) -> RpcResult<ArtifactImportResponse> {
         let r = req.into_inner();
-        let bytes = fs::read(&r.file_path).map_err(|e| Status::not_found(e.to_string()))?;
+        let bytes = fs::read(&r.path).map_err(|e| Status::not_found(e.to_string()))?;
         let artifact_id = Uuid::new_v4().to_string();
         let path = crate::storage::artifact::store_artifact_file(
             &self.data_dir,
@@ -392,7 +391,7 @@ impl EngineService for EngineServer {
             &bytes,
         )
         .map_err(|e| Status::internal(e.to_string()))?;
-        let source = Path::new(&r.file_path)
+        let source = Path::new(&r.path)
             .file_name()
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_default();
@@ -409,13 +408,13 @@ impl EngineService for EngineServer {
                 &source,
             )
             .map_err(|e| Status::internal(e.to_string()))?;
-        Ok(Response::new(ImportArtifactResponse { artifact_id }))
+        Ok(Response::new(ArtifactImportResponse { artifact_id }))
     }
 
-    async fn list_artifacts(
+    async fn artifacts_list(
         &self,
-        req: Request<ListArtifactsRequest>,
-    ) -> RpcResult<ListArtifactsResponse> {
+        req: Request<ArtifactsListRequest>,
+    ) -> RpcResult<ArtifactsListResponse> {
         let r = req.into_inner();
         let arts = self
             .sm
@@ -424,7 +423,7 @@ impl EngineService for EngineServer {
             .unwrap()
             .list_artifacts(&r.session_id)
             .map_err(|e| Status::internal(e.to_string()))?;
-        Ok(Response::new(ListArtifactsResponse {
+        Ok(Response::new(ArtifactsListResponse {
             artifacts: arts
                 .into_iter()
                 .map(|a| ArtifactInfo {
@@ -438,9 +437,9 @@ impl EngineService for EngineServer {
         }))
     }
 
-    async fn set_setup_item_visibility(
+    async fn setup_set_form_visibility(
         &self,
-        req: Request<SetSetupItemVisibilityRequest>,
+        req: Request<SetupSetFormVisibilityRequest>,
     ) -> RpcResult<Empty> {
         let r = req.into_inner();
         let mut images = self.images.lock().await;
@@ -452,7 +451,7 @@ impl EngineService for EngineServer {
         Ok(Response::new(Empty {}))
     }
 
-    async fn save_image(&self, req: Request<SaveImageRequest>) -> RpcResult<Empty> {
+    async fn image_save(&self, req: Request<ImageSaveRequest>) -> RpcResult<Empty> {
         let r = req.into_inner();
         let images = self.images.lock().await;
         let img = images
@@ -464,10 +463,10 @@ impl EngineService for EngineServer {
         Ok(Response::new(Empty {}))
     }
 
-    async fn add_setup_form_set(
+    async fn setup_form_set_add(
         &self,
-        req: Request<AddSetupFormSetRequest>,
-    ) -> RpcResult<AddSetupFormSetResponse> {
+        req: Request<SetupFormSetAddRequest>,
+    ) -> RpcResult<SetupFormSetAddResponse> {
         let r = req.into_inner();
         let schema = crate::setup_advanced::schema::parse_schema(&r.schema_json)
             .map_err(|e| Status::invalid_argument(e.to_string()))?;
@@ -497,7 +496,7 @@ impl EngineService for EngineServer {
             crate::setup_advanced::SetupAdvancedError::IfrBuildError(s) => Status::internal(s),
             crate::setup_advanced::SetupAdvancedError::FfsAssemblyError(s) => Status::internal(s),
         })?;
-        Ok(Response::new(AddSetupFormSetResponse {
+        Ok(Response::new(SetupFormSetAddResponse {
             new_ffs_id: result.new_ffs_guid.to_string(),
             inserted_form_ids: result
                 .inserted_form_ids
