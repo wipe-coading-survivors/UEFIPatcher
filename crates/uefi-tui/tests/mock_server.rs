@@ -17,30 +17,30 @@ pub struct MockEngine {
 
 #[tonic::async_trait]
 impl EngineService for MockEngine {
-    async fn create_session(
+    async fn session_create(
         &self,
-        _req: Request<CreateSessionRequest>,
-    ) -> Result<Response<CreateSessionResponse>, Status> {
+        _req: Request<SessionCreateRequest>,
+    ) -> Result<Response<SessionCreateResponse>, Status> {
         let id = uuid::Uuid::new_v4().to_string();
         let tok = uuid::Uuid::new_v4().to_string();
         self.sessions.lock().await.insert(id.clone(), tok.clone());
-        Ok(Response::new(CreateSessionResponse {
+        Ok(Response::new(SessionCreateResponse {
             session_id: id,
             token: tok,
         }))
     }
-    async fn destroy_session(
+    async fn session_destroy(
         &self,
-        req: Request<DestroySessionRequest>,
+        req: Request<SessionDestroyRequest>,
     ) -> Result<Response<Empty>, Status> {
         let r = req.into_inner();
         self.sessions.lock().await.remove(&r.session_id);
         Ok(Response::new(Empty {}))
     }
-    async fn list_sessions(
+    async fn sessions_list(
         &self,
-        _req: Request<ListSessionsRequest>,
-    ) -> Result<Response<ListSessionsResponse>, Status> {
+        _req: Request<SessionsListRequest>,
+    ) -> Result<Response<SessionsListResponse>, Status> {
         let s = self.sessions.lock().await;
         let sessions = s
             .keys()
@@ -51,31 +51,51 @@ impl EngineService for MockEngine {
                 last_activity: 0,
             })
             .collect();
-        Ok(Response::new(ListSessionsResponse { sessions }))
+        Ok(Response::new(SessionsListResponse { sessions }))
     }
-    async fn open_image(
+    async fn image_open(
         &self,
-        _req: Request<OpenImageRequest>,
-    ) -> Result<Response<OpenImageResponse>, Status> {
-        Ok(Response::new(OpenImageResponse {
+        _req: Request<ImageOpenRequest>,
+    ) -> Result<Response<ImageOpenResponse>, Status> {
+        Ok(Response::new(ImageOpenResponse {
             image_id: uuid::Uuid::new_v4().to_string(),
             root_guid: String::new(),
+            name: "mock.bin".into(),
         }))
     }
-    async fn dump_tree(
+    async fn image_close(
         &self,
-        _req: Request<DumpTreeRequest>,
-    ) -> Result<Response<DumpTreeResponse>, Status> {
-        Ok(Response::new(DumpTreeResponse {
-            text: "0 62 Image\n0/0 65 Volume\n".into(),
+        _req: Request<ImageCloseRequest>,
+    ) -> Result<Response<Empty>, Status> {
+        Ok(Response::new(Empty {}))
+    }
+    async fn images_list(
+        &self,
+        _req: Request<ImagesListRequest>,
+    ) -> Result<Response<ImagesListResponse>, Status> {
+        Ok(Response::new(ImagesListResponse { images: vec![] }))
+    }
+    async fn image_save(&self, _req: Request<ImageSaveRequest>) -> Result<Response<Empty>, Status> {
+        Ok(Response::new(Empty {}))
+    }
+    async fn image_status(
+        &self,
+        req: Request<ImageStatusRequest>,
+    ) -> Result<Response<ImageStatusResponse>, Status> {
+        let r = req.into_inner();
+        Ok(Response::new(ImageStatusResponse {
+            info: Some(ImageInfo {
+                image_id: r.image_id,
+                ..Default::default()
+            }),
         }))
     }
-    async fn list_items(
+    async fn image_nodes_list(
         &self,
-        _req: Request<ListItemsRequest>,
-    ) -> Result<Response<ListItemsResponse>, Status> {
-        Ok(Response::new(ListItemsResponse {
-            items: vec![Item {
+        _req: Request<ImageNodesListRequest>,
+    ) -> Result<Response<ImageNodesResponse>, Status> {
+        Ok(Response::new(ImageNodesResponse {
+            nodes: vec![Node {
                 path: "0".into(),
                 r#type: 65,
                 subtype: 0,
@@ -86,84 +106,91 @@ impl EngineService for MockEngine {
             }],
         }))
     }
-    async fn search_items(
+    async fn image_nodes_search(
         &self,
-        _req: Request<SearchItemsRequest>,
-    ) -> Result<Response<SearchItemsResponse>, Status> {
-        Ok(Response::new(SearchItemsResponse { items: vec![] }))
+        _req: Request<ImageNodesSearchRequest>,
+    ) -> Result<Response<ImageNodesResponse>, Status> {
+        Ok(Response::new(ImageNodesResponse { nodes: vec![] }))
     }
-    async fn find_item(
+    async fn image_node_insert(
         &self,
-        req: Request<FindItemRequest>,
-    ) -> Result<Response<FindItemResponse>, Status> {
-        Ok(Response::new(FindItemResponse {
-            item_id: req.into_inner().target,
-        }))
-    }
-    async fn insert(
-        &self,
-        _req: Request<InsertRequest>,
-    ) -> Result<Response<InsertResponse>, Status> {
-        Ok(Response::new(InsertResponse {
+        _req: Request<ImageNodeInsertRequest>,
+    ) -> Result<Response<ImageNodeResponse>, Status> {
+        Ok(Response::new(ImageNodeResponse {
             item_id: "mock".into(),
         }))
     }
-    async fn remove(&self, _req: Request<RemoveRequest>) -> Result<Response<Empty>, Status> {
+    async fn image_node_remove(
+        &self,
+        _req: Request<ImageNodeRemoveRequest>,
+    ) -> Result<Response<Empty>, Status> {
         Ok(Response::new(Empty {}))
     }
-    async fn replace(
+    async fn image_node_replace(
         &self,
-        _req: Request<ReplaceRequest>,
-    ) -> Result<Response<ReplaceResponse>, Status> {
-        Ok(Response::new(ReplaceResponse {
+        _req: Request<ImageNodeReplaceRequest>,
+    ) -> Result<Response<ImageNodeResponse>, Status> {
+        Ok(Response::new(ImageNodeResponse {
             item_id: "mock".into(),
         }))
     }
-    async fn rebuild(&self, _req: Request<RebuildRequest>) -> Result<Response<Empty>, Status> {
-        Ok(Response::new(Empty {}))
-    }
-    async fn set_setup_item_visibility(
+    async fn image_node_rebuild(
         &self,
-        _req: Request<SetSetupItemVisibilityRequest>,
+        _req: Request<ImageNodeRebuildRequest>,
     ) -> Result<Response<Empty>, Status> {
         Ok(Response::new(Empty {}))
     }
-    async fn save_image(&self, _req: Request<SaveImageRequest>) -> Result<Response<Empty>, Status> {
-        Ok(Response::new(Empty {}))
-    }
-    async fn extract_artifact(
+    async fn image_node_extract(
         &self,
-        _req: Request<ExtractArtifactRequest>,
-    ) -> Result<Response<ExtractArtifactResponse>, Status> {
-        Ok(Response::new(ExtractArtifactResponse {
+        _req: Request<ImageNodeExtractRequest>,
+    ) -> Result<Response<ImageNodeExtractResponse>, Status> {
+        Ok(Response::new(ImageNodeExtractResponse {
             artifact_id: uuid::Uuid::new_v4().to_string(),
         }))
     }
-    async fn export_artifact(
+    async fn artifacts_list(
         &self,
-        _req: Request<ExportArtifactRequest>,
+        _req: Request<ArtifactsListRequest>,
+    ) -> Result<Response<ArtifactsListResponse>, Status> {
+        Ok(Response::new(ArtifactsListResponse { artifacts: vec![] }))
+    }
+    async fn artifact_import(
+        &self,
+        _req: Request<ArtifactImportRequest>,
+    ) -> Result<Response<ArtifactImportResponse>, Status> {
+        Ok(Response::new(ArtifactImportResponse {
+            artifact_id: uuid::Uuid::new_v4().to_string(),
+        }))
+    }
+    async fn artifact_export(
+        &self,
+        _req: Request<ArtifactExportRequest>,
     ) -> Result<Response<Empty>, Status> {
         Ok(Response::new(Empty {}))
     }
-    async fn import_artifact(
+    async fn setup_list_forms(
         &self,
-        _req: Request<ImportArtifactRequest>,
-    ) -> Result<Response<ImportArtifactResponse>, Status> {
-        Ok(Response::new(ImportArtifactResponse {
-            artifact_id: uuid::Uuid::new_v4().to_string(),
-        }))
+        _req: Request<SetupListFormsRequest>,
+    ) -> Result<Response<SetupListFormsResponse>, Status> {
+        Ok(Response::new(SetupListFormsResponse { forms: vec![] }))
     }
-    async fn list_artifacts(
+    async fn setup_set_form_visibility(
         &self,
-        _req: Request<ListArtifactsRequest>,
-    ) -> Result<Response<ListArtifactsResponse>, Status> {
-        Ok(Response::new(ListArtifactsResponse { artifacts: vec![] }))
+        _req: Request<SetupSetFormVisibilityRequest>,
+    ) -> Result<Response<Empty>, Status> {
+        Ok(Response::new(Empty {}))
     }
-    async fn add_setup_form_set(
+    async fn setup_list_strings(
         &self,
-        _req: Request<AddSetupFormSetRequest>,
-    ) -> Result<Response<AddSetupFormSetResponse>, Status> {
-        Ok(Response::new(AddSetupFormSetResponse {
+        _req: Request<SetupListStringsRequest>,
+    ) -> Result<Response<SetupListStringsResponse>, Status> {
+        Ok(Response::new(SetupListStringsResponse { strings: vec![] }))
+    }
+    async fn setup_form_set_add(
+        &self,
+        _req: Request<SetupFormSetAddRequest>,
+    ) -> Result<Response<SetupFormSetAddResponse>, Status> {
+        Ok(Response::new(SetupFormSetAddResponse {
             new_ffs_id: "mock".into(),
             inserted_form_ids: vec![],
             string_ids: std::collections::HashMap::new(),
@@ -214,7 +241,7 @@ mod tests {
             .unwrap();
         let mut client = EngineServiceClient::new(channel);
         let resp = client
-            .create_session(CreateSessionRequest {
+            .session_create(SessionCreateRequest {
                 name: "test".into(),
             })
             .await

@@ -60,30 +60,33 @@ pub async fn execute_command(
                 .ok_or("usage: :open PATH [--mode read|write]")?;
             let mode = if parts.contains(&"write") { 1 } else { 0 };
             let sid = client.state.session_id.clone().ok_or("no session")?;
-            let req = OpenImageRequest {
+            let req = ImageOpenRequest {
                 session_id: sid,
-                image_path: path.to_string(),
+                path: path.to_string(),
                 mode,
+                name: String::new(),
             };
             let r = client
                 .inner
-                .open_image(auth_req(&client.state, req))
+                .image_open(auth_req(&client.state, req))
                 .await
                 .map_err(|e| e.message().to_string())?
                 .into_inner();
             app.image_loaded = true;
             app.status_msg = format!("opened image {}", r.image_id);
-            let dump_req = DumpTreeRequest {
-                image_id: r.image_id.clone(),
-                format: 0,
-            };
             let dump = client
                 .inner
-                .dump_tree(auth_req(&client.state, dump_req))
+                .image_nodes_list(auth_req(
+                    &client.state,
+                    ImageNodesListRequest {
+                        image_id: r.image_id.clone(),
+                        filter: String::new(),
+                    },
+                ))
                 .await
                 .map_err(|e| e.message().to_string())?
                 .into_inner();
-            app.tree = parse_tree_dump(&dump.text);
+            app.tree = parse_nodes_flat(&dump.nodes);
             app.cursor = 0;
             Ok(r.image_id)
         }
@@ -94,13 +97,13 @@ pub async fn execute_command(
                 .active_image_id
                 .clone()
                 .ok_or("no active image")?;
-            let req = SaveImageRequest {
+            let req = ImageSaveRequest {
                 image_id: iid,
                 output_path: path.to_string(),
             };
             client
                 .inner
-                .save_image(auth_req(&client.state, req))
+                .image_save(auth_req(&client.state, req))
                 .await
                 .map_err(|e| e.message().to_string())?;
             app.status_msg = format!("saved to {path}");
@@ -114,14 +117,14 @@ pub async fn execute_command(
                 .active_image_id
                 .clone()
                 .ok_or("no active image")?;
-            let req = ExtractArtifactRequest {
+            let req = ImageNodeExtractRequest {
                 image_id: iid,
                 target: target.to_string(),
                 body_only,
             };
             let r = client
                 .inner
-                .extract_artifact(auth_req(&client.state, req))
+                .image_node_extract(auth_req(&client.state, req))
                 .await
                 .map_err(|e| e.message().to_string())?
                 .into_inner();
@@ -136,13 +139,13 @@ pub async fn execute_command(
                     .map(|d| d.display().to_string())
                     .unwrap_or_default()
             });
-            let req = ExportArtifactRequest {
+            let req = ArtifactExportRequest {
                 artifact_id: artifact_id.to_string(),
                 output_path: path.clone(),
             };
             client
                 .inner
-                .export_artifact(auth_req(&client.state, req))
+                .artifact_export(auth_req(&client.state, req))
                 .await
                 .map_err(|e| e.message().to_string())?;
             app.status_msg = format!("exported {artifact_id} to {path}");
@@ -151,13 +154,13 @@ pub async fn execute_command(
         "import" => {
             let file = parts.get(1).ok_or("usage: :import FILE")?;
             let sid = client.state.session_id.clone().ok_or("no session")?;
-            let req = ImportArtifactRequest {
+            let req = ArtifactImportRequest {
                 session_id: sid,
-                file_path: file.to_string(),
+                path: file.to_string(),
             };
             let r = client
                 .inner
-                .import_artifact(auth_req(&client.state, req))
+                .artifact_import(auth_req(&client.state, req))
                 .await
                 .map_err(|e| e.message().to_string())?
                 .into_inner();
@@ -166,10 +169,10 @@ pub async fn execute_command(
         }
         "artifacts" => {
             let sid = client.state.session_id.clone().ok_or("no session")?;
-            let req = ListArtifactsRequest { session_id: sid };
+            let req = ArtifactsListRequest { session_id: sid };
             let r = client
                 .inner
-                .list_artifacts(auth_req(&client.state, req))
+                .artifacts_list(auth_req(&client.state, req))
                 .await
                 .map_err(|e| e.message().to_string())?
                 .into_inner();
@@ -188,26 +191,23 @@ pub async fn execute_command(
     }
 }
 
-// TODO(2026-08-09): migrate to list_items RPC — current text-parser drops subtype, parses "File"/"Volume" as int (always 0), and reads "subtype=07" as name. See docs/superpowers/specs/2026-08-09-display-and-search-design.md
-fn parse_tree_dump(text: &str) -> Vec<crate::app::TreeNode> {
-    text.lines()
-        .filter_map(|line| {
-            let trimmed = line.trim_start();
-            let parts: Vec<&str> = trimmed.split_whitespace().collect();
-            if parts.len() < 2 {
-                return None;
-            }
-            Some(crate::app::TreeNode {
-                path: parts[0].into(),
-                depth: parts[0].matches('/').count(),
-                node_type: parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0),
-                subtype: 0,
-                guid: None,
-                name: parts.get(2).unwrap_or(&"").to_string(),
-                action: 50,
-                expanded: true,
-                has_children: false,
-            })
+fn parse_nodes_flat(nodes: &[Node]) -> Vec<crate::app::TreeNode> {
+    nodes
+        .iter()
+        .map(|n| crate::app::TreeNode {
+            path: n.path.clone(),
+            depth: 0,
+            node_type: n.r#type as u8,
+            subtype: n.subtype as u8,
+            guid: if n.guid.is_empty() {
+                None
+            } else {
+                Some(n.guid.clone())
+            },
+            name: n.name.clone(),
+            action: 50,
+            expanded: true,
+            has_children: false,
         })
         .collect()
 }
@@ -217,12 +217,34 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_tree_simple() {
-        let text = "0  Image\n  0/0  Volume\n  0/0/0  File\n";
-        let nodes = parse_tree_dump(text);
-        assert_eq!(nodes.len(), 3);
-        assert_eq!(nodes[0].depth, 0);
-        assert_eq!(nodes[1].depth, 1);
-        assert_eq!(nodes[2].depth, 2);
+    fn parse_nodes_flat_basic() {
+        let nodes = vec![
+            Node {
+                path: "0".into(),
+                r#type: 62,
+                subtype: 0,
+                guid: String::new(),
+                offset: 0,
+                size: 256,
+                name: "Image".into(),
+            },
+            Node {
+                path: "0/0".into(),
+                r#type: 65,
+                subtype: 1,
+                guid: "abc".into(),
+                offset: 256,
+                size: 1024,
+                name: "Volume".into(),
+            },
+        ];
+        let tree = parse_nodes_flat(&nodes);
+        assert_eq!(tree.len(), 2);
+        assert_eq!(tree[0].depth, 0);
+        assert_eq!(tree[0].node_type, 62);
+        assert_eq!(tree[0].guid, None);
+        assert_eq!(tree[1].node_type, 65);
+        assert_eq!(tree[1].subtype, 1);
+        assert_eq!(tree[1].guid.as_deref(), Some("abc"));
     }
 }
