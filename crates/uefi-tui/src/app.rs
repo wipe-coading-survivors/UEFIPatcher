@@ -312,4 +312,31 @@ mod tests {
             Some(RegistryRow::Artifact(0))
         ));
     }
+
+    #[test]
+    fn details_text_named_file_and_section() {
+        let f = TreeNode {
+            path: "1/0".into(), depth: 2, node_type: 66, subtype: 0x07,
+            guid: Some("ABC".into()), name: "Setup".into(),
+            action: ACTION_NO, expanded: false, has_children: true,
+        };
+        let t = details_text(&f);
+        assert!(t.contains("Type:     File (66 / 0x42)"));
+        assert!(t.contains("Subtype:  DXE driver (0x07)"));
+        assert!(t.contains("GUID:     ABC"));
+        assert!(t.contains("Children: true"));
+    }
+
+    #[test]
+    fn details_text_volume_no_subtype_name() {
+        let v = TreeNode {
+            path: "1".into(), depth: 1, node_type: 65, subtype: 0,
+            guid: None, name: "DXE".into(),
+            action: ACTION_NO, expanded: true, has_children: true,
+        };
+        let t = details_text(&v);
+        assert!(t.contains("Type:     Volume (65 / 0x41)"));
+        assert!(t.contains("Subtype:  0x00"));
+        assert!(t.contains("GUID:     (none)"));
+    }
 }
