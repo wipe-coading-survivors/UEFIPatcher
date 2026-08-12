@@ -319,7 +319,16 @@ async fn dispatch(cli: &Cli, format: output::OutputFormat) -> Result<(), error::
                     visible,
                     hidden,
                 } => {
-                    let vis = if *hidden { false } else { *visible };
+                    let vis = match (*visible, *hidden) {
+                        (true, false) => true,
+                        (false, true) => false,
+                        _ => {
+                            return Err(error::AppError::new(
+                                error::ErrKind::RpcInvalidArgument,
+                                "exactly one of --visible or --hidden required",
+                            ));
+                        }
+                    };
                     commands::setup::form_set_visibility(form_id, vis, sock, format).await
                 }
             },

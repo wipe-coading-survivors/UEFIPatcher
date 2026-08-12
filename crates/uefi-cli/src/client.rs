@@ -131,13 +131,13 @@ impl Client {
         let req = ImageStatusRequest {
             image_id: image_id.into(),
         };
-        Ok(self
+        let resp = self
             .inner
             .image_status(auth_req(&self.state, req))
             .await?
-            .into_inner()
-            .info
-            .unwrap())
+            .into_inner();
+        resp.info
+            .ok_or_else(|| AppError::new(ErrKind::RpcNotFound, "image status returned no info"))
     }
 
     pub async fn image_nodes_list(
