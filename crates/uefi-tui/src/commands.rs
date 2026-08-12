@@ -43,6 +43,62 @@ pub async fn connect(cli_sock: Option<&str>, state: State) -> Result<Client, Str
     })
 }
 
+struct NodeCmdArgs {
+    target: Option<String>,
+    file: Option<String>,
+    artifact_id: Option<String>,
+    mode: Option<String>,
+    body_only: bool,
+}
+
+fn parse_node_cmd_args(parts: &[&str]) -> NodeCmdArgs {
+    let mut a = NodeCmdArgs {
+        target: None,
+        file: None,
+        artifact_id: None,
+        mode: None,
+        body_only: false,
+    };
+    let mut i = 1;
+    while i < parts.len() {
+        match parts[i] {
+            "--file" => {
+                a.file = parts.get(i + 1).map(|s| s.to_string());
+                i += 2;
+            }
+            "--artifact-id" => {
+                a.artifact_id = parts.get(i + 1).map(|s| s.to_string());
+                i += 2;
+            }
+            "--mode" => {
+                a.mode = parts.get(i + 1).map(|s| s.to_string());
+                i += 2;
+            }
+            "--body-only" => {
+                a.body_only = true;
+                i += 1;
+            }
+            other if !other.starts_with("--") && a.target.is_none() => {
+                a.target = Some(other.to_string());
+                i += 1;
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+    a
+}
+
+fn mode_to_i32(s: &str) -> Result<i32, String> {
+    match s {
+        "into" | "" => Ok(0),
+        "before" => Ok(1),
+        "after" => Ok(2),
+        _ => Err(format!("unknown mode: {s} (into|before|after)")),
+    }
+}
+
 pub async fn execute_command(
     app: &mut App,
     cmdline: &str,
@@ -182,6 +238,107 @@ pub async fn execute_command(
             app.status_msg = format!("{} artifacts", r.artifacts.len());
             Ok(format!("{} artifacts", r.artifacts.len()))
         }
+        "insert" => {
+            let a = parse_node_cmd_args(&parts);
+            let iid = client.state.active_image_id.clone().ok_or("no active image")?;
+            let target = a
+                .target
+                .or_else(|| app.selected_path())
+                .ok_or("no target (select a node or pass TARGET)")?;
+            let (ffs_path, artifact_id) = match (a.file, a.artifact_id) {
+                (Some(p), None) => (p, String::new()),
+                (None, Some(id)) => (String::new(), id),
+                _ => {
+                    return Err(
+                        "usage: :insert [TARGET] (--file PATH | --artifact-id ID) [--mode into|before|after]"
+                            .into(),
+                    )
+                }
+            };
+            let mode = mode_to_i32(a.mode.as_deref().unwrap_or(""))?;
+            let req = ImageNodeInsertRequest {
+                image_id: iid,
+                target,
+                ffs_path,
+                artifact_id,
+                mode,
+            };
+            let r = client
+                .inner
+                .image_node_insert(auth_req(&client.state, req))
+                .await
+                .map_err(|e| e.message().to_string())?
+                .into_inner();
+            app.status_msg = format!("inserted {}", r.item_id);
+            let _ = refresh_registry(app, client).await;
+            Ok(r.item_id)
+        }
+        "replace" => {
+            let a = parse_node_cmd_args(&parts);
+            let iid = client.state.active_image_id.clone().ok_or("no active image")?;
+            let target = a
+                .target
+                .or_else(|| app.selected_path())
+                .ok_or("no target")?;
+            let (ffs_path, artifact_id) = match (a.file, a.artifact_id) {
+                (Some(p), None) => (p, String::new()),
+                (None, Some(id)) => (String::new(), id),
+                _ => {
+                    return Err(
+                        "usage: :replace [TARGET] (--file PATH | --artifact-id ID) [--body-only]"
+                            .into(),
+                    )
+                }
+            };
+            let req = ImageNodeReplaceRequest {
+                image_id: iid,
+                target,
+                ffs_path,
+                artifact_id,
+                body_only: a.body_only,
+            };
+            let r = client
+                .inner
+                .image_node_replace(auth_req(&client.state, req))
+                .await
+                .map_err(|e| e.message().to_string())?
+                .into_inner();
+            app.status_msg = format!("replaced {}", r.item_id);
+            let _ = refresh_registry(app, client).await;
+            Ok(r.item_id)
+        }
+        "remove" => {
+            let a = parse_node_cmd_args(&parts);
+            let iid = client.state.active_image_id.clone().ok_or("no active image")?;
+            let target = a
+                .target
+                .or_else(|| app.selected_path())
+                .ok_or("no target")?;
+            let req = ImageNodeRemoveRequest { image_id: iid, target: target.clone() };
+            client
+                .inner
+                .image_node_remove(auth_req(&client.state, req))
+                .await
+                .map_err(|e| e.message().to_string())?;
+            app.status_msg = format!("removed {target}");
+            Ok(target)
+        }
+        "rebuild" => {
+            let a = parse_node_cmd_args(&parts);
+            let iid = client.state.active_image_id.clone().ok_or("no active image")?;
+            let target = a
+                .target
+                .or_else(|| app.selected_path())
+                .ok_or("no target")?;
+            let req = ImageNodeRebuildRequest { image_id: iid, target: target.clone() };
+            client
+                .inner
+                .image_node_rebuild(auth_req(&client.state, req))
+                .await
+                .map_err(|e| e.message().to_string())?;
+            app.status_msg = format!("rebuilt {target}");
+            Ok(target)
+        }
         "quit" | "q" => {
             app.quit = true;
             Ok("quitting".into())
@@ -214,4 +371,34 @@ pub async fn refresh_registry(app: &mut App, client: &mut Client) -> Result<(), 
         app.registry.cursor = 0;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_node_cmd_target_and_flags() {
+        let a = parse_node_cmd_args(&["insert", "1/0", "--file", "/x.bin", "--mode", "into"]);
+        assert_eq!(a.target.as_deref(), Some("1/0"));
+        assert_eq!(a.file.as_deref(), Some("/x.bin"));
+        assert_eq!(a.mode.as_deref(), Some("into"));
+        assert!(a.artifact_id.is_none());
+        assert!(!a.body_only);
+    }
+
+    #[test]
+    fn parse_node_cmd_artifact_and_body_only() {
+        let a = parse_node_cmd_args(&["replace", "--artifact-id", "art1", "--body-only"]);
+        assert_eq!(a.artifact_id.as_deref(), Some("art1"));
+        assert!(a.body_only);
+        assert!(a.target.is_none());
+        assert!(a.file.is_none());
+    }
+
+    #[test]
+    fn parse_node_cmd_target_is_first_non_flag() {
+        let a = parse_node_cmd_args(&["remove", "0/3"]);
+        assert_eq!(a.target.as_deref(), Some("0/3"));
+    }
 }
