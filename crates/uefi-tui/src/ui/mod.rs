@@ -1,5 +1,6 @@
 pub mod cmdline;
 pub mod details;
+pub mod registry;
 pub mod help;
 pub mod status;
 pub mod tree;
