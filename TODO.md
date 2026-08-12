@@ -4,83 +4,94 @@
 > известные дефекты, рефакторинг, deprecated-код, пробелы в API.
 > Формат: `* [ ] <область> — <что сделать>. Контекст: <почему>.`
 
+> **Plan A complete** (commit `a02654a`, цикл 2026-08-10):
+> CLI topology (5 top-level), proto noun-first rename, image persistence
+> with write-through, lazy re-load. Разделы ниже актуализированы — что
+> закрыто Plan A помечено `[x]`, что осталось — `[ ]`. Deep work (TUI
+> bugfix, Gateway+WebUI rework, Plan B) тречится отдельно.
+
 ## Deprecated: выпиливание DumpTree RPC
 
-`DumpTree` дублирует `ListItems` + клиентское форматирование через
-`uefi-common::format`. Legend в stderr через DumpTree не получить; TUI и
-Gateway уже мигрируют на `ListItems` (см. spec
-`2026-08-09-display-and-search`). Из CLI уже удалён. Дальнейший порядок:
+> Plan A complete (commit `a02654a`). Весь раздел закрыт — DumpTree RPC,
+> `DumpFormat`, `dump_tree` handler, `parser::image::dump_tree`, все
+> клиентские вызовы и mock-stub'ы удалены. WebUI `/dump` маршрут пока
+> оставлен (внутри вызывает `image_nodes_list`, возвращает `{nodes}`) —
+> глубокий rework в разделе "Gateway + WebUI rework".
 
-* [ ] **uefi-tui** — убрать `dump_tree` client-вызов и `parse_tree_dump`
-  (команда `dump` в TUI должна ходить через `list_items` + рендерить
-  дерево локально). Контекст: TUI парсит текстовый дамп строками, теряет
-  subtype, читает `subtype=07` как name (см. `crates/uefi-tui/src/commands.rs:191`).
-* [ ] **uefi-gateway / WebUI** — убрать `DumpTree`-маршрут и
-  клиентский вызов `gateway::client::dump_tree`, переключить WebUI на
-  `list_items`. Контекст: `crates/uefi-gateway/src/client.rs:127` и
-  `crates/uefi-gateway/src/routes/image.rs`.
-* [ ] **uefi-proto + uefi-engine** — после миграции всех клиентов
-  удалить `rpc DumpTree` из `engine.proto`, убрать сообщения
-  `DumpTreeRequest`/`DumpTreeResponse`, убрать `dump_tree` handler из
-  `rpc/server.rs`, убрать stub'ы из 3 mock'ов
-  (`uefi-cli`/`uefi-tui`/`uefi-gateway` tests), убрать
-  `parser::image::dump_tree` и `DumpFormat` enum.
+* [x] **uefi-tui** — `dump_tree` client-вызов и `parse_tree_dump` удалены
+  (Plan A Task 6); заменён на `image_nodes_list` + `parse_nodes_flat`
+  (плоский список — известный display-bug, отдельный TODO ниже).
+* [x] **uefi-gateway / WebUI** — `DumpTree` клиентский вызов убран,
+  `/dump/ws` удалён (Plan A Task 7); WebUI `findItem()` убран (Task 8).
+  `/dump` маршрут сохранён, внутри `image_nodes_list`.
+* [x] **uefi-proto + uefi-engine** — `rpc DumpTree`, `DumpTreeRequest`/
+  `DumpTreeResponse`, `dump_tree` handler, mock-stub'ы, `parser::image::
+  dump_tree` и `DumpFormat` enum удалены (Plan A Task 3 + Task 4g).
 
 ## Ревизия CLI (2026-08-10)
 
-Прогон по всем командам/подкомандам `uefi-cli`. Срочности нет, по
-бóльшей части UX/консистентность. Решение о плане принимается отдельно.
+> Plan A complete (commit `a02654a`) для большинства пунктов. Оставшиеся
+> (image switch валидация, `about:` на подкомандах) — ниже.
 
 ### Семантика команд image
 
-* [ ] **`image find <target>` бесполезна в текущем виде** — handler
-  `find_item` (`rpc/server.rs:160`) только валидирует существование
-  узла и возвращает echo введённого target как `item_id`. Не возвращает
-  данных об узле (path/type/subtype/guid/name/offset/size). Варианты:
-  (а) расширить `FindItemResponse` до полного `Item`; (б) выпилить
-  `image find` altogether, т.к. `image list --filter` + `image search`
-  покрывают discovery.
-* [ ] **`image list` конфликтует семантически** — это `ListItems` RPC
-  (список FFS-узлов внутри образа), а не список открытых образов.
-  Имя сбивает с толку. Варианты: переименовать в `image items` /
-  `image tree`, а под `image list` завести список открытых образов.
-* [ ] **Нет `ListImages` RPC в proto** — нельзя узнать, какие образы
-  открыты на сервере. Без этого `image switch <id>` бесполезен: пользователь
-  не знает валидные id, кроме как из вывода прошлых `image open`.
+* [x] **`image find <target>` бесполезна** — закрыто: `FindItem` RPC и
+  `image find` удалены (Plan A Task 3/5); discovery через `node search`.
+* [x] **`image list` конфликтует семантически** — закрыто: `image list`
+  теперь `ImagesList` (список открытых образов); FFS-узлы → `node list`.
+* [x] **Нет `ListImages` RPC в proto** — закрыто: добавлен `ImagesList` +
+  `ImageInfo` (Plan A Task 3) + CLI `image list` (Task 5).
 * [ ] **`image switch <image_id>` не валидирует образ на сервере** —
-  только перезаписывает локальный state-файл (`commands/image.rs:36`).
-  Любая опечатка молча сохраняется и проявится на следующей операции.
-  Нужна проверка через будущий `ListImages`/`GetImage`.
-* [ ] **Нет `image status`** — пользователь не может узнать активный
-  образ без чтения `.uefipatcher`. Аналогично `session status`.
+  только перезаписывает локальный state-файл. Опечатка молча сохраняется.
+  Контекст: добавить проверку через `ImageStatus`/`ImagesList` перед
+  записью state.
+* [x] **Нет `image status`** — закрыто: `ImageStatus` RPC + CLI
+  `image status` (Plan A Task 3/4c/5).
 
 ### UX/cli-rendering
 
-* [ ] **Все подкоманды без `about:`** — `image --help`, `edit --help`,
+* [ ] **Все подкоманды без `about:`** — `image --help`, `node --help`,
   `setup --help` показывают голые имена без описания. Проставить
-  `#[command(about = "...")]` и `#[arg(help = "...")]` везде.
-* [ ] **`--format` глобальный — String, не ValueEnum** — валидация
-  формата происходит в runtime через `output::parse_format`, лучше
-  `#[derive(clap::ValueEnum)]` (см. `SearchModeCli` в main.rs:136).
-* [ ] **`--mode` у `image open` — String, не ValueEnum** — то же
-  (`read|write` парсится в `commands/image.rs:13`). Тоже для `--mode`
-  у `edit insert` (`into|before|after`, `commands/edit.rs:17`).
-* [ ] **Семантика `ffs`/`data` в `edit insert`/`edit replace` не очевидна**
-  — позиционный arg, на самом деле путь к файлу **на стороне сервера**
-  (engine читает файл из своей FS), либо `--from-artifact` для артефакта.
-  Переработать в группу: `--file <path>` / `--artifact <id>` (взаимоисключающие).
-* [ ] **`session init` имя = `env::var("PWD")`** — неявно. Если PWD не
-  задан, имя пустое. Явный `--name <name>` с fallback на PWD был бы понятнее.
+  `#[command(about = "...")]` и `#[arg(help = "...")]` везде. Plan A
+  топологию поменял, но `about:` не добавил.
+* [x] **`--format` глобальный — String, не ValueEnum** — закрыто:
+  `OutputFormat` теперь `clap::ValueEnum` (Plan A Task 5a).
+* [x] **`--mode` у `image open` — String, не ValueEnum** — закрыто:
+  `ImageModeCli`/`InsertModeCli`/`SearchModeCli` ValueEnum (Plan A Task 5e).
+* [x] **Семантика `ffs`/`data` в insert/replace** — закрыто: ArgGroup
+  `--file <path>` / `--artifact <id>` (взаимоисключающие) для `node
+  insert`/`node replace` (Plan A Task 5e).
+* [x] **`session init` имя = `env::var("PWD")`** — закрыто: явный
+  `--name <name>` (Plan A Task 5d).
 
 ### Прочее
 
-* [ ] **`output::print_find` печатает только `item_id`** — используется
-  в `image find`, `edit insert`, `edit replace`. После расширения
-  `FindItemResponse` (см. выше) — обновить вывод.
-* [ ] **`setup list-items` противоречит `image list` по именованию** —
-  `list-items` через дефис, `list` без. Привести к единому стилю
-  (clap конвертирует `list_items` → `list-items` автоматически, но
-  исходник стоит унифицировать).
+* [x] **`output::print_find` печатает только `item_id`** — закрыто:
+  переименовано в `print_node_id` (Plan A Task 5a); для `node insert`/
+  `replace` возврат echo target как `item_id` сохранён намеренно
+  (target — это и есть идентификатор узла в текущей модели).
+* [x] **`setup list-items` противоречит `image list`** — закрыто: setup
+  реструктурирован в `setup form {list,set-visibility}` + `setup string
+  {list}` (Plan A Task 5d).
+
+### Новые находки Plan A (code review)
+
+* [ ] **`client.rs image_status` делает `.info.unwrap()`** (Task 5b,
+  verbatim из brief) — паника, если сервер вернёт `None` (race с close).
+  Контекст: `crates/uefi-cli/src/client.rs` image_status. Заменить на
+  `ok_or_else(|| AppError::new(ErrKind::NotFound, ...))`. Mock'и
+  компенсируют возвратом `Some`, но production-сервер может race'нуть.
+* [ ] **`write_through_persists_mutation_to_disk` тест тафтологичен** —
+  `before==fixture_volume()` делает assertion `after != before || after
+  == fixture_volume()` всегда истинным. Тест не ловит регрессию удаления
+  `flush_image`. Контекст: `crates/uefi-engine/src/rpc/server.rs` tests.
+  Усилить: mtime-check или реально меняющая байты мутация (`node remove`).
+* [ ] **Интеграционные тесты CLI проверяют только exit-code, не stdout**
+  — `cli_integration.rs`/`e2e.rs` (Task 5f.0). Регрессия в print-fn
+  пройдёт незамеченной. Добавить content-assertions.
+* [ ] **Нет теста на ArgGroup exclusivity** — `--file X --artifact Y`
+  (clap ловит) и ни `--file`, ни `--artifact` (runtime ловит) не покрыты.
+
 
 ## План B: IFR forms/strings extraction + слияние с setup_advanced
 
@@ -131,33 +142,29 @@ Gateway уже мигрируют на `ListItems` (см. spec
 
 ## TUI: migration + bugfix (после Плана A)
 
-План A (спека `2026-08-10-cli-topology-and-image-storage-design.md`)
-мигрирует TUI **механически** — только rename client-методов под новые
-RPC, чтобы workspace компилировался. Глубокая работа — отдельным циклом:
+> Plan A mechanical migration complete (commit `a02654a`, Task 6): все
+> client-вызовы переименованы, `dump_tree` заменён на `image_nodes_list`
+> + `parse_nodes_flat` (плоский список). Глубокая работа — ниже.
 
-* [ ] **Выкинуть `parse_tree_dump`** (`crates/uefi-tui/src/commands.rs:191`)
-  — текстовый парсинг flat-списка, теряет subtype, читает `subtype=07` как
-  name (см. TODO в файле). Заменить на локальный tree-рендер через
-  `uefi-common::format` (`format_tree` + `format_legend`).
-* [ ] **TUI: убрать зависимость от DumpTree-формата** — сегодня
-  `app.tree` строится из текста; переключить на структурированные
-  `Item`-данные из `image_nodes_list`.
+* [ ] **Выкинуть `parse_nodes_flat`** (`crates/uefi-tui/src/commands.rs`)
+  — плоский список (depth=0 для всех), замена старому `parse_tree_dump`.
+  Перевести на локальный tree-рендер через `uefi-common::format`
+  (`format_tree` + `format_legend`), восстановив иерархию по `path`.
+  Контекст: Plan A Task 6 сознанно сохранил display-bug (плоский список).
 * [ ] **Fix существующих TUI-багов** — провести ревизию после миграции.
 
 ## Gateway + WebUI rework (после Плана A)
 
-План A мигрирует Gateway **механически** (rename client-методов, старые
-маршруты сохраняются, но внутри дёргают новые RPC). WebUI сейчас в
-поломанном состоянии — если компилируется, минимально обновить fetch-имена;
-если нет — оставить и явным образом зафиксировать. Полный rework —
-отдельным циклом:
+> Plan A mechanical migration complete (commit `a02654a`, Tasks 7+8):
+> gateway client переименован, `/find` и `/dump/ws` маршруты удалены,
+> `/dump` возвращает `{nodes}`, WebUI `findItem()` убран (был green до и
+> после). Глубокий rework — ниже.
 
 * [ ] **Gateway: новые маршруты** — `/api/v1/image/:id/dump` → `/nodes`;
-  удалить `/dump` и `/dump/ws`; добавить `/api/v1/images` (ImagesList),
+  удалить `/dump`; добавить `/api/v1/images` (ImagesList),
   `/api/v1/image/:id/forms`, `/api/v1/image/:id/strings`,
   `/api/v1/image/:id/status`, `DELETE /api/v1/image/:id` (ImageClose).
 * [ ] **Gateway: `routes/setup.rs`** — добавить `forms`, `strings` handlers.
-* [ ] **Gateway: `routes/ws.rs`** — удалить или переделать (сегодня только
-  `dump_ws`).
 * [ ] **WebUI: полный fix** — обновить все fetch-вызовы под новые маршруты,
-  подключить forms/strings listing, починить существующие баги.
+  подключить forms/strings listing, починить существующие баги (dead
+  `dumpTree` import, unused `openImage` name field, a11y warnings).
