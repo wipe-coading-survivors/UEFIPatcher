@@ -410,11 +410,8 @@ impl EngineService for EngineServer {
         req: Request<ImageNodeExtractRequest>,
     ) -> RpcResult<ImageNodeExtractResponse> {
         let r = req.into_inner();
+        let img = self.get_or_load_image(&r.image_id).await?;
         let (session_id, bytes) = {
-            let images = self.images.lock().await;
-            let img = images
-                .get(&r.image_id)
-                .ok_or_else(|| Status::not_found("image not found"))?;
             let session_id = img.session_id.clone();
             let t = parse_target(&r.target).map_err(|e| Status::invalid_argument(e.to_string()))?;
             let node = find_item(&img.root, &t).map_err(|e| Status::not_found(e.to_string()))?;
@@ -574,12 +571,9 @@ impl EngineService for EngineServer {
 
     async fn image_save(&self, req: Request<ImageSaveRequest>) -> RpcResult<Empty> {
         let r = req.into_inner();
-        let images = self.images.lock().await;
-        let img = images
-            .get(&r.image_id)
-            .ok_or_else(|| Status::not_found("image not found"))?;
+        let img = self.get_or_load_image(&r.image_id).await?;
         let bytes =
-            crate::builder::build_image(img).map_err(|e| Status::internal(e.to_string()))?;
+            crate::builder::build_image(&img).map_err(|e| Status::internal(e.to_string()))?;
         fs::write(&r.output_path, &bytes).map_err(|e| Status::internal(e.to_string()))?;
         Ok(Response::new(Empty {}))
     }
@@ -838,6 +832,7 @@ mod tests {
             .join("images")
             .join(format!("{}.bin", opened.image_id));
         let before = std::fs::read(&img_path).unwrap();
+        let before_mtime = std::fs::metadata(&img_path).unwrap().modified().unwrap();
 
         client
             .image_node_rebuild(ImageNodeRebuildRequest {
@@ -848,9 +843,11 @@ mod tests {
             .unwrap();
 
         let after = std::fs::read(&img_path).unwrap();
+        let after_mtime = std::fs::metadata(&img_path).unwrap().modified().unwrap();
         assert!(
-            after != before || after == fixture_volume(),
-            "write-through must update disk file after mutation"
+            after != before || after_mtime != before_mtime,
+            "write-through must rewrite disk file after mutation \
+             (bytes or mtime must change)"
         );
     }
 }
