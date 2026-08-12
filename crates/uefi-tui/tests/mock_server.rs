@@ -290,4 +290,23 @@ mod tests {
         assert!(app.registry.images.len() == 1);
         assert!(app.registry.artifacts.len() == 1);
     }
+
+    #[tokio::test]
+    async fn refresh_populates_registry() {
+        let td = TempDir::new().unwrap();
+        let sock = td.path().join("mock.sock");
+        let _handle = start_mock(&sock).await;
+        let state = uefi_common::state::State {
+            session_id: Some("s1".into()),
+            token: Some("t1".into()),
+            ..Default::default()
+        };
+        let mut client = commands::connect(Some(sock.to_str().unwrap()), state).await.unwrap();
+        let mut app = App::new();
+        commands::execute_command(&mut app, "refresh", &mut client)
+            .await
+            .unwrap();
+        assert_eq!(app.registry.images.len(), 1);
+        assert_eq!(app.registry.artifacts.len(), 1);
+    }
 }

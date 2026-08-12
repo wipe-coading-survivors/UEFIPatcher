@@ -339,6 +339,67 @@ pub async fn execute_command(
             app.status_msg = format!("rebuilt {target}");
             Ok(target)
         }
+        "image" => {
+            let sub = parts.get(1).ok_or("usage: :image switch ID | close [ID]")?;
+            match *sub {
+                "switch" => {
+                    let id = parts.get(2).ok_or("usage: :image switch ID")?.to_string();
+                    let dump = client
+                        .inner
+                        .image_nodes_list(auth_req(
+                            &client.state,
+                            ImageNodesListRequest {
+                                image_id: id.clone(),
+                                filter: String::new(),
+                            },
+                        ))
+                        .await
+                        .map_err(|e| e.message().to_string())?
+                        .into_inner();
+                    app.tree = crate::tree::build_tree(&dump.nodes);
+                    app.cursor = 0;
+                    app.active_image_id = Some(id.clone());
+                    client.state.active_image_id = Some(id.clone());
+                    app.status_msg = format!("switched to {id}");
+                    let _ = refresh_registry(app, client).await;
+                    Ok(id)
+                }
+                "close" => {
+                    let id = parts
+                        .get(2)
+                        .map(|s| s.to_string())
+                        .or_else(|| client.state.active_image_id.clone())
+                        .ok_or("no active image")?;
+                    let req = ImageCloseRequest { image_id: id.clone() };
+                    client
+                        .inner
+                        .image_close(auth_req(&client.state, req))
+                        .await
+                        .map_err(|e| e.message().to_string())?
+                        .into_inner();
+                    if app.active_image_id.as_deref() == Some(id.as_str()) {
+                        app.active_image_id = None;
+                        client.state.active_image_id = None;
+                        app.tree.clear();
+                        app.cursor = 0;
+                        app.image_loaded = false;
+                    }
+                    app.status_msg = format!("closed {id}");
+                    let _ = refresh_registry(app, client).await;
+                    Ok(id)
+                }
+                other => Err(format!("unknown image subcommand: {other}")),
+            }
+        }
+        "refresh" => {
+            refresh_registry(app, client).await?;
+            app.status_msg = format!(
+                "registry: {} images, {} artifacts",
+                app.registry.images.len(),
+                app.registry.artifacts.len()
+            );
+            Ok("refreshed".into())
+        }
         "quit" | "q" => {
             app.quit = true;
             Ok("quitting".into())
