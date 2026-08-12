@@ -86,8 +86,11 @@ pub async fn execute_command(
                 .await
                 .map_err(|e| e.message().to_string())?
                 .into_inner();
-            app.tree = parse_nodes_flat(&dump.nodes);
+            app.tree = crate::tree::build_tree(&dump.nodes);
             app.cursor = 0;
+            app.active_image_id = Some(r.image_id.clone());
+            client.state.active_image_id = Some(r.image_id.clone());
+            let _ = refresh_registry(app, client).await;
             Ok(r.image_id)
         }
         "save" | "s" => {
@@ -191,60 +194,24 @@ pub async fn execute_command(
     }
 }
 
-fn parse_nodes_flat(nodes: &[Node]) -> Vec<crate::app::TreeNode> {
-    nodes
-        .iter()
-        .map(|n| crate::app::TreeNode {
-            path: n.path.clone(),
-            depth: 0,
-            node_type: n.r#type as u8,
-            subtype: n.subtype as u8,
-            guid: if n.guid.is_empty() {
-                None
-            } else {
-                Some(n.guid.clone())
-            },
-            name: n.name.clone(),
-            action: 50,
-            expanded: true,
-            has_children: false,
-        })
-        .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_nodes_flat_basic() {
-        let nodes = vec![
-            Node {
-                path: "0".into(),
-                r#type: 62,
-                subtype: 0,
-                guid: String::new(),
-                offset: 0,
-                size: 256,
-                name: "Image".into(),
-            },
-            Node {
-                path: "0/0".into(),
-                r#type: 65,
-                subtype: 1,
-                guid: "abc".into(),
-                offset: 256,
-                size: 1024,
-                name: "Volume".into(),
-            },
-        ];
-        let tree = parse_nodes_flat(&nodes);
-        assert_eq!(tree.len(), 2);
-        assert_eq!(tree[0].depth, 0);
-        assert_eq!(tree[0].node_type, 62);
-        assert_eq!(tree[0].guid, None);
-        assert_eq!(tree[1].node_type, 65);
-        assert_eq!(tree[1].subtype, 1);
-        assert_eq!(tree[1].guid.as_deref(), Some("abc"));
+pub async fn refresh_registry(app: &mut App, client: &mut Client) -> Result<(), String> {
+    let sid = client.state.session_id.clone().ok_or("no session")?;
+    let imgs = client
+        .inner
+        .images_list(auth_req(&client.state, ImagesListRequest { session_id: sid.clone() }))
+        .await
+        .map_err(|e| e.message().to_string())?
+        .into_inner();
+    let arts = client
+        .inner
+        .artifacts_list(auth_req(&client.state, ArtifactsListRequest { session_id: sid }))
+        .await
+        .map_err(|e| e.message().to_string())?
+        .into_inner();
+    app.registry.images = imgs.images;
+    app.registry.artifacts = arts.artifacts;
+    if app.registry.cursor >= app.registry_selectable().len() {
+        app.registry.cursor = 0;
     }
+    Ok(())
 }

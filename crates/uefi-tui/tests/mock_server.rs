@@ -73,7 +73,17 @@ impl EngineService for MockEngine {
         &self,
         _req: Request<ImagesListRequest>,
     ) -> Result<Response<ImagesListResponse>, Status> {
-        Ok(Response::new(ImagesListResponse { images: vec![] }))
+        Ok(Response::new(ImagesListResponse {
+            images: vec![ImageInfo {
+                image_id: "mock-img-1".into(),
+                name: "mock.bin".into(),
+                path: "/tmp/mock.bin".into(),
+                mode: 0,
+                size: 16777216,
+                created_at: 0,
+                last_activity: 0,
+            }],
+        }))
     }
     async fn image_save(&self, _req: Request<ImageSaveRequest>) -> Result<Response<Empty>, Status> {
         Ok(Response::new(Empty {}))
@@ -95,15 +105,13 @@ impl EngineService for MockEngine {
         _req: Request<ImageNodesListRequest>,
     ) -> Result<Response<ImageNodesResponse>, Status> {
         Ok(Response::new(ImageNodesResponse {
-            nodes: vec![Node {
-                path: "0".into(),
-                r#type: 65,
-                subtype: 0,
-                guid: String::new(),
-                offset: 0,
-                size: 256,
-                name: String::new(),
-            }],
+            nodes: vec![
+                Node { path: "".into(),       r#type: 62, subtype: 0,    guid: String::new(), offset: 0,    size: 16777216, name: "Image".into() },
+                Node { path: "0".into(),      r#type: 65, subtype: 0,    guid: String::new(), offset: 0,    size: 8388608,  name: "ME".into() },
+                Node { path: "1".into(),      r#type: 65, subtype: 0,    guid: String::new(), offset: 8388608, size: 4194304, name: "DXE".into() },
+                Node { path: "1/0".into(),    r#type: 66, subtype: 0x07, guid: "ABC".into(),   offset: 8388608, size: 4096,   name: "Setup".into() },
+                Node { path: "1/0/0".into(),  r#type: 67, subtype: 0x15, guid: String::new(), offset: 8388608, size: 24,     name: String::new() },
+            ],
         }))
     }
     async fn image_nodes_search(
@@ -152,7 +160,15 @@ impl EngineService for MockEngine {
         &self,
         _req: Request<ArtifactsListRequest>,
     ) -> Result<Response<ArtifactsListResponse>, Status> {
-        Ok(Response::new(ArtifactsListResponse { artifacts: vec![] }))
+        Ok(Response::new(ArtifactsListResponse {
+            artifacts: vec![ArtifactInfo {
+                artifact_id: "mock-art-1".into(),
+                kind: "section".into(),
+                size: 4096,
+                created_at: 0,
+                source: "extracted".into(),
+            }],
+        }))
     }
     async fn artifact_import(
         &self,
@@ -222,6 +238,8 @@ mod tests {
     use tonic::transport::Endpoint;
     use tower::service_fn;
     use uefi_proto::engine_service_client::EngineServiceClient;
+    use uefi_tui::app::App;
+    use uefi_tui::commands;
 
     #[tokio::test]
     async fn mock_roundtrip() {
@@ -249,5 +267,27 @@ mod tests {
             .into_inner();
         assert!(!resp.session_id.is_empty());
         assert!(!resp.token.is_empty());
+    }
+
+    #[tokio::test]
+    async fn open_sets_active_image_and_builds_tree() {
+        let td = TempDir::new().unwrap();
+        let sock = td.path().join("mock.sock");
+        let _handle = start_mock(&sock).await;
+        let state = uefi_common::state::State {
+            session_id: Some("s1".into()),
+            token: Some("t1".into()),
+            ..Default::default()
+        };
+        let mut client = commands::connect(Some(sock.to_str().unwrap()), state).await.unwrap();
+        let mut app = App::new();
+        let res = commands::execute_command(&mut app, "open /tmp/mock.bin", &mut client).await;
+        assert!(res.is_ok(), "open failed: {:?}", res.err());
+        assert_eq!(app.active_image_id, client.state.active_image_id);
+        assert!(app.active_image_id.is_some());
+        assert!(app.tree.len() >= 5);
+        assert!(app.tree[0].has_children);
+        assert!(app.registry.images.len() == 1);
+        assert!(app.registry.artifacts.len() == 1);
     }
 }
