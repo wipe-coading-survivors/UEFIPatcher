@@ -1183,7 +1183,7 @@ use crate::app::{App, Focus};
 
 fn header(text: &str) -> ListItem<'static> {
     ListItem::new(Line::from(Span::styled(
-        text,
+        text.to_string(),
         Style::default().add_modifier(Modifier::BOLD),
     )))
 }
