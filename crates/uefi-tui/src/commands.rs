@@ -188,6 +188,7 @@ pub async fn execute_command(
                 .map_err(|e| e.message().to_string())?
                 .into_inner();
             app.status_msg = format!("extracted artifact {}", r.artifact_id);
+            let _ = refresh_registry(app, client).await;
             Ok(r.artifact_id)
         }
         "export" => {
@@ -224,6 +225,7 @@ pub async fn execute_command(
                 .map_err(|e| e.message().to_string())?
                 .into_inner();
             app.status_msg = format!("imported artifact {}", r.artifact_id);
+            let _ = refresh_registry(app, client).await;
             Ok(r.artifact_id)
         }
         "artifacts" => {

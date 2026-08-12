@@ -388,6 +388,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn extract_refreshes_registry() {
+        let td = TempDir::new().unwrap();
+        let sock = td.path().join("mock.sock");
+        let _handle = start_mock(&sock).await;
+        let state = uefi_common::state::State {
+            session_id: Some("s1".into()),
+            token: Some("t1".into()),
+            ..Default::default()
+        };
+        let mut client = commands::connect(Some(sock.to_str().unwrap()), state)
+            .await
+            .unwrap();
+        let mut app = App::new();
+        commands::execute_command(&mut app, "open /tmp/mock.bin", &mut client)
+            .await
+            .unwrap();
+        app.registry.artifacts.clear();
+        commands::execute_command(&mut app, "extract 1/0", &mut client)
+            .await
+            .unwrap();
+        assert_eq!(
+            app.registry.artifacts.len(),
+            1,
+            ":extract should refresh registry"
+        );
+    }
+
+    #[tokio::test]
+    async fn import_refreshes_registry() {
+        let td = TempDir::new().unwrap();
+        let sock = td.path().join("mock.sock");
+        let _handle = start_mock(&sock).await;
+        let state = uefi_common::state::State {
+            session_id: Some("s1".into()),
+            token: Some("t1".into()),
+            ..Default::default()
+        };
+        let mut client = commands::connect(Some(sock.to_str().unwrap()), state)
+            .await
+            .unwrap();
+        let mut app = App::new();
+        app.registry.images.clear();
+        app.registry.artifacts.clear();
+        let f = std::fs::File::create("/tmp/uefi_tui_import_dummy.bin").unwrap();
+        drop(f);
+        commands::execute_command(
+            &mut app,
+            "import /tmp/uefi_tui_import_dummy.bin",
+            &mut client,
+        )
+        .await
+        .unwrap();
+        assert!(
+            !app.registry.artifacts.is_empty(),
+            ":import should refresh registry"
+        );
+        let _ = std::fs::remove_file("/tmp/uefi_tui_import_dummy.bin");
+    }
+
+    #[tokio::test]
     async fn image_close_clears_state() {
         let td = TempDir::new().unwrap();
         let sock = td.path().join("mock.sock");
