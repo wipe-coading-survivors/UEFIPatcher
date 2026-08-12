@@ -1025,7 +1025,7 @@ fn mode_to_i32(s: &str) -> Result<i32, String> {
             let a = parse_node_cmd_args(&parts);
             let iid = client.state.active_image_id.clone().ok_or("no active image")?;
             let target = a.target.or_else(|| app.selected_path()).ok_or("no target")?;
-            let req = ImageNodeRemoveRequest { image_id: iid, target };
+            let req = ImageNodeRemoveRequest { image_id: iid, target: target.clone() };
             client.inner.image_node_remove(auth_req(&client.state, req)).await.map_err(|e| e.message().to_string())?;
             app.status_msg = format!("removed {target}");
             Ok(target)
@@ -1034,7 +1034,7 @@ fn mode_to_i32(s: &str) -> Result<i32, String> {
             let a = parse_node_cmd_args(&parts);
             let iid = client.state.active_image_id.clone().ok_or("no active image")?;
             let target = a.target.or_else(|| app.selected_path()).ok_or("no target")?;
-            let req = ImageNodeRebuildRequest { image_id: iid, target };
+            let req = ImageNodeRebuildRequest { image_id: iid, target: target.clone() };
             client.inner.image_node_rebuild(auth_req(&client.state, req)).await.map_err(|e| e.message().to_string())?;
             app.status_msg = format!("rebuilt {target}");
             Ok(target)
