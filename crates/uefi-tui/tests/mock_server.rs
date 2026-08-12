@@ -386,4 +386,39 @@ mod tests {
             Some(RegistryRow::Artifact(0)) | Some(RegistryRow::Image(_))
         ));
     }
+
+    #[tokio::test]
+    async fn image_close_clears_state() {
+        let td = TempDir::new().unwrap();
+        let sock = td.path().join("mock.sock");
+        let _handle = start_mock(&sock).await;
+        let state = uefi_common::state::State {
+            session_id: Some("s1".into()),
+            token: Some("t1".into()),
+            ..Default::default()
+        };
+        let mut client = commands::connect(Some(sock.to_str().unwrap()), state)
+            .await
+            .unwrap();
+        let mut app = App::new();
+        commands::execute_command(&mut app, "open /tmp/mock.bin", &mut client)
+            .await
+            .unwrap();
+        assert!(app.image_loaded);
+        assert!(app.active_image_id.is_some());
+        let active = app.active_image_id.clone().unwrap();
+        commands::execute_command(&mut app, &format!("image close {active}"), &mut client)
+            .await
+            .unwrap();
+        assert!(app.tree.is_empty(), "tree should be cleared after close");
+        assert!(
+            app.active_image_id.is_none(),
+            "active_image_id should be None after close"
+        );
+        assert!(
+            !app.image_loaded,
+            "image_loaded should be false after close"
+        );
+        assert_eq!(app.cursor, 0);
+    }
 }

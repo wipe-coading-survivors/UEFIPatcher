@@ -23,7 +23,6 @@ pub fn poll_event(timeout: Duration) -> Option<AppEvent> {
             return None;
         }
         return Some(match k.code {
-            KeyCode::Char('q') => AppEvent::Quit,
             KeyCode::Char(c) if k.modifiers.contains(KeyModifiers::CONTROL) => AppEvent::Ctrl(c),
             KeyCode::Char(c) => AppEvent::Key(c),
             KeyCode::Enter => AppEvent::Enter,

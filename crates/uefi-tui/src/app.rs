@@ -130,6 +130,15 @@ impl App {
         }
     }
 
+    pub fn set_expand_selected(&mut self, expand: bool) {
+        if let Some(idx) = self.selected_tree_idx()
+            && let Some(node) = self.tree.get_mut(idx)
+            && node.has_children
+        {
+            node.expanded = expand;
+        }
+    }
+
     pub fn sanitize_cursor(&mut self) {
         let n = self.visible().len();
         if n == 0 {

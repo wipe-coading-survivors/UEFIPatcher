@@ -93,9 +93,14 @@ async fn handle_normal(app: &mut App, ev: &AppEvent, client: &mut Option<command
             Focus::Tree => app.cursor_up(),
             Focus::Details => {}
         },
-        AppEvent::Key('h') | AppEvent::Key('l') => {
+        AppEvent::Key('h') => {
             if app.focus == Focus::Tree {
-                app.toggle_expand_selected();
+                app.set_expand_selected(false);
+            }
+        }
+        AppEvent::Key('l') => {
+            if app.focus == Focus::Tree {
+                app.set_expand_selected(true);
             }
         }
         AppEvent::Enter if app.focus == Focus::Registry => {

@@ -65,8 +65,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn short(id: &str) -> String {
-    let len = id.len().min(8);
-    id[..len].to_string()
+    id.chars().take(8).collect()
 }
 
 fn fmt_size(n: u64) -> String {
