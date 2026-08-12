@@ -24,18 +24,21 @@ struct Cli {
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let state = uefi_common::read_state().unwrap_or_default();
+    let mut app = App::new();
     let mut client = match commands::connect(cli.sock.as_deref(), state.clone()).await {
         Ok(c) => Some(c),
         Err(e) => {
+            app.engine_online = false;
+            app.status_msg = format!("ENGINE OFFLINE: {e}");
             eprintln!("warning: cannot connect to engine: {e}");
             None
         }
     };
+    app.engine_online = client.is_some();
     enable_raw_mode()?;
     execute!(stdout(), EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout());
     let mut terminal = Terminal::new(backend)?;
-    let mut app = App::new();
     loop {
         terminal.draw(|f| {
             ui::render(f, &mut app);
