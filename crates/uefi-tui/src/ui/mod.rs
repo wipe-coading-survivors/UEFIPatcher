@@ -27,7 +27,12 @@ pub fn render(f: &mut Frame, app: &App) {
         .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
         .split(vertical[1]);
     tree::render(f, horizontal[0], app);
-    details::render(f, horizontal[1], app);
+    let right = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+        .split(horizontal[1]);
+    details::render(f, right[0], app);
+    registry::render(f, right[1], app);
     cmdline::render(f, vertical[2], app);
     render_hint(f, vertical[3], app);
 }
