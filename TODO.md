@@ -168,3 +168,33 @@
 * [ ] **WebUI: полный fix** — обновить все fetch-вызовы под новые маршруты,
   подключить forms/strings listing, починить существующие баги (dead
   `dumpTree` import, unused `openImage` name field, a11y warnings).
+
+## TUI: deferred enhancements (after cycle 3 rework)
+
+> Из ревизии спеки `2026-08-12-tui-migration-bugfix-design.md`. Не вошло в цикл 3
+> по YAGNI; записано для будущих циклов.
+
+* [ ] **FIND/GO — jump to section** — интерактивным клиентам не нужен full-search
+  как в CLI (`node search`), но нужен прямой переход по target/адресу (`:goto 0/3/1`
+  или `/`-промпт), чтобы быстро прыгнуть на нужную секцию (например, на DXE/PEI при
+  раскрытом первым ME). Curse перемещается + auto-expand родителей по пути.
+* [ ] **Persistent search-results panel** — если когда-либо добавим поиск по
+  содержимому/имени секции (не прямой goto), результаты должны отображаться
+  **постоянно** (не исчезать после первого выбора) с навигацией по ним. Вариант:
+  4-я панель со скроллингом (как tree/registry), либо таб в правой колонке, либо
+  модалка. **Пустую заглушку сейчас не ставим** — layout/focus-ring из 4 элементов
+  лучше проектировать вместе с самим search-ом. Решение оставить layout B (details +
+  registry в правой колонке) принято в спеке 2026-08-12.
+* [ ] **Unified path addressing** — переход с `""`-корня на унифицированную
+  `/`-адресацию: `/` = корень-образ, `/0` `/1` = первые дети (FV), `/0/0` `/0/1` =
+  внуки. Сейчас корень имеет path `""` (engine `parser/image.rs:107,115,127-133`),
+  что ломает наивное `depth = path.matches('/').count()` и `parent_path + "/"`
+  префиксы — приходится isolировать спец-случай в `segments()` (TUI `tree.rs`).
+  Cross-cutting рефакторинг: engine parser, CLI `parser/target.rs`, proto-семантика,
+  gateway, webui. **TUI переделывать не придётся** — `segments()` уже хэнделит оба
+  формата идентично (`segments("") == segments("/") == []`).
+* [ ] **Tab-completion + shared flag-parsing в `uefi-common`** — вынести парсинг
+  флагов ex-команд (`--file`/`--artifact-id`/`--mode`/`--body-only`/TARGET-default)
+  из `uefi-tui/src/commands.rs` и `uefi-cli` в общий модуль `uefi-common::cli` (или
+  подобный), чтобы CLI/TUI не дублировали. Заодно — tab-completion для TUI-cmdline
+  (имена команд, флаги, `--artifact-id` из текущего registry, target-ы из дерева).

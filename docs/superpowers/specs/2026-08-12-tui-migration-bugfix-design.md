@@ -39,7 +39,8 @@
 2. **Корректный скроллинг** через stateful `List` + `ListState`.
 3. **Expand/collapse** с vi-style клавишами `h`/`l`; курсор ходит по видимым строкам,
    свёрнутые поддеревья пропускаются; при сворачивании родителя курсор, стоявший на
-   потомке, переходит на родителя.
+   потомке, переходит на родителя. **По умолчанию развернуты только Image и его прямые
+   дети (FV) — depth ≤ 1**; глубокие секции свёрнуты (см. «Default collapse»).
 4. **Фикс `active_image_id`** после `:open` — `:save`/`:extract`/`:insert`/… работают.
 5. **Новые ex-команды** (паритет с CLI `node insert/replace/remove/rebuild`,
    `image switch/close`): `--file PATH | --artifact-id ID` ровно один.
@@ -77,7 +78,7 @@ pub fn segments(path: &str) -> Vec<&str>;
 pub fn build_tree(nodes: &[Node]) -> Vec<TreeNode>;
 //   depth        = segments(path).len()        // "" -> 0, "0" -> 1, "0/0" -> 2
 //   has_children = exists node, чьи segments — строгий префикс
-//   expanded     = true (по умолчанию все развёрнуты)
+//   expanded     = depth <= 1   (см. «Default collapse» ниже)
 //   action       = ACTION_NO (50)
 
 pub fn visible_rows(tree: &[TreeNode]) -> Vec<usize>;
@@ -149,6 +150,16 @@ f.render_stateful_widget(List::new(items).block(...), area, &mut state);
 
 Stateful-рендер даёт автоматический скроллинг viewport-а к выбранной строке.
 
+### Default collapse
+
+`expanded = depth <= 1` при первичной загрузке (`build_tree`):
+- depth 0 (Image-корень) и depth 1 (топовые firmware volumes — ME/DXE/PEI, пути `"0"`,`"1"`,`"2"`)
+  **развёрнуты** → пользователь сразу видит список FFS-файлов внутри каждого FV.
+- depth ≥ 2 (секции внутри файлов и глубже) **свёрнуты** → типовой UX: открыл BIOS,
+  сразу видишь три больших раздела и их файлы, затем точечно раскрываешь нужный файл.
+
+Ручной expand/collapse (`l`/`h`) свободно меняет состояние после загрузки.
+
 ### Details (`ui/details.rs`)
 
 Человеко-читаемые имена из `uefi_common::names`:
@@ -196,16 +207,19 @@ client.state.active_image_id = Some(r.image_id.clone());   // parity с CLI imag
 
 ## Mode::Insert
 
-Нажатие `i` в Normal mode (Tree focus) предзаполняет cmdline и переходит в Insert:
+Нажатие `i`/`r`/`d` в Normal mode (Tree focus) предзаполняет cmdline и переходит в Insert:
 ```
-app.cmdline = format!("insert {} --file ", selected_path.unwrap_or_default());
+i -> app.cmdline = format!("insert {} --file ", path);
+r -> app.cmdline = format!("replace {} --file ", path);
+d -> app.cmdline = format!("remove {}", path);
 app.mode = Mode::Insert;
 ```
-`ui/cmdline.rs` рендерит Insert как `insert> {cmdline}` (вместо `:{cmdline}`).
-Существующая машина (`handle_command`: Key/Enter/Esc/Backspace) переиспользуется как
-есть — Enter выполняет `app.cmdline` как ex-команду, Esc отменяет.
-Если пользователь хочет `replace`/артефакт — правит текст руками. Multi-field wizard —
-out-of-scope (см. Non-goals).
+(`path` = `selected_path().unwrap_or_default()`.) `ui/cmdline.rs` рендерит Insert как
+`{cmd}> {cmdline}` (подсказка операции вместо `:`). Существующая машина (`handle_command`:
+Key/Enter/Esc/Backspace) переиспользуётся — Enter выполняет `app.cmdline` как ex-команду,
+Esc отменяет. Для `d` (remove) prefill уже полный — достаточно Enter; для `i`/`r`
+пользователь дописывает `--file PATH` / `--artifact-id ID` (или берёт артефакт из registry
+через `Enter` на нём). Multi-field wizard — out-of-scope.
 
 ## Registry-панель (новый `ui/registry.rs`)
 
@@ -269,10 +283,16 @@ Layout B — правая колонка вертикально сплититс
 | `l` | expand selected | no-op | no-op |
 | `Enter` | no-op | no-op | image→switch / artifact→cmdline prefill |
 | `i` | Mode::Insert (prefill `insert … --file `) | — | — |
+| `r` | Mode::Insert (prefill `replace … --file `) | — | — |
+| `d` | Mode::Insert (prefill `remove <selected>`) | — | — |
 | `Ctrl-h/j/k/l` | focus ring | focus ring | focus ring |
 | `:` | Command mode | Command mode | Command mode |
-| `?` | help toggle | help toggle | help toggle |
+| `?` | help overlay (toggle) | help overlay | help overlay |
 | `q` | quit | quit | quit |
+
+`i`/`r`/`d` — быстрые переходы в Insert для частых операций (insert/replace/remove).
+`:rebuild` остаётся только ex-командой (редкая операция; ключ `b` зарезервирован на
+будущее, если потребуется).
 
 **Command / Insert:** существующая логика (`handle_command`) без изменений — Key/Enter/
 Esc/Backspace作用于 `app.cmdline`. Разница только в prompt-префиксе рендера (`:` vs `insert>`).
@@ -309,9 +329,25 @@ Esc/Backspace作用于 `app.cmdline`. Разница только в prompt-пр
 | `crates/uefi-tui/src/ui/tree.rs` | `render_stateful_widget` + `ListState` (скроллинг) |
 | `crates/uefi-tui/src/ui/details.rs` | имена из `uefi_common::names`; focus-бордер |
 | `crates/uefi-tui/src/ui/registry.rs` | **новый** — образы + артефакты, selectable, focus-бордер |
-| `crates/uefi-tui/src/ui/cmdline.rs` | `Mode::Insert` → prompt `insert> ` |
+| `crates/uefi-tui/src/ui/help.rs` | **переписать**: полноэкранный scrollable-оверлей, актуальный список команд/клавиш |
+| `crates/uefi-tui/src/ui/cmdline.rs` | `Mode::Insert` → prompt `<cmd>> ` |
 | `crates/uefi-tui/src/ui/hint.rs` (или `mod.rs::render_hint`) | обновить hint: `h/l collapse/expand · Ctrl-hjkl focus · i insert · : cmd` |
 | `crates/uefi-tui/tests/mock_server.rs` | многоуровневая фикстура + непустые images/artifacts lists |
+
+## Help overlay (`ui/help.rs`)
+
+Текущий help **устарел** (перечисляет несуществующие `:dump`/`:find`/`:set-visibility`/
+`:session`) и краток. Заменяется на **полноэкранный scrollable-оверлей** (`?` — toggle),
+содержит:
+- **Modes:** Normal / Command / Insert — что можно делать.
+- **Keybindings по mode и focus** (таблица из секции «Навигация»).
+- **Ex-команды** — полный список с аргументами и default-значениями (из таблицы
+  «Команды»): `:open`, `:save`, `:extract`, `:export`, `:import`, `:insert`, `:replace`,
+  `:remove`, `:rebuild`, `:image switch/close`, `:refresh`, `:artifacts`, `:help`, `:quit`.
+- **Registry interaction:** `Enter` на артефакте/образе.
+
+Реализация: `Paragraph` в full-area блоке + `ListState`-скроллинг (j/k внутри help-оверлея),
+Esc/`?` — закрытие. Высота содержимого > экрана → скроллинг как у дерева.
 
 ## Decisions log
 
@@ -328,3 +364,7 @@ Esc/Backspace作用于 `app.cmdline`. Разница только в prompt-пр
 - **D6:** `:image switch`/`:image close` локально манипулируют `active_image_id`
   (отдельного RPC «switch» нет — это клиент-side концепция активного образа). Switch
   также перезагружает дерево через `image_nodes_list`; close — вызывает `image_close`.
+- **D7:** Default `expanded = depth <= 1` (Image + FV развёрнуты, секции свёрнуты) —
+  типовой UX, чтобы сразу видеть ME/DXE/PEI и их файлы без раскрытия.
+- **D8:** `i`/`r`/`d` — Normal-mode быстрые клавиши insert/replace/remove (prefill
+  cmdline); `:rebuild` пока только ex-command (редкая операция).
