@@ -47,10 +47,6 @@ export async function listItems(imageId: string, filter: string = '') {
     return req(`/image/${imageId}/items?filter=${filter}`);
 }
 
-export async function findItem(imageId: string, target: string) {
-    return req(`/image/${imageId}/find?target=${encodeURIComponent(target)}`);
-}
-
 export async function insert(imageId: string, target: string, ffsPath: string, mode: string = 'into') {
     return req(`/image/${imageId}/insert`, { method: 'POST', body: JSON.stringify({ target, ffs_path: ffsPath, mode }) });
 }
