@@ -359,11 +359,22 @@ impl App {
     }
 
     pub fn toggle_expand_selected(&mut self) {
-        if let Some(idx) = self.selected_tree_idx() {
-            if let Some(node) = self.tree.get_mut(idx) {
-                if node.has_children {
-                    node.expanded = !node.expanded;
-                }
+        if let Some(idx) = self.selected_tree_idx()
+            && let Some(node) = self.tree.get_mut(idx)
+            && node.has_children
+        {
+            node.expanded = !node.expanded;
+        }
+    }
+
+    pub fn set_expand_selected(&mut self, expand: bool) {
+        if let Some(idx) = self.selected_tree_idx()
+            && let Some(node) = self.tree.get_mut(idx)
+            && node.has_children
+        {
+            node.expanded = expand;
+        }
+    }
             }
         }
     }
@@ -1447,7 +1458,6 @@ pub fn poll_event(timeout: Duration) -> Option<AppEvent> {
             return None;
         }
         return Some(match k.code {
-            KeyCode::Char('q') => AppEvent::Quit,
             KeyCode::Char(c) if k.modifiers.contains(KeyModifiers::CONTROL) => AppEvent::Ctrl(c),
             KeyCode::Char(c) => AppEvent::Key(c),
             KeyCode::Enter => AppEvent::Enter,
@@ -1512,9 +1522,14 @@ async fn handle_normal(app: &mut App, ev: &AppEvent, client: &mut Option<command
             Focus::Tree => app.cursor_up(),
             Focus::Details => {}
         },
-        AppEvent::Key('h') | AppEvent::Key('l') => {
+        AppEvent::Key('h') => {
             if app.focus == Focus::Tree {
-                app.toggle_expand_selected();
+                app.set_expand_selected(false);
+            }
+        }
+        AppEvent::Key('l') => {
+            if app.focus == Focus::Tree {
+                app.set_expand_selected(true);
             }
         }
         AppEvent::Enter => {
