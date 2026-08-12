@@ -240,7 +240,11 @@ pub async fn execute_command(
         }
         "insert" => {
             let a = parse_node_cmd_args(&parts);
-            let iid = client.state.active_image_id.clone().ok_or("no active image")?;
+            let iid = client
+                .state
+                .active_image_id
+                .clone()
+                .ok_or("no active image")?;
             let target = a
                 .target
                 .or_else(|| app.selected_path())
@@ -275,21 +279,24 @@ pub async fn execute_command(
         }
         "replace" => {
             let a = parse_node_cmd_args(&parts);
-            let iid = client.state.active_image_id.clone().ok_or("no active image")?;
+            let iid = client
+                .state
+                .active_image_id
+                .clone()
+                .ok_or("no active image")?;
             let target = a
                 .target
                 .or_else(|| app.selected_path())
                 .ok_or("no target")?;
-            let (ffs_path, artifact_id) = match (a.file, a.artifact_id) {
-                (Some(p), None) => (p, String::new()),
-                (None, Some(id)) => (String::new(), id),
-                _ => {
-                    return Err(
+            let (ffs_path, artifact_id) =
+                match (a.file, a.artifact_id) {
+                    (Some(p), None) => (p, String::new()),
+                    (None, Some(id)) => (String::new(), id),
+                    _ => return Err(
                         "usage: :replace [TARGET] (--file PATH | --artifact-id ID) [--body-only]"
                             .into(),
-                    )
-                }
-            };
+                    ),
+                };
             let req = ImageNodeReplaceRequest {
                 image_id: iid,
                 target,
@@ -309,12 +316,19 @@ pub async fn execute_command(
         }
         "remove" => {
             let a = parse_node_cmd_args(&parts);
-            let iid = client.state.active_image_id.clone().ok_or("no active image")?;
+            let iid = client
+                .state
+                .active_image_id
+                .clone()
+                .ok_or("no active image")?;
             let target = a
                 .target
                 .or_else(|| app.selected_path())
                 .ok_or("no target")?;
-            let req = ImageNodeRemoveRequest { image_id: iid, target: target.clone() };
+            let req = ImageNodeRemoveRequest {
+                image_id: iid,
+                target: target.clone(),
+            };
             client
                 .inner
                 .image_node_remove(auth_req(&client.state, req))
@@ -325,12 +339,19 @@ pub async fn execute_command(
         }
         "rebuild" => {
             let a = parse_node_cmd_args(&parts);
-            let iid = client.state.active_image_id.clone().ok_or("no active image")?;
+            let iid = client
+                .state
+                .active_image_id
+                .clone()
+                .ok_or("no active image")?;
             let target = a
                 .target
                 .or_else(|| app.selected_path())
                 .ok_or("no target")?;
-            let req = ImageNodeRebuildRequest { image_id: iid, target: target.clone() };
+            let req = ImageNodeRebuildRequest {
+                image_id: iid,
+                target: target.clone(),
+            };
             client
                 .inner
                 .image_node_rebuild(auth_req(&client.state, req))
@@ -370,7 +391,9 @@ pub async fn execute_command(
                         .map(|s| s.to_string())
                         .or_else(|| client.state.active_image_id.clone())
                         .ok_or("no active image")?;
-                    let req = ImageCloseRequest { image_id: id.clone() };
+                    let req = ImageCloseRequest {
+                        image_id: id.clone(),
+                    };
                     client
                         .inner
                         .image_close(auth_req(&client.state, req))
@@ -416,13 +439,21 @@ pub async fn refresh_registry(app: &mut App, client: &mut Client) -> Result<(), 
     let sid = client.state.session_id.clone().ok_or("no session")?;
     let imgs = client
         .inner
-        .images_list(auth_req(&client.state, ImagesListRequest { session_id: sid.clone() }))
+        .images_list(auth_req(
+            &client.state,
+            ImagesListRequest {
+                session_id: sid.clone(),
+            },
+        ))
         .await
         .map_err(|e| e.message().to_string())?
         .into_inner();
     let arts = client
         .inner
-        .artifacts_list(auth_req(&client.state, ArtifactsListRequest { session_id: sid }))
+        .artifacts_list(auth_req(
+            &client.state,
+            ArtifactsListRequest { session_id: sid },
+        ))
         .await
         .map_err(|e| e.message().to_string())?
         .into_inner();

@@ -55,6 +55,10 @@ pub fn render(f: &mut Frame, app: &App) {
     }
     let area = f.area();
     f.render_widget(Clear, area);
-    let p = Paragraph::new(HELP).block(Block::default().borders(Borders::ALL).title("Help (? to close)"));
+    let p = Paragraph::new(HELP).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title("Help (? to close)"),
+    );
     f.render_widget(p, area);
 }

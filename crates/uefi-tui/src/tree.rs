@@ -95,7 +95,12 @@ mod tests {
 
     #[test]
     fn build_tree_default_expanded_only_top_two_levels() {
-        let nodes = vec![nd("", 62, 0), nd("0", 65, 0), nd("0/0", 66, 0), nd("0/0/0", 67, 0)];
+        let nodes = vec![
+            nd("", 62, 0),
+            nd("0", 65, 0),
+            nd("0/0", 66, 0),
+            nd("0/0/0", 67, 0),
+        ];
         let tree = build_tree(&nodes);
         assert!(tree[0].expanded);
         assert!(tree[1].expanded);

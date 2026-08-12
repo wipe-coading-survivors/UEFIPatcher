@@ -35,9 +35,17 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         })
         .collect();
     let mut state = ListState::default();
-    let sel = if visible.is_empty() { None } else { Some(app.cursor.min(visible.len() - 1)) };
+    let sel = if visible.is_empty() {
+        None
+    } else {
+        Some(app.cursor.min(visible.len() - 1))
+    };
     state.select(sel);
-    let title = if app.focus == Focus::Tree { "Tree *" } else { "Tree" };
+    let title = if app.focus == Focus::Tree {
+        "Tree *"
+    } else {
+        "Tree"
+    };
     let list = List::new(items)
         .block(Block::default().borders(Borders::ALL).title(title))
         .highlight_style(Style::default().bg(Color::DarkGray));

@@ -106,11 +106,51 @@ impl EngineService for MockEngine {
     ) -> Result<Response<ImageNodesResponse>, Status> {
         Ok(Response::new(ImageNodesResponse {
             nodes: vec![
-                Node { path: "".into(),       r#type: 62, subtype: 0,    guid: String::new(), offset: 0,    size: 16777216, name: "Image".into() },
-                Node { path: "0".into(),      r#type: 65, subtype: 0,    guid: String::new(), offset: 0,    size: 8388608,  name: "ME".into() },
-                Node { path: "1".into(),      r#type: 65, subtype: 0,    guid: String::new(), offset: 8388608, size: 4194304, name: "DXE".into() },
-                Node { path: "1/0".into(),    r#type: 66, subtype: 0x07, guid: "ABC".into(),   offset: 8388608, size: 4096,   name: "Setup".into() },
-                Node { path: "1/0/0".into(),  r#type: 67, subtype: 0x15, guid: String::new(), offset: 8388608, size: 24,     name: String::new() },
+                Node {
+                    path: "".into(),
+                    r#type: 62,
+                    subtype: 0,
+                    guid: String::new(),
+                    offset: 0,
+                    size: 16777216,
+                    name: "Image".into(),
+                },
+                Node {
+                    path: "0".into(),
+                    r#type: 65,
+                    subtype: 0,
+                    guid: String::new(),
+                    offset: 0,
+                    size: 8388608,
+                    name: "ME".into(),
+                },
+                Node {
+                    path: "1".into(),
+                    r#type: 65,
+                    subtype: 0,
+                    guid: String::new(),
+                    offset: 8388608,
+                    size: 4194304,
+                    name: "DXE".into(),
+                },
+                Node {
+                    path: "1/0".into(),
+                    r#type: 66,
+                    subtype: 0x07,
+                    guid: "ABC".into(),
+                    offset: 8388608,
+                    size: 4096,
+                    name: "Setup".into(),
+                },
+                Node {
+                    path: "1/0/0".into(),
+                    r#type: 67,
+                    subtype: 0x15,
+                    guid: String::new(),
+                    offset: 8388608,
+                    size: 24,
+                    name: String::new(),
+                },
             ],
         }))
     }
@@ -238,7 +278,7 @@ mod tests {
     use tonic::transport::Endpoint;
     use tower::service_fn;
     use uefi_proto::engine_service_client::EngineServiceClient;
-    use uefi_tui::app::App;
+    use uefi_tui::app::{App, Focus, RegistryRow};
     use uefi_tui::commands;
 
     #[tokio::test]
@@ -279,7 +319,9 @@ mod tests {
             token: Some("t1".into()),
             ..Default::default()
         };
-        let mut client = commands::connect(Some(sock.to_str().unwrap()), state).await.unwrap();
+        let mut client = commands::connect(Some(sock.to_str().unwrap()), state)
+            .await
+            .unwrap();
         let mut app = App::new();
         let res = commands::execute_command(&mut app, "open /tmp/mock.bin", &mut client).await;
         assert!(res.is_ok(), "open failed: {:?}", res.err());
@@ -301,12 +343,47 @@ mod tests {
             token: Some("t1".into()),
             ..Default::default()
         };
-        let mut client = commands::connect(Some(sock.to_str().unwrap()), state).await.unwrap();
+        let mut client = commands::connect(Some(sock.to_str().unwrap()), state)
+            .await
+            .unwrap();
         let mut app = App::new();
         commands::execute_command(&mut app, "refresh", &mut client)
             .await
             .unwrap();
         assert_eq!(app.registry.images.len(), 1);
         assert_eq!(app.registry.artifacts.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn smoke_open_collapse_switch_registry_pick() {
+        let td = TempDir::new().unwrap();
+        let sock = td.path().join("mock.sock");
+        let _handle = start_mock(&sock).await;
+        let state = uefi_common::state::State {
+            session_id: Some("s1".into()),
+            token: Some("t1".into()),
+            ..Default::default()
+        };
+        let mut client = commands::connect(Some(sock.to_str().unwrap()), state)
+            .await
+            .unwrap();
+        let mut app = App::new();
+        commands::execute_command(&mut app, "open /tmp/mock.bin", &mut client)
+            .await
+            .unwrap();
+        assert!(app.tree[1].expanded);
+        app.toggle_expand_selected();
+        assert!(!app.tree[app.selected_tree_idx().unwrap()].expanded);
+        commands::execute_command(&mut app, "image switch mock-img-1", &mut client)
+            .await
+            .unwrap();
+        assert_eq!(app.active_image_id.as_deref(), Some("mock-img-1"));
+        app.focus_next();
+        app.focus_next();
+        assert_eq!(app.focus, Focus::Registry);
+        assert!(matches!(
+            app.current_registry_row(),
+            Some(RegistryRow::Artifact(0)) | Some(RegistryRow::Image(_))
+        ));
     }
 }

@@ -1,7 +1,7 @@
 pub mod cmdline;
 pub mod details;
-pub mod registry;
 pub mod help;
+pub mod registry;
 pub mod status;
 pub mod tree;
 
@@ -40,9 +40,17 @@ pub fn render(f: &mut Frame, app: &App) {
 fn render_hint(f: &mut Frame, area: Rect, app: &App) {
     use ratatui::widgets::{Block, Borders, Paragraph};
     let hint = match app.mode {
-        crate::app::Mode::Normal => "NORMAL: j/k move · Space expand · :commands · ?help · q quit",
-        crate::app::Mode::Command => "COMMAND: Enter execute · Esc cancel",
-        crate::app::Mode::Insert => "INSERT: type text · Esc back to Normal",
+        crate::app::Mode::Normal => match app.focus {
+            crate::app::Focus::Tree => {
+                "NORMAL[Tree]: j/k move · h/l collapse/expand · i/r/d · Ctrl-hjkl focus · :cmd · ?help · q"
+            }
+            crate::app::Focus::Details => "NORMAL[Details]: Ctrl-hjkl focus · :cmd · ?help · q",
+            crate::app::Focus::Registry => {
+                "NORMAL[Registry]: j/k select · Enter pick · Ctrl-hjkl focus · ?help · q"
+            }
+        },
+        crate::app::Mode::Command => "COMMAND: Enter execute · Esc cancel · Backspace",
+        crate::app::Mode::Insert => "INSERT: Enter execute · Esc cancel · Backspace",
     };
     let p = Paragraph::new(hint).block(Block::default().borders(Borders::NONE));
     f.render_widget(p, area);

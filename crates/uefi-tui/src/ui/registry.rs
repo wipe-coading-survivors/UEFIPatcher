@@ -21,7 +21,11 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     items.push(header("Images"));
     for im in &app.registry.images {
         selectable_items_idx.push(items.len());
-        let marker = if active == Some(im.image_id.as_str()) { "► " } else { "  " };
+        let marker = if active == Some(im.image_id.as_str()) {
+            "► "
+        } else {
+            "  "
+        };
         items.push(ListItem::new(Line::from(format!(
             "{marker}{}  {}  {}",
             short(&im.image_id),

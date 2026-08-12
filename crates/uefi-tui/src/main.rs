@@ -64,14 +64,20 @@ async fn handle_normal(app: &mut App, ev: &AppEvent, client: &mut Option<command
         AppEvent::Key('?') => app.show_help = !app.show_help,
         AppEvent::Key('q') | AppEvent::Quit => app.quit = true,
         AppEvent::Key(':') => app.enter_command_mode(),
-        AppEvent::Key('i') | AppEvent::Key('r') | AppEvent::Key('d') if app.focus == Focus::Tree => {
+        AppEvent::Key('i') | AppEvent::Key('r') | AppEvent::Key('d')
+            if app.focus == Focus::Tree =>
+        {
             let (cmd_str, prefill) = match ev {
-                AppEvent::Key('i') => {
-                    ("insert", format!("insert {} --file ", app.selected_path().unwrap_or_default()))
-                }
+                AppEvent::Key('i') => (
+                    "insert",
+                    format!("insert {} --file ", app.selected_path().unwrap_or_default()),
+                ),
                 AppEvent::Key('r') => (
                     "replace",
-                    format!("replace {} --file ", app.selected_path().unwrap_or_default()),
+                    format!(
+                        "replace {} --file ",
+                        app.selected_path().unwrap_or_default()
+                    ),
                 ),
                 _ => ("remove", "remove ".to_string()),
             };
@@ -137,7 +143,10 @@ async fn handle_registry_enter(app: &mut App, client: &mut Option<commands::Clie
         Some(RegistryRow::Artifact(i)) => {
             if let Some(ar) = app.registry.artifacts.get(i).cloned() {
                 let path = app.selected_path().unwrap_or_default();
-                app.enter_insert_mode("insert", format!("insert {path} --artifact-id {} ", ar.artifact_id));
+                app.enter_insert_mode(
+                    "insert",
+                    format!("insert {path} --artifact-id {} ", ar.artifact_id),
+                );
             }
         }
         None => {}
