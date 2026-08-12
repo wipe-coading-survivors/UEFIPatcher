@@ -1,9 +1,10 @@
-use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AppEvent {
     Key(char),
+    Ctrl(char),
     Enter,
     Esc,
     Backspace,
@@ -23,6 +24,7 @@ pub fn poll_event(timeout: Duration) -> Option<AppEvent> {
         }
         return Some(match k.code {
             KeyCode::Char('q') => AppEvent::Quit,
+            KeyCode::Char(c) if k.modifiers.contains(KeyModifiers::CONTROL) => AppEvent::Ctrl(c),
             KeyCode::Char(c) => AppEvent::Key(c),
             KeyCode::Enter => AppEvent::Enter,
             KeyCode::Esc => AppEvent::Esc,

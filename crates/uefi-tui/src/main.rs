@@ -8,7 +8,7 @@ use crossterm::terminal::{
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use uefi_tui::app::{App, Mode};
+use uefi_tui::app::{App, Focus, Mode, RegistryRow};
 use uefi_tui::commands;
 use uefi_tui::input::{self, AppEvent};
 use uefi_tui::ui;
@@ -45,9 +45,8 @@ async fn main() -> anyhow::Result<()> {
             continue;
         };
         match app.mode {
-            Mode::Normal => handle_normal(&mut app, &ev),
-            Mode::Command => handle_command(&mut app, &ev, &mut client).await,
-            Mode::Insert => handle_insert(&mut app, &ev),
+            Mode::Normal => handle_normal(&mut app, &ev, &mut client).await,
+            Mode::Command | Mode::Insert => handle_command(&mut app, &ev, &mut client).await,
         }
         if app.quit {
             break;
@@ -58,14 +57,44 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn handle_normal(app: &mut App, ev: &AppEvent) {
+async fn handle_normal(app: &mut App, ev: &AppEvent, client: &mut Option<commands::Client>) {
     match ev {
-        AppEvent::Key('j') | AppEvent::Down => app.cursor_down(),
-        AppEvent::Key('k') | AppEvent::Up => app.cursor_up(),
-        AppEvent::Key(':') => app.enter_command_mode(),
+        AppEvent::Ctrl('h') | AppEvent::Ctrl('k') => app.focus_prev(),
+        AppEvent::Ctrl('l') | AppEvent::Ctrl('j') => app.focus_next(),
         AppEvent::Key('?') => app.show_help = !app.show_help,
-        AppEvent::Key('q') => app.quit = true,
-        AppEvent::Quit => app.quit = true,
+        AppEvent::Key('q') | AppEvent::Quit => app.quit = true,
+        AppEvent::Key(':') => app.enter_command_mode(),
+        AppEvent::Key('i') | AppEvent::Key('r') | AppEvent::Key('d') if app.focus == Focus::Tree => {
+            let (cmd_str, prefill) = match ev {
+                AppEvent::Key('i') => {
+                    ("insert", format!("insert {} --file ", app.selected_path().unwrap_or_default()))
+                }
+                AppEvent::Key('r') => (
+                    "replace",
+                    format!("replace {} --file ", app.selected_path().unwrap_or_default()),
+                ),
+                _ => ("remove", "remove ".to_string()),
+            };
+            app.enter_insert_mode(cmd_str, prefill);
+        }
+        AppEvent::Key('j') | AppEvent::Down => match app.focus {
+            Focus::Registry => app.registry_cursor_down(),
+            Focus::Tree => app.cursor_down(),
+            Focus::Details => {}
+        },
+        AppEvent::Key('k') | AppEvent::Up => match app.focus {
+            Focus::Registry => app.registry_cursor_up(),
+            Focus::Tree => app.cursor_up(),
+            Focus::Details => {}
+        },
+        AppEvent::Key('h') | AppEvent::Key('l') => {
+            if app.focus == Focus::Tree {
+                app.toggle_expand_selected();
+            }
+        }
+        AppEvent::Enter if app.focus == Focus::Registry => {
+            handle_registry_enter(app, client).await;
+        }
         _ => {}
     }
 }
@@ -93,8 +122,24 @@ async fn handle_command(app: &mut App, ev: &AppEvent, client: &mut Option<comman
     }
 }
 
-fn handle_insert(app: &mut App, ev: &AppEvent) {
-    if ev == &AppEvent::Esc {
-        app.exit_to_normal();
+async fn handle_registry_enter(app: &mut App, client: &mut Option<commands::Client>) {
+    let Some(c) = client else { return };
+    match app.current_registry_row() {
+        Some(RegistryRow::Image(i)) => {
+            if let Some(im) = app.registry.images.get(i).cloned() {
+                let cmd = format!("image switch {}", im.image_id);
+                if let Err(e) = commands::execute_command(app, &cmd, c).await {
+                    app.status_msg = format!("error: {e}");
+                }
+                app.focus = Focus::Tree;
+            }
+        }
+        Some(RegistryRow::Artifact(i)) => {
+            if let Some(ar) = app.registry.artifacts.get(i).cloned() {
+                let path = app.selected_path().unwrap_or_default();
+                app.enter_insert_mode("insert", format!("insert {path} --artifact-id {} ", ar.artifact_id));
+            }
+        }
+        None => {}
     }
 }
