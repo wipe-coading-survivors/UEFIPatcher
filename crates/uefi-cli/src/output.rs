@@ -75,7 +75,13 @@ pub fn print_image_info(info: &ImageInfo, format: OutputFormat) {
             println!("image_id\tname\tpath\tmode\tsize\tcreated\tlast_activity");
             println!(
                 "{}\t{}\t{}\t{}\t{}\t{}\t{}",
-                info.image_id, info.name, info.path, info.mode, info.size, info.created_at, info.last_activity
+                info.image_id,
+                info.name,
+                info.path,
+                info.mode,
+                info.size,
+                info.created_at,
+                info.last_activity
             );
         }
     }

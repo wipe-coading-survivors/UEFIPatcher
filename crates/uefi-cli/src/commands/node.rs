@@ -74,7 +74,7 @@ pub async fn insert(
             return Err(AppError::new(
                 ErrKind::RpcInvalidArgument,
                 "exactly one of --file or --artifact required",
-            ))
+            ));
         }
     };
     let mode_i = match mode {
@@ -85,7 +85,7 @@ pub async fn insert(
             return Err(AppError::new(
                 ErrKind::RpcInvalidArgument,
                 "mode must be into|before|after",
-            ))
+            ));
         }
     };
     let item_id = client
@@ -95,7 +95,11 @@ pub async fn insert(
     Ok(())
 }
 
-pub async fn remove(target: &str, cli_sock: Option<&str>, format: OutputFormat) -> Result<(), AppError> {
+pub async fn remove(
+    target: &str,
+    cli_sock: Option<&str>,
+    format: OutputFormat,
+) -> Result<(), AppError> {
     let st = state::require_state()?;
     let mut client = Client::connect(cli_sock, st).await?;
     let image_id = client.active_image()?;
@@ -122,7 +126,7 @@ pub async fn replace(
             return Err(AppError::new(
                 ErrKind::RpcInvalidArgument,
                 "exactly one of --file or --artifact required",
-            ))
+            ));
         }
     };
     let item_id = client
@@ -132,7 +136,11 @@ pub async fn replace(
     Ok(())
 }
 
-pub async fn rebuild(target: &str, cli_sock: Option<&str>, format: OutputFormat) -> Result<(), AppError> {
+pub async fn rebuild(
+    target: &str,
+    cli_sock: Option<&str>,
+    format: OutputFormat,
+) -> Result<(), AppError> {
     let st = state::require_state()?;
     let mut client = Client::connect(cli_sock, st).await?;
     let image_id = client.active_image()?;

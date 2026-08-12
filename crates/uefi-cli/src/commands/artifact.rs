@@ -27,7 +27,11 @@ pub async fn list(cli_sock: Option<&str>, format: OutputFormat) -> Result<(), Ap
     Ok(())
 }
 
-pub async fn import(path: &str, cli_sock: Option<&str>, format: OutputFormat) -> Result<(), AppError> {
+pub async fn import(
+    path: &str,
+    cli_sock: Option<&str>,
+    format: OutputFormat,
+) -> Result<(), AppError> {
     let st = state::require_state()?;
     let mut client = Client::connect(cli_sock, st).await?;
     let artifact_id = client.artifact_import(path).await?;

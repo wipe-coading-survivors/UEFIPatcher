@@ -12,9 +12,8 @@ pub async fn open(
 ) -> Result<(), AppError> {
     let mut st = state::require_state()?;
     let mut client = Client::connect(cli_sock, st.clone()).await?;
-    let (image_id, root_guid, confirmed_name) = client
-        .image_open(path, name.unwrap_or(""), mode)
-        .await?;
+    let (image_id, root_guid, confirmed_name) =
+        client.image_open(path, name.unwrap_or(""), mode).await?;
     st.active_image_id = Some(image_id.clone());
     state::write_state(&st)?;
     match format {

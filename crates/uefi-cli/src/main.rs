@@ -307,7 +307,9 @@ async fn dispatch(cli: &Cli, format: output::OutputFormat) -> Result<(), error::
             ArtifactCmd::Export {
                 artifact_id,
                 output_path,
-            } => commands::artifact::export(artifact_id, output_path.as_deref(), sock, format).await,
+            } => {
+                commands::artifact::export(artifact_id, output_path.as_deref(), sock, format).await
+            }
         },
         Cmd::Setup { sub } => match sub {
             SetupCmd::Form { sub } => match sub {

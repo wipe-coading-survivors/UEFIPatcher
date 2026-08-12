@@ -201,7 +201,11 @@ impl Client {
             .item_id)
     }
 
-    pub async fn image_node_remove(&mut self, image_id: &str, target: &str) -> Result<(), AppError> {
+    pub async fn image_node_remove(
+        &mut self,
+        image_id: &str,
+        target: &str,
+    ) -> Result<(), AppError> {
         let req = ImageNodeRemoveRequest {
             image_id: image_id.into(),
             target: target.into(),
@@ -235,7 +239,11 @@ impl Client {
             .item_id)
     }
 
-    pub async fn image_node_rebuild(&mut self, image_id: &str, target: &str) -> Result<(), AppError> {
+    pub async fn image_node_rebuild(
+        &mut self,
+        image_id: &str,
+        target: &str,
+    ) -> Result<(), AppError> {
         let req = ImageNodeRebuildRequest {
             image_id: image_id.into(),
             target: target.into(),
