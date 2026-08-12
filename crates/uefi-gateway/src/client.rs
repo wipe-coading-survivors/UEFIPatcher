@@ -46,104 +46,70 @@ impl EngineClient {
         Ok(req)
     }
 
-    pub async fn create_session(&mut self, name: &str) -> Result<(String, String), tonic::Status> {
+    pub async fn session_create(&mut self, name: &str) -> Result<(String, String), tonic::Status> {
         let r = self
             .inner
-            .create_session(CreateSessionRequest { name: name.into() })
+            .session_create(SessionCreateRequest { name: name.into() })
             .await?
             .into_inner();
         Ok((r.session_id, r.token))
     }
-    pub async fn destroy_session(&mut self, id: &str) -> Result<(), tonic::Status> {
+    pub async fn session_destroy(&mut self, id: &str) -> Result<(), tonic::Status> {
         self.inner
-            .destroy_session(DestroySessionRequest {
+            .session_destroy(SessionDestroyRequest {
                 session_id: id.into(),
             })
             .await?;
         Ok(())
     }
-    pub async fn list_sessions(&mut self) -> Result<Vec<SessionInfo>, tonic::Status> {
+    pub async fn sessions_list(&mut self) -> Result<Vec<SessionInfo>, tonic::Status> {
         Ok(self
             .inner
-            .list_sessions(ListSessionsRequest {})
+            .sessions_list(SessionsListRequest {})
             .await?
             .into_inner()
             .sessions)
     }
-    pub async fn open_image(
+    pub async fn image_open(
         &mut self,
         sessions: &SessionMap,
         session_id: &str,
         path: &str,
+        name: &str,
         mode: i32,
-    ) -> Result<OpenImageResponse, tonic::Status> {
-        let req = OpenImageRequest {
+    ) -> Result<ImageOpenResponse, tonic::Status> {
+        let req = ImageOpenRequest {
             session_id: session_id.into(),
-            image_path: path.into(),
+            path: path.into(),
+            name: name.into(),
             mode,
         };
         Ok(self
             .inner
-            .open_image(Self::auth_req(sessions, session_id, req).await?)
+            .image_open(Self::auth_req(sessions, session_id, req).await?)
             .await?
             .into_inner())
     }
-    pub async fn dump_tree(
-        &mut self,
-        sessions: &SessionMap,
-        session_id: &str,
-        image_id: &str,
-        format: i32,
-    ) -> Result<String, tonic::Status> {
-        let req = DumpTreeRequest {
-            image_id: image_id.into(),
-            format,
-        };
-        Ok(self
-            .inner
-            .dump_tree(Self::auth_req(sessions, session_id, req).await?)
-            .await?
-            .into_inner()
-            .text)
-    }
-    pub async fn list_items(
+    pub async fn image_nodes_list(
         &mut self,
         sessions: &SessionMap,
         session_id: &str,
         image_id: &str,
         filter: &str,
-    ) -> Result<Vec<Item>, tonic::Status> {
-        let req = ListItemsRequest {
+    ) -> Result<Vec<Node>, tonic::Status> {
+        let req = ImageNodesListRequest {
             image_id: image_id.into(),
             filter: filter.into(),
         };
         Ok(self
             .inner
-            .list_items(Self::auth_req(sessions, session_id, req).await?)
+            .image_nodes_list(Self::auth_req(sessions, session_id, req).await?)
             .await?
             .into_inner()
-            .items)
-    }
-    pub async fn find_item(
-        &mut self,
-        sessions: &SessionMap,
-        session_id: &str,
-        image_id: &str,
-        target: &str,
-    ) -> Result<String, tonic::Status> {
-        let req = FindItemRequest {
-            image_id: image_id.into(),
-            target: target.into(),
-        };
-        Ok(self
-            .inner
-            .find_item(Self::auth_req(sessions, session_id, req).await?)
-            .await?
-            .into_inner()
-            .item_id)
+            .nodes)
     }
     #[allow(clippy::too_many_arguments)]
-    pub async fn insert(
+    pub async fn image_node_insert(
         &mut self,
         sessions: &SessionMap,
         session_id: &str,
@@ -153,7 +119,7 @@ impl EngineClient {
         artifact_id: &str,
         mode: i32,
     ) -> Result<String, tonic::Status> {
-        let req = InsertRequest {
+        let req = ImageNodeInsertRequest {
             image_id: image_id.into(),
             target: target.into(),
             ffs_path: ffs_path.into(),
@@ -162,29 +128,29 @@ impl EngineClient {
         };
         Ok(self
             .inner
-            .insert(Self::auth_req(sessions, session_id, req).await?)
+            .image_node_insert(Self::auth_req(sessions, session_id, req).await?)
             .await?
             .into_inner()
             .item_id)
     }
-    pub async fn remove(
+    pub async fn image_node_remove(
         &mut self,
         sessions: &SessionMap,
         session_id: &str,
         image_id: &str,
         target: &str,
     ) -> Result<(), tonic::Status> {
-        let req = RemoveRequest {
+        let req = ImageNodeRemoveRequest {
             image_id: image_id.into(),
             target: target.into(),
         };
         self.inner
-            .remove(Self::auth_req(sessions, session_id, req).await?)
+            .image_node_remove(Self::auth_req(sessions, session_id, req).await?)
             .await?;
         Ok(())
     }
     #[allow(clippy::too_many_arguments)]
-    pub async fn replace(
+    pub async fn image_node_replace(
         &mut self,
         sessions: &SessionMap,
         session_id: &str,
@@ -194,7 +160,7 @@ impl EngineClient {
         artifact_id: &str,
         body_only: bool,
     ) -> Result<String, tonic::Status> {
-        let req = ReplaceRequest {
+        let req = ImageNodeReplaceRequest {
             image_id: image_id.into(),
             target: target.into(),
             ffs_path: data_path.into(),
@@ -203,28 +169,28 @@ impl EngineClient {
         };
         Ok(self
             .inner
-            .replace(Self::auth_req(sessions, session_id, req).await?)
+            .image_node_replace(Self::auth_req(sessions, session_id, req).await?)
             .await?
             .into_inner()
             .item_id)
     }
-    pub async fn rebuild(
+    pub async fn image_node_rebuild(
         &mut self,
         sessions: &SessionMap,
         session_id: &str,
         image_id: &str,
         target: &str,
     ) -> Result<(), tonic::Status> {
-        let req = RebuildRequest {
+        let req = ImageNodeRebuildRequest {
             image_id: image_id.into(),
             target: target.into(),
         };
         self.inner
-            .rebuild(Self::auth_req(sessions, session_id, req).await?)
+            .image_node_rebuild(Self::auth_req(sessions, session_id, req).await?)
             .await?;
         Ok(())
     }
-    pub async fn set_setup_visibility(
+    pub async fn setup_set_form_visibility(
         &mut self,
         sessions: &SessionMap,
         session_id: &str,
@@ -232,33 +198,33 @@ impl EngineClient {
         item_id: &str,
         visible: bool,
     ) -> Result<(), tonic::Status> {
-        let req = SetSetupItemVisibilityRequest {
+        let req = SetupSetFormVisibilityRequest {
             image_id: image_id.into(),
             item_id: item_id.into(),
             visible,
         };
         self.inner
-            .set_setup_item_visibility(Self::auth_req(sessions, session_id, req).await?)
+            .setup_set_form_visibility(Self::auth_req(sessions, session_id, req).await?)
             .await?;
         Ok(())
     }
-    pub async fn save_image(
+    pub async fn image_save(
         &mut self,
         sessions: &SessionMap,
         session_id: &str,
         image_id: &str,
         output_path: &str,
     ) -> Result<(), tonic::Status> {
-        let req = SaveImageRequest {
+        let req = ImageSaveRequest {
             image_id: image_id.into(),
             output_path: output_path.into(),
         };
         self.inner
-            .save_image(Self::auth_req(sessions, session_id, req).await?)
+            .image_save(Self::auth_req(sessions, session_id, req).await?)
             .await?;
         Ok(())
     }
-    pub async fn extract_artifact(
+    pub async fn image_node_extract(
         &mut self,
         sessions: &SessionMap,
         session_id: &str,
@@ -266,62 +232,62 @@ impl EngineClient {
         target: &str,
         body_only: bool,
     ) -> Result<String, tonic::Status> {
-        let req = ExtractArtifactRequest {
+        let req = ImageNodeExtractRequest {
             image_id: image_id.into(),
             target: target.into(),
             body_only,
         };
         Ok(self
             .inner
-            .extract_artifact(Self::auth_req(sessions, session_id, req).await?)
+            .image_node_extract(Self::auth_req(sessions, session_id, req).await?)
             .await?
             .into_inner()
             .artifact_id)
     }
-    pub async fn export_artifact(
+    pub async fn artifact_export(
         &mut self,
         sessions: &SessionMap,
         session_id: &str,
         artifact_id: &str,
         output_path: &str,
     ) -> Result<(), tonic::Status> {
-        let req = ExportArtifactRequest {
+        let req = ArtifactExportRequest {
             artifact_id: artifact_id.into(),
             output_path: output_path.into(),
         };
         self.inner
-            .export_artifact(Self::auth_req(sessions, session_id, req).await?)
+            .artifact_export(Self::auth_req(sessions, session_id, req).await?)
             .await?;
         Ok(())
     }
-    pub async fn import_artifact(
+    pub async fn artifact_import(
         &mut self,
         sessions: &SessionMap,
         session_id: &str,
-        file_path: &str,
+        path: &str,
     ) -> Result<String, tonic::Status> {
-        let req = ImportArtifactRequest {
+        let req = ArtifactImportRequest {
             session_id: session_id.into(),
-            file_path: file_path.into(),
+            path: path.into(),
         };
         Ok(self
             .inner
-            .import_artifact(Self::auth_req(sessions, session_id, req).await?)
+            .artifact_import(Self::auth_req(sessions, session_id, req).await?)
             .await?
             .into_inner()
             .artifact_id)
     }
-    pub async fn list_artifacts(
+    pub async fn artifacts_list(
         &mut self,
         sessions: &SessionMap,
         session_id: &str,
     ) -> Result<Vec<ArtifactInfo>, tonic::Status> {
-        let req = ListArtifactsRequest {
+        let req = ArtifactsListRequest {
             session_id: session_id.into(),
         };
         Ok(self
             .inner
-            .list_artifacts(Self::auth_req(sessions, session_id, req).await?)
+            .artifacts_list(Self::auth_req(sessions, session_id, req).await?)
             .await?
             .into_inner()
             .artifacts)

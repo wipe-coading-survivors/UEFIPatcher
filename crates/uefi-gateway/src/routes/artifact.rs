@@ -24,7 +24,7 @@ pub async fn extract(
     let sid = extract_session_id(&jar).ok_or(AppError::Auth)?;
     let mut c = state.client.lock().await;
     let artifact_id = c
-        .extract_artifact(&state.sessions, &sid, &id, &body.target, body.body_only)
+        .image_node_extract(&state.sessions, &sid, &id, &body.target, body.body_only)
         .await
         .map_err(AppError::from)?;
     Ok(Json(json!({ "artifact_id": artifact_id })))
@@ -42,7 +42,7 @@ pub async fn export(
 ) -> Result<Json<Value>, AppError> {
     let sid = extract_session_id(&jar).ok_or(AppError::Auth)?;
     let mut c = state.client.lock().await;
-    c.export_artifact(&state.sessions, &sid, &id, &body.output_path)
+    c.artifact_export(&state.sessions, &sid, &id, &body.output_path)
         .await
         .map_err(AppError::from)?;
     Ok(Json(json!({ "ok": true })))
@@ -75,7 +75,7 @@ pub async fn import(
     let fp = file_path.ok_or_else(|| AppError::BadRequest("no file field in multipart".into()))?;
     let mut c = state.client.lock().await;
     let artifact_id = c
-        .import_artifact(&state.sessions, &sid, &fp)
+        .artifact_import(&state.sessions, &sid, &fp)
         .await
         .map_err(AppError::from)?;
     Ok(Json(json!({ "artifact_id": artifact_id })))
@@ -96,7 +96,7 @@ pub async fn list(
         .ok_or(AppError::Auth)?;
     let mut c = state.client.lock().await;
     let artifacts = c
-        .list_artifacts(&state.sessions, &sid)
+        .artifacts_list(&state.sessions, &sid)
         .await
         .map_err(AppError::from)?;
     Ok(Json(json!({ "artifacts": artifacts })))

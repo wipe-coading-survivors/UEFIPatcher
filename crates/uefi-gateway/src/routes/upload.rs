@@ -46,7 +46,7 @@ pub async fn download(
     let sid = extract_session_id(&jar).ok_or(AppError::Auth)?;
     let out_path = format!("/tmp/uefipatcher-download-{}.bin", Uuid::new_v4());
     let mut c = state.client.lock().await;
-    c.save_image(&state.sessions, &sid, &id, &out_path)
+    c.image_save(&state.sessions, &sid, &id, &out_path)
         .await
         .map_err(AppError::from)?;
     let data = tokio::fs::read(&out_path)

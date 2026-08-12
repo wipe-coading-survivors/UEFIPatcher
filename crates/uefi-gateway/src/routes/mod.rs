@@ -4,7 +4,6 @@ pub mod image;
 pub mod session;
 pub mod setup;
 pub mod upload;
-pub mod ws;
 
 use std::sync::Arc;
 
@@ -33,9 +32,7 @@ pub fn router(state: AppState) -> axum::Router {
         .route("/api/v1/image/open", axum::routing::post(image::open))
         .route("/api/v1/image/upload", axum::routing::post(upload::upload))
         .route("/api/v1/image/:id/dump", axum::routing::get(image::dump))
-        .route("/api/v1/image/:id/dump/ws", axum::routing::get(ws::dump_ws))
         .route("/api/v1/image/:id/items", axum::routing::get(image::items))
-        .route("/api/v1/image/:id/find", axum::routing::get(image::find))
         .route("/api/v1/image/:id/save", axum::routing::post(image::save))
         .route(
             "/api/v1/image/:id/download",

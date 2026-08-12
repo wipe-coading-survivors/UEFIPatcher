@@ -24,7 +24,7 @@ pub async fn create(
             .map(|p| p.display().to_string())
             .unwrap_or_default()
     });
-    let (sid, tok) = c.create_session(&name).await.map_err(AppError::from)?;
+    let (sid, tok) = c.session_create(&name).await.map_err(AppError::from)?;
     state.sessions.insert(sid.clone(), tok).await;
     let jar = CookieJar::new().add(make_session_cookie(&sid));
     Ok((jar, Json(json!({ "session_id": sid }))))
@@ -36,7 +36,7 @@ pub async fn destroy(
 ) -> Result<Json<Value>, AppError> {
     let sid = extract_session_id(&jar).ok_or(AppError::Auth)?;
     let mut c = state.client.lock().await;
-    c.destroy_session(&sid).await.map_err(AppError::from)?;
+    c.session_destroy(&sid).await.map_err(AppError::from)?;
     state.sessions.remove(&sid).await;
     Ok(Json(json!({ "ok": true })))
 }
@@ -44,6 +44,6 @@ pub async fn destroy(
 pub async fn list(State(state): State<AppState>, jar: CookieJar) -> Result<Json<Value>, AppError> {
     let _sid = extract_session_id(&jar).ok_or(AppError::Auth)?;
     let mut c = state.client.lock().await;
-    let rows = c.list_sessions().await.map_err(AppError::from)?;
+    let rows = c.sessions_list().await.map_err(AppError::from)?;
     Ok(Json(json!({ "sessions": rows })))
 }

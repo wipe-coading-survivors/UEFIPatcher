@@ -34,7 +34,7 @@ pub async fn insert(
     };
     let mut c = state.client.lock().await;
     let item_id = c
-        .insert(
+        .image_node_insert(
             &state.sessions,
             &sid,
             &id,
@@ -60,7 +60,7 @@ pub async fn remove(
 ) -> Result<Json<Value>, AppError> {
     let sid = extract_session_id(&jar).ok_or(AppError::Auth)?;
     let mut c = state.client.lock().await;
-    c.remove(&state.sessions, &sid, &id, &body.target)
+    c.image_node_remove(&state.sessions, &sid, &id, &body.target)
         .await
         .map_err(AppError::from)?;
     Ok(Json(json!({ "ok": true })))
@@ -82,7 +82,7 @@ pub async fn replace(
     let sid = extract_session_id(&jar).ok_or(AppError::Auth)?;
     let mut c = state.client.lock().await;
     let item_id = c
-        .replace(
+        .image_node_replace(
             &state.sessions,
             &sid,
             &id,
@@ -104,7 +104,7 @@ pub async fn rebuild(
 ) -> Result<Json<Value>, AppError> {
     let sid = extract_session_id(&jar).ok_or(AppError::Auth)?;
     let mut c = state.client.lock().await;
-    c.rebuild(&state.sessions, &sid, &id, &body.target)
+    c.image_node_rebuild(&state.sessions, &sid, &id, &body.target)
         .await
         .map_err(AppError::from)?;
     Ok(Json(json!({ "ok": true })))
