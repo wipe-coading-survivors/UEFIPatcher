@@ -33,12 +33,14 @@ async fn full_flow() {
         .assert()
         .success();
 
-    cli(&sock, cwd).args(["image", "dump"]).assert().success();
+    cli(&sock, cwd).args(["node", "list"]).assert().success();
 
     cli(&sock, cwd).args(["image", "list"]).assert().success();
 
+    cli(&sock, cwd).args(["image", "status"]).assert().success();
+
     cli(&sock, cwd)
-        .args(["image", "find", "0"])
+        .args(["node", "search", "0"])
         .assert()
         .success();
 
@@ -56,7 +58,7 @@ async fn no_state_errors() {
     let td = TempDir::new().unwrap();
     let cwd = td.path();
     cli("/tmp/x", cwd)
-        .args(["image", "dump"])
+        .args(["node", "list"])
         .assert()
         .failure()
         .code(3);

@@ -25,15 +25,23 @@ async fn edit_flow() {
         .assert()
         .success();
     cli(&sock, cwd)
-        .args(["edit", "insert", "0", "/dev/null", "--mode", "before"])
+        .args([
+            "node",
+            "insert",
+            "0",
+            "--file",
+            "/dev/null",
+            "--mode",
+            "before",
+        ])
         .assert()
         .success();
     cli(&sock, cwd)
-        .args(["edit", "remove", "0"])
+        .args(["node", "remove", "0"])
         .assert()
         .success();
     cli(&sock, cwd)
-        .args(["setup", "set-visibility", "0", "--visible"])
+        .args(["setup", "form", "set-visibility", "0", "--visible"])
         .assert()
         .success();
     cli(&sock, cwd)
