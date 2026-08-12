@@ -1,8 +1,36 @@
+use uefi_proto::{ArtifactInfo, ImageInfo};
+
+use crate::tree::visible_rows;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     Normal,
     Command,
     Insert,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Focus {
+    Tree,
+    Details,
+    Registry,
+}
+
+impl Focus {
+    pub fn next(self) -> Focus {
+        match self {
+            Focus::Tree => Focus::Details,
+            Focus::Details => Focus::Registry,
+            Focus::Registry => Focus::Tree,
+        }
+    }
+    pub fn prev(self) -> Focus {
+        match self {
+            Focus::Tree => Focus::Registry,
+            Focus::Details => Focus::Tree,
+            Focus::Registry => Focus::Details,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -18,12 +46,29 @@ pub struct TreeNode {
     pub has_children: bool,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct RegistryData {
+    pub images: Vec<ImageInfo>,
+    pub artifacts: Vec<ArtifactInfo>,
+    pub cursor: usize,
+}
+
+#[derive(Debug, Clone)]
+pub enum RegistryRow {
+    Image(usize),
+    Artifact(usize),
+}
+
 pub struct App {
     pub mode: Mode,
     pub tree: Vec<TreeNode>,
     pub cursor: usize,
+    pub focus: Focus,
+    pub registry: RegistryData,
+    pub active_image_id: Option<String>,
     pub selected: Option<String>,
     pub cmdline: String,
+    pub insert_cmd: &'static str,
     pub status_msg: String,
     pub image_loaded: bool,
     pub quit: bool,
@@ -36,8 +81,12 @@ impl App {
             mode: Mode::Normal,
             tree: vec![],
             cursor: 0,
+            focus: Focus::Tree,
+            registry: RegistryData::default(),
+            active_image_id: None,
             selected: None,
             cmdline: String::new(),
+            insert_cmd: "",
             status_msg: "Welcome. Press : for commands, ? for help".into(),
             image_loaded: false,
             quit: false,
@@ -45,8 +94,23 @@ impl App {
         }
     }
 
+    pub fn visible(&self) -> Vec<usize> {
+        visible_rows(&self.tree)
+    }
+
+    pub fn selected_tree_idx(&self) -> Option<usize> {
+        self.visible().get(self.cursor).copied()
+    }
+
+    pub fn selected_path(&self) -> Option<String> {
+        self.selected_tree_idx()
+            .and_then(|i| self.tree.get(i))
+            .map(|n| n.path.clone())
+    }
+
     pub fn cursor_down(&mut self) {
-        if self.cursor + 1 < self.tree.len() {
+        let n = self.visible().len();
+        if n > 0 && self.cursor + 1 < n {
             self.cursor += 1;
         }
     }
@@ -57,14 +121,78 @@ impl App {
         }
     }
 
+    pub fn toggle_expand_selected(&mut self) {
+        if let Some(idx) = self.selected_tree_idx()
+            && let Some(node) = self.tree.get_mut(idx)
+            && node.has_children
+        {
+            node.expanded = !node.expanded;
+        }
+    }
+
+    pub fn sanitize_cursor(&mut self) {
+        let n = self.visible().len();
+        if n == 0 {
+            self.cursor = 0;
+        } else if self.cursor >= n {
+            self.cursor = n - 1;
+        }
+    }
+
+    pub fn focus_next(&mut self) {
+        self.focus = self.focus.next();
+    }
+
+    pub fn focus_prev(&mut self) {
+        self.focus = self.focus.prev();
+    }
+
+    pub fn registry_selectable(&self) -> Vec<RegistryRow> {
+        let mut rows = Vec::new();
+        for i in 0..self.registry.images.len() {
+            rows.push(RegistryRow::Image(i));
+        }
+        for i in 0..self.registry.artifacts.len() {
+            rows.push(RegistryRow::Artifact(i));
+        }
+        rows
+    }
+
+    pub fn current_registry_row(&self) -> Option<RegistryRow> {
+        self.registry_selectable()
+            .get(self.registry.cursor)
+            .cloned()
+    }
+
+    pub fn registry_cursor_down(&mut self) {
+        let n = self.registry_selectable().len();
+        if n > 0 && self.registry.cursor + 1 < n {
+            self.registry.cursor += 1;
+        }
+    }
+
+    pub fn registry_cursor_up(&mut self) {
+        if self.registry.cursor > 0 {
+            self.registry.cursor -= 1;
+        }
+    }
+
     pub fn enter_command_mode(&mut self) {
         self.mode = Mode::Command;
         self.cmdline.clear();
+        self.insert_cmd = "";
+    }
+
+    pub fn enter_insert_mode(&mut self, cmd: &'static str, prefill: String) {
+        self.mode = Mode::Insert;
+        self.insert_cmd = cmd;
+        self.cmdline = prefill;
     }
 
     pub fn exit_to_normal(&mut self) {
         self.mode = Mode::Normal;
         self.cmdline.clear();
+        self.insert_cmd = "";
     }
 }
 
@@ -74,72 +202,114 @@ impl Default for App {
     }
 }
 
+pub fn details_text(node: &TreeNode) -> String {
+    let type_name = uefi_common::names::node_type_name(node.node_type as u32);
+    let sub_name = match node.node_type {
+        66 => uefi_common::names::file_type_name_or_raw(node.subtype),
+        67 => uefi_common::names::section_type_name_or_raw(node.subtype),
+        _ => String::new(),
+    };
+    let sub_part = if sub_name.is_empty() {
+        format!("0x{:02X}", node.subtype)
+    } else {
+        format!("{} (0x{:02X})", sub_name, node.subtype)
+    };
+    format!(
+        "Path:     {}\nType:     {} ({} / 0x{:02X})\nSubtype:  {}\nGUID:     {}\nName:     {}\nAction:   {}\nChildren: {}",
+        node.path,
+        type_name,
+        node.node_type,
+        node.node_type,
+        sub_part,
+        node.guid.as_deref().unwrap_or("(none)"),
+        node.name,
+        node.action,
+        node.has_children,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::theme::ACTION_NO;
 
-    #[test]
-    fn app_new_starts_normal() {
-        let app = App::new();
-        assert_eq!(app.mode, Mode::Normal);
-        assert!(!app.quit);
+    fn node(path: &str, depth: usize) -> TreeNode {
+        TreeNode {
+            path: path.into(),
+            depth,
+            node_type: 62,
+            subtype: 0,
+            guid: None,
+            name: String::new(),
+            action: ACTION_NO,
+            expanded: true,
+            has_children: depth == 0,
+        }
     }
 
     #[test]
-    fn cursor_down_increments() {
+    fn app_new_starts_normal_tree_focus() {
+        let app = App::new();
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(app.focus, Focus::Tree);
+        assert!(app.active_image_id.is_none());
+    }
+
+    #[test]
+    fn selected_path_indexes_visible() {
         let mut app = App::new();
-        app.tree = vec![
-            TreeNode {
-                path: "0".into(),
-                depth: 0,
-                node_type: 62,
-                subtype: 0,
-                guid: None,
-                name: "Image".into(),
-                action: 50,
-                expanded: true,
-                has_children: true,
-            },
-            TreeNode {
-                path: "0/0".into(),
-                depth: 1,
-                node_type: 65,
-                subtype: 0,
-                guid: None,
-                name: "Volume".into(),
-                action: 50,
-                expanded: false,
-                has_children: true,
-            },
-        ];
+        app.tree = vec![node("0", 0), node("0/0", 1)];
+        assert_eq!(app.selected_path(), Some("0".into()));
         app.cursor_down();
+        assert_eq!(app.selected_path(), Some("0/0".into()));
+    }
+
+    #[test]
+    fn toggle_expand_selected_flips_only_parents() {
+        let mut app = App::new();
+        app.tree = vec![node("", 0), node("0", 1)];
+        app.cursor = 0;
+        app.toggle_expand_selected();
+        assert!(!app.tree[0].expanded);
+        app.toggle_expand_selected();
+        assert!(app.tree[0].expanded);
+    }
+
+    #[test]
+    fn sanitize_cursor_clamps_to_visible() {
+        let mut app = App::new();
+        app.tree = vec![node("", 0), node("0", 1)];
+        app.cursor = 5;
+        app.sanitize_cursor();
         assert_eq!(app.cursor, 1);
     }
 
     #[test]
-    fn cursor_down_clamps() {
+    fn focus_ring_cycles() {
         let mut app = App::new();
-        app.tree = vec![TreeNode {
-            path: "0".into(),
-            depth: 0,
-            node_type: 62,
-            subtype: 0,
-            guid: None,
-            name: "X".into(),
-            action: 50,
-            expanded: false,
-            has_children: false,
-        }];
-        app.cursor_down();
-        assert_eq!(app.cursor, 0);
+        assert_eq!(app.focus, Focus::Tree);
+        app.focus_next();
+        assert_eq!(app.focus, Focus::Details);
+        app.focus_next();
+        assert_eq!(app.focus, Focus::Registry);
+        app.focus_next();
+        assert_eq!(app.focus, Focus::Tree);
+        app.focus_prev();
+        assert_eq!(app.focus, Focus::Registry);
     }
 
     #[test]
-    fn mode_transitions() {
+    fn registry_selectable_and_cursor() {
         let mut app = App::new();
-        app.enter_command_mode();
-        assert_eq!(app.mode, Mode::Command);
-        app.exit_to_normal();
-        assert_eq!(app.mode, Mode::Normal);
+        app.registry.images = vec![ImageInfo::default()];
+        app.registry.artifacts = vec![ArtifactInfo::default(), ArtifactInfo::default()];
+        let rows = app.registry_selectable();
+        assert_eq!(rows.len(), 3);
+        app.registry_cursor_down();
+        assert_eq!(app.registry.cursor, 1);
+        assert!(matches!(
+            app.current_registry_row(),
+            Some(RegistryRow::Artifact(0))
+        ));
     }
 }
