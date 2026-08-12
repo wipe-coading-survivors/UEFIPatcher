@@ -10,7 +10,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
 use crate::app::App;
 
-pub fn render(f: &mut Frame, app: &App) {
+pub fn render(f: &mut Frame, app: &mut App) {
     let full = f.area();
     let vertical = Layout::default()
         .direction(Direction::Vertical)

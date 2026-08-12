@@ -2,12 +2,15 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState};
+use ratatui::widgets::{Block, Borders, List, ListItem};
 
 use crate::app::{App, Focus};
 use crate::theme::*;
+use crate::tree::compute_scrolled_offset;
 
-pub fn render(f: &mut Frame, area: Rect, app: &App) {
+const SCROLL_PAD: usize = 3;
+
+pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
     let visible = app.visible();
     let items: Vec<ListItem> = visible
         .iter()
@@ -34,13 +37,20 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             ]))
         })
         .collect();
-    let mut state = ListState::default();
-    let sel = if visible.is_empty() {
-        None
+
+    let total = visible.len();
+    let inner_h = area.height.saturating_sub(2) as usize;
+    let cursor = if total == 0 {
+        0
     } else {
-        Some(app.cursor.min(visible.len() - 1))
+        app.cursor.min(total - 1)
     };
-    state.select(sel);
+    let prev_off = app.tree_state.offset();
+    let new_off = compute_scrolled_offset(cursor, prev_off, inner_h, total, SCROLL_PAD);
+    app.tree_state
+        .select(if total == 0 { None } else { Some(cursor) });
+    *app.tree_state.offset_mut() = new_off;
+
     let title = if app.focus == Focus::Tree {
         "Tree *"
     } else {
@@ -49,5 +59,5 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let list = List::new(items)
         .block(Block::default().borders(Borders::ALL).title(title))
         .highlight_style(Style::default().bg(Color::DarkGray));
-    f.render_stateful_widget(list, area, &mut state);
+    f.render_stateful_widget(list, area, &mut app.tree_state);
 }

@@ -1,3 +1,4 @@
+use ratatui::widgets::ListState;
 use uefi_proto::{ArtifactInfo, ImageInfo};
 
 use crate::tree::visible_rows;
@@ -73,6 +74,8 @@ pub struct App {
     pub image_loaded: bool,
     pub quit: bool,
     pub show_help: bool,
+    pub tree_state: ListState,
+    pub registry_state: ListState,
 }
 
 impl App {
@@ -91,6 +94,8 @@ impl App {
             image_loaded: false,
             quit: false,
             show_help: false,
+            tree_state: ListState::default(),
+            registry_state: ListState::default(),
         }
     }
 

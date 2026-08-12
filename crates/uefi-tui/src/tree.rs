@@ -50,6 +50,32 @@ pub fn visible_rows(tree: &[TreeNode]) -> Vec<usize> {
     visible
 }
 
+pub fn compute_scrolled_offset(
+    cursor: usize,
+    prev_off: usize,
+    inner_h: usize,
+    total: usize,
+    pad: usize,
+) -> usize {
+    if inner_h == 0 || total <= inner_h {
+        return 0;
+    }
+    let max_off = total - inner_h;
+    let pad = pad.min(inner_h.saturating_sub(1) / 2);
+    let first = prev_off;
+    let last = prev_off + inner_h - 1;
+    if cursor < first + pad {
+        cursor.saturating_sub(pad).min(max_off)
+    } else if cursor > last.saturating_sub(pad) {
+        cursor
+            .saturating_add(pad)
+            .saturating_sub(inner_h - 1)
+            .min(max_off)
+    } else {
+        prev_off.min(max_off)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -133,5 +159,71 @@ mod tests {
         tree[1].expanded = false;
         let v = visible_rows(&tree);
         assert_eq!(v, vec![0, 1, 4]);
+    }
+
+    #[test]
+    fn offset_fits_all_returns_zero() {
+        assert_eq!(compute_scrolled_offset(5, 3, 10, 5, 2), 0);
+        assert_eq!(compute_scrolled_offset(0, 0, 10, 5, 2), 0);
+    }
+
+    #[test]
+    fn offset_keeps_stable_within_padding_zone() {
+        let inner_h = 10;
+        let total = 100;
+        let pad = 2;
+        let off = 5;
+        for cur in (off + pad)..=(off + inner_h - 1 - pad) {
+            assert_eq!(
+                compute_scrolled_offset(cur, off, inner_h, total, pad),
+                off,
+                "cursor {cur} should not scroll"
+            );
+        }
+    }
+
+    #[test]
+    fn offset_scrolls_down_at_bottom_padding_boundary() {
+        let inner_h = 10;
+        let total = 100;
+        let pad = 2;
+        let off = 5;
+        let cur = off + inner_h - 1 - pad + 1;
+        let new_off = compute_scrolled_offset(cur, off, inner_h, total, pad);
+        assert!(new_off > off);
+        assert_eq!(cur - new_off, inner_h - 1 - pad);
+    }
+
+    #[test]
+    fn offset_scrolls_up_at_top_padding_boundary() {
+        let inner_h = 10;
+        let total = 100;
+        let pad = 2;
+        let off = 10;
+        let cur = off + pad - 1;
+        let new_off = compute_scrolled_offset(cur, off, inner_h, total, pad);
+        assert!(new_off < off);
+        assert_eq!(cur - new_off, pad);
+    }
+
+    #[test]
+    fn offset_clamps_at_top_and_bottom() {
+        let inner_h = 10;
+        let total = 100;
+        let pad = 2;
+        assert_eq!(compute_scrolled_offset(0, 0, inner_h, total, pad), 0);
+        assert_eq!(
+            compute_scrolled_offset(99, 0, inner_h, total, pad),
+            total - inner_h
+        );
+    }
+
+    #[test]
+    fn offset_caps_pad_for_tiny_views() {
+        let inner_h = 3;
+        let total = 100;
+        let new_off = compute_scrolled_offset(50, 40, inner_h, total, 2);
+        assert!(new_off <= 50);
+        assert!(new_off + inner_h > 50);
     }
 }

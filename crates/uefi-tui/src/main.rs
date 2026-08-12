@@ -38,7 +38,7 @@ async fn main() -> anyhow::Result<()> {
     let mut app = App::new();
     loop {
         terminal.draw(|f| {
-            ui::render(f, &app);
+            ui::render(f, &mut app);
             ui::help::render(f, &app);
         })?;
         let Some(ev) = input::poll_event(Duration::from_millis(100)) else {
