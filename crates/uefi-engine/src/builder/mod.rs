@@ -101,6 +101,9 @@ fn build_file(node: &FfsNode, out: &mut Vec<u8>) -> Result<(), BuilderError> {
 }
 
 fn build_section(node: &FfsNode, out: &mut Vec<u8>) -> Result<(), BuilderError> {
+    if node.action == Action::Remove {
+        return Ok(());
+    }
     if node.action == Action::NoAction || is_compressed_or_guided(node) {
         out.extend_from_slice(&node.header);
         out.extend_from_slice(&node.body);
@@ -180,8 +183,11 @@ fn recompute_ffs_checksums(header: &mut [u8], body: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ffs::EFI_FVH_SIGNATURE;
+    use crate::ffs::{EFI_FVH_SIGNATURE, EFI_SECTION_RAW};
     use crate::parser::image::parse_image;
+    use crate::types::{
+        Action, FfsNode, FfsType, Image, ImageMode, ParsingData, VolumeParsingData,
+    };
 
     fn make_image_with_volume() -> Vec<u8> {
         let mut buf = vec![0xFFu8; 256];
@@ -199,6 +205,106 @@ mod tests {
         let img = parse_image(&orig, ImageMode::Read, "img1", "s1").unwrap();
         let rebuilt = build_image(&img).unwrap();
         assert_eq!(rebuilt, orig);
+    }
+
+    fn removed_section_image(remove: bool) -> Image {
+        let section_action = if remove {
+            Action::Remove
+        } else {
+            Action::Rebuild
+        };
+        let section = FfsNode {
+            guid: None,
+            node_type: FfsType::Section,
+            subtype: EFI_SECTION_RAW,
+            offset: 0,
+            header: vec![0u8; 4],
+            body: vec![0xAAu8; 8],
+            tail: vec![],
+            children: vec![],
+            action: section_action,
+            parsing_data: ParsingData::None,
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        };
+        let file = FfsNode {
+            guid: None,
+            node_type: FfsType::File,
+            subtype: 0x07,
+            offset: 0,
+            header: vec![0u8; 24],
+            body: vec![],
+            tail: vec![],
+            children: vec![section],
+            action: Action::Rebuild,
+            parsing_data: ParsingData::None,
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        };
+        let volume = FfsNode {
+            guid: None,
+            node_type: FfsType::Volume,
+            subtype: 0,
+            offset: 0,
+            header: vec![0u8; 56],
+            body: vec![0xFFu8; 128],
+            tail: vec![],
+            children: vec![file],
+            action: Action::Rebuild,
+            parsing_data: ParsingData::Volume(VolumeParsingData {
+                extended_header_guid: None,
+                alignment: 0,
+                ffs_version: 2,
+                empty_byte: 0xFF,
+                revision: 2,
+            }),
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        };
+        let root = FfsNode {
+            guid: None,
+            node_type: FfsType::Image,
+            subtype: 0,
+            offset: 0,
+            header: vec![],
+            body: vec![],
+            tail: vec![],
+            children: vec![volume],
+            action: Action::NoAction,
+            parsing_data: ParsingData::None,
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        };
+        Image {
+            image_id: "img1".into(),
+            session_id: "s1".into(),
+            root,
+            mode: ImageMode::Write,
+        }
+    }
+
+    #[test]
+    fn build_section_skips_removed() {
+        let img = removed_section_image(true);
+        let out = build_image(&img).unwrap();
+        assert!(
+            !out.windows(8).any(|w| w.iter().all(|&b| b == 0xAA)),
+            "removed section body must not appear in output"
+        );
+    }
+
+    #[test]
+    fn build_section_emits_rebuilt_when_not_removed() {
+        let img = removed_section_image(false);
+        let out = build_image(&img).unwrap();
+        assert!(
+            out.windows(8).any(|w| w.iter().all(|&b| b == 0xAA)),
+            "rebuilt (non-removed) section body must appear in output"
+        );
     }
 
     #[test]
