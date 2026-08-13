@@ -46,7 +46,7 @@ impl EngineServer {
             .join(format!("{image_id}.bin"));
         if let Ok(metadata) = fs::metadata(&path) {
             let existing_size = metadata.len() as usize;
-            if !bytes.is_empty() && bytes.len() < existing_size {
+            if bytes.len() < existing_size {
                 return Err(Status::failed_precondition(format!(
                     "build_image output ({}) is smaller than stored file ({}); \
                      refusing write to prevent data loss",
@@ -911,6 +911,52 @@ mod tests {
         assert!(
             result.is_err(),
             "flush_image must reject when build output (256) < stored file (512)"
+        );
+        let err = result.unwrap_err();
+        assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+
+        let preserved = std::fs::read(&img_path).unwrap();
+        assert_eq!(preserved, stored_buf, "stored file must be unchanged");
+    }
+
+    #[tokio::test]
+    async fn flush_image_rejects_zero_byte_build_output() {
+        let td = TempDir::new().unwrap();
+        let db = crate::storage::open_db(&td.path().join("db.sqlite")).unwrap();
+        let sm = Arc::new(SessionManager::new(
+            db,
+            td.path().to_path_buf(),
+            Duration::from_secs(864000),
+            Duration::from_secs(3600),
+            false,
+        ));
+        let (session_id, _tok) = sm.create_session("test").unwrap();
+        let image_id = "img-test";
+
+        let stored_buf = vec![0xFFu8; 64];
+        let img_path = td
+            .path()
+            .join("sessions")
+            .join(&session_id)
+            .join("images")
+            .join(format!("{image_id}.bin"));
+        std::fs::create_dir_all(img_path.parent().unwrap()).unwrap();
+        std::fs::write(&img_path, &stored_buf).unwrap();
+
+        let img = parse_image(&[], ImageMode::Write, image_id, &session_id).unwrap();
+
+        let images = Arc::new(Mutex::new(HashMap::from([(image_id.to_string(), img)])));
+        let server = EngineServer {
+            sm,
+            images,
+            data_dir: td.path().to_path_buf(),
+        };
+
+        let result = server.flush_image(image_id).await;
+
+        assert!(
+            result.is_err(),
+            "flush_image must reject when build output is empty (0 < stored 64)"
         );
         let err = result.unwrap_err();
         assert_eq!(err.code(), tonic::Code::FailedPrecondition);
