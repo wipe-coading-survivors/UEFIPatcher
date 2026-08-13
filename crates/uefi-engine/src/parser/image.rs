@@ -9,6 +9,7 @@ use uefi_proto::Node;
 const FVH_SCAN_STEP: usize = 16;
 const FFS_ALIGN: usize = 8;
 
+#[tracing::instrument(level = "info", skip(buf), fields(size = buf.len()), err)]
 pub fn parse_image(
     buf: &[u8],
     mode: ImageMode,
@@ -57,7 +58,7 @@ pub fn parse_image(
     if buf.len() > last_end {
         children.push(make_padding_node(buf, last_end, buf.len()));
     }
-    Ok(Image {
+    let img = Image {
         image_id: image_id.into(),
         session_id: session_id.into(),
         root: FfsNode {
@@ -76,7 +77,24 @@ pub fn parse_image(
             alignment_bytes: vec![],
         },
         mode,
-    })
+    };
+    tracing::info!(
+        volumes = img.root.children.len(),
+        files = count_files(&img.root),
+        "image parsed"
+    );
+    Ok(img)
+}
+
+fn count_files(node: &FfsNode) -> usize {
+    let mut n = match node.node_type {
+        FfsType::File => 1,
+        _ => 0,
+    };
+    for child in &node.children {
+        n += count_files(child);
+    }
+    n
 }
 
 fn make_padding_node(buf: &[u8], start: usize, end: usize) -> FfsNode {
@@ -729,5 +747,20 @@ mod tests {
         assert_eq!(trail.node_type, FfsType::Padding);
         assert_eq!(trail.offset, 304);
         assert_eq!(trail.body.len(), 16);
+    }
+}
+
+#[cfg(test)]
+mod logging_tests {
+    use super::*;
+    use crate::types::ImageMode;
+
+    #[tracing_test::traced_test]
+    #[test]
+    fn parse_image_emits_milestone() {
+        let buf = vec![0xFFu8; 4096];
+        let _ = parse_image(&buf, ImageMode::Read, "img-logger", "sess-logger");
+        assert!(logs_contain("image parsed"));
+        assert!(logs_contain("img-logger"));
     }
 }

@@ -15,9 +15,11 @@ pub enum BuilderError {
     ChecksumFailed,
 }
 
+#[tracing::instrument(level = "info", skip_all, err)]
 pub fn build_image(image: &Image) -> Result<Vec<u8>, BuilderError> {
     let mut out = vec![];
     build_node(&image.root, &mut out)?;
+    tracing::info!(size = out.len(), "image built");
     Ok(out)
 }
 
