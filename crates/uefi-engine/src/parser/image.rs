@@ -675,6 +675,39 @@ mod tests {
     }
 
     #[test]
+    fn parse_image_all_padding_buffer_yields_single_padding_node() {
+        let buf = vec![0x77u8; 200];
+        let img = parse_image(&buf, ImageMode::Read, "img1", "s1").unwrap();
+        assert_eq!(img.root.children.len(), 1);
+        assert_eq!(img.root.children[0].node_type, FfsType::Padding);
+        assert_eq!(img.root.children[0].offset, 0);
+        assert_eq!(img.root.children[0].body.len(), 200);
+    }
+
+    #[test]
+    fn parse_image_back_to_back_volumes_insert_no_padding() {
+        let fv1 = make_image_with_volume();
+        let fv2 = make_image_with_volume();
+        let mut buf = fv1.clone();
+        buf.extend_from_slice(&fv2);
+        let img = parse_image(&buf, ImageMode::Read, "img1", "s1").unwrap();
+        assert_eq!(
+            img.root.children.len(),
+            2,
+            "two adjacent volumes, no padding"
+        );
+        assert_eq!(img.root.children[0].node_type, FfsType::Volume);
+        assert_eq!(img.root.children[1].node_type, FfsType::Volume);
+        let first = &img.root.children[0];
+        let first_total = first.header.len() + first.body.len() + first.tail.len();
+        assert_eq!(
+            img.root.children[1].offset as usize,
+            first.offset as usize + first_total,
+            "child[1] must immediately follow child[0] with zero gap"
+        );
+    }
+
+    #[test]
     fn parse_image_padding_node_fields() {
         let fv = make_image_with_volume();
         let mut buf = vec![0xDDu8; 48];

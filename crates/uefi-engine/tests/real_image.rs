@@ -405,7 +405,13 @@ fn real_image_target_and_find_item() {
     let section = find_item(&img.root, &t_sec).expect("find section by type");
     assert_eq!(section.subtype, EFI_SECTION_PE32);
 
-    let t_path = parse_target("0/0").expect("parse path target");
+    let vol_idx = img
+        .root
+        .children
+        .iter()
+        .position(|c| c.node_type == FfsType::Volume)
+        .expect("at least one Volume child");
+    let t_path = parse_target(&format!("{vol_idx}/0")).expect("parse path target");
     assert!(matches!(t_path, Target::Path(_)));
     let first_file = find_item(&img.root, &t_path).expect("find by path");
     assert_eq!(first_file.node_type, FfsType::File);
