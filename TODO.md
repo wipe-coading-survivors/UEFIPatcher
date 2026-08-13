@@ -283,6 +283,86 @@
   добавить `uint32 action = 8;`; `list_recursive` (`parser/image.rs:111`) уже
   имеет доступ к `node.action`.
 
+### Stale-tree: in-memory дерево не синхронизируется с байтами после flush (issue II-bis, ревизия 2026-08-13)
+
+> Findings расследования `remove 3/13` на реальном образе. Предыдущие пункты
+> issue II закрыли байт-уровень (`build_*` скиплет Remove) и добавили `action`
+> в proto — но узел **остаётся в выдаче `image_nodes_list`** (с маркером `-`)
+> даже после `remove → build_image → flush_image → image_save`. Root cause:
+> движок хранит **два представления**, которые расходятся и не
+> синхронизируются:
+>
+> 1. **In-memory дерево** `Image.root` (кэш `rpc/server.rs:24` `images:
+>    HashMap`). `ops::remove` (`ops.rs:66` `node.action = Action::Remove;`)
+>    только **переключает флаг** — узел из дерева не удаляется.
+> 2. **Байты на диске** — `flush_image` (`server.rs:31-66`) строит их через
+>    `build_image` (скипает Remove, `builder/mod.rs:58,75,106`) и пишет на диск.
+>    Дерево при этом **не трогает** — ни prune, ни re-parse.
+>
+> `image_nodes_list` (`server.rs:295`) читает представление №1 через
+> `list_recursive` (`parser/image.rs:155-180`), которое выдаёт все узлы
+> включая Remove-маркированные. `get_or_load_image` (`server.rs:68-97`) на
+> кэш-хите отдаёт ту же закэшированную копию → маркер висит бесконечно.
+> Рестарт TUI не помогает: кэш в **процессе движка**, не в TUI. Объясняет
+> жалобу «удалил/пересобрал/сохранил — а секция на месте»: байты корректны
+> (216→215 файлов, GUID удалён — проверено save+reopen), но `node list`
+> показывает устаревшее дерево.
+>
+> Дизайн задумывался как «pending-операции видны» (см. TODO:281), но
+> write-through на каждой мутации (commit `aa6ed56`) эту семантику нарушает:
+> изменение уже на диске, но показывается как «запланированное».
+
+* [ ] **ENGINE: prune Remove-узлов из дерева после успешного `build_image`**
+  (вариант 2 из трёх рассмотренных). После того как `flush_image`
+  (`server.rs:31-66`) успешно собрал и записал байты, удалить из
+  `Image.root` все узлы с `action == Action::Remove` (рекурсивный splice
+  children) и сбросить `Action::Rebuild`/`Replace` обратно в `NoAction` у
+  задействованных предков — чтобы дерево отражало **применённое** состояние, а
+  не pending. Контекст: почему не варианты 1/3 — №1 (re-parse после flush)
+  дорог (~700мс на 16MB по `engine-debug-2.log:19`) и теряет pending-вид;
+  №3 (фильтр в `list_recursive` + флаг в реквесте) перекладывает логику на
+  клиентов и не чинит расход дерева↔байты. Вариант 2 дёшев (один проход по
+  дереву), сохраняет дерево как source-of-truth и убирает ложный pending.
+  Контрвариант для отдельных узлов внутри LZMA/GUID_DEFINED (issue IV) — prune
+  делать **после** проверки, что билд реально их применил (иначе при барьере
+  узел пропадёт из дерева, оставшись в байтах); до фикса issue IV prune
+  ограничить узлами, чей вывод действительно попал в `build_image` (т.е. не
+  внутри compression-барьера).
+  Покрыть тестом: `remove` top-level файла/секции → `flush_image` →
+  `image_nodes_list` не содержит узел (без reopen); проверить что повторный
+  `build_image` на том же дереве идемпотентен (байты совпадают). Регрессия на
+  `real_image_ops_remove_last_file` (должен остаться зелёным).
+
+### rebuild/replace молча отменяют Remove (issue II-ter, ревизия 2026-08-13)
+
+> Findings `engine-debug-3.log`. Последовательность `remove 3/13` (21:03:17,
+> строка 15) → `rebuild 3/13` (21:03:39, строка 25) → `image_save` (строка 43)
+> → `image_open HN-1.bin` (строка 49, files=**276** = как оригинал, без секции
+> было бы 275). Секция осталась в сохранённых байтах не из-за stale-tree, а
+> потому что `rebuild` **перезаписал** `Action::Remove` → `build_file`/`build_section`
+> пошли по rebuild-ветке и пере-сериализовали узел (включили его в вывод) вместо
+> скипа. Root cause: `ops::rebuild` (`ops.rs:105`) и `ops::replace`
+> (`ops.rs:95`) ставят action **безусловно**, без проверки, был ли узел уже
+> помечен Remove. Эмпирически подтверждено: `remove 3/13` → action=54; `rebuild
+> 3/13` → action=**55**; save+reopen → files в FV[3]=216 (не 215), GUID
+> 40BEAB40 present. Затронут также `insert` (Replace/Insert после Remove на том
+> же пути). Отдельный баг от issue II/II-bis — там байт-уровень и stale-tree,
+> тут — cancellation pending-операций.
+
+* [ ] **ENGINE: гард `Action::Remove` в `ops::rebuild` и `ops::replace`** —
+  `rebuild` (`ops.rs:104-105`) и `replace` (`ops.rs:95`) не должны молча
+  перезаписывать `Action::Remove`. Для `rebuild`: no-op, если узел уже Remove
+  (`if node.action == Action::Remove { return Ok(()); }` до `node.action =
+  Action::Rebuild;`) — rebuild не должен воскрешать удалённый узел. Для
+  `replace`: вопрос семантики (replace осмысленно «воскрешает» узел новым
+  содержимым) — как минимум задокументировать, что replace отменывает remove;
+  рассмотреть отказ с ошибкой `OpsError` если требуется явное подтверждение.
+  Аналогично проверить `insert` на тот же путь после Remove. Контекст: `Action`
+  enum в `types.rs:23-29` (`NoAction=50, Replace=53, Remove=54, Rebuild=55`).
+  Покрыть тестом: `remove` → `rebuild` того же пути → `action` остаётся
+  `Remove` (не `Rebuild`) → `build_image` узел отсутствует. Регрессия на
+  существующие `ops::rebuild`/`replace` тесты (`ops.rs:173-220`).
+
 ### Replace: конфликт режимов (issue III, ревизия 2026-08-13)
 
 > Нажатие `r` вводит `Mode::Insert` с prefill `replace {path} --file `
