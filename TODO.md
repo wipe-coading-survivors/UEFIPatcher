@@ -263,7 +263,7 @@
 > и в TUI. Дополнительно: TUI не обновляет дерево после мутаций, а `Node` proto
 > не содержит `action` — клиенты не видят pending-операций.
 
-* [ ] **ENGINE (баг): `build_section` игнорирует `Action::Remove`** — root cause
+* [x] **ENGINE (баг): `build_section` игнорирует `Action::Remove`** — root cause
   бага remove. Добавить `if node.action == Action::Remove { return Ok(()); }` в
   начале `build_section` (`builder/mod.rs:103`), аналогично `build_volume:40` и
   `build_file:73`. Покрыть тестом: remove секции → `build_image` → секции нет в
@@ -273,12 +273,12 @@
   Дополнительно: `remove` не создаёт артефакт (только `extract` создаёт) —
   ожидание пользователя не совпадает; задокументировать или добавить флаг
   auto-extract.
-* [ ] **TUI: дерево не обновляется после мутаций** — после
+* [x] **TUI: дерево не обновляется после мутаций** — после
   remove/insert/replace/rebuild дерево stale (узел остаётся на экране).
   Контекст: `commands.rs:319-341` (remove) и др. ставят только `status_msg`,
   не re-fetch'ат `image_nodes_list`. Все ex-команды мутаций должны rebuild'ить
   дерево (как `open` в `commands.rs:133-146`).
-* [ ] **Proto: добавить `action` в `Node`** — клиенты (TUI/CLI/WebUI) не видят
+* [x] **Proto: добавить `action` в `Node`** — клиенты (TUI/CLI/WebUI) не видят
   pending-операций (+/-/*/~). Контекст: `engine.proto:76` `message Node` —
   добавить `uint32 action = 8;`; `list_recursive` (`parser/image.rs:111`) уже
   имеет доступ к `node.action`.
@@ -308,3 +308,180 @@
   (guided-промпт после выбора target). B и C — альтернативы, если A+D неприемлемы.
   Дополнительно к любому варианту: в Insert-режиме разрешить `Tab`/`Ctrl-L` для
   смены фокуса (выбор артефакта не выходя из режима).
+
+### Compression barrier: мутации внутри LZMA/GUID_DEFINED (issue IV, ревизия 2026-08-13)
+
+> Symptoms (репрод на `refs/fw/HNX99TF_200525_original_E5C88C6F.bin`):
+> `:remove 1/13/2/1` в TUI → маркер красный (-), каскад `~` на предках.
+> `:rebuild` → маркер стал жёлтым (~). Удалённая секция осталась на месте.
+> После рестарта TUI дерево без изменений (секция вернулась). Вопрос: «у нас же
+> write-through на мутациях секций?» — да, но он ineffective для этого кейса.
+
+#### Root cause
+
+Таргет `1/13/2/1` — UI-секция **внутри GUID_DEFINED (LZMA)-обёртки**. Цепочка
+предков (по реальному образу):
+
+```
+[1] Volume (216 files)
+[2] File   subtype=0x07, 3 секции
+[3] Section subtype=GUID_DEFINED  ← compression barrier
+[4] Section subtype=UI            ← target 1/13/2/1
+```
+
+`build_section` (`crates/uefi-engine/src/builder/mod.rs:103-109`) для
+COMPRESSED/GUID_DEFINED-секций emits оригинальный `body` **дословно** и **не**
+ре-сериализует распакованные children:
+
+```rust
+fn build_section(node: &FfsNode, out: &mut Vec<u8>) -> Result<(), BuilderError> {
+    if node.action == Action::Remove { return Ok(()); }   // фикс issue II
+    if node.action == Action::NoAction || is_compressed_or_guided(node) {
+        out.extend_from_slice(&node.header);   // сжатый блоб — как есть
+        out.extend_from_slice(&node.body);     // children полностью игнорируются
+        out.extend_from_slice(&node.tail);
+        return Ok(());
+    }
+    ...  // rebuild-путь сюда для сжатых не доходит
+}
+```
+
+Парсер для отображения секцию **распаковывает** и строит children
+(`parser/section.rs:34-50` — `decompress_guided` / `decompress::decompress`),
+но билдер обратно **не упаковывает**. Поэтому `Action::Remove` (и `Replace`/
+`Insert`) на дочернем узле внутри сжатия не влияет на выходные байты. Барьер
+глушит и `NoAction` (verbatim), и `Rebuild` (та же ветка verbatim — т.к.
+`is_compressed_or_guided` стоит в условии раньше проверки action).
+
+#### Evidence (интерактивное исследование на реальном образе)
+
+remove(`1/13/2/1`) → `build_image` → re-parse:
+- `before_build.len() == after_build.len()` (delta=0);
+- `before_build != after_build` (байт-разница только от ре-компутации
+  checksum/size родительского File — cosmetics);
+- повторный парсинг rebuilt-образа: **target still present = true** (UI-секция
+  физически осталась в сжатом блобе).
+
+Write-through **срабатывает** на каждой мутации (`flush_image` в
+`image_node_remove`, `rpc/server.rs:352` пишет байты на диск). Но записаны
+**неизменные** байты сжатого блоба → удаление невидимо на диске → после
+рестарта парсинг восстанавливает секцию из исходных байт. Для **несжатых**
+секций фикс issue II работает корректно (см. тест `real_image_ops_remove_last_file`
+— удаление файла верхнего уровня проходит и персистится).
+
+#### Что можно и нельзя мутировать (reference-матрица)
+
+> Эмпирически проверено на `refs/fw/HNX99TF_200525_original_E5C88C6F.bin`
+> (target `1/13` = FFS-файл; `1/13/2` = GUID_DEFINED/LZMA; `1/13/2/1` = UI
+> внутри LZMA). Сигнал — `watch_present` после `remove/replace → build_image →
+> re-parse` (длина/`bytes_changed` нерелевантны из-за issue V ниже).
+
+| Мутация            | Вне сжатия            | Сама GUID_DEFINED/COMPRESSED (`1/13/2`) | Внутри блоба (`1/13/2/1`)      |
+|--------------------|-----------------------|-----------------------------------------|--------------------------------|
+| **Remove**         | ✅ работает           | ✅ работает (весь блоб удаляется)        | ❌ барьер (секция остаётся)     |
+| **Replace body-only** | ✅ работает        | ⚠️ **корпортит** (stale header-size → re-parse падает, узел пропадает как битый) | ❌ барьер |
+| **Replace whole**  | ⚠️ `parse_file`-семантика (заточено под FFS-файл, не секцию) | ⚠️ то же | ❌ барьер |
+| **Insert**         | ✅ работает           | ❌ барьер (новый child выбрасывается)    | —                              |
+| **Rebuild**        | cosmetic (recompute)  | ❌ no-op (verbatim)                      | ❌ no-op + перетирает Remove    |
+
+**Вывод (ответ на пользовательский кейс):** удалить UI-секцию можно **только**
+если она не внутри сжатия (на DXE-модулях реальных BIOS UI почти всегда внутри
+LZMA → как правило нельзя). Удалить можно: весь FFS-файл (`1/13`), **или**
+цельную несжатую секцию, **или** цельную сжатую секцию (`1/13/2` — дропает всё
+содержимое блоба). Точечная мутация одной секции **внутри** блоба невозможна
+без рекомпрессии. Replace body-only на самой сжатой секции — **небезопасен**
+(не пересчитывает size в header).
+
+#### Связанные баги (найдены при разборе)
+
+* [ ] **`ops::rebuild` перетирает `Action::Remove`** (`crates/uefi-engine/src/
+  ops.rs:95-101`) — `node.action = Action::Rebuild` безусловно. Поэтому
+  `:rebuild` по Remove-узлу отменяет удаление (маркер красный → жёлтый).
+  Фикс: не даунгрейдить Remove (и иные pending-операции) до Rebuild — rebuild
+  должен быть no-op для уже-Remove-узла (или возвращать ошибку «узел помечен на
+  удаление»).
+* [ ] **`build_file`/`build_volume` впустую ре-сериализуют детей сжатой секции**
+  — при Rebuild-каскаде build_file пересобирает body из children, но сжатый
+  child всё равно выбросит verbatim-body; ре-компутация size/checksum на
+  родителе делает байты `!=` (cosmetic), скрывая факт «ничего не изменилось».
+  Это мешает диагностике (см. тафтологичный тест `write_through_persists...`
+  из code-review находок).
+
+#### Рекомендации по фиксу (выбрать объём)
+
+| Вариант | Описание | Плюс | Минус |
+|---------|----------|------|-------|
+| **Минимум (честные ошибки)** | Билдер возвращает явную `BuilderError` при Remove/Replace/Insert внутрь COMPRESSED/GUID_DEFINED (детект: dirty-узел внутри `is_compressed_or_guided` предка). + починить `ops::rebuild` (не перетирать Remove). + документировать в user-facing help | Честность вместо silent no-op; мало кода; покрывается unit-тестами | Не решает задачу — редактировать сжатые секции всё ещё нельзя |
+| **Полный (рекомпрессия)** | Билдер: при dirty-сжатой секции — собрать decompressed payload из children → compress (LZMA/Tiano через `decompress`-инфра) → пересобрать compression/guided header (размеры, dict-size, attributes) | Реально решает юзер-кейс | Большой объём, отдельный цикл, нужны фикстуры и тесты на реальном образе, риск рассинхрона с парсером |
+
+**Рекомендация:** сначала **Минимум** (отдельный коммит/цикл) — перестать
+молча глотать мутации внутри сжатия и починить `:rebuild`. Рекомпрессию
+планировать отдельной спекой (baseline-коммит текущего `builder/mod.rs`), т.к.
+это функциональный апгрейд, а не багфикс. Для `Replace body-only` на самой
+сжатой секции (не на дочернем узле) барьер можно обойти уже сейчас —
+зафиксировать как разрешённый кейс.
+
+* [ ] **Минимум: BuilderError на мутации внутри compression barrier** —
+  покрыть тестом: `remove` секции `1/13/2/1`-вида → `build_image` возвращает
+  ошибку (не silent-verbatim). Клиенту (CLI/TUI) показать человекочитаемое
+  сообщение «cannot mutate inside compressed section without recompression».
+* [ ] **Минимум: `ops::rebuild` не перетирает `Action::Remove`** — unit-тест
+  `rebuild_after_remove_keeps_remove`.
+* [ ] **Спека: рекомпрессия LZMA/GUID_DEFINED в билдере** — декомпозиция,
+  референсы (`refs/UEFITool-ai-fork/common/ffsbuilder.cpp` — recompress path),
+  тест-фикстуры на `HNX99TF_200525_original_E5C88C6F.bin`.
+
+### CRITICAL: Builder не round-tripит полный flash-образ (issue V, ревизия 2026-08-13)
+
+> Severity: **high** — потенциальная порча данных / кирпич при прошивке.
+> Влияет на **все** мутации на полном образе, независимо от issue IV.
+
+#### Symptom
+
+`build_image(parse_image(<полный 16MB образ>))` → **7.8MB** (а не 16MB). Замерено
+на `refs/fw/HNX99TF_200525_original_E5C88C6F.bin`: `build_image` даёт `7798784`
+байта во **всех** кейсах (даже без мутаций). `bytes_changed=true` в матрице issue
+IV — артефакт этой потери, не мутации; relевантный сигнал там только `watch_present`.
+
+#### Root cause
+
+`parse_image` (`crates/uefi-engine/src/parser/image.rs:12-72`) сканирует буфер по
+`EFI_FVH_SIGNATURE` и кладёт в `root.children` **только** найденные FV (на
+реальном образе — 3 тома: 0x800000, 0x890000, 0xda0000). Всё остальное — Intel
+Flash Descriptor (первые 0x1000), ME-регион, межтомные gap'ы, padding в конце —
+**не моделируется** как узел. `build_image` (`builder/mod.rs:18-22`) эммитит
+только `root.children` (FV) → ~половина образа теряется.
+
+Существующий тест `real_image_builder_round_trip` проверяет round-trip только
+**отдельных FV-слайсов** (`parse_image(slice)`, где slice = один FV) — не полного
+образа. Поэтому регрессия не ловилась.
+
+#### Impact
+
+`flush_image` (`rpc/server.rs:31-55`) на **любой** мутации (remove/insert/
+replace/rebuild/form-visibility) вызывает `build_image` и пишет результат на диск
+atomic_write. После первой мутации хранимый файл становится **обрезанным**
+(7.8MB вместо 16MB). На рестарте `get_or_load_image` читает уже 7.8MB → дерево
+меньше оригинала (нет ME/descriptor). Прошивка такого образа = потеря ME/IFD =
+**кирпич**. Write-through «работает» механически, но персистит обрезанные байты.
+
+#### Рекомендации по фиксу
+
+* [ ] **Спека: full-flash round-trip в билдере** — билдер должен воспроизводить
+  полный буфер образа, сохраняя non-FV регионы. Варианты:
+  - **(a) Gap-aware parser+builder:** `parse_image` создаёт `Region`/`Padding`
+    узлы для байтовых диапазонов **между** и **вне** FV (raw bytes в `body`);
+    `build_node` для Image эммитит children в порядке offset'ов → полный буфер.
+    Требует хранения raw-gaps в дереве и сортировки по offset.
+  - **(b) Patch-overlay:** билдер хранит оригинальные байты образа и накладывает
+    только изменённые FV (по offset) → меньше риска, но другая модель (overlay,
+    а не полное перестроение).
+  - Референс: `refs/UEFITool-ai-fork/common/ffsbuilder.cpp` — как UEFITool
+    собирает полный образ (memcpy немодифицированных регионов + rebuild FV).
+* [ ] **Регрессионный тест:** `parse_image(full_16MB) → build_image → len == orig`
+  + `== orig` по байтам (на немутрированном образе). Добавить в
+  `crates/uefi-engine/tests/real_image.rs` с `#[ignore]`.
+* [ ] **Bugfix `flush_image`:** пока round-trip не реализован, `flush_image` на
+  полном образе молча портит файл. Минимум — детект `root.node_type == Image &&
+  sum(children sizes) < orig size` → отказывать в write-through с понятной
+  ошибкой вместо тихой порчи.
