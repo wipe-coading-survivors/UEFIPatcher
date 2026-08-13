@@ -118,8 +118,8 @@ mod tests {
     #[test]
     fn span_events_only_when_verbose() {
         assert_eq!(span_events(0), FmtSpan::NONE);
-        assert!(span_events(1).contains(FmtSpan::ENTER));
-        assert!(span_events(1).contains(FmtSpan::CLOSE));
+        assert!(span_events(1) & FmtSpan::ENTER != FmtSpan::NONE);
+        assert!(span_events(1) & FmtSpan::CLOSE != FmtSpan::NONE);
     }
 }
 ```
