@@ -96,6 +96,16 @@ async fn handle_normal(app: &mut App, ev: &AppEvent, client: &mut Option<command
             Focus::Tree => app.cursor_up(),
             Focus::Details => {}
         },
+        AppEvent::PageDown => {
+            if app.focus == Focus::Tree {
+                app.cursor_page_down();
+            }
+        }
+        AppEvent::PageUp => {
+            if app.focus == Focus::Tree {
+                app.cursor_page_up();
+            }
+        }
         AppEvent::Key('h') => {
             if app.focus == Focus::Tree {
                 app.set_expand_selected(false);

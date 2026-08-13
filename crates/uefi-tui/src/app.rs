@@ -77,6 +77,7 @@ pub struct App {
     pub show_help: bool,
     pub tree_state: ListState,
     pub registry_state: ListState,
+    pub tree_viewport_rows: usize,
 }
 
 impl App {
@@ -98,6 +99,7 @@ impl App {
             show_help: false,
             tree_state: ListState::default(),
             registry_state: ListState::default(),
+            tree_viewport_rows: 0,
         }
     }
 
@@ -126,6 +128,26 @@ impl App {
         if self.cursor > 0 {
             self.cursor -= 1;
         }
+    }
+
+    fn page_size(&self) -> usize {
+        if self.tree_viewport_rows == 0 {
+            10
+        } else {
+            self.tree_viewport_rows
+        }
+    }
+
+    pub fn cursor_page_down(&mut self) {
+        let n = self.visible().len();
+        if n == 0 {
+            return;
+        }
+        self.cursor = self.cursor.saturating_add(self.page_size()).min(n - 1);
+    }
+
+    pub fn cursor_page_up(&mut self) {
+        self.cursor = self.cursor.saturating_sub(self.page_size());
     }
 
     pub fn toggle_expand_selected(&mut self) {
@@ -298,6 +320,48 @@ mod tests {
         app.cursor = 5;
         app.sanitize_cursor();
         assert_eq!(app.cursor, 1);
+    }
+
+    #[test]
+    fn page_down_advances_by_viewport_and_clamps() {
+        let mut app = App::new();
+        app.tree = (0..30)
+            .map(|i| node(&format!("n{i}"), 0))
+            .collect();
+        app.tree_viewport_rows = 10;
+        app.cursor = 0;
+        app.cursor_page_down();
+        assert_eq!(app.cursor, 10);
+        app.cursor_page_down();
+        assert_eq!(app.cursor, 20);
+        app.cursor_page_down();
+        assert_eq!(app.cursor, 29, "clamp at last visible row");
+    }
+
+    #[test]
+    fn page_up_decreases_by_viewport_and_clamps() {
+        let mut app = App::new();
+        app.tree = (0..30)
+            .map(|i| node(&format!("n{i}"), 0))
+            .collect();
+        app.tree_viewport_rows = 10;
+        app.cursor = 25;
+        app.cursor_page_up();
+        assert_eq!(app.cursor, 15);
+        app.cursor_page_up();
+        app.cursor_page_up();
+        assert_eq!(app.cursor, 0, "clamp at 0");
+    }
+
+    #[test]
+    fn page_uses_default_when_viewport_unknown() {
+        let mut app = App::new();
+        app.tree = (0..30)
+            .map(|i| node(&format!("n{i}"), 0))
+            .collect();
+        app.cursor = 0;
+        app.cursor_page_down();
+        assert_eq!(app.cursor, 10, "fallback page size 10");
     }
 
     #[test]

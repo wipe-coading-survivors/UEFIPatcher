@@ -11,6 +11,7 @@ Modes:  Normal (default) · Command (:) · Insert (i/r/d)
 
 NORMAL (Tree focus)
   j / k          move cursor (по видимым строкам)
+  PgDn / PgUp    page down / up (по высоте панели)
   h              collapse selected node
   l              expand selected node
   i              insert  -> prefill :insert <path> --file

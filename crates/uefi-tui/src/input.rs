@@ -10,6 +10,8 @@ pub enum AppEvent {
     Backspace,
     Up,
     Down,
+    PageUp,
+    PageDown,
     Quit,
     Tick,
 }
@@ -30,6 +32,8 @@ pub fn poll_event(timeout: Duration) -> Option<AppEvent> {
             KeyCode::Backspace => AppEvent::Backspace,
             KeyCode::Up => AppEvent::Up,
             KeyCode::Down => AppEvent::Down,
+            KeyCode::PageUp => AppEvent::PageUp,
+            KeyCode::PageDown => AppEvent::PageDown,
             _ => return None,
         });
     }

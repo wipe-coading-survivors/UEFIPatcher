@@ -40,6 +40,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
 
     let total = visible.len();
     let inner_h = area.height.saturating_sub(2) as usize;
+    app.tree_viewport_rows = inner_h;
     let cursor = if total == 0 {
         0
     } else {
