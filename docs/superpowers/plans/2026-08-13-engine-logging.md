@@ -1063,7 +1063,7 @@ git commit -m "feat(uefi-engine): add INFO instrument spans to plain gRPC handle
             let node = find_item(&img.root, &t).map_err(|e| Status::not_found(e.to_string()))?;
             let ty = node.node_type;
             let sub = node.subtype;
-            let guid = node.guid.clone();
+            let guid = node.guid;
             let bytes = if r.body_only {
                 node.body.clone()
             } else {
@@ -1097,7 +1097,7 @@ git commit -m "feat(uefi-engine): add INFO instrument spans to plain gRPC handle
 
 Атрибут `#[tracing::instrument(skip(self, req), err)]` над сигнатурой.
 
-> `node.node_type` (`FfsType`) и `node.subtype` (`u8`) — `Copy`. `node.guid` (`Option<Guid>`) — `.clone()` для надёжности.
+> `node.node_type` (`FfsType`), `node.subtype` (`u8`) и `node.guid` (`Option<Guid>`) — все `Copy` (Guid в uguid — `Copy`), копируются без `.clone()` (иначе `clippy::clone_on_copy`).
 
 - [ ] **Step 8: `artifact_import`**
 
