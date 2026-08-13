@@ -193,6 +193,7 @@ mod tests {
             offset: 0,
             size: 0,
             name: String::new(),
+            action: 0,
         };
         let j = serde_json::to_string(&it).unwrap();
         assert!(

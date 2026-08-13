@@ -114,6 +114,7 @@ impl EngineService for MockEngine {
                     offset: 0,
                     size: 16777216,
                     name: "Image".into(),
+                    action: 0,
                 },
                 Node {
                     path: "0".into(),
@@ -123,6 +124,7 @@ impl EngineService for MockEngine {
                     offset: 0,
                     size: 8388608,
                     name: "ME".into(),
+                    action: 0,
                 },
                 Node {
                     path: "1".into(),
@@ -132,6 +134,7 @@ impl EngineService for MockEngine {
                     offset: 8388608,
                     size: 4194304,
                     name: "DXE".into(),
+                    action: 0,
                 },
                 Node {
                     path: "1/0".into(),
@@ -141,6 +144,7 @@ impl EngineService for MockEngine {
                     offset: 8388608,
                     size: 4096,
                     name: "Setup".into(),
+                    action: 0,
                 },
                 Node {
                     path: "1/0/0".into(),
@@ -150,6 +154,7 @@ impl EngineService for MockEngine {
                     offset: 8388608,
                     size: 24,
                     name: String::new(),
+                    action: 0,
                 },
             ],
         }))

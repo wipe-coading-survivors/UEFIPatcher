@@ -103,6 +103,7 @@ impl EngineService for MockEngine {
                 offset: 0,
                 size: 256,
                 name: String::new(),
+                action: 0,
             }],
         }))
     }

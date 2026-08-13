@@ -122,6 +122,7 @@ fn list_recursive(node: &FfsNode, path: &str, items: &mut Vec<Node>, filter: Opt
             offset: node.offset as u64,
             size: (node.header.len() + node.body.len() + node.tail.len()) as u64,
             name,
+            action: node.action as u32,
         });
     }
     for (i, child) in node.children.iter().enumerate() {
@@ -174,6 +175,7 @@ fn search_recursive(
             offset: node.offset as u64,
             size: (node.header.len() + node.body.len() + node.tail.len()) as u64,
             name,
+            action: node.action as u32,
         });
         if out.len() >= limit {
             return;

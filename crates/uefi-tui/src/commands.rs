@@ -277,6 +277,7 @@ pub async fn execute_command(
                 .into_inner();
             app.status_msg = format!("inserted {}", r.item_id);
             let _ = refresh_registry(app, client).await;
+            let _ = refresh_tree(app, client).await;
             Ok(r.item_id)
         }
         "replace" => {
@@ -314,6 +315,7 @@ pub async fn execute_command(
                 .into_inner();
             app.status_msg = format!("replaced {}", r.item_id);
             let _ = refresh_registry(app, client).await;
+            let _ = refresh_tree(app, client).await;
             Ok(r.item_id)
         }
         "remove" => {
@@ -337,6 +339,7 @@ pub async fn execute_command(
                 .await
                 .map_err(|e| e.message().to_string())?;
             app.status_msg = format!("removed {target}");
+            let _ = refresh_tree(app, client).await;
             Ok(target)
         }
         "rebuild" => {
@@ -360,6 +363,7 @@ pub async fn execute_command(
                 .await
                 .map_err(|e| e.message().to_string())?;
             app.status_msg = format!("rebuilt {target}");
+            let _ = refresh_tree(app, client).await;
             Ok(target)
         }
         "image" => {
@@ -435,6 +439,54 @@ pub async fn execute_command(
         }
         _ => Err(format!("unknown command: :{cmd}, try :help")),
     }
+}
+
+pub async fn refresh_tree(app: &mut App, client: &mut Client) -> Result<(), String> {
+    let iid = client
+        .state
+        .active_image_id
+        .clone()
+        .ok_or("no active image")?;
+    let expanded: std::collections::HashSet<String> = app
+        .tree
+        .iter()
+        .filter(|n| n.expanded)
+        .map(|n| n.path.clone())
+        .collect();
+    let cursor_path = app.selected_path();
+    let dump = client
+        .inner
+        .image_nodes_list(auth_req(
+            &client.state,
+            ImageNodesListRequest {
+                image_id: iid,
+                filter: String::new(),
+            },
+        ))
+        .await
+        .map_err(|e| e.message().to_string())?
+        .into_inner();
+    app.tree = crate::tree::build_tree(&dump.nodes);
+    for n in &mut app.tree {
+        if expanded.contains(&n.path) {
+            n.expanded = true;
+        }
+    }
+    match cursor_path
+        .as_deref()
+        .and_then(|p| app.tree.iter().position(|n| n.path == p))
+    {
+        Some(idx) => {
+            let vis = app.visible();
+            if let Some(vis_idx) = vis.iter().position(|&v| v == idx) {
+                app.cursor = vis_idx;
+            } else {
+                app.sanitize_cursor();
+            }
+        }
+        None => app.sanitize_cursor(),
+    }
+    Ok(())
 }
 
 pub async fn refresh_registry(app: &mut App, client: &mut Client) -> Result<(), String> {

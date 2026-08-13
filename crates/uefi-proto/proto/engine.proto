@@ -81,6 +81,7 @@ message Node {
   uint64 offset = 5;
   uint64 size = 6;
   string name = 7;
+  uint32 action = 8;
 }
 message ImageNodesResponse { repeated Node nodes = 1; }
 

@@ -1,5 +1,4 @@
 use crate::app::TreeNode;
-use crate::theme::ACTION_NO;
 use uefi_proto::Node;
 
 pub fn segments(path: &str) -> Vec<&str> {
@@ -29,7 +28,7 @@ pub fn build_tree(nodes: &[Node]) -> Vec<TreeNode> {
                     Some(nd.guid.clone())
                 },
                 name: nd.name.clone(),
-                action: ACTION_NO,
+                action: nd.action as u8,
                 expanded: depth == 0,
                 has_children,
             }
@@ -89,7 +88,16 @@ mod tests {
             offset: 0,
             size: 0,
             name: String::new(),
+            action: 0,
         }
+    }
+
+    #[test]
+    fn build_tree_maps_action_from_proto() {
+        let mut n = nd("0/0", 66, 0x07);
+        n.action = 54;
+        let tree = build_tree(&[nd("", 62, 0), n]);
+        assert_eq!(tree[1].action, 54);
     }
 
     #[test]
