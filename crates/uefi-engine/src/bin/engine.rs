@@ -42,6 +42,7 @@ fn main() -> anyhow::Result<()> {
     }
     let db = uefi_engine::storage::open_db(&data_dir.join("uefipatcher.db"))?;
     tracing::info!(
+        target: "uefi_engine",
         "Starting engine: sock={}, data={}, purge_artifacts={}",
         sock.display(),
         data_dir.display(),
