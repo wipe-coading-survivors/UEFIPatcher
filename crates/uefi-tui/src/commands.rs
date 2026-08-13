@@ -467,6 +467,41 @@ pub async fn refresh_registry(app: &mut App, client: &mut Client) -> Result<(), 
     Ok(())
 }
 
+pub async fn restore_session(app: &mut App, client: &mut Client) -> Result<(), String> {
+    if let Err(e) = refresh_registry(app, client).await {
+        app.status_msg = format!("registry: {e}");
+    }
+    if let Some(id) = client.state.active_image_id.clone() {
+        let req = ImageNodesListRequest {
+            image_id: id.clone(),
+            filter: String::new(),
+        };
+        match client
+            .inner
+            .image_nodes_list(auth_req(&client.state, req))
+            .await
+        {
+            Ok(resp) => {
+                let dump = resp.into_inner();
+                app.tree = crate::tree::build_tree(&dump.nodes);
+                app.cursor = 0;
+                app.active_image_id = Some(id.clone());
+                client.state.active_image_id = Some(id);
+                app.image_loaded = true;
+                app.sanitize_cursor();
+                app.status_msg = "restored".into();
+            }
+            Err(e) => {
+                let msg = e.message().to_string();
+                app.active_image_id = None;
+                client.state.active_image_id = None;
+                app.status_msg = format!("active image unavailable: {msg}");
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

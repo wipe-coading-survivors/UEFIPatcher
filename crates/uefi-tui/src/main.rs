@@ -35,6 +35,9 @@ async fn main() -> anyhow::Result<()> {
         }
     };
     app.engine_online = client.is_some();
+    if let Some(c) = client.as_mut() {
+        let _ = commands::restore_session(&mut app, c).await;
+    }
     enable_raw_mode()?;
     execute!(stdout(), EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout());

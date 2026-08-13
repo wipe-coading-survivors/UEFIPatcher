@@ -483,4 +483,55 @@ mod tests {
         );
         assert_eq!(app.cursor, 0);
     }
+
+    #[tokio::test]
+    async fn restore_session_populates_tree_and_registry() {
+        let td = TempDir::new().unwrap();
+        let sock = td.path().join("mock.sock");
+        let _handle = start_mock(&sock).await;
+        let state = uefi_common::state::State {
+            session_id: Some("s1".into()),
+            token: Some("t1".into()),
+            active_image_id: Some("mock-img-1".into()),
+            ..Default::default()
+        };
+        let mut client = commands::connect(Some(sock.to_str().unwrap()), state)
+            .await
+            .unwrap();
+        let mut app = App::new();
+        commands::restore_session(&mut app, &mut client)
+            .await
+            .unwrap();
+        assert_eq!(app.active_image_id.as_deref(), Some("mock-img-1"));
+        assert!(app.image_loaded, "image_loaded should be set on restore");
+        assert!(
+            app.tree.len() >= 5,
+            "tree should be rebuilt from nodes list"
+        );
+        assert_eq!(app.registry.images.len(), 1);
+        assert_eq!(app.registry.artifacts.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn restore_session_without_active_image_only_registry() {
+        let td = TempDir::new().unwrap();
+        let sock = td.path().join("mock.sock");
+        let _handle = start_mock(&sock).await;
+        let state = uefi_common::state::State {
+            session_id: Some("s1".into()),
+            token: Some("t1".into()),
+            ..Default::default()
+        };
+        let mut client = commands::connect(Some(sock.to_str().unwrap()), state)
+            .await
+            .unwrap();
+        let mut app = App::new();
+        commands::restore_session(&mut app, &mut client)
+            .await
+            .unwrap();
+        assert!(app.active_image_id.is_none());
+        assert!(app.tree.is_empty());
+        assert_eq!(app.registry.images.len(), 1);
+        assert_eq!(app.registry.artifacts.len(), 1);
+    }
 }
