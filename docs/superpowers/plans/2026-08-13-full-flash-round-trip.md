@@ -564,7 +564,7 @@ Expected: FAIL — `flush_image` не имеет safety-guard, `build_image` в�
             .join(format!("{image_id}.bin"));
         if let Ok(metadata) = fs::metadata(&path) {
             let existing_size = metadata.len() as usize;
-            if !bytes.is_empty() && bytes.len() < existing_size {
+            if bytes.len() < existing_size {
                 return Err(Status::failed_precondition(format!(
                     "build_image output ({}) is smaller than stored file ({}); \
                      refusing write to prevent data loss",
@@ -583,6 +583,8 @@ Expected: FAIL — `flush_image` не имеет safety-guard, `build_image` в�
         Ok(())
     }
 ```
+
+> Примечание: `!bytes.is_empty()` убран — empty build output должен триггерить guard (0 < existing_size), а не обходить его.
 
 - [ ] **Step 4: Запустить тест — должен пройти**
 
