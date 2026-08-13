@@ -30,7 +30,7 @@ pub fn build_tree(nodes: &[Node]) -> Vec<TreeNode> {
                 },
                 name: nd.name.clone(),
                 action: ACTION_NO,
-                expanded: depth <= 1,
+                expanded: depth == 0,
                 has_children,
             }
         })
@@ -120,7 +120,7 @@ mod tests {
     }
 
     #[test]
-    fn build_tree_default_expanded_only_top_two_levels() {
+    fn build_tree_default_expanded_only_root() {
         let nodes = vec![
             nd("", 62, 0),
             nd("0", 65, 0),
@@ -129,7 +129,7 @@ mod tests {
         ];
         let tree = build_tree(&nodes);
         assert!(tree[0].expanded);
-        assert!(tree[1].expanded);
+        assert!(!tree[1].expanded);
         assert!(!tree[2].expanded);
         assert!(!tree[3].expanded);
     }

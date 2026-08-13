@@ -371,7 +371,9 @@ mod tests {
         commands::execute_command(&mut app, "open /tmp/mock.bin", &mut client)
             .await
             .unwrap();
-        assert!(app.tree[1].expanded);
+        // default: only root expanded, volumes collapsed
+        assert!(app.tree[0].expanded);
+        assert!(!app.tree[1].expanded);
         app.toggle_expand_selected();
         assert!(!app.tree[app.selected_tree_idx().unwrap()].expanded);
         commands::execute_command(&mut app, "image switch mock-img-1", &mut client)
