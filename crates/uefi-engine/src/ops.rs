@@ -18,6 +18,7 @@ pub enum InsertMode {
     After,
 }
 
+#[tracing::instrument(level = "debug", skip(root, ffs_bytes), fields(mode = ?mode, target = ?target), err)]
 pub fn insert(
     root: &mut FfsNode,
     target: &Target,
@@ -54,17 +55,21 @@ pub fn insert(
             mark_rebuild_to_root_by_path(root, &parent_path);
         }
     }
+    tracing::debug!(path = ?parent_path, mode = ?mode, "node inserted");
     Ok(())
 }
 
+#[tracing::instrument(level = "debug", skip(root), fields(target = ?target), err)]
 pub fn remove(root: &mut FfsNode, target: &Target) -> Result<(), OpsError> {
     let path = target_path(target)?;
     let node = find_mut(root, &path).ok_or(OpsError::NotFound)?;
     node.action = Action::Remove;
     mark_rebuild_to_root_by_path(root, &path);
+    tracing::debug!(path = ?path, "marked for removal");
     Ok(())
 }
 
+#[tracing::instrument(level = "debug", skip(root, data), fields(target = ?target, body_only), err)]
 pub fn replace(
     root: &mut FfsNode,
     target: &Target,
@@ -89,14 +94,17 @@ pub fn replace(
     }
     node.action = Action::Replace;
     mark_rebuild_to_root_by_path(root, &path);
+    tracing::debug!(path = ?path, body_only, "node replaced");
     Ok(())
 }
 
+#[tracing::instrument(level = "debug", skip(root), fields(target = ?target), err)]
 pub fn rebuild(root: &mut FfsNode, target: &Target) -> Result<(), OpsError> {
     let path = target_path(target)?;
     let node = find_mut(root, &path).ok_or(OpsError::NotFound)?;
     node.action = Action::Rebuild;
     mark_rebuild_to_root_by_path(root, &path);
+    tracing::debug!(path = ?path, "marked for rebuild");
     Ok(())
 }
 
@@ -217,5 +225,15 @@ mod tests {
         let mut img = parse_image(&buf, ImageMode::Read, "i", "s").unwrap();
         let t = parse_target("0").unwrap();
         assert!(insert(&mut img.root, &t, &[0; 2], InsertMode::Into).is_err());
+    }
+
+    #[tracing_test::traced_test]
+    #[test]
+    fn remove_emits_debug_milestone() {
+        let buf = make_simple_image();
+        let mut img = parse_image(&buf, ImageMode::Read, "i", "s").unwrap();
+        let t = parse_target("0").unwrap();
+        remove(&mut img.root, &t).unwrap();
+        assert!(logs_contain("marked for removal"));
     }
 }

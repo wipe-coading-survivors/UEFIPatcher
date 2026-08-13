@@ -14,6 +14,7 @@ pub enum SetupError {
     InvalidIfr,
 }
 
+#[tracing::instrument(level = "debug", skip(image), fields(item_id = %item_id, visible), err)]
 pub fn set_item_visibility(
     image: &mut Image,
     item_id: &str,
@@ -42,6 +43,7 @@ pub fn set_item_visibility(
     if changed {
         ops::mark_rebuild_to_root_by_path(&mut image.root, &path);
     }
+    tracing::debug!(changed, "set_item_visibility done");
     Ok(())
 }
 
