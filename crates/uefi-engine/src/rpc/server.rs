@@ -99,6 +99,7 @@ impl EngineServer {
 
 #[tonic::async_trait]
 impl EngineService for EngineServer {
+    #[tracing::instrument(skip(self, req), err)]
     async fn session_create(
         &self,
         req: Request<SessionCreateRequest>,
@@ -113,17 +114,20 @@ impl EngineService for EngineServer {
             .sm
             .create_session(&name)
             .map_err(|e| Status::internal(e.to_string()))?;
+        tracing::info!(name = %name, session_id = %id, "session created");
         Ok(Response::new(SessionCreateResponse {
             session_id: id,
             token: tok,
         }))
     }
 
+    #[tracing::instrument(skip(self, req), err)]
     async fn session_destroy(&self, req: Request<SessionDestroyRequest>) -> RpcResult<Empty> {
         let r = req.into_inner();
         self.sm
             .destroy_session(&r.session_id, self.sm.purge_artifacts)
             .map_err(|e| Status::internal(e.to_string()))?;
+        tracing::info!(session_id = %r.session_id, purged = self.sm.purge_artifacts, "session destroyed");
         Ok(Response::new(Empty {}))
     }
 
@@ -149,6 +153,7 @@ impl EngineService for EngineServer {
         }))
     }
 
+    #[tracing::instrument(skip(self, req), err)]
     async fn image_open(&self, req: Request<ImageOpenRequest>) -> RpcResult<ImageOpenResponse> {
         let r = req.into_inner();
         let mode = match r.mode {
@@ -190,6 +195,14 @@ impl EngineService for EngineServer {
             .unwrap_or_default();
         self.images.lock().await.insert(image_id.clone(), img);
         let _ = self.sm.touch(&r.session_id);
+        tracing::info!(
+            name = %name,
+            size = bytes.len(),
+            image_id = %image_id,
+            mode = ?mode,
+            root_guid = %root_guid,
+            "image opened"
+        );
         Ok(Response::new(ImageOpenResponse {
             image_id,
             root_guid,
@@ -314,6 +327,7 @@ impl EngineService for EngineServer {
         Ok(Response::new(ImageNodesResponse { nodes }))
     }
 
+    #[tracing::instrument(skip(self, req), err)]
     async fn image_node_insert(
         &self,
         req: Request<ImageNodeInsertRequest>,
@@ -333,27 +347,41 @@ impl EngineService for EngineServer {
         } else {
             fs::read(&r.ffs_path).map_err(|e| Status::not_found(e.to_string()))?
         };
+        let t = parse_target(&r.target).map_err(|e| Status::invalid_argument(e.to_string()))?;
+        let mode = match r.mode {
+            0 => crate::ops::InsertMode::Into,
+            1 => crate::ops::InsertMode::Before,
+            2 => crate::ops::InsertMode::After,
+            _ => return Err(Status::invalid_argument("bad mode")),
+        };
         let img = self.get_or_load_image(&r.image_id).await?;
         {
             let mut images = self.images.lock().await;
             let img_slot = images
                 .get_mut(&r.image_id)
                 .ok_or_else(|| Status::not_found("image not found"))?;
-            let t = parse_target(&r.target).map_err(|e| Status::invalid_argument(e.to_string()))?;
-            let mode = match r.mode {
-                0 => crate::ops::InsertMode::Into,
-                1 => crate::ops::InsertMode::Before,
-                2 => crate::ops::InsertMode::After,
-                _ => return Err(Status::invalid_argument("bad mode")),
-            };
             crate::ops::insert(&mut img_slot.root, &t, &ffs_bytes, mode)
                 .map_err(|e| Status::internal(e.to_string()))?;
         }
         self.flush_image(&r.image_id).await?;
         let _ = self.sm.touch(&img.session_id);
+        let source = if !r.artifact_id.is_empty() {
+            r.artifact_id.as_str()
+        } else {
+            r.ffs_path.as_str()
+        };
+        tracing::info!(
+            image_id = %r.image_id,
+            target = %r.target,
+            mode = ?mode,
+            source = %source,
+            size = ffs_bytes.len(),
+            "artifact inserted"
+        );
         Ok(Response::new(ImageNodeResponse { item_id: r.target }))
     }
 
+    #[tracing::instrument(skip(self, req), err)]
     async fn image_node_remove(&self, req: Request<ImageNodeRemoveRequest>) -> RpcResult<Empty> {
         let r = req.into_inner();
         let img = self.get_or_load_image(&r.image_id).await?;
@@ -368,9 +396,11 @@ impl EngineService for EngineServer {
         }
         self.flush_image(&r.image_id).await?;
         let _ = self.sm.touch(&img.session_id);
+        tracing::info!(image_id = %r.image_id, target = %r.target, "node removed");
         Ok(Response::new(Empty {}))
     }
 
+    #[tracing::instrument(skip(self, req), err)]
     async fn image_node_replace(
         &self,
         req: Request<ImageNodeReplaceRequest>,
@@ -402,6 +432,19 @@ impl EngineService for EngineServer {
         }
         self.flush_image(&r.image_id).await?;
         let _ = self.sm.touch(&img.session_id);
+        let source = if !r.artifact_id.is_empty() {
+            r.artifact_id.as_str()
+        } else {
+            r.ffs_path.as_str()
+        };
+        tracing::info!(
+            image_id = %r.image_id,
+            target = %r.target,
+            body_only = r.body_only,
+            source = %source,
+            size = data.len(),
+            "node replaced"
+        );
         Ok(Response::new(ImageNodeResponse { item_id: r.target }))
     }
 
@@ -423,16 +466,20 @@ impl EngineService for EngineServer {
         Ok(Response::new(Empty {}))
     }
 
+    #[tracing::instrument(skip(self, req), err)]
     async fn image_node_extract(
         &self,
         req: Request<ImageNodeExtractRequest>,
     ) -> RpcResult<ImageNodeExtractResponse> {
         let r = req.into_inner();
         let img = self.get_or_load_image(&r.image_id).await?;
-        let (session_id, bytes) = {
+        let (session_id, bytes, node_ty, node_subtype, node_guid) = {
             let session_id = img.session_id.clone();
             let t = parse_target(&r.target).map_err(|e| Status::invalid_argument(e.to_string()))?;
             let node = find_item(&img.root, &t).map_err(|e| Status::not_found(e.to_string()))?;
+            let ty = node.node_type;
+            let sub = node.subtype;
+            let guid = node.guid;
             let bytes = if r.body_only {
                 node.body.clone()
             } else {
@@ -442,7 +489,7 @@ impl EngineService for EngineServer {
                     .copied()
                     .collect()
             };
-            (session_id, bytes)
+            (session_id, bytes, ty, sub, guid)
         };
         let artifact_id = Uuid::new_v4().to_string();
         let path = crate::storage::artifact::store_artifact_file(
@@ -467,9 +514,21 @@ impl EngineService for EngineServer {
                 &source,
             )
             .map_err(|e| Status::internal(e.to_string()))?;
+        tracing::info!(
+            image_id = %r.image_id,
+            target = %r.target,
+            body_only = r.body_only,
+            ty = ?node_ty,
+            subtype = node_subtype,
+            guid = ?node_guid,
+            size = bytes.len(),
+            artifact_id = %artifact_id,
+            "artifact extracted"
+        );
         Ok(Response::new(ImageNodeExtractResponse { artifact_id }))
     }
 
+    #[tracing::instrument(skip(self, req), err)]
     async fn artifact_export(&self, req: Request<ArtifactExportRequest>) -> RpcResult<Empty> {
         let r = req.into_inner();
         let art = self
@@ -487,9 +546,16 @@ impl EngineService for EngineServer {
             &r.output_path,
         )
         .map_err(|e| Status::internal(e.to_string()))?;
+        tracing::info!(
+            artifact_id = %r.artifact_id,
+            output_path = %r.output_path,
+            size = art.size,
+            "artifact exported"
+        );
         Ok(Response::new(Empty {}))
     }
 
+    #[tracing::instrument(skip(self, req), err)]
     async fn artifact_import(
         &self,
         req: Request<ArtifactImportRequest>,
@@ -521,6 +587,13 @@ impl EngineService for EngineServer {
                 &source,
             )
             .map_err(|e| Status::internal(e.to_string()))?;
+        tracing::info!(
+            name = %source,
+            size = bytes.len(),
+            kind = "imported",
+            artifact_id = %artifact_id,
+            "artifact imported"
+        );
         Ok(Response::new(ArtifactImportResponse { artifact_id }))
     }
 
@@ -551,6 +624,7 @@ impl EngineService for EngineServer {
         }))
     }
 
+    #[tracing::instrument(skip(self, req), err)]
     async fn setup_set_form_visibility(
         &self,
         req: Request<SetupSetFormVisibilityRequest>,
@@ -567,6 +641,7 @@ impl EngineService for EngineServer {
         }
         self.flush_image(&r.image_id).await?;
         let _ = self.sm.touch(&img.session_id);
+        tracing::info!(image_id = %r.image_id, item_id = %r.item_id, visible = r.visible, "form visibility set");
         Ok(Response::new(Empty {}))
     }
 
