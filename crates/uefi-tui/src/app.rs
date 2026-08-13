@@ -325,9 +325,7 @@ mod tests {
     #[test]
     fn page_down_advances_by_viewport_and_clamps() {
         let mut app = App::new();
-        app.tree = (0..30)
-            .map(|i| node(&format!("n{i}"), 0))
-            .collect();
+        app.tree = (0..30).map(|i| node(&format!("n{i}"), 0)).collect();
         app.tree_viewport_rows = 10;
         app.cursor = 0;
         app.cursor_page_down();
@@ -341,9 +339,7 @@ mod tests {
     #[test]
     fn page_up_decreases_by_viewport_and_clamps() {
         let mut app = App::new();
-        app.tree = (0..30)
-            .map(|i| node(&format!("n{i}"), 0))
-            .collect();
+        app.tree = (0..30).map(|i| node(&format!("n{i}"), 0)).collect();
         app.tree_viewport_rows = 10;
         app.cursor = 25;
         app.cursor_page_up();
@@ -356,9 +352,7 @@ mod tests {
     #[test]
     fn page_uses_default_when_viewport_unknown() {
         let mut app = App::new();
-        app.tree = (0..30)
-            .map(|i| node(&format!("n{i}"), 0))
-            .collect();
+        app.tree = (0..30).map(|i| node(&format!("n{i}"), 0)).collect();
         app.cursor = 0;
         app.cursor_page_down();
         assert_eq!(app.cursor, 10, "fallback page size 10");
