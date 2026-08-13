@@ -178,7 +178,17 @@ fn main() -> anyhow::Result<()> {
     uefi_engine::logging::init(args.verbose, args.quiet);
 ```
 
-Существующий `tracing::info!("Starting engine: ...")` (engine.rs:42-47) оставить без изменений.
+Существующему `tracing::info!("Starting engine: ...")` (engine.rs:44-49) **добавить явный `target: "uefi_engine"`**. Бинарный крейт называется `engine` (файл `src/bin/engine.rs`, пакет `uefi-engine`), поэтому без явного `target:` макрос использует `module_path!()` = `engine`, который не подпадает под дефолтный префиксный фильтр `uefi_engine=info` и подавляется catch-all `warn`. Итоговый вид:
+
+```rust
+    tracing::info!(
+        target: "uefi_engine",
+        "Starting engine: sock={}, data={}, purge_artifacts={}",
+        sock.display(),
+        data_dir.display(),
+        args.purge_artifacts
+    );
+```
 
 - [ ] **Step 5: Проверить сборку и крейт engine**
 
