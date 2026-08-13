@@ -19,13 +19,15 @@ struct Args {
     gc_interval: u64,
     #[arg(long, env = "UEFIPATCHER_PURGE_ARTIFACTS", default_value = "false")]
     purge_artifacts: bool,
+    #[arg(short = 'v', long = "verbose", action = clap::ArgAction::Count)]
+    verbose: u8,
+    #[arg(short = 'q', long = "quiet")]
+    quiet: bool,
 }
 
 fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
     let args = Args::parse();
+    uefi_engine::logging::init(args.verbose, args.quiet);
     let data_dir = args.data_dir.unwrap_or_else(|| {
         directories::ProjectDirs::from("", "", "uefipatcher")
             .map(|d| d.data_dir().to_path_buf())
