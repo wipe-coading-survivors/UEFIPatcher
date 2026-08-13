@@ -78,7 +78,7 @@ pub fn segments(path: &str) -> Vec<&str>;
 pub fn build_tree(nodes: &[Node]) -> Vec<TreeNode>;
 //   depth        = segments(path).len()        // "" -> 0, "0" -> 1, "0/0" -> 2
 //   has_children = exists node, чьи segments — строгий префикс
-//   expanded     = depth <= 1   (см. «Default collapse» ниже)
+//   expanded     = depth == 0   (см. «Default collapse» ниже)
 //   action       = ACTION_NO (50)
 
 pub fn visible_rows(tree: &[TreeNode]) -> Vec<usize>;
@@ -152,13 +152,18 @@ Stateful-рендер даёт автоматический скроллинг v
 
 ### Default collapse
 
-`expanded = depth <= 1` при первичной загрузке (`build_tree`):
-- depth 0 (Image-корень) и depth 1 (топовые firmware volumes — ME/DXE/PEI, пути `"0"`,`"1"`,`"2"`)
-  **развёрнуты** → пользователь сразу видит список FFS-файлов внутри каждого FV.
-- depth ≥ 2 (секции внутри файлов и глубже) **свёрнуты** → типовой UX: открыл BIOS,
-  сразу видишь три больших раздела и их файлы, затем точечно раскрываешь нужный файл.
+`expanded = depth == 0` при первичной загрузке (`build_tree`):
+- depth 0 (Image-корень) **развёрнут** → пользователь сразу видит топовые firmware
+  volumes (ME/DXE/PEI, пути `"0"`,`"1"`,`"2"`).
+- depth ≥ 1 (сами FV и глубже) **свёрнуты** → типовой UX: открыл BIOS, видишь
+  компактный список томов; чтобы дойти до PEI, не нужно пролистывать 150-200 секций
+  DXE. Разворачиваешь нужный том (`l`/Enter), затем точечно нужный файл.
 
 Ручной expand/collapse (`l`/`h`) свободно меняет состояние после загрузки.
+
+> Rev. 2026-08-13: изначально было `depth <= 1` (root + FV развёрнуты, FFS-файлы
+> видны сразу). На реальных образах (DXE = 150-200 файлов) это заставляло
+> пролистывать весь DXE до PEI — решение пересмотрено в пользу root-only.
 
 ### Details (`ui/details.rs`)
 
@@ -364,7 +369,8 @@ Esc/`?` — закрытие. Высота содержимого > экрана
 - **D6:** `:image switch`/`:image close` локально манипулируют `active_image_id`
   (отдельного RPC «switch» нет — это клиент-side концепция активного образа). Switch
   также перезагружает дерево через `image_nodes_list`; close — вызывает `image_close`.
-- **D7:** Default `expanded = depth <= 1` (Image + FV развёрнуты, секции свёрнуты) —
-  типовой UX, чтобы сразу видеть ME/DXE/PEI и их файлы без раскрытия.
+- **D7:** Default `expanded = depth == 0` (только Image-корень развёрнут; FV и
+  секции свёрнуты) — типовой UX: открыл BIOS, видишь компактный список томов, не
+  пролистывая 150-200 секций DXE. Rev. 2026-08-13 (было `depth <= 1`).
 - **D8:** `i`/`r`/`d` — Normal-mode быстрые клавиши insert/replace/remove (prefill
   cmdline); `:rebuild` пока только ex-command (редкая операция).
