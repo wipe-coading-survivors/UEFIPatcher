@@ -198,3 +198,29 @@
   из `uefi-tui/src/commands.rs` и `uefi-cli` в общий модуль `uefi-common::cli` (или
   подобный), чтобы CLI/TUI не дублировали. Заодно — tab-completion для TUI-cmdline
   (имена команд, флаги, `--artifact-id` из текущего registry, target-ы из дерева).
+
+## Ревизия TUI cycle 3 (2026-08-13)
+
+> Находки пользовательского ревью после цикла `2026-08-12-tui-migration-bugfix`.
+> Дефекты парсера/engine (не TUI-специфичные) — ниже.
+
+* [ ] **Имя файла не поднимается из UI-секции, обёрнутой в GUIDED/LZMA** —
+  `node_name` (`crates/uefi-engine/src/parser/image.rs:225-232`) для `FfsType::File`
+  инспектирует **только прямых детей** на `EFI_SECTION_UI`/`EFI_SECTION_VERSION`.
+  На реальных образах UI/Setup-секция DXE-файлов часто завёрнута в GUIDED (LZMA)
+  compression-секцию → имя не поднимается на уровень файла (виден только путь,
+  например `1/28`, а Setup-имя живёт в `1/28/1/1`). В PEI UI-секция — прямой ребёнок
+  FFS-файла, поэтому там lift работает (напр. `2/2/2 WtdPei` поднимается на `2/2`).
+  Контекст: подтверждено коммитом `fbd593eb` (display-and-search plan Task 12 fix).
+  Влияет одинаково на CLI и TUI (оба берут имя из `node_name`). Фикс: рекурсивный
+  спуск через GUIDED/compression-обёртки до UI/Version-секции (как делает UEFITool).
+* [ ] **Том ME показывает только одну секцию** — первый ребёнок образа (path `"0"`,
+  ME-регион) парсится в одну секцию, хотя по памяти их там больше. Регион ME
+  использует нестандартный формат (FTPR), а `parse_image`
+  (`crates/uefi-engine/src/parser/image.rs:20-51`) сканирует только `EFI_FVH_SIGNATURE`.
+  Подозрение: либо совпадение сигнатуры `_FVH` внутри ME даёт один «объём», после
+  которого FFS-парсинг обрывается (`parse_volume_files` делает `break` на
+  erase-all-байтах `image.rs:82-83` или на ошибке `image.rs:97-99`), либо FFS-файлы
+  ME не выравниваются на FFS_ALIGN=8. Контекст: проверить парсер на реальном образе
+  `refs/fw/HNX99TF_200525_original_E5C88C6F.bin`, сравнить кол-во узлов ME с UEFITool.
+  Возможно потребуется отдельный распознаватель ME/FTPR-регионов (как flash-descriptor).
