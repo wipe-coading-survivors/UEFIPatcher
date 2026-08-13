@@ -17,6 +17,7 @@ pub fn parse_image(
 ) -> Result<Image, ParserError> {
     let mut children = vec![];
     let mut off = 0usize;
+    let mut last_end = 0usize;
     while off + 44 <= buf.len() {
         let sig = u32::from_le_bytes([buf[off + 40], buf[off + 41], buf[off + 42], buf[off + 43]]);
         if sig != EFI_FVH_SIGNATURE {
@@ -30,6 +31,9 @@ pub fn parse_image(
                     off += FVH_SCAN_STEP;
                     continue;
                 }
+                if off > last_end {
+                    children.push(make_padding_node(buf, last_end, off));
+                }
                 let (erase, rev) = match &vol.parsing_data {
                     ParsingData::Volume(vd) => (vd.empty_byte, vd.revision),
                     _ => (0xFF, 2),
@@ -41,6 +45,7 @@ pub fn parse_image(
                 vol_with_files.children =
                     parse_volume_files(&buf[body_start..body_end], body_start, erase, rev);
                 children.push(vol_with_files);
+                last_end = off + vol_size;
                 off += vol_size;
             }
             Err(e) => {
@@ -48,6 +53,9 @@ pub fn parse_image(
                 off += FVH_SCAN_STEP;
             }
         }
+    }
+    if buf.len() > last_end {
+        children.push(make_padding_node(buf, last_end, buf.len()));
     }
     Ok(Image {
         image_id: image_id.into(),
@@ -69,6 +77,24 @@ pub fn parse_image(
         },
         mode,
     })
+}
+
+fn make_padding_node(buf: &[u8], start: usize, end: usize) -> FfsNode {
+    FfsNode {
+        guid: None,
+        node_type: FfsType::Padding,
+        subtype: 0,
+        offset: start as u32,
+        header: vec![],
+        body: buf[start..end].to_vec(),
+        tail: vec![],
+        children: vec![],
+        action: Action::NoAction,
+        parsing_data: ParsingData::None,
+        fixed: false,
+        compressed: false,
+        alignment_bytes: vec![],
+    }
 }
 
 fn parse_volume_files(body: &[u8], body_start: usize, erase: u8, rev: u8) -> Vec<FfsNode> {
@@ -564,5 +590,111 @@ mod tests {
             100,
         );
         assert_eq!(res.len(), 0, "search must skip File nodes");
+    }
+
+    #[test]
+    fn parse_image_captures_leading_gap_as_padding() {
+        use crate::builder::build_image;
+        let fv = make_image_with_volume();
+        let mut buf = vec![0xAAu8; 64];
+        buf.extend_from_slice(&fv);
+        let img = parse_image(&buf, ImageMode::Read, "img1", "s1").unwrap();
+        assert_eq!(img.root.children.len(), 2, "expected Padding + Volume");
+        let pad = &img.root.children[0];
+        assert_eq!(pad.node_type, FfsType::Padding);
+        assert_eq!(pad.offset, 0);
+        assert_eq!(pad.body.len(), 64);
+        assert_eq!(&pad.body, &[0xAAu8; 64]);
+        let vol = &img.root.children[1];
+        assert_eq!(vol.node_type, FfsType::Volume);
+        assert_eq!(vol.offset, 64);
+        let rebuilt = build_image(&img).unwrap();
+        assert_eq!(
+            rebuilt, buf,
+            "leading gap round-trip must be byte-identical"
+        );
+    }
+
+    #[test]
+    fn parse_image_captures_gap_between_volumes_as_padding() {
+        use crate::builder::build_image;
+        let fv1 = make_image_with_volume();
+        let fv2 = make_image_with_volume();
+        let mut buf = fv1.clone();
+        buf.extend_from_slice(&[0xBBu8; 32]);
+        buf.extend_from_slice(&fv2);
+        let img = parse_image(&buf, ImageMode::Read, "img1", "s1").unwrap();
+        assert_eq!(
+            img.root.children.len(),
+            3,
+            "expected Volume + Padding + Volume"
+        );
+        assert_eq!(img.root.children[0].node_type, FfsType::Volume);
+        assert_eq!(img.root.children[0].offset, 0);
+        assert_eq!(img.root.children[1].node_type, FfsType::Padding);
+        assert_eq!(img.root.children[1].offset, 256);
+        assert_eq!(img.root.children[1].body.len(), 32);
+        assert_eq!(img.root.children[2].node_type, FfsType::Volume);
+        assert_eq!(img.root.children[2].offset, 288);
+        let rebuilt = build_image(&img).unwrap();
+        assert_eq!(
+            rebuilt, buf,
+            "inter-volume gap round-trip must be byte-identical"
+        );
+    }
+
+    #[test]
+    fn parse_image_captures_trailing_gap_as_padding() {
+        use crate::builder::build_image;
+        let fv = make_image_with_volume();
+        let mut buf = fv;
+        buf.extend_from_slice(&[0xCCu8; 64]);
+        let img = parse_image(&buf, ImageMode::Read, "img1", "s1").unwrap();
+        assert_eq!(
+            img.root.children.len(),
+            2,
+            "expected Volume + trailing Padding"
+        );
+        assert_eq!(img.root.children[0].node_type, FfsType::Volume);
+        assert_eq!(img.root.children[1].node_type, FfsType::Padding);
+        assert_eq!(img.root.children[1].offset, 256);
+        assert_eq!(img.root.children[1].body.len(), 64);
+        let rebuilt = build_image(&img).unwrap();
+        assert_eq!(
+            rebuilt, buf,
+            "trailing gap round-trip must be byte-identical"
+        );
+    }
+
+    #[test]
+    fn parse_image_no_padding_when_fv_fills_buffer() {
+        let buf = make_image_with_volume();
+        let img = parse_image(&buf, ImageMode::Read, "img1", "s1").unwrap();
+        assert_eq!(img.root.children.len(), 1, "no gaps expected");
+        assert_eq!(img.root.children[0].node_type, FfsType::Volume);
+    }
+
+    #[test]
+    fn parse_image_padding_node_fields() {
+        let fv = make_image_with_volume();
+        let mut buf = vec![0xDDu8; 48];
+        buf.extend_from_slice(&fv);
+        buf.extend_from_slice(&[0xEEu8; 16]);
+        let img = parse_image(&buf, ImageMode::Read, "img1", "s1").unwrap();
+        let lead = &img.root.children[0];
+        assert_eq!(lead.node_type, FfsType::Padding);
+        assert_eq!(lead.guid, None);
+        assert_eq!(lead.subtype, 0);
+        assert_eq!(lead.offset, 0);
+        assert!(lead.header.is_empty());
+        assert_eq!(lead.body.len(), 48);
+        assert!(lead.tail.is_empty());
+        assert!(lead.children.is_empty());
+        assert_eq!(lead.action, Action::NoAction);
+        assert!(matches!(lead.parsing_data, ParsingData::None));
+        let trail = &img.root.children[2];
+        assert_eq!(trail.node_type, FfsType::Padding);
+        assert_eq!(trail.offset, 304);
+        assert_eq!(trail.body.len(), 16);
     }
 }
