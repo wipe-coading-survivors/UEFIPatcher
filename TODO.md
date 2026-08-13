@@ -508,3 +508,9 @@ atomic_write. После первой мутации хранимый файл �
   IFD parser upgrade (Padding → Region nodes with subtype), отдельный цикл.
   Референс: `refs/UEFITool-ai-fork/common/descriptor.cpp`,
   `refs/UEFITool-ai-fork/common/meparser.cpp`.
+* [ ] **Positional `Target::Path` нестабилен на full-flash** — gap-capture
+  сдвигает индексы Volume'ов (первый Volume теперь не `root.children[0]`,
+  а после Padding-узлов IFD/ME). GUID-based targeting (`<guid>:<type>`,
+  `<guid>/<index>`) остаётся стабильным и предпочтительным. Future fix:
+  динамический поиск Volume по offset/GUID в path-resolver. Референс:
+  `crates/uefi-engine/src/parser/target.rs`.
