@@ -127,6 +127,7 @@ impl EngineService for EngineServer {
         Ok(Response::new(Empty {}))
     }
 
+    #[tracing::instrument(skip(self, _req), err)]
     async fn sessions_list(
         &self,
         _req: Request<SessionsListRequest>,
@@ -196,6 +197,7 @@ impl EngineService for EngineServer {
         }))
     }
 
+    #[tracing::instrument(skip(self, req), err)]
     async fn image_close(&self, req: Request<ImageCloseRequest>) -> RpcResult<Empty> {
         let r = req.into_inner();
         let row = self
@@ -218,6 +220,7 @@ impl EngineService for EngineServer {
         Ok(Response::new(Empty {}))
     }
 
+    #[tracing::instrument(skip(self, req), err)]
     async fn images_list(&self, req: Request<ImagesListRequest>) -> RpcResult<ImagesListResponse> {
         let r = req.into_inner();
         let rows = self
@@ -243,6 +246,7 @@ impl EngineService for EngineServer {
         }))
     }
 
+    #[tracing::instrument(skip(self, req), err)]
     async fn image_status(
         &self,
         req: Request<ImageStatusRequest>,
@@ -269,6 +273,7 @@ impl EngineService for EngineServer {
         }))
     }
 
+    #[tracing::instrument(skip(self, req), err)]
     async fn image_nodes_list(
         &self,
         req: Request<ImageNodesListRequest>,
@@ -287,6 +292,7 @@ impl EngineService for EngineServer {
         Ok(Response::new(ImageNodesResponse { nodes }))
     }
 
+    #[tracing::instrument(skip(self, req), err)]
     async fn image_nodes_search(
         &self,
         req: Request<ImageNodesSearchRequest>,
@@ -399,6 +405,7 @@ impl EngineService for EngineServer {
         Ok(Response::new(ImageNodeResponse { item_id: r.target }))
     }
 
+    #[tracing::instrument(skip(self, req), err)]
     async fn image_node_rebuild(&self, req: Request<ImageNodeRebuildRequest>) -> RpcResult<Empty> {
         let r = req.into_inner();
         let img = self.get_or_load_image(&r.image_id).await?;
@@ -517,6 +524,7 @@ impl EngineService for EngineServer {
         Ok(Response::new(ArtifactImportResponse { artifact_id }))
     }
 
+    #[tracing::instrument(skip(self, req), err)]
     async fn artifacts_list(
         &self,
         req: Request<ArtifactsListRequest>,
@@ -562,6 +570,7 @@ impl EngineService for EngineServer {
         Ok(Response::new(Empty {}))
     }
 
+    #[tracing::instrument(skip(self, _req), err)]
     async fn setup_list_forms(
         &self,
         _req: Request<SetupListFormsRequest>,
@@ -571,6 +580,7 @@ impl EngineService for EngineServer {
         ))
     }
 
+    #[tracing::instrument(skip(self, _req), err)]
     async fn setup_list_strings(
         &self,
         _req: Request<SetupListStringsRequest>,
@@ -580,6 +590,7 @@ impl EngineService for EngineServer {
         ))
     }
 
+    #[tracing::instrument(skip(self, req), err)]
     async fn image_save(&self, req: Request<ImageSaveRequest>) -> RpcResult<Empty> {
         let r = req.into_inner();
         let img = self.get_or_load_image(&r.image_id).await?;
@@ -589,6 +600,7 @@ impl EngineService for EngineServer {
         Ok(Response::new(Empty {}))
     }
 
+    #[tracing::instrument(skip(self, req), err)]
     async fn setup_form_set_add(
         &self,
         req: Request<SetupFormSetAddRequest>,
