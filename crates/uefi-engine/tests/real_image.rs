@@ -560,3 +560,49 @@ fn real_image_search_finds_utf8_string_in_pe32() {
         matches.len()
     );
 }
+
+#[test]
+#[ignore = "requires external real BIOS image under refs/fw/"]
+fn real_image_full_flash_round_trip() {
+    use uefi_engine::builder::build_image;
+    use uefi_engine::types::ImageMode;
+
+    let data = load_fw();
+    assert_eq!(data.len(), 0x0100_0000, "16 MiB image expected");
+
+    let img = parse_image(&data, ImageMode::Read, "img1", "s1").expect("parse_image");
+    let rebuilt = build_image(&img).expect("build_image");
+
+    assert_eq!(
+        rebuilt.len(),
+        data.len(),
+        "full-flash round-trip: size mismatch (rebuilt {} != orig {})",
+        rebuilt.len(),
+        data.len()
+    );
+    assert_eq!(rebuilt, data, "full-flash round-trip: byte mismatch");
+}
+
+#[test]
+#[ignore = "requires external real BIOS image under refs/fw/"]
+fn real_image_full_flash_repatch_stability() {
+    use uefi_engine::builder::build_image;
+    use uefi_engine::types::ImageMode;
+
+    let data = load_fw();
+    let img = parse_image(&data, ImageMode::Read, "img1", "s1").expect("parse_image");
+    let built1 = build_image(&img).expect("build_image");
+    assert_eq!(built1, data, "first build must equal original");
+
+    let img2 = parse_image(&built1, ImageMode::Read, "img1", "s1").expect("re-parse");
+    let built2 = build_image(&img2).expect("second build_image");
+
+    assert_eq!(
+        built2, built1,
+        "re-patch instability: second build differs from first"
+    );
+    assert_eq!(
+        built2, data,
+        "re-patch instability: second build differs from original"
+    );
+}
