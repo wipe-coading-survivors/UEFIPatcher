@@ -224,3 +224,87 @@
   ME не выравниваются на FFS_ALIGN=8. Контекст: проверить парсер на реальном образе
   `refs/fw/HNX99TF_200525_original_E5C88C6F.bin`, сравнить кол-во узлов ME с UEFITool.
   Возможно потребуется отдельный распознаватель ME/FTPR-регионов (как flash-descriptor).
+
+### TreeView: пустые элементы (issue I, ревизия 2026-08-13)
+
+> Рендерер `ui/tree.rs:30-37` собирает строку
+> `{indent}{expand} {icon} {name} {guid} {marker}`.
+> Если `node.name` пустое и `guid` равен `None`, строка визуально пустая
+> (только иконка). `node_name` (`parser/image.rs:218-235`) возвращает "" для
+> всего, кроме UI/Version-секций и файлов с прямым UI-ребёнком.
+
+* [ ] **TUI: метка для узла Image** — корневой узел (type 62, path `""`)
+  показывается пустым. Выводить имя образа из Registry (найти `ImageInfo.name`
+  по `active_image_id`) или `image_id`. Контекст: `ui/tree.rs:35` рендерит
+  `node.name`, для Image оно всегда пустое.
+* [ ] **TUI: метка для узла Volume** — тома (type 65) показываются пустыми.
+  Минимум: вывести строку `"Volume"`. Идеал: классификация региона
+  `Volume (ME/DXE/PEI)`. Контекст: регион кодируется не в GUID тома (у FV нет
+  GUID-региона; `VolumeParsingData` содержит только `extended_header_guid` /
+  `ffs_version`), а в Intel Flash Descriptor (первые 0x1000 байт full-flash
+  образа). Требует парсера IFD — отдельная задача engine (связана с пунктом
+  про ME-регион выше).
+* [ ] **TUI/engine: fallback-метка по subtype для безымянных узлов** — секции
+  без UI-имени (DXE dependency, RAW, PE32…) и файлы без UI-ребёнка показываются
+  пустыми. Выводить имя subtype через `section_type_name_or_raw` /
+  `file_type_name_or_raw` (уже используется в `details_text`, `app.rs:245-254`).
+  Контекст: `node_name` (`parser/image.rs:218`) возвращает "" — рендерер
+  `ui/tree.rs` должен fallback'ить на subtype-name, когда `name` пуст.
+
+### Remove: root cause бага + stale-tree (issue II, ревизия 2026-08-13)
+
+> Баг в **engine**, не в TUI. `build_section`
+> (`crates/uefi-engine/src/builder/mod.rs:103-126`) **не проверяет
+> `Action::Remove`** — в отличие от `build_volume` (mod.rs:40-42) и
+> `build_file` (mod.rs:73-75), которые обе проверяют Remove и пропускают узел.
+> `build_section` проверяет только `NoAction` и `is_compressed_or_guided`, затем
+> проваливается в rebuild-путь. Поэтому удалённая секция молча пересобирается в
+> output — файл на диске не меняется по содержимому. Баг воспроизводится и в CLI,
+> и в TUI. Дополнительно: TUI не обновляет дерево после мутаций, а `Node` proto
+> не содержит `action` — клиенты не видят pending-операций.
+
+* [ ] **ENGINE (баг): `build_section` игнорирует `Action::Remove`** — root cause
+  бага remove. Добавить `if node.action == Action::Remove { return Ok(()); }` в
+  начале `build_section` (`builder/mod.rs:103`), аналогично `build_volume:40` и
+  `build_file:73`. Покрыть тестом: remove секции → `build_image` → секции нет в
+  выводе. Примечание: `build_file` (mod.rs:88-91) не скипает Remove-детей в
+  цикле (в отличие от `build_volume:56-58`) — после фикса `build_section` это
+  безопасно (секция даст 0 байт), но стоит проверить выравнивание/padding.
+  Дополнительно: `remove` не создаёт артефакт (только `extract` создаёт) —
+  ожидание пользователя не совпадает; задокументировать или добавить флаг
+  auto-extract.
+* [ ] **TUI: дерево не обновляется после мутаций** — после
+  remove/insert/replace/rebuild дерево stale (узел остаётся на экране).
+  Контекст: `commands.rs:319-341` (remove) и др. ставят только `status_msg`,
+  не re-fetch'ат `image_nodes_list`. Все ex-команды мутаций должны rebuild'ить
+  дерево (как `open` в `commands.rs:133-146`).
+* [ ] **Proto: добавить `action` в `Node`** — клиенты (TUI/CLI/WebUI) не видят
+  pending-операций (+/-/*/~). Контекст: `engine.proto:76` `message Node` —
+  добавить `uint32 action = 8;`; `list_recursive` (`parser/image.rs:111`) уже
+  имеет доступ к `node.action`.
+
+### Replace: конфликт режимов (issue III, ревизия 2026-08-13)
+
+> Нажатие `r` вводит `Mode::Insert` с prefill `replace {path} --file `
+> (`main.rs:82-87`). В Insert-режиме **все** клавиши идут в cmdline
+> (`handle_command`, `main.rs:129-150`) → навигация по панелям отключена, выбрать
+> артефакт нельзя. Prefill хардкодит `--file`, даже когда нужен `--artifact-id`.
+> Hotkeys `i/r/d` работают только при `focus == Tree` (`main.rs:73-74`).
+
+* [ ] **TUI: конфликт режимов при replace** — выбрать источник замены
+  (артефакт) не выходя из Insert-режима невозможно. Варианты решения:
+
+  | Вариант | Описание | Плюс | Минус |
+  |---------|----------|------|-------|
+  | **A. Smart prefill** | При `r`/`i`: если Registry-курсор на артефакте → prefill `--artifact-id <id>`; иначе `--file ` | Минимум переключений; использует уже выбранное | Требует проверки типа registry-строки (Image vs Artifact) |
+  | **B. Auto-resolve на Enter** | На Enter: если cmdline имеет пустой `--file` и Registry курсор на артефакте — подставить `--artifact-id` | Не ломает существующий flow | Неинтуитивно (магия); промах если Registry на image |
+  | **C. Раздельные hotkeys** | `r` = replace-from-file, `R` (Shift-R) = replace-from-registry (берёт активный артефакт без cmdline) | Явный, быстрый | Две кнопки запоминать |
+  | **D. Guided replace** | `r` помечает target → модальный промпт «source: [f]ile / [a]rtifact» → подсвечивает соответствующую панель | Самый интуитивный | Сложнее реализовать (модал/новый режим) |
+
+  **Рекомендация: A + D.** Вариант A решает 90% кейса минимальным кодом (в
+  `handle_normal` перед `enter_insert_mode` проверить `current_registry_row()` —
+  если `RegistryRow::Artifact(i)` и артефакт существует, prefill
+  `--artifact-id {id}`). Вариант D — целевой UX-апгрейд на следующий цикл
+  (guided-промпт после выбора target). B и C — альтернативы, если A+D неприемлемы.
+  Дополнительно к любому варианту: в Insert-режиме разрешить `Tab`/`Ctrl-L` для
+  смены фокуса (выбор артефакта не выходя из режима).
