@@ -389,6 +389,33 @@
   Дополнительно к любому варианту: в Insert-режиме разрешить `Tab`/`Ctrl-L` для
   смены фокуса (выбор артефакта не выходя из режима).
 
+### Registry: TUI обрезает UUID образов/артефактов (issue VI, ревизия 2026-08-14)
+
+> `short()` (`crates/uefi-tui/src/ui/registry.rs:80-82`) урезает `image_id` и
+> `artifact_id` до 8 символов (`id.chars().take(8).collect()`). Применяется в
+> рендере Images (`registry.rs:34`) и Artifacts (`registry.rs:44`). Полный
+> UUID (36 символов) нигде не показывается → пользователь видит только
+> префикс: `956ad394  NH-6.bin  16.0 MB` (образ), `eab517d5  whole  8.8 KB  3/13`
+> (артефакт).
+>
+> **Impact:** ломаются пути через **ручной ввод** ID. `:image switch <id>`
+> (`commands.rs:373`) и `:insert/replace --artifact-id <id>`
+> (`commands.rs:69`, `parse_node_cmd_args`) отправляют ID в движок as-is;
+> движок ищет по полному UUID → введённый 8-символьный префикс не найдёт.
+> Путь через **Enter на строке Registry** (`main.rs:157,169`) берёт полный ID
+> из модели данных (не из рендер-строки) → работает; баг затрагивает только
+> display + ручной ввод ID в cmdline.
+
+* [ ] **TUI: показывать полный UUID в Registry** — убрать `short()` для ID
+  (или truncation с раскрытием полного значения при выборе строки — в details/
+  status). Контекст: `crates/uefi-tui/src/ui/registry.rs:34,44,80-82`. Узкая
+  панель может не вместить 36 символов — рассмотреть двухстрочный рендер для
+  выбранной строки или вынос полного UUID в status-bar при `focus == Registry`.
+* [ ] **TUI: copy-to-clipboard ID из Registry** — даже с полным отображением
+  набирать 36 символов вручную в `:image switch`/`--artifact-id` неудобно.
+  Добавить `y`/Enter-вариант для копирования `image_id`/`artifact_id` в
+  буфер (и/или вставку в cmdline). Снимает зависимость от ручного ввода.
+
 ### Compression barrier: мутации внутри LZMA/GUID_DEFINED (issue IV, ревизия 2026-08-13)
 
 > Symptoms (репрод на `refs/fw/HNX99TF_200525_original_E5C88C6F.bin`):
@@ -515,6 +542,13 @@ LZMA → как правило нельзя). Удалить можно: вес�
 
 > Severity: **high** — потенциальная порча данных / кирпич при прошивке.
 > Влияет на **все** мутации на полном образе, независимо от issue IV.
+>
+> **Fixed** (вариант a — gap-aware). Дизайн `435e77a`, план `f924367`,
+> реализация `918b6da` (parse_image captures non-FV bytes as Padding),
+> регрессионные тесты `b3ca457`, safety-guard `flush_image` `95791b9` +
+> `89cc606` (empty-output edge). Ревизия: `973209a` (dynamic Volume index
+> in target test). Оставшиеся ограничения — в разделе «Known limitations:
+> gap-aware round-trip» ниже.
 
 #### Symptom
 
@@ -547,24 +581,22 @@ atomic_write. После первой мутации хранимый файл �
 
 #### Рекомендации по фиксу
 
-* [ ] **Спека: full-flash round-trip в билдере** — билдер должен воспроизводить
-  полный буфер образа, сохраняя non-FV регионы. Варианты:
-  - **(a) Gap-aware parser+builder:** `parse_image` создаёт `Region`/`Padding`
-    узлы для байтовых диапазонов **между** и **вне** FV (raw bytes в `body`);
-    `build_node` для Image эммитит children в порядке offset'ов → полный буфер.
-    Требует хранения raw-gaps в дереве и сортировки по offset.
-  - **(b) Patch-overlay:** билдер хранит оригинальные байты образа и накладывает
-    только изменённые FV (по offset) → меньше риска, но другая модель (overlay,
-    а не полное перестроение).
-  - Референс: `refs/UEFITool-ai-fork/common/ffsbuilder.cpp` — как UEFITool
-    собирает полный образ (memcpy немодифицированных регионов + rebuild FV).
-* [ ] **Регрессионный тест:** `parse_image(full_16MB) → build_image → len == orig`
-  + `== orig` по байтам (на немутрированном образе). Добавить в
-  `crates/uefi-engine/tests/real_image.rs` с `#[ignore]`.
-* [ ] **Bugfix `flush_image`:** пока round-trip не реализован, `flush_image` на
-  полном образе молча портит файл. Минимум — детект `root.node_type == Image &&
-  sum(children sizes) < orig size` → отказывать в write-through с понятной
-  ошибкой вместо тихой порчи.
+* [x] **Спека: full-flash round-trip в билдере** — закрыто вариантом (a)
+  gap-aware: `parse_image` создаёт `Padding`-узлы для non-FV диапазонов
+  (IFD, ME, межтомные gap'и, trailing), билдер эммитит их дословно.
+  Дизайн `435e77a`, план `f924367`, реализация `918b6da`. Исходные
+  варианты (a)/(b) и референс `ffsbuilder.cpp` — в спеке
+  `docs/superpowers/specs/2026-08-13-full-flash-round-trip-design.md`.
+* [x] **Регрессионный тест:** закрыто — `real_image_full_flash_round_trip`
+  (parse→build→len==orig + byte==orig) и `real_image_full_flash_repatch_stability`
+  (parse→build→parse→build идемпотентен) в `crates/uefi-engine/tests/real_image.rs`
+  с `#[ignore]`. Коммит `b3ca457`.
+* [x] **Bugfix `flush_image`:** закрыт safety-guard'ом — `flush_image`
+  сравнивает размер `build_image`-вывода с существующим файлом и при
+  усечении (или 0 байт) возвращает `FailedPrecondition` вместо тихой
+  порчи. Коммиты `95791b9` (size guard) + `89cc606` (drop
+  `!bytes.is_empty()` bypass, test
+  `flush_image_rejects_zero_byte_build_output`).
 
 ### Known limitations: gap-aware round-trip (после фикса issue V)
 
