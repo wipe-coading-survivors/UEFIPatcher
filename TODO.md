@@ -485,3 +485,26 @@ atomic_write. После первой мутации хранимый файл �
   полном образе молча портит файл. Минимум — детект `root.node_type == Image &&
   sum(children sizes) < orig size` → отказывать в write-through с понятной
   ошибкой вместо тихой порчи.
+
+### Known limitations: gap-aware round-trip (после фикса issue V)
+
+> Результаты ревизии gap-aware фикса. Фикс (issue V) устраняет усечку
+> полного образа, но следующие ограничения остаются:
+
+* [ ] **Volume-level Remove на full-flash** — `build_volume`
+  (`builder/mod.rs:40-42`) эммитит 0 байт для `Action::Remove`. На полном
+  flash-образе это сдвигает все последующие регионы → ломает IFD layout
+  (absolute region boundaries). Future fix: при Remove Volume → emit
+  erase-byte Padding того же размера (preserve total flash size). Пока:
+  Volume-level Remove на полном flash-образе **опасен**, не использовать
+  без ручной проверки output-байтов.
+* [ ] **Padding node `Action::Remove` игнорируется** — `build_node`
+  (`builder/mod.rs:34`) всегда эммитит `body` для Padding, не проверяя
+  action. Safe для round-trip (нет data loss), но пользовательский intent
+  (удалить padding) молча игнорируется. Low priority — Padding-манипуляция
+  нестандартна.
+* [ ] **ME/IFD регионы opaque** — captured как raw Padding bytes, не
+  structured. Нет ME version display, нет IFD region labeling. Future:
+  IFD parser upgrade (Padding → Region nodes with subtype), отдельный цикл.
+  Референс: `refs/UEFITool-ai-fork/common/descriptor.cpp`,
+  `refs/UEFITool-ai-fork/common/meparser.cpp`.
