@@ -449,6 +449,18 @@ test -f refs/fw/HNX99TF_200525_original_E5C88C6F.bin && \
 
 Expected: compile PASS; with the firmware present, both new tests PASS and the eprintln shows the formset GUIDs / string language.
 
+> **Defect found at implementation (2026-08-14, commit `9413d5a`):** on
+> HNX99TF the HII package lists are stored inside PE32 `.rsrc` resources
+> (type `'H'`) of the Setup (`899407D7-…`) and Platform (`ABBCE13D-…`)
+> files' PE32 sections — not as bare section bodies. The Phase 3/4 readers
+> (`is_form_package`/`is_string_package` over section bodies) get 0 hits
+> tree-wide, so both tests FAIL at `!forms.is_empty()` under `--ignored`.
+> The `>= 2` formsets expectation is correct (formsets `7B59104A-…` and
+> `EC87D643-…` exist inside the PE resources). Per the binding note the
+> assertions were NOT relaxed: the tests stay as acceptance tests for a
+> future PE-resource extraction engine phase (see TODO.md, «Находки фазы 5
+> real-image validation»).
+
 - [ ] **Step 3: clippy + fmt + commit**
 
 ```bash

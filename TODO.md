@@ -184,6 +184,47 @@
   объявил дублирование намеренным (развязка prod-модулей); при росте —
   вынести в общий `#[cfg(test)]` fixture-модуль.
 
+### Находки фазы 5 real-image validation (2026-08-14) — HII в PE-ресурсах
+
+> План-дефект, обнаружен живым запуском тестов Task 3 (branch
+> `fix/cycle6-reimplent`, commit `9413d5a`). Ридеры фаз 3–4 валидировались
+> на синтетических фикстурах (bare HII-пакет = тело секции 0x19); в
+> реальном образце HNX99TF (AMI Aptio V) HII-списки лежат иначе.
+
+* [ ] **Реальный образец: HII package lists внутри PE32 `.rsrc`-ресурсов
+  (тип `'H'`, EDK2 HiiAddPackages-механизм), а не bare-пакетами в телах
+  секций.** Предикаты `is_form_package`/`is_string_package` дают 0 hits
+  по всему дереву (включая распакованные LZMA-детей); `collect_forms`/
+  `collect_strings` на реальном образе возвращают пусто. Данные
+  подтверждаются: FFS Setup `899407D7-99FE-43D8-9A21-79EC328CAC21` →
+  PE32 → resource 'H' (55 266 B): FORM len=10 082 (formset
+  `7B59104A-C00D-4158-87FF-F04D6396A915`) + 2 STRING; FFS Platform
+  `ABBCE13D-E25A-4D9F-A1F9-2F7710786892` → PE32 → resource 'H'
+  (545 682 B): FORM len=207 249 (formset
+  `EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9`) + 2 STRING. Секции обоих
+  файлов: `[DEPEX(0x13), GUIDed-LZMA(0x02)]`, внутри LZMA —
+  `[PE32(0x10), UI(0x15), VERSION(0x14)]`, RAW-секции в образе — ACPI.
+  **Нужен engine-этап:** PE32 `.rsrc`-обход → 'H'-ресурс → package-list
+  header (16-byte GUID + u32 length + конкатенация пакетов) → диспетч
+  в существующие `parse_form_package`/`parse_string_package`. Ресурс-
+  каталог можно брать через крейт `object` (уже в workspace). Acceptance-
+  тесты — два красных `#[ignore]`-теста в `real_image.rs`
+  (`real_image_hii_forms_and_strings`,
+  `real_image_hii_form_visibility_round_trip`); ожидаемые formset-GUID'ы
+  см. выше.
+* [ ] **`parse_string_package`: язык по реальному
+  `EFI_HII_STRING_PACKAGE_HDR`** — на синтетике язык читался из
+  упрощённого смещения; в реальных пакетах `LanguageName` (u16) лежит на
+  +12, строка языка — с +14 (вероятно UCS-2 `en-US`). Проверить при
+  подключении реальных данных (предыдущий пункт).
+* [ ] **`real_image.rs`: ignore-строки разъехались** — 10 старых тестов
+  используют `"... (gitignored)"`, 4 новых (full-flash + HII) — без
+  суффикса. Мелочь; унифицировать при следующем касании файла.
+* [ ] **language-assert в `real_image_hii_forms_and_strings`** — предикат
+  `all(...)`, а сообщение об ошибке семплирует только `first()`; при
+  падении укажет не тот пакет. Verbatim из плана фазы 5; поправить при
+  следующем касании.
+
 ## ImageUpload RPC (docker-развертывание)
 
 `ImageOpen` читает файл с **серверной FS** по пути (`OpenImageRequest.path`).
