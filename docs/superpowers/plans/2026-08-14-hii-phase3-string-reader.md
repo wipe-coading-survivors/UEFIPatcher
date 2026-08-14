@@ -19,7 +19,8 @@
 - **Best-effort reader:** malformed SIBT blocks stop the walk (`break`) + `tracing::warn!`; never panic. Strings before the break are returned.
 - **Primary-language only:** `collect_strings` returns the first string-package found (pre-order DFS); stop after it.
 - **No comments** in code. Per-task: `cargo test -p uefi-engine` + `cargo clippy -p uefi-engine -- -D warnings`.
-- **Language header layout (confirmed against `string_pack.rs:STRING_INFO_OFFSET_POS=8`):** PackageHeader(4) + LanguageNameString u32(@4) + StringInfoOffset u32(@8) + Language[] ASCII NUL-terminated starting @12, running until StringInfoOffset. `language` = ASCII from offset 12 to first NUL.
+- **Language header layout (real edk2 `EFI_HII_STRING_PACKAGE_HDR`, verified against `refs/IFRExtractor-RS/src/uefi_parser.rs` `hii_string_package`):** Header(4, type byte 0x04) + HdrSize u32(@4) + StringInfoOffset u32(@8) + `CHAR16 LanguageWindow[16]` (32 bytes @12, zeroed in practice) + LanguageName u16(@44) + Language[] ASCII NUL-terminated starting @46, running until StringInfoOffset. `language` = ASCII from offset 46 to first NUL; `LANGUAGE_OFFSET = 46`. Packages whose header is smaller than 46 naturally fall back to `""` (the spec permits `language = ""` for nonstandard layouts). No separate legacy path.
+- **STRINGS_* truncation break (review fix):** in every `SIBT_STRINGS_*` inner loop, check `p >= body.len()` before decoding each string; if the data ran out while `count` strings remain, emit `tracing::warn!` and break out of the SIBT walk (labeled `break 'outer`). Never push phantom empty entries; strings decoded before the truncation are still returned; well-formed packages behave identically.
 
 **Reference:** existing writer `crates/uefi-engine/src/setup_advanced→hii/string_pack.rs` (`scan_sibt`, `skip_scsu`, `skip_ucs2`, `is_string_package`). The reader mirrors the SIBT cases but captures text.
 
@@ -58,7 +59,7 @@ const SIBT_SKIP1: u8 = 0x22;
 
 const HEADER_LEN: usize = 4;
 const STRING_INFO_OFFSET_POS: usize = 8;
-const LANGUAGE_OFFSET: usize = 12;
+const LANGUAGE_OFFSET: usize = 46;
 
 pub struct ParsedStringPackage {
     pub language: String,
@@ -74,15 +75,17 @@ mod tests {
     use super::*;
 
     fn make_pkg(language: &str, sibt_bytes: &[u8]) -> Vec<u8> {
-        let info_off: u32 = (LANGUAGE_OFFSET + language.len() + 1) as u32;
+        let hdr_size: u32 = (46 + language.len() + 1) as u32;
+        let info_off = hdr_size;
         let mut buf = Vec::new();
         buf.extend_from_slice(&[0u8; 3]);
         buf.push(0x04);
-        buf.extend_from_slice(&1u32.to_le_bytes());
+        buf.extend_from_slice(&hdr_size.to_le_bytes());
         buf.extend_from_slice(&info_off.to_le_bytes());
-        while buf.len() < LANGUAGE_OFFSET {
+        while buf.len() < 44 {
             buf.push(0);
         }
+        buf.extend_from_slice(&0u16.to_le_bytes());
         buf.extend_from_slice(language.as_bytes());
         buf.push(0);
         while buf.len() < info_off as usize {
@@ -142,7 +145,7 @@ const SIBT_SKIP1: u8 = 0x22;
 
 const HEADER_LEN: usize = 4;
 const STRING_INFO_OFFSET_POS: usize = 8;
-const LANGUAGE_OFFSET: usize = 12;
+const LANGUAGE_OFFSET: usize = 46;
 
 pub struct ParsedStringPackage {
     pub language: String,
@@ -392,7 +395,7 @@ Append to the `tests` module in `strings.rs`:
 ```
 
 Run: `cargo test -p uefi-engine hii::strings`
-Expected: all PASS. (The truncated-language test: StringInfoOffset = HEADER_LEN = 4, which is ≤ LANGUAGE_OFFSET=12, so `read_language` scans an empty range → `""`. `info_off` clamps to `HEADER_LEN`.)
+Expected: all PASS. (The truncated-language test: StringInfoOffset = HEADER_LEN = 4, which is ≤ LANGUAGE_OFFSET=46, so `read_language` scans an empty range → `""`. `info_off` clamps to `HEADER_LEN`.)
 
 - [ ] **Step 6: clippy + fmt + commit**
 
@@ -543,7 +546,7 @@ git add -A && git commit -m "feat(uefi-engine): collect_strings + wire HiiListSt
 
 ## Self-Review (completed by plan author)
 
-**Spec coverage (string-reader scope):** ✅ `parse_string_package` (SIBT walker + language @offset12), ✅ `collect_strings` (primary-language, first package), ✅ `HiiListStrings` handler oживлен, ✅ pure-parser unit tests (synthetic), ✅ best-effort error handling (`tracing::warn` + break).
+**Spec coverage (string-reader scope):** ✅ `parse_string_package` (SIBT walker + language @offset46), ✅ `collect_strings` (primary-language, first package), ✅ `HiiListStrings` handler oживлен, ✅ pure-parser unit tests (synthetic), ✅ best-effort error handling (`tracing::warn` + break).
 
 **Placeholder scan:** none. All code inlined and final.
 
