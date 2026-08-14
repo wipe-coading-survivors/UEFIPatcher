@@ -41,7 +41,7 @@ async fn edit_flow() {
         .assert()
         .success();
     cli(&sock, cwd)
-        .args(["setup", "form", "set-visibility", "0", "--visible"])
+        .args(["hii", "form", "set-visibility", "0", "--visible"])
         .assert()
         .success();
     cli(&sock, cwd)

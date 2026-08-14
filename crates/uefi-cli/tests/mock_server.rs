@@ -169,29 +169,29 @@ impl EngineService for MockEngine {
     ) -> Result<Response<Empty>, Status> {
         Ok(Response::new(Empty {}))
     }
-    async fn setup_list_forms(
+    async fn hii_list_forms(
         &self,
-        _req: Request<SetupListFormsRequest>,
-    ) -> Result<Response<SetupListFormsResponse>, Status> {
-        Ok(Response::new(SetupListFormsResponse { forms: vec![] }))
+        _req: Request<HiiListFormsRequest>,
+    ) -> Result<Response<HiiListFormsResponse>, Status> {
+        Ok(Response::new(HiiListFormsResponse { forms: vec![] }))
     }
-    async fn setup_set_form_visibility(
+    async fn hii_set_form_visibility(
         &self,
-        _req: Request<SetupSetFormVisibilityRequest>,
+        _req: Request<HiiSetFormVisibilityRequest>,
     ) -> Result<Response<Empty>, Status> {
         Ok(Response::new(Empty {}))
     }
-    async fn setup_list_strings(
+    async fn hii_list_strings(
         &self,
-        _req: Request<SetupListStringsRequest>,
-    ) -> Result<Response<SetupListStringsResponse>, Status> {
-        Ok(Response::new(SetupListStringsResponse { strings: vec![] }))
+        _req: Request<HiiListStringsRequest>,
+    ) -> Result<Response<HiiListStringsResponse>, Status> {
+        Ok(Response::new(HiiListStringsResponse { strings: vec![] }))
     }
-    async fn setup_form_set_add(
+    async fn hii_form_set_add(
         &self,
-        _req: Request<SetupFormSetAddRequest>,
-    ) -> Result<Response<SetupFormSetAddResponse>, Status> {
-        Ok(Response::new(SetupFormSetAddResponse {
+        _req: Request<HiiFormSetAddRequest>,
+    ) -> Result<Response<HiiFormSetAddResponse>, Status> {
+        Ok(Response::new(HiiFormSetAddResponse {
             new_ffs_id: "mock".into(),
             inserted_form_ids: vec![],
             string_ids: std::collections::HashMap::new(),

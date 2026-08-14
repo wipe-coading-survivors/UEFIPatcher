@@ -190,7 +190,7 @@ impl EngineClient {
             .await?;
         Ok(())
     }
-    pub async fn setup_set_form_visibility(
+    pub async fn hii_set_form_visibility(
         &mut self,
         sessions: &SessionMap,
         session_id: &str,
@@ -198,13 +198,13 @@ impl EngineClient {
         item_id: &str,
         visible: bool,
     ) -> Result<(), tonic::Status> {
-        let req = SetupSetFormVisibilityRequest {
+        let req = HiiSetFormVisibilityRequest {
             image_id: image_id.into(),
             item_id: item_id.into(),
             visible,
         };
         self.inner
-            .setup_set_form_visibility(Self::auth_req(sessions, session_id, req).await?)
+            .hii_set_form_visibility(Self::auth_req(sessions, session_id, req).await?)
             .await?;
         Ok(())
     }

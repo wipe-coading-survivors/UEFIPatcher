@@ -625,9 +625,9 @@ impl EngineService for EngineServer {
     }
 
     #[tracing::instrument(skip(self, req), err)]
-    async fn setup_set_form_visibility(
+    async fn hii_set_form_visibility(
         &self,
-        req: Request<SetupSetFormVisibilityRequest>,
+        req: Request<HiiSetFormVisibilityRequest>,
     ) -> RpcResult<Empty> {
         let r = req.into_inner();
         let img = self.get_or_load_image(&r.image_id).await?;
@@ -646,22 +646,22 @@ impl EngineService for EngineServer {
     }
 
     #[tracing::instrument(skip(self, _req), err)]
-    async fn setup_list_forms(
+    async fn hii_list_forms(
         &self,
-        _req: Request<SetupListFormsRequest>,
-    ) -> RpcResult<SetupListFormsResponse> {
+        _req: Request<HiiListFormsRequest>,
+    ) -> RpcResult<HiiListFormsResponse> {
         Err(Status::unimplemented(
-            "SetupListForms not implemented (Plan B)",
+            "HiiListForms not implemented (Plan B)",
         ))
     }
 
     #[tracing::instrument(skip(self, _req), err)]
-    async fn setup_list_strings(
+    async fn hii_list_strings(
         &self,
-        _req: Request<SetupListStringsRequest>,
-    ) -> RpcResult<SetupListStringsResponse> {
+        _req: Request<HiiListStringsRequest>,
+    ) -> RpcResult<HiiListStringsResponse> {
         Err(Status::unimplemented(
-            "SetupListStrings not implemented (Plan B)",
+            "HiiListStrings not implemented (Plan B)",
         ))
     }
 
@@ -676,10 +676,10 @@ impl EngineService for EngineServer {
     }
 
     #[tracing::instrument(skip(self, req), err)]
-    async fn setup_form_set_add(
+    async fn hii_form_set_add(
         &self,
-        req: Request<SetupFormSetAddRequest>,
-    ) -> RpcResult<SetupFormSetAddResponse> {
+        req: Request<HiiFormSetAddRequest>,
+    ) -> RpcResult<HiiFormSetAddResponse> {
         let r = req.into_inner();
         let schema = crate::hii::schema::parse_schema(&r.schema_json)
             .map_err(|e| Status::invalid_argument(e.to_string()))?;
@@ -711,7 +711,7 @@ impl EngineService for EngineServer {
         };
         self.flush_image(&r.image_id).await?;
         let _ = self.sm.touch(&img.session_id);
-        Ok(Response::new(SetupFormSetAddResponse {
+        Ok(Response::new(HiiFormSetAddResponse {
             new_ffs_id: result.new_ffs_guid.to_string(),
             inserted_form_ids: result
                 .inserted_form_ids

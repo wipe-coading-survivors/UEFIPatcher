@@ -74,9 +74,9 @@ enum Cmd {
         #[command(subcommand)]
         sub: ArtifactCmd,
     },
-    Setup {
+    Hii {
         #[command(subcommand)]
-        sub: SetupCmd,
+        sub: HiiCmd,
     },
 }
 
@@ -173,19 +173,19 @@ enum ArtifactCmd {
 }
 
 #[derive(Subcommand)]
-enum SetupCmd {
+enum HiiCmd {
     Form {
         #[command(subcommand)]
-        sub: SetupFormCmd,
+        sub: HiiFormCmd,
     },
     String {
         #[command(subcommand)]
-        sub: SetupStringCmd,
+        sub: HiiStringCmd,
     },
 }
 
 #[derive(Subcommand)]
-enum SetupFormCmd {
+enum HiiFormCmd {
     List,
     SetVisibility {
         form_id: String,
@@ -197,7 +197,7 @@ enum SetupFormCmd {
 }
 
 #[derive(Subcommand)]
-enum SetupStringCmd {
+enum HiiStringCmd {
     List,
 }
 
@@ -311,10 +311,10 @@ async fn dispatch(cli: &Cli, format: output::OutputFormat) -> Result<(), error::
                 commands::artifact::export(artifact_id, output_path.as_deref(), sock, format).await
             }
         },
-        Cmd::Setup { sub } => match sub {
-            SetupCmd::Form { sub } => match sub {
-                SetupFormCmd::List => commands::setup::form_list(sock, format).await,
-                SetupFormCmd::SetVisibility {
+        Cmd::Hii { sub } => match sub {
+            HiiCmd::Form { sub } => match sub {
+                HiiFormCmd::List => commands::hii::form_list(sock, format).await,
+                HiiFormCmd::SetVisibility {
                     form_id,
                     visible,
                     hidden,
@@ -329,11 +329,11 @@ async fn dispatch(cli: &Cli, format: output::OutputFormat) -> Result<(), error::
                             ));
                         }
                     };
-                    commands::setup::form_set_visibility(form_id, vis, sock, format).await
+                    commands::hii::form_set_visibility(form_id, vis, sock, format).await
                 }
             },
-            SetupCmd::String { sub } => match sub {
-                SetupStringCmd::List => commands::setup::string_list(sock, format).await,
+            HiiCmd::String { sub } => match sub {
+                HiiStringCmd::List => commands::hii::string_list(sock, format).await,
             },
         },
     }

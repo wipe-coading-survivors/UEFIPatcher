@@ -24,10 +24,10 @@ service EngineService {
   rpc ArtifactImport(ArtifactImportRequest) returns (ArtifactImportResponse);
   rpc ArtifactExport(ArtifactExportRequest) returns (Empty);
 
-  rpc SetupListForms(SetupListFormsRequest)                 returns (SetupListFormsResponse);
-  rpc SetupSetFormVisibility(SetupSetFormVisibilityRequest) returns (Empty);
-  rpc SetupListStrings(SetupListStringsRequest)             returns (SetupListStringsResponse);
-  rpc SetupFormSetAdd(SetupFormSetAddRequest)               returns (SetupFormSetAddResponse);
+  rpc HiiListForms(HiiListFormsRequest)                 returns (HiiListFormsResponse);
+  rpc HiiSetFormVisibility(HiiSetFormVisibilityRequest) returns (Empty);
+  rpc HiiListStrings(HiiListStringsRequest)             returns (HiiListStringsResponse);
+  rpc HiiFormSetAdd(HiiFormSetAddRequest)               returns (HiiFormSetAddResponse);
 }
 
 enum ImageMode { READ = 0; WRITE = 1; }
@@ -141,7 +141,7 @@ message ArtifactExportRequest {
   string output_path = 2;
 }
 
-message SetupListFormsRequest { string image_id = 1; }
+message HiiListFormsRequest { string image_id = 1; }
 message FormInfo {
   string form_id = 1;
   string formset_guid = 2;
@@ -149,28 +149,28 @@ message FormInfo {
   string title = 4;
   bool visible = 5;
 }
-message SetupListFormsResponse { repeated FormInfo forms = 1; }
+message HiiListFormsResponse { repeated FormInfo forms = 1; }
 
-message SetupSetFormVisibilityRequest {
+message HiiSetFormVisibilityRequest {
   string image_id = 1;
   string item_id = 2;
   bool visible = 3;
 }
 
-message SetupListStringsRequest { string image_id = 1; }
+message HiiListStringsRequest { string image_id = 1; }
 message StringInfo {
   string language = 1;
   uint32 string_id = 2;
   string text = 3;
 }
-message SetupListStringsResponse { repeated StringInfo strings = 1; }
+message HiiListStringsResponse { repeated StringInfo strings = 1; }
 
-message SetupFormSetAddRequest {
+message HiiFormSetAddRequest {
   string image_id = 1;
   string schema_json = 2;
   string target_ffs_guid = 3;
 }
-message SetupFormSetAddResponse {
+message HiiFormSetAddResponse {
   string new_ffs_id = 1;
   repeated uint32 inserted_form_ids = 2;
   map<string, uint32> string_ids = 3;

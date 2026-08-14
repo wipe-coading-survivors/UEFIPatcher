@@ -7,7 +7,7 @@ pub async fn form_list(cli_sock: Option<&str>, format: OutputFormat) -> Result<(
     let st = state::require_state()?;
     let mut client = Client::connect(cli_sock, st).await?;
     let image_id = client.active_image()?;
-    let forms = client.setup_list_forms(&image_id).await?;
+    let forms = client.hii_list_forms(&image_id).await?;
     crate::output::print_forms(&forms, format);
     Ok(())
 }
@@ -22,7 +22,7 @@ pub async fn form_set_visibility(
     let mut client = Client::connect(cli_sock, st).await?;
     let image_id = client.active_image()?;
     client
-        .setup_set_form_visibility(&image_id, form_id, visible)
+        .hii_set_form_visibility(&image_id, form_id, visible)
         .await?;
     crate::output::print_ok(format);
     Ok(())
@@ -32,7 +32,7 @@ pub async fn string_list(cli_sock: Option<&str>, format: OutputFormat) -> Result
     let st = state::require_state()?;
     let mut client = Client::connect(cli_sock, st).await?;
     let image_id = client.active_image()?;
-    let strings = client.setup_list_strings(&image_id).await?;
+    let strings = client.hii_list_strings(&image_id).await?;
     crate::output::print_strings(&strings, format);
     Ok(())
 }

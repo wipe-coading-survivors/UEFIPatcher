@@ -21,7 +21,7 @@ pub async fn set_visibility(
 ) -> Result<Json<Value>, AppError> {
     let sid = extract_session_id(&jar).ok_or(AppError::Auth)?;
     let mut c = state.client.lock().await;
-    c.setup_set_form_visibility(&state.sessions, &sid, &id, &body.item_id, body.visible)
+    c.hii_set_form_visibility(&state.sessions, &sid, &id, &body.item_id, body.visible)
         .await
         .map_err(AppError::from)?;
     Ok(Json(json!({ "ok": true })))

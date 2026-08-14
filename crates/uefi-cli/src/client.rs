@@ -273,46 +273,43 @@ impl Client {
             .artifact_id)
     }
 
-    pub async fn setup_list_forms(&mut self, image_id: &str) -> Result<Vec<FormInfo>, AppError> {
-        let req = SetupListFormsRequest {
+    pub async fn hii_list_forms(&mut self, image_id: &str) -> Result<Vec<FormInfo>, AppError> {
+        let req = HiiListFormsRequest {
             image_id: image_id.into(),
         };
         Ok(self
             .inner
-            .setup_list_forms(auth_req(&self.state, req))
+            .hii_list_forms(auth_req(&self.state, req))
             .await?
             .into_inner()
             .forms)
     }
 
-    pub async fn setup_list_strings(
-        &mut self,
-        image_id: &str,
-    ) -> Result<Vec<StringInfo>, AppError> {
-        let req = SetupListStringsRequest {
+    pub async fn hii_list_strings(&mut self, image_id: &str) -> Result<Vec<StringInfo>, AppError> {
+        let req = HiiListStringsRequest {
             image_id: image_id.into(),
         };
         Ok(self
             .inner
-            .setup_list_strings(auth_req(&self.state, req))
+            .hii_list_strings(auth_req(&self.state, req))
             .await?
             .into_inner()
             .strings)
     }
 
-    pub async fn setup_set_form_visibility(
+    pub async fn hii_set_form_visibility(
         &mut self,
         image_id: &str,
         item_id: &str,
         visible: bool,
     ) -> Result<(), AppError> {
-        let req = SetupSetFormVisibilityRequest {
+        let req = HiiSetFormVisibilityRequest {
             image_id: image_id.into(),
             item_id: item_id.into(),
             visible,
         };
         self.inner
-            .setup_set_form_visibility(auth_req(&self.state, req))
+            .hii_set_form_visibility(auth_req(&self.state, req))
             .await?;
         Ok(())
     }
