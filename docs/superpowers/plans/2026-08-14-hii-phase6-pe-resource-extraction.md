@@ -133,7 +133,7 @@ git commit -m "test(uefi-engine): add rk3588 HII fixtures (string resource blob 
 ```rust
 pub struct HiiPackage<'a> { pub kind: u8, pub bytes: &'a [u8] }        // bytes = whole package incl. u24+type header
 pub struct HiiPackageList<'a> { pub guid: Guid, pub packages: Vec<HiiPackage<'a>> }
-pub fn parse_package_list(bytes: &[u8]) -> Option<HiiPackageList>
+pub fn parse_package_list(bytes: &[u8]) -> Option<HiiPackageList<'_>>
 ```
 
 - [ ] **Step 1: Create the module with failing tests + declare the module**
@@ -275,7 +275,7 @@ pub struct HiiPackageList<'a> {
     pub packages: Vec<HiiPackage<'a>>,
 }
 
-pub fn parse_package_list(bytes: &[u8]) -> Option<HiiPackageList> {
+pub fn parse_package_list(bytes: &[u8]) -> Option<HiiPackageList<'_>> {
     if bytes.len() < 20 {
         tracing::debug!("HII package list shorter than 20-byte header");
         return None;
