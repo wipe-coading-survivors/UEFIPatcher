@@ -1,3 +1,9 @@
+use r_efi::hii::{
+    FormId, IFR_END_OP, IFR_FORM_OP, IFR_FORM_SET_OP, IFR_SUPPRESS_IF_OP, PACKAGE_FORMS, StringId,
+};
+
+use crate::types::Guid;
+
 #[derive(Debug, Clone)]
 pub struct SuppressScope {
     pub start: usize,
@@ -45,4 +51,192 @@ pub fn unsuppress(ifr: &mut Vec<u8>, scope: &SuppressScope) {
         ifr.drain(scope.end..scope.end + 2);
     }
     ifr.splice(scope.start..scope.start, [0x29, 0x02]);
+}
+
+#[derive(Debug, Clone)]
+pub struct FormSetInfo {
+    pub guid: Guid,
+    pub title: StringId,
+    pub forms: Vec<RawForm>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RawForm {
+    pub form_id: FormId,
+    pub title: StringId,
+    pub suppressed: bool,
+}
+
+pub fn is_form_package(body: &[u8]) -> bool {
+    body.len() >= 5 && body[3] == PACKAGE_FORMS && body[4] == IFR_FORM_SET_OP
+}
+
+pub fn parse_form_package(body: &[u8]) -> Option<FormSetInfo> {
+    if !is_form_package(body) {
+        return None;
+    }
+    let mut guid = None;
+    let mut title: StringId = 0;
+    let mut forms = Vec::new();
+    let mut scope_stack: Vec<u8> = Vec::new();
+    let mut i = 4;
+    while i + 2 <= body.len() {
+        let op_code = body[i];
+        let length_and_scope = body[i + 1];
+        let length = (length_and_scope & 0x7F) as usize;
+        if length < 2 || i + length > body.len() {
+            return None;
+        }
+        match op_code {
+            IFR_FORM_SET_OP => {
+                if length < 23 {
+                    return None;
+                }
+                let mut arr = [0u8; 16];
+                arr.copy_from_slice(&body[i + 2..i + 18]);
+                guid = Some(Guid::from_bytes(arr));
+                title = u16::from_le_bytes([body[i + 18], body[i + 19]]);
+            }
+            IFR_FORM_OP => {
+                if length < 6 {
+                    return None;
+                }
+                forms.push(RawForm {
+                    form_id: u16::from_le_bytes([body[i + 2], body[i + 3]]),
+                    title: u16::from_le_bytes([body[i + 4], body[i + 5]]),
+                    suppressed: scope_stack.contains(&IFR_SUPPRESS_IF_OP),
+                });
+            }
+            IFR_END_OP => {
+                scope_stack.pop();
+            }
+            _ => {
+                tracing::trace!(op_code, offset = i, "unknown ifr opcode skipped");
+            }
+        }
+        if length_and_scope & 0x80 != 0 {
+            scope_stack.push(op_code);
+        }
+        i += length;
+    }
+    guid.map(|g| FormSetInfo {
+        guid: g,
+        title,
+        forms,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use r_efi::hii::PACKAGE_STRINGS;
+    use std::str::FromStr;
+
+    const FORMSET_GUID: &str = "5C60F367-A505-419A-859E-2A4FF6CA6FE5";
+
+    fn opcode(op_code: u8, scope: bool, payload: &[u8]) -> Vec<u8> {
+        let mut v = Vec::with_capacity(payload.len() + 2);
+        v.push(op_code);
+        v.push(((payload.len() + 2) as u8) | if scope { 0x80 } else { 0 });
+        v.extend_from_slice(payload);
+        v
+    }
+
+    fn form_set(guid: &Guid, title: u16) -> Vec<u8> {
+        let mut p = Vec::new();
+        p.extend_from_slice(&guid.to_bytes());
+        p.extend_from_slice(&title.to_le_bytes());
+        p.extend_from_slice(&0u16.to_le_bytes());
+        p.push(0u8);
+        opcode(IFR_FORM_SET_OP, true, &p)
+    }
+
+    fn form(id: u16, title: u16) -> Vec<u8> {
+        let mut p = Vec::new();
+        p.extend_from_slice(&id.to_le_bytes());
+        p.extend_from_slice(&title.to_le_bytes());
+        opcode(IFR_FORM_OP, true, &p)
+    }
+
+    fn end() -> Vec<u8> {
+        vec![IFR_END_OP, 0x02]
+    }
+
+    fn package(ifr: &[u8]) -> Vec<u8> {
+        let total = 4 + ifr.len();
+        let mut b = vec![
+            (total & 0xFF) as u8,
+            ((total >> 8) & 0xFF) as u8,
+            ((total >> 16) & 0xFF) as u8,
+            PACKAGE_FORMS,
+        ];
+        b.extend_from_slice(ifr);
+        b
+    }
+
+    #[test]
+    fn is_form_package_detects_form_packages() {
+        let pkg = package(&form_set(&Guid::from_str(FORMSET_GUID).unwrap(), 1));
+        assert!(is_form_package(&pkg));
+        assert!(!is_form_package(&[0x00, 0x00, 0x00, PACKAGE_FORMS]));
+        assert!(!is_form_package(&[
+            0x17,
+            0x00,
+            0x00,
+            PACKAGE_STRINGS,
+            IFR_FORM_SET_OP
+        ]));
+    }
+
+    #[test]
+    fn parse_extracts_formset_and_forms() {
+        let g = Guid::from_str(FORMSET_GUID).unwrap();
+        let mut ifr = form_set(&g, 7);
+        ifr.extend(form(1, 10));
+        ifr.extend(end());
+        ifr.extend(end());
+        let fs = parse_form_package(&package(&ifr)).unwrap();
+        assert_eq!(fs.guid, g);
+        assert_eq!(fs.title, 7);
+        assert_eq!(fs.forms.len(), 1);
+        assert_eq!(fs.forms[0].form_id, 1);
+        assert_eq!(fs.forms[0].title, 10);
+        assert!(!fs.forms[0].suppressed);
+    }
+
+    #[test]
+    fn parse_marks_suppressed_form() {
+        let g = Guid::from_str(FORMSET_GUID).unwrap();
+        let mut ifr = form_set(&g, 7);
+        ifr.extend(form(1, 10));
+        ifr.extend(end());
+        ifr.extend(opcode(IFR_SUPPRESS_IF_OP, true, &[]));
+        ifr.extend(form(2, 20));
+        ifr.extend(end());
+        ifr.extend(end());
+        ifr.extend(end());
+        let fs = parse_form_package(&package(&ifr)).unwrap();
+        assert_eq!(fs.forms.len(), 2);
+        assert!(!fs.forms[0].suppressed);
+        assert!(fs.forms[1].suppressed);
+    }
+
+    #[test]
+    fn parse_returns_none_on_truncation() {
+        let g = Guid::from_str(FORMSET_GUID).unwrap();
+        let mut ifr = form_set(&g, 7);
+        ifr.extend(form(1, 10));
+        ifr.extend(end());
+        ifr.extend(end());
+        let mut pkg = package(&ifr);
+        pkg.truncate(pkg.len() - 7);
+        assert!(parse_form_package(&pkg).is_none());
+    }
+
+    #[test]
+    fn parse_returns_none_for_non_form_package() {
+        assert!(
+            parse_form_package(&[0x00, 0x00, 0x00, PACKAGE_STRINGS, IFR_FORM_SET_OP]).is_none()
+        );
+    }
 }
