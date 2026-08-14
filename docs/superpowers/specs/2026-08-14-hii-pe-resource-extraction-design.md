@@ -25,7 +25,7 @@ bare-массивами в теле PE.
 
 ## 2. Эталон — разведка на живых байтах (2026-08-14)
 
-Probe-скрипт (Python, `/tmp/hii_probe.py`): raw-MZ-скан + распаковка
+Probe-скрипт (Python, `hack/hii_probe.py`): raw-MZ-скан + распаковка
 GUIDed-LZMA (все 4 LZMA-GUID из `ffs.rs`) + MZ-скан внутри распакованного +
 обход resource directory. Образцы: HNX99TF_200525 (Lenovo AMI Aptio V),
 OVMF 4MB ×2, edk2-rk3588 1.9MB (Orange Pi 5 Plus) + капсула 6.9MB.
@@ -267,7 +267,7 @@ Acceptance-критерий фазы — HNX99TF.
 ## 11. Референсы
 
 - Живые байты: probe-разведка 2026-08-14 (TODO, коммит `ffa1a46`);
-  скрипт `/tmp/hii_probe.py` (вне репо).
+  скрипт `hack/hii_probe.py`.
 - `docs/plans/2026-08-14-предпосылки-для-рекомпрессии.md` — следующая фаза.
 - `refs/UEFITool-ai-fork/common/ffsparser.cpp` — layout guided-секций;
   `refs/IFRExtractor-RS/src/main.rs` — сигнатурный скан (отвергнут как

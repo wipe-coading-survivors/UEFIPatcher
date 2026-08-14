@@ -222,7 +222,7 @@
   `real_image_hii_form_visibility_round_trip`); ожидаемые formset-GUID'ы
   см. выше.
   *Уточнения probe-разведки 2026-08-14 (брейнсторм фазы 6, скрипт
-  /tmp/hii_probe.py на HNX99TF + EDK2-образах OVMF/edk2-rk3588):*
+  `hack/hii_probe.py` на HNX99TF + EDK2-образах OVMF/edk2-rk3588):*
   - Имя типа ресурса — **`L"HII"`** (у AMI и EDK2 одинаково); «'H'» в
     отчёте фазы 5 — неполное чтение имени.
   - На HNX99TF всего **6 package lists / 4 формсета**: помимо Setup и
