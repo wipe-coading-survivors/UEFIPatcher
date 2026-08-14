@@ -39,10 +39,8 @@ pub fn set_item_visibility(
     visible: bool,
 ) -> Result<(), HiiError> {
     let target = crate::parser::target::parse_target(item_id).map_err(|_| HiiError::NotFound)?;
-    let path = match &target {
-        Target::Path(p) => p.clone(),
-        _ => return Err(HiiError::NotFound),
-    };
+    let path =
+        crate::parser::target::find_item_path(&image.root, &target).ok_or(HiiError::NotFound)?;
     let mut changed = false;
     {
         let node = crate::parser::target::find_item_mut(&mut image.root, &target)
@@ -69,6 +67,7 @@ pub fn set_item_visibility(
 mod tests {
     use super::*;
     use crate::types::{Action, FfsNode, FfsType, Image, ImageMode, ParsingData};
+    use std::str::FromStr;
 
     #[test]
     fn unsuppress_makes_block_empty() {
@@ -124,5 +123,60 @@ mod tests {
             root,
             mode: ImageMode::Write,
         }
+    }
+
+    const FILE_GUID_STR: &str = "5C60F367-A505-419A-859E-2A4FF6CA6FE5";
+
+    fn sample_image_with_ifr_guid() -> Image {
+        let mut section = mk_node(
+            FfsType::Section,
+            vec![0x0A, 0x82, 0x12, 0x03, 0x40, 0x29, 0x02],
+            vec![],
+        );
+        section.subtype = 0x19;
+        let mut file = mk_node(FfsType::File, vec![], vec![section]);
+        file.guid = Some(Guid::from_str(FILE_GUID_STR).unwrap());
+        let volume = mk_node(FfsType::Volume, vec![], vec![file]);
+        let root = mk_node(FfsType::Image, vec![], vec![volume]);
+        Image {
+            image_id: "img".into(),
+            session_id: "s".into(),
+            root,
+            mode: ImageMode::Write,
+        }
+    }
+
+    #[test]
+    fn set_item_visibility_guid_section_target_unsuppresses() {
+        let mut image = sample_image_with_ifr_guid();
+        set_item_visibility(
+            &mut image,
+            "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:0",
+            true,
+        )
+        .unwrap();
+        let section = &image.root.children[0].children[0].children[0];
+        assert_eq!(&section.body[0..4], &[0x0A, 0x82, 0x29, 0x02]);
+        assert_eq!(section.action, Action::Rebuild);
+        assert_eq!(image.root.action, Action::Rebuild);
+    }
+
+    #[test]
+    fn set_item_visibility_guid_target_rejects_non_section() {
+        let mut image = sample_image_with_ifr_guid();
+        let err = set_item_visibility(&mut image, FILE_GUID_STR, true).unwrap_err();
+        assert!(matches!(err, HiiError::NotASetupItem));
+    }
+
+    #[test]
+    fn set_item_visibility_unknown_guid_is_not_found() {
+        let mut image = sample_image_with_ifr_guid();
+        let err = set_item_visibility(
+            &mut image,
+            "00000000-0000-0000-0000-000000000001:0x19:0",
+            true,
+        )
+        .unwrap_err();
+        assert!(matches!(err, HiiError::NotFound));
     }
 }
