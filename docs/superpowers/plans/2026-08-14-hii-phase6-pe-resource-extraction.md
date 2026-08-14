@@ -141,7 +141,8 @@ pub fn parse_package_list(bytes: &[u8]) -> Option<HiiPackageList>
 Create `crates/uefi-engine/src/hii/package_list.rs` containing ONLY the test module:
 
 ```rust
-use r_efi::hii::{PACKAGE_END, PACKAGE_FORMS, PACKAGE_STRINGS};
+#[cfg(test)]
+use r_efi::hii::{PACKAGE_FORMS, PACKAGE_STRINGS};
 
 #[cfg(test)]
 mod tests {
@@ -233,7 +234,7 @@ mod tests {
 
     #[test]
     fn parses_real_rk3588_string_resource() {
-        let bytes = include_bytes!("../../../tests/fixtures/hii_rk3588_string_res.bin");
+        let bytes = include_bytes!("../../tests/fixtures/hii_rk3588_string_res.bin");
         let parsed = parse_package_list(bytes).unwrap();
         assert_eq!(
             parsed.guid,
@@ -398,7 +399,7 @@ mod tests {
     use super::*;
 
     const RK3588_STRING_RES: &[u8] =
-        include_bytes!("../../../tests/fixtures/hii_rk3588_string_res.bin");
+        include_bytes!("../../tests/fixtures/hii_rk3588_string_res.bin");
 
     #[test]
     fn extracts_hii_blob_from_synthetic_pe() {
@@ -644,7 +645,7 @@ Append to the `tests` module in `pe_resource.rs`:
 
 ```rust
     const RK3588_BARE_FORM: &[u8] =
-        include_bytes!("../../../tests/fixtures/hii_rk3588_bare_form.bin");
+        include_bytes!("../../tests/fixtures/hii_rk3588_bare_form.bin");
 
     #[test]
     fn bare_scan_finds_valid_form_package_in_pe_body() {
@@ -871,7 +872,7 @@ In `forms.rs` tests: replace the wrong-layout `string_pkg()` builder (language a
     fn collect_forms_sees_bare_form_package_in_pe_body() {
         let mut body = vec![0x44u8; 16];
         body.extend_from_slice(include_bytes!(
-            "../../../tests/fixtures/hii_rk3588_bare_form.bin"
+            "../../tests/fixtures/hii_rk3588_bare_form.bin"
         ));
         let pe_sec = mk_node(None, FfsType::Section, 0x10, body, vec![]);
         let file = mk_node(
@@ -921,7 +922,7 @@ In `strings.rs` tests append:
 ```rust
     #[test]
     fn collect_strings_from_pe_resources() {
-        let blob = include_bytes!("../../../tests/fixtures/hii_rk3588_string_res.bin");
+        let blob = include_bytes!("../../tests/fixtures/hii_rk3588_string_res.bin");
         let pe = crate::hii::pe_resource::synth_hii_pe("HII", blob);
         let mut section = mk_node(FfsType::Section, pe, vec![]);
         section.subtype = crate::ffs::EFI_SECTION_PE32;
