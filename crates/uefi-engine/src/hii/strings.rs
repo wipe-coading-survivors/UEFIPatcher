@@ -19,7 +19,7 @@ const SIBT_SKIP1: u8 = 0x22;
 
 const HEADER_LEN: usize = 4;
 const STRING_INFO_OFFSET_POS: usize = 8;
-const LANGUAGE_OFFSET: usize = 12;
+const LANGUAGE_OFFSET: usize = 46;
 
 pub struct ParsedStringPackage {
     pub language: String,
@@ -38,7 +38,7 @@ pub fn parse_string_package(body: &[u8]) -> Option<ParsedStringPackage> {
     let mut by_id: HashMap<u16, String> = HashMap::new();
     let mut next_id: u16 = 1;
     let mut pos = info_off;
-    while pos < body.len() {
+    'outer: while pos < body.len() {
         match body[pos] {
             SIBT_END => break,
             SIBT_STRING_SCSU => {
@@ -54,6 +54,13 @@ pub fn parse_string_package(body: &[u8]) -> Option<ParsedStringPackage> {
             SIBT_STRINGS_SCSU => {
                 let (count, mut p) = read_u16(body, pos + 1);
                 for _ in 0..count {
+                    if p >= body.len() {
+                        tracing::warn!(
+                            opcode = body[pos],
+                            "truncated SIBT_STRINGS block; stopping string parse"
+                        );
+                        break 'outer;
+                    }
                     let (text, np) = read_scsu(body, p);
                     push(&mut strings, &mut by_id, &mut next_id, text);
                     p = np;
@@ -63,6 +70,13 @@ pub fn parse_string_package(body: &[u8]) -> Option<ParsedStringPackage> {
             SIBT_STRINGS_SCSU_FONT => {
                 let (count, mut p) = read_u16(body, pos + 2);
                 for _ in 0..count {
+                    if p >= body.len() {
+                        tracing::warn!(
+                            opcode = body[pos],
+                            "truncated SIBT_STRINGS block; stopping string parse"
+                        );
+                        break 'outer;
+                    }
                     let (text, np) = read_scsu(body, p);
                     push(&mut strings, &mut by_id, &mut next_id, text);
                     p = np;
@@ -82,6 +96,13 @@ pub fn parse_string_package(body: &[u8]) -> Option<ParsedStringPackage> {
             SIBT_STRINGS_UCS2 => {
                 let (count, mut p) = read_u16(body, pos + 1);
                 for _ in 0..count {
+                    if p >= body.len() {
+                        tracing::warn!(
+                            opcode = body[pos],
+                            "truncated SIBT_STRINGS block; stopping string parse"
+                        );
+                        break 'outer;
+                    }
                     let (text, np) = read_ucs2(body, p);
                     push(&mut strings, &mut by_id, &mut next_id, text);
                     p = np;
@@ -91,6 +112,13 @@ pub fn parse_string_package(body: &[u8]) -> Option<ParsedStringPackage> {
             SIBT_STRINGS_UCS2_FONT => {
                 let (count, mut p) = read_u16(body, pos + 2);
                 for _ in 0..count {
+                    if p >= body.len() {
+                        tracing::warn!(
+                            opcode = body[pos],
+                            "truncated SIBT_STRINGS block; stopping string parse"
+                        );
+                        break 'outer;
+                    }
                     let (text, np) = read_ucs2(body, p);
                     push(&mut strings, &mut by_id, &mut next_id, text);
                     p = np;
@@ -228,15 +256,17 @@ mod tests {
     use crate::types::{Action, FfsNode, FfsType, Image, ImageMode, ParsingData};
 
     fn make_pkg(language: &str, sibt_bytes: &[u8]) -> Vec<u8> {
-        let info_off: u32 = (LANGUAGE_OFFSET + language.len() + 1) as u32;
+        let hdr_size: u32 = (46 + language.len() + 1) as u32;
+        let info_off = hdr_size;
         let mut buf = Vec::new();
         buf.extend_from_slice(&[0u8; 3]);
         buf.push(0x04);
-        buf.extend_from_slice(&1u32.to_le_bytes());
+        buf.extend_from_slice(&hdr_size.to_le_bytes());
         buf.extend_from_slice(&info_off.to_le_bytes());
-        while buf.len() < LANGUAGE_OFFSET {
+        while buf.len() < 44 {
             buf.push(0);
         }
+        buf.extend_from_slice(&0u16.to_le_bytes());
         buf.extend_from_slice(language.as_bytes());
         buf.push(0);
         while buf.len() < info_off as usize {
@@ -337,6 +367,29 @@ mod tests {
         buf.push(SIBT_END);
         let parsed = parse_string_package(&buf).unwrap();
         assert!(parsed.language.is_empty());
+    }
+
+    #[test]
+    fn parse_truncated_strings_scsu_block_returns_only_real_strings() {
+        let sibt = [SIBT_STRINGS_SCSU, 0x03, 0x00, b'A', 0];
+        let pkg = make_pkg("en", &sibt);
+        let parsed = parse_string_package(&pkg).unwrap();
+        assert_eq!(parsed.strings.len(), 1);
+        assert_eq!(parsed.strings[0], (1, "A".to_string()));
+    }
+
+    #[test]
+    fn parse_truncated_strings_ucs2_block_returns_only_real_strings() {
+        let mut sibt = vec![SIBT_STRINGS_UCS2, 0x02, 0x00];
+        for u in "Hi".encode_utf16() {
+            sibt.extend_from_slice(&u.to_le_bytes());
+        }
+        sibt.push(0);
+        sibt.push(0);
+        let pkg = make_pkg("en", &sibt);
+        let parsed = parse_string_package(&pkg).unwrap();
+        assert_eq!(parsed.strings.len(), 1);
+        assert_eq!(parsed.strings[0], (1, "Hi".to_string()));
     }
 
     #[test]
