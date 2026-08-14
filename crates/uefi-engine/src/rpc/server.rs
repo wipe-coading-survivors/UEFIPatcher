@@ -636,7 +636,7 @@ impl EngineService for EngineServer {
             let img_slot = images
                 .get_mut(&r.image_id)
                 .ok_or_else(|| Status::not_found("image not found"))?;
-            crate::setup::set_item_visibility(img_slot, &r.item_id, r.visible)
+            crate::hii::set_item_visibility(img_slot, &r.item_id, r.visible)
                 .map_err(|e| Status::internal(e.to_string()))?;
         }
         self.flush_image(&r.image_id).await?;

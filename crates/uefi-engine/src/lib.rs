@@ -1,12 +1,12 @@
 pub mod builder;
 pub mod decompress;
 pub mod ffs;
+pub mod hii;
 pub mod logging;
 pub mod ops;
 pub mod parser;
 pub mod rpc;
 pub mod session;
-pub mod setup;
 pub mod setup_advanced;
 pub mod storage;
 pub mod types;

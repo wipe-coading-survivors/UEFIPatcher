@@ -5,7 +5,7 @@ use crate::types::*;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
-pub enum SetupError {
+pub enum HiiError {
     #[error("not found")]
     NotFound,
     #[error("not a setup item")]
@@ -19,18 +19,18 @@ pub fn set_item_visibility(
     image: &mut Image,
     item_id: &str,
     visible: bool,
-) -> Result<(), SetupError> {
-    let target = crate::parser::target::parse_target(item_id).map_err(|_| SetupError::NotFound)?;
+) -> Result<(), HiiError> {
+    let target = crate::parser::target::parse_target(item_id).map_err(|_| HiiError::NotFound)?;
     let path = match &target {
         Target::Path(p) => p.clone(),
-        _ => return Err(SetupError::NotFound),
+        _ => return Err(HiiError::NotFound),
     };
     let mut changed = false;
     {
         let node = crate::parser::target::find_item_mut(&mut image.root, &target)
-            .map_err(|_| SetupError::NotFound)?;
+            .map_err(|_| HiiError::NotFound)?;
         if node.node_type != FfsType::Section {
-            return Err(SetupError::NotASetupItem);
+            return Err(HiiError::NotASetupItem);
         }
         if visible && let Some(scope) = ifr::find_suppress_if_scopes(&node.body).into_iter().next()
         {
