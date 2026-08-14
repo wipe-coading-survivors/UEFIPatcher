@@ -10,6 +10,7 @@ uefi-common = { path = "../uefi-common" }
 uguid.workspace = true
 r-efi.workspace = true
 binrw.workspace = true
+object.workspace = true
 lzma-rs = "0.3"
 uuid.workspace = true
 anyhow.workspace = true
