@@ -120,6 +120,31 @@
   импортов и更新ть `lib.rs`.
 * [ ] **Подключить CLI/TUI/Gateway/WebUI** на реальные данные вместо stub'ов.
 
+### Находки ревизии фазы 3 string-reader (2026-08-14)
+
+> Фаза 3 (`hii/strings.rs`, reader) завершена; ниже — отложенные minors
+> из per-task и финального ревью (branch `fix/cycle6-reimplent`).
+
+* [ ] **hii/strings: SIBT_EXT1/2/4 (0x30–0x32) не обрабатываются** —
+  трактуются как unknown-opcode, walk останавливается с warn; пакет с EXT-
+  блоками молча теряет все последующие строки. Контекст: writer
+  (`string_pack.rs`) ведёт себя так же; в реальном firmware редкость.
+* [ ] **hii/strings + string_pack: унифицировать SIBT-код** — константы
+  опкодов и u16-хелперы дублируются reader'ом и writer'ом и уже дрейфуют
+  (clamp `<=` vs `<` в info_off). Контекст: вынести в общий `sibt`
+  submodule при следующем касании.
+* [ ] **hii/strings: walk-сигнал «found» = `!out.is_empty()`** — пустой,
+  но валидный первый string-package не останавливает обход (может
+  вернуться пакет позже по дереву); guard `if let Some(pkg)` вокруг
+  `parse_string_package` в walk — мёртвый (None недостижим после
+  `is_string_package`). Контекст: дегенеративный случай, verbatim из
+  плана фазы 3; поправить found-флагом при следующем касании файла.
+* [ ] **hii/strings: обрезанный u16-count STRINGS_\* блока молча даёт
+  count=0** — `read_u16` fallback `(0, body.len())` без warn; одиночный
+  хвостовой байт UCS2-блока даёт одну пустую запись. Контекст:
+  ограничено одной записью, массовая фабрикация пустых строк исправлена
+  в фазе 3 (commit `f5198f9`).
+
 ## ImageUpload RPC (docker-развертывание)
 
 `ImageOpen` читает файл с **серверной FS** по пути (`OpenImageRequest.path`).
