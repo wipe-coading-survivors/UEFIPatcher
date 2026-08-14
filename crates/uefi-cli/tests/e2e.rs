@@ -53,3 +53,32 @@ async fn edit_flow() {
         .assert()
         .success();
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hii_list_output_content() {
+    let td = TempDir::new().unwrap();
+    let sock = td.path().join("e2e-hii.sock");
+    let _handle = mock_server::start_mock(&sock).await;
+    let cwd = td.path();
+    let sock = sock.display().to_string();
+
+    cli(&sock, cwd).args(["session", "init"]).assert().success();
+    cli(&sock, cwd)
+        .args(["image", "open", "/dev/null", "--mode", "write"])
+        .assert()
+        .success();
+    cli(&sock, cwd)
+        .args(["hii", "form", "list"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Main"));
+    cli(&sock, cwd)
+        .args(["hii", "string", "list"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Hello"));
+    cli(&sock, cwd)
+        .args(["session", "destroy"])
+        .assert()
+        .success();
+}

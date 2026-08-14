@@ -21,6 +21,7 @@ http = "1"
 
 [dev-dependencies]
 assert_cmd = "2"
+predicates = "3"
 tempfile = "3"
 uuid.workspace = true
 tokio-stream = { version = "0.1", features = ["net"] }
