@@ -1,8 +1,8 @@
 pub mod artifact;
 pub mod edit;
+pub mod hii;
 pub mod image;
 pub mod session;
-pub mod setup;
 pub mod upload;
 
 use std::sync::Arc;
@@ -56,11 +56,11 @@ pub fn router(state: AppState) -> axum::Router {
         )
         .route(
             "/api/v1/image/:id/set-visibility",
-            axum::routing::post(setup::set_visibility),
+            axum::routing::post(hii::set_visibility),
         )
         .route(
             "/api/v1/image/:id/setup-items",
-            axum::routing::get(setup::list_items),
+            axum::routing::get(hii::list_items),
         )
         .route(
             "/api/v1/image/:id/extract",
