@@ -612,3 +612,71 @@ fn real_image_full_flash_repatch_stability() {
         "re-patch instability: second build differs from original"
     );
 }
+
+#[test]
+#[ignore = "requires external real BIOS image under refs/fw/"]
+fn real_image_hii_forms_and_strings() {
+    use std::collections::HashSet;
+    use uefi_engine::hii::forms::collect_forms;
+    use uefi_engine::hii::strings::collect_strings;
+    use uefi_engine::types::ImageMode;
+
+    let data = load_fw();
+    let img = parse_image(&data, ImageMode::Read, "img1", "s1").expect("parse_image");
+
+    let forms = collect_forms(&img);
+    assert!(!forms.is_empty(), "expected forms in real image");
+    let formsets: HashSet<&str> = forms.iter().map(|f| f.formset_guid.as_str()).collect();
+    assert!(
+        formsets.len() >= 2,
+        "expected >=2 formsets (Setup + Platform/IntelRCSetup), got {formsets:?}"
+    );
+    assert!(
+        forms.iter().all(|f| f.form_id.contains(':')),
+        "every form_id must be a GUID-section target"
+    );
+
+    let strings = collect_strings(&img);
+    assert!(!strings.is_empty(), "expected strings in real image");
+    assert!(
+        strings
+            .iter()
+            .all(|s| s.language.to_lowercase().starts_with("en")),
+        "primary language expected ~English (en/en-US/eng), got {:?}",
+        strings.first().map(|s| &s.language)
+    );
+
+    eprintln!(
+        "real_image hii: {} forms across {} formsets {:?}; {} strings (language {:?})",
+        forms.len(),
+        formsets.len(),
+        formsets,
+        strings.len(),
+        strings.first().map(|s| &s.language)
+    );
+}
+
+#[test]
+#[ignore = "requires external real BIOS image under refs/fw/"]
+fn real_image_hii_form_visibility_round_trip() {
+    use uefi_engine::hii::forms::collect_forms;
+    use uefi_engine::hii::set_item_visibility;
+    use uefi_engine::types::ImageMode;
+
+    let data = load_fw();
+    let mut img = parse_image(&data, ImageMode::Write, "img1", "s1").expect("parse_image");
+
+    let forms = collect_forms(&img);
+    assert!(!forms.is_empty());
+    let form_id = forms[0].form_id.clone();
+
+    let t = parse_target(&form_id).expect("form_id parses as target");
+    let node = find_item(&img.root, &t).expect("form_id resolves in tree");
+    assert_eq!(
+        node.node_type,
+        FfsType::Section,
+        "form target must resolve to a Section"
+    );
+
+    set_item_visibility(&mut img, &form_id, true).expect("set_item_visibility on real form target");
+}
