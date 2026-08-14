@@ -5,6 +5,7 @@ pub mod ifr;
 pub mod ifr_builder;
 pub mod schema;
 pub mod string_pack;
+pub mod strings;
 
 use crate::ops;
 use crate::types::*;
