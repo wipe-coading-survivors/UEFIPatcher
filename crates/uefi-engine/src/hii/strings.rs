@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
 use crate::hii::string_pack::is_string_package;
+use crate::types::{FfsNode, FfsType, Image};
+use uefi_proto::StringInfo;
 
 const SIBT_END: u8 = 0x00;
 const SIBT_STRING_SCSU: u8 = 0x10;
@@ -192,9 +194,38 @@ fn read_ucs2(body: &[u8], start: usize) -> (String, usize) {
     )
 }
 
+pub fn collect_strings(image: &Image) -> Vec<StringInfo> {
+    let mut out: Vec<StringInfo> = Vec::new();
+    walk_for_string_package(&image.root, &mut out);
+    out
+}
+
+fn walk_for_string_package(node: &FfsNode, out: &mut Vec<StringInfo>) {
+    if node.node_type == FfsType::Section
+        && is_string_package(&node.body)
+        && let Some(pkg) = parse_string_package(&node.body)
+    {
+        for (sid, text) in pkg.strings {
+            out.push(StringInfo {
+                language: pkg.language.clone(),
+                string_id: sid as u32,
+                text,
+            });
+        }
+        return;
+    }
+    for child in &node.children {
+        walk_for_string_package(child, out);
+        if !out.is_empty() {
+            return;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::{Action, FfsNode, FfsType, Image, ImageMode, ParsingData};
 
     fn make_pkg(language: &str, sibt_bytes: &[u8]) -> Vec<u8> {
         let info_off: u32 = (LANGUAGE_OFFSET + language.len() + 1) as u32;
@@ -316,5 +347,54 @@ mod tests {
         if let Some((_, text)) = parsed.strings.first() {
             assert!(text.is_empty());
         }
+    }
+
+    fn mk_node(node_type: FfsType, body: Vec<u8>, children: Vec<FfsNode>) -> FfsNode {
+        FfsNode {
+            guid: None,
+            node_type,
+            subtype: 0,
+            offset: 0,
+            header: vec![],
+            body,
+            tail: vec![],
+            children,
+            action: Action::NoAction,
+            parsing_data: ParsingData::None,
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        }
+    }
+
+    fn mk_image(pkg_body: Vec<u8>) -> Image {
+        let section = mk_node(FfsType::Section, pkg_body, vec![]);
+        let file = mk_node(FfsType::File, vec![], vec![section]);
+        let volume = mk_node(FfsType::Volume, vec![], vec![file]);
+        let root = mk_node(FfsType::Image, vec![], vec![volume]);
+        Image {
+            image_id: "img".into(),
+            session_id: "s".into(),
+            root,
+            mode: ImageMode::Read,
+        }
+    }
+
+    #[test]
+    fn collect_strings_returns_first_package_strings() {
+        let sibt = [SIBT_STRING_SCSU, b'X', 0, SIBT_END];
+        let pkg = make_pkg("eng", &sibt);
+        let image = mk_image(pkg);
+        let out = collect_strings(&image);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].language, "eng");
+        assert_eq!(out[0].string_id, 1);
+        assert_eq!(out[0].text, "X");
+    }
+
+    #[test]
+    fn collect_strings_empty_when_no_package() {
+        let image = mk_image(vec![0x00, 0x00, 0x00, 0x02]);
+        assert!(collect_strings(&image).is_empty());
     }
 }

@@ -655,14 +655,16 @@ impl EngineService for EngineServer {
         ))
     }
 
-    #[tracing::instrument(skip(self, _req), err)]
+    #[tracing::instrument(skip(self, req), err)]
     async fn hii_list_strings(
         &self,
-        _req: Request<HiiListStringsRequest>,
+        req: Request<HiiListStringsRequest>,
     ) -> RpcResult<HiiListStringsResponse> {
-        Err(Status::unimplemented(
-            "HiiListStrings not implemented (Plan B)",
-        ))
+        let r = req.into_inner();
+        let img = self.get_or_load_image(&r.image_id).await?;
+        let strings = crate::hii::strings::collect_strings(&img);
+        let _ = self.sm.touch(&img.session_id);
+        Ok(Response::new(HiiListStringsResponse { strings }))
     }
 
     #[tracing::instrument(skip(self, req), err)]
