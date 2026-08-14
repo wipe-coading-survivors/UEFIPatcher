@@ -84,24 +84,85 @@ pub fn find_item<'a>(root: &'a FfsNode, target: &Target) -> Result<&'a FfsNode, 
     }
 }
 
-pub fn find_item_mut<'a>(
-    root: &'a mut FfsNode,
-    target: &Target,
-) -> Result<&'a mut FfsNode, ParserError> {
+pub fn find_item_path(root: &FfsNode, target: &Target) -> Option<Vec<usize>> {
     match target {
         Target::Path(indices) => {
             let mut node = root;
             for &i in indices {
-                node = node.children.get_mut(i).ok_or_else(|| {
-                    ParserError::InvalidHeader(format!("path index {i} not found"))
-                })?;
+                node = node.children.get(i)?;
             }
-            Ok(node)
+            Some(indices.clone())
         }
-        _ => Err(ParserError::InvalidHeader(
-            "only path targets supported for mutable".into(),
-        )),
+        Target::Guid(g) => find_path_by_guid(root, g, &mut Vec::new()),
+        Target::GuidSection {
+            guid,
+            section_type,
+            section_index,
+        } => {
+            let mut file_path = find_path_by_guid(root, guid, &mut Vec::new())?;
+            let file = node_at_path(root, &file_path)?;
+            let wanted = *section_index;
+            let mut count = 0usize;
+            for (i, child) in file.children.iter().enumerate() {
+                if child.subtype == *section_type {
+                    if wanted.is_none_or(|w| w == count) {
+                        file_path.push(i);
+                        return Some(file_path);
+                    }
+                    count += 1;
+                }
+            }
+            None
+        }
     }
+}
+
+pub fn find_item_mut<'a>(
+    root: &'a mut FfsNode,
+    target: &Target,
+) -> Result<&'a mut FfsNode, ParserError> {
+    let path = find_item_path(root, target)
+        .ok_or_else(|| ParserError::InvalidHeader(format!("target {target:?} not found")))?;
+    let mut node = root;
+    for &i in &path {
+        node = node
+            .children
+            .get_mut(i)
+            .ok_or_else(|| ParserError::InvalidHeader(format!("path index {i} not found")))?;
+    }
+    Ok(node)
+}
+
+fn node_at_path<'a>(root: &'a FfsNode, path: &[usize]) -> Option<&'a FfsNode> {
+    let mut node = root;
+    for &i in path {
+        node = node.children.get(i)?;
+    }
+    Some(node)
+}
+
+fn find_path_by_guid(node: &FfsNode, g: &Guid, path: &mut Vec<usize>) -> Option<Vec<usize>> {
+    if node.guid == Some(*g) {
+        return Some(path.clone());
+    }
+    if let ParsingData::Volume(vd) = &node.parsing_data
+        && vd.extended_header_guid == Some(*g)
+    {
+        return Some(path.clone());
+    }
+    if let ParsingData::GuidedSection(gs) = &node.parsing_data
+        && gs.guid == *g
+    {
+        return Some(path.clone());
+    }
+    for (i, child) in node.children.iter().enumerate() {
+        path.push(i);
+        if let Some(p) = find_path_by_guid(child, g, path) {
+            return Some(p);
+        }
+        path.pop();
+    }
+    None
 }
 
 fn find_by_guid<'a>(node: &'a FfsNode, g: &Guid) -> Option<&'a FfsNode> {
@@ -221,6 +282,79 @@ mod tests {
         };
         let node = find_item(&tree, &t).unwrap();
         assert_eq!(node.subtype, 0x10);
+    }
+
+    #[test]
+    fn find_item_path_resolves_guid_and_guid_section() {
+        let tree = sample_tree();
+        let g = Guid::from_str("5C60F367-A505-419A-859E-2A4FF6CA6FE5").unwrap();
+        let p = find_item_path(&tree, &Target::Guid(g)).unwrap();
+        assert_eq!(p, vec![0, 0]);
+        let p = find_item_path(
+            &tree,
+            &Target::GuidSection {
+                guid: g,
+                section_type: 0x10,
+                section_index: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(p, vec![0, 0, 0]);
+    }
+
+    #[test]
+    fn find_item_path_returns_none_on_miss() {
+        let tree = sample_tree();
+        assert!(find_item_path(&tree, &Target::Path(vec![0, 9])).is_none());
+        let g = Guid::from_str("5C60F367-A505-419A-859E-2A4FF6CA6FE5").unwrap();
+        assert!(
+            find_item_path(
+                &tree,
+                &Target::GuidSection {
+                    guid: g,
+                    section_type: 0x02,
+                    section_index: None,
+                },
+            )
+            .is_none()
+        );
+        let other = Guid::from_str("00000000-0000-0000-0000-000000000000").unwrap();
+        assert!(find_item_path(&tree, &Target::Guid(other)).is_none());
+    }
+
+    #[test]
+    fn find_item_mut_guid_section_gives_mutable_access() {
+        let mut tree = sample_tree();
+        let g = Guid::from_str("5C60F367-A505-419A-859E-2A4FF6CA6FE5").unwrap();
+        let t = Target::GuidSection {
+            guid: g,
+            section_type: 0x10,
+            section_index: None,
+        };
+        let node = find_item_mut(&mut tree, &t).unwrap();
+        node.body.extend_from_slice(b"patched");
+        assert!(
+            tree.children[0].children[0].children[0]
+                .body
+                .ends_with(b"patched")
+        );
+    }
+
+    #[test]
+    fn find_item_mut_guid_gives_mutable_access() {
+        let mut tree = sample_tree();
+        let g = Guid::from_str("5C60F367-A505-419A-859E-2A4FF6CA6FE5").unwrap();
+        let node = find_item_mut(&mut tree, &Target::Guid(g)).unwrap();
+        node.body.push(0xAA);
+        assert_eq!(tree.children[0].children[0].body, vec![0xAA]);
+    }
+
+    #[test]
+    fn find_item_mut_path_still_works() {
+        let mut tree = sample_tree();
+        let node = find_item_mut(&mut tree, &Target::Path(vec![0, 0, 0])).unwrap();
+        node.body.push(1);
+        assert_eq!(tree.children[0].children[0].children[0].body, vec![1]);
     }
 
     fn sample_tree() -> FfsNode {
