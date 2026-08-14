@@ -645,14 +645,16 @@ impl EngineService for EngineServer {
         Ok(Response::new(Empty {}))
     }
 
-    #[tracing::instrument(skip(self, _req), err)]
+    #[tracing::instrument(skip(self, req), err)]
     async fn hii_list_forms(
         &self,
-        _req: Request<HiiListFormsRequest>,
+        req: Request<HiiListFormsRequest>,
     ) -> RpcResult<HiiListFormsResponse> {
-        Err(Status::unimplemented(
-            "HiiListForms not implemented (Plan B)",
-        ))
+        let r = req.into_inner();
+        let img = self.get_or_load_image(&r.image_id).await?;
+        let forms = crate::hii::forms::collect_forms(&img);
+        let _ = self.sm.touch(&img.session_id);
+        Ok(Response::new(HiiListFormsResponse { forms }))
     }
 
     #[tracing::instrument(skip(self, req), err)]
