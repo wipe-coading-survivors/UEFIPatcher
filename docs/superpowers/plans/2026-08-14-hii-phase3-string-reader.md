@@ -287,6 +287,7 @@ fn read_language(body: &[u8], start: usize, end: usize) -> String {
 }
 
 fn read_scsu(body: &[u8], start: usize) -> (String, usize) {
+    let start = start.min(body.len());
     let mut i = start;
     while i < body.len() && body[i] != 0 {
         i += 1;
@@ -296,6 +297,7 @@ fn read_scsu(body: &[u8], start: usize) -> (String, usize) {
 }
 
 fn read_ucs2(body: &[u8], start: usize) -> (String, usize) {
+    let start = start.min(body.len());
     let mut i = start;
     while i + 1 < body.len() && !(body[i] == 0 && body[i + 1] == 0) {
         i += 2;
@@ -376,6 +378,16 @@ Append to the `tests` module in `strings.rs`:
         buf.push(SIBT_END);
         let parsed = parse_string_package(&buf).unwrap();
         assert!(parsed.language.is_empty());
+    }
+
+    #[test]
+    fn parse_truncated_font_opcode_does_not_panic() {
+        let pkg = make_pkg("en", &[SIBT_STRING_SCSU_FONT]);
+        let parsed = parse_string_package(&pkg).unwrap();
+        assert!(parsed.strings.len() <= 1);
+        if let Some((_, text)) = parsed.strings.first() {
+            assert!(text.is_empty());
+        }
     }
 ```
 
