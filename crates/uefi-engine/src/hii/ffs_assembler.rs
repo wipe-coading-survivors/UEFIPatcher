@@ -1,7 +1,7 @@
 use crate::ffs::*;
 use crate::types::Guid;
 
-use super::SetupAdvancedError;
+use super::HiiError;
 
 const FFS_HEADER_SIZE: usize = 24;
 
@@ -9,7 +9,7 @@ pub fn assemble_ffs(
     ifr_bytes: &[u8],
     string_package_bytes: &[u8],
     file_guid: &Guid,
-) -> Result<Vec<u8>, SetupAdvancedError> {
+) -> Result<Vec<u8>, HiiError> {
     let mut body = Vec::new();
     emit_raw_section(&mut body, ifr_bytes);
     emit_raw_section(&mut body, string_package_bytes);

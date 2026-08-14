@@ -1,4 +1,10 @@
+pub mod ami_patcher;
+pub mod ffs_assembler;
+pub mod formset_add;
 pub mod ifr;
+pub mod ifr_builder;
+pub mod schema;
+pub mod string_pack;
 
 use crate::ops;
 use crate::types::*;
@@ -12,6 +18,16 @@ pub enum HiiError {
     NotASetupItem,
     #[error("invalid IFR")]
     InvalidIfr,
+    #[error("invalid schema: {0}")]
+    InvalidSchema(String),
+    #[error("string package not found")]
+    StringPackageNotFound,
+    #[error("AMI files not found (setupdataBin/amitseSct)")]
+    AmiFilesNotFound,
+    #[error("IFR build error: {0}")]
+    IfrBuildError(String),
+    #[error("FFS assembly error: {0}")]
+    FfsAssemblyError(String),
 }
 
 #[tracing::instrument(level = "debug", skip(image), fields(item_id = %item_id, visible), err)]

@@ -681,7 +681,7 @@ impl EngineService for EngineServer {
         req: Request<SetupFormSetAddRequest>,
     ) -> RpcResult<SetupFormSetAddResponse> {
         let r = req.into_inner();
-        let schema = crate::setup_advanced::schema::parse_schema(&r.schema_json)
+        let schema = crate::hii::schema::parse_schema(&r.schema_json)
             .map_err(|e| Status::invalid_argument(e.to_string()))?;
         let target_guid: Option<Guid> = if r.target_ffs_guid.is_empty() {
             None
@@ -697,23 +697,16 @@ impl EngineService for EngineServer {
             let img_slot = images
                 .get_mut(&r.image_id)
                 .ok_or_else(|| Status::not_found("image not found"))?;
-            crate::setup_advanced::add_setup_formset(img_slot, &schema, target_guid.as_ref())
+            crate::hii::formset_add::add_setup_formset(img_slot, &schema, target_guid.as_ref())
                 .map_err(|e| match e {
-                    crate::setup_advanced::SetupAdvancedError::InvalidSchema(s) => {
-                        Status::invalid_argument(s)
-                    }
-                    crate::setup_advanced::SetupAdvancedError::StringPackageNotFound => {
+                    crate::hii::HiiError::InvalidSchema(s) => Status::invalid_argument(s),
+                    crate::hii::HiiError::StringPackageNotFound => {
                         Status::not_found("string package not found")
                     }
-                    crate::setup_advanced::SetupAdvancedError::AmiFilesNotFound => {
+                    crate::hii::HiiError::AmiFilesNotFound => {
                         Status::not_found("AMI setupdataBin/amitseSct not found")
                     }
-                    crate::setup_advanced::SetupAdvancedError::IfrBuildError(s) => {
-                        Status::internal(s)
-                    }
-                    crate::setup_advanced::SetupAdvancedError::FfsAssemblyError(s) => {
-                        Status::internal(s)
-                    }
+                    _ => Status::internal(e.to_string()),
                 })?
         };
         self.flush_image(&r.image_id).await?;

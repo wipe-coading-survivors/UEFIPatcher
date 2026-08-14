@@ -7,7 +7,6 @@ pub mod ops;
 pub mod parser;
 pub mod rpc;
 pub mod session;
-pub mod setup_advanced;
 pub mod storage;
 pub mod types;
 pub use types::*;

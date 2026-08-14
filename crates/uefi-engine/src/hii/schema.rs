@@ -1,4 +1,4 @@
-use super::SetupAdvancedError;
+use super::HiiError;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -182,8 +182,8 @@ pub struct OrderedListItem {
     pub max_containers: u8,
 }
 
-pub fn parse_schema(json: &str) -> Result<FormSetSchema, SetupAdvancedError> {
-    serde_json::from_str(json).map_err(|e| SetupAdvancedError::InvalidSchema(e.to_string()))
+pub fn parse_schema(json: &str) -> Result<FormSetSchema, HiiError> {
+    serde_json::from_str(json).map_err(|e| HiiError::InvalidSchema(e.to_string()))
 }
 
 #[cfg(test)]

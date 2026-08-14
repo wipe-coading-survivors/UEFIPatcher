@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use super::SetupAdvancedError;
+use super::HiiError;
 use crate::ops;
 use crate::types::*;
 
@@ -26,7 +26,7 @@ pub fn add_strings(
     image: &mut Image,
     ffs_guid: Option<&Guid>,
     strings: &[String],
-) -> Result<HashMap<String, u16>, SetupAdvancedError> {
+) -> Result<HashMap<String, u16>, HiiError> {
     let (vi, fi, si) = find_string_package(image, ffs_guid)?;
     let path = vec![vi, fi, si];
     let body = &mut image.root.children[vi].children[fi].children[si].body;
@@ -52,7 +52,7 @@ fn add_strings_to_body(body: &mut Vec<u8>, strings: &[String]) -> HashMap<String
 fn find_string_package(
     image: &Image,
     ffs_guid: Option<&Guid>,
-) -> Result<(usize, usize, usize), SetupAdvancedError> {
+) -> Result<(usize, usize, usize), HiiError> {
     for (vi, vol) in image.root.children.iter().enumerate() {
         for (fi, file) in vol.children.iter().enumerate() {
             if let Some(g) = ffs_guid
@@ -67,7 +67,7 @@ fn find_string_package(
             }
         }
     }
-    Err(SetupAdvancedError::StringPackageNotFound)
+    Err(HiiError::StringPackageNotFound)
 }
 
 pub fn is_string_package(body: &[u8]) -> bool {
@@ -335,7 +335,7 @@ mod tests {
         let mut image = make_image(vec![0x00, 0x00, 0x00, 0x02]);
         assert!(matches!(
             add_strings(&mut image, None, &["x".to_string()]),
-            Err(SetupAdvancedError::StringPackageNotFound)
+            Err(HiiError::StringPackageNotFound)
         ));
     }
 }

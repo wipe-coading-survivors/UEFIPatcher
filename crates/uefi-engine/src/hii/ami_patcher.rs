@@ -1,7 +1,7 @@
 use crate::ops;
 use crate::types::*;
 
-use super::SetupAdvancedError;
+use super::HiiError;
 
 pub const AMI_RECORD_SIZE: usize = 108;
 pub const AMI_DEFAULT_ACCESS_LEVEL: u8 = 0x05;
@@ -37,7 +37,7 @@ pub fn patch_ami(
     questions: &[QuestionAmiRecord],
     setupdata_guid: Option<&Guid>,
     amitse_guid: Option<&Guid>,
-) -> Result<(), SetupAdvancedError> {
+) -> Result<(), HiiError> {
     let (sd_vi, sd_fi) = find_ami_module(image, setupdata_guid, "setupdata")?;
     let (am_vi, am_fi) = find_ami_module(image, amitse_guid, "AMITSE")?;
     {
@@ -69,7 +69,7 @@ fn find_ami_module(
     image: &Image,
     guid: Option<&Guid>,
     name_hint: &str,
-) -> Result<(usize, usize), SetupAdvancedError> {
+) -> Result<(usize, usize), HiiError> {
     for (vi, vol) in image.root.children.iter().enumerate() {
         for (fi, file) in vol.children.iter().enumerate() {
             if let Some(g) = guid
@@ -93,7 +93,7 @@ fn find_ami_module(
             }
         }
     }
-    Err(SetupAdvancedError::AmiFilesNotFound)
+    Err(HiiError::AmiFilesNotFound)
 }
 
 fn has_name_section(children: &[FfsNode], name: &str) -> bool {
@@ -280,7 +280,7 @@ mod tests {
         let formset_guid: Guid = "A1B2C3D4-E5F6-7890-ABCD-EF1234567890".parse().unwrap();
         assert!(matches!(
             patch_ami(&mut image, &formset_guid, &[], &[], None, None),
-            Err(SetupAdvancedError::AmiFilesNotFound)
+            Err(HiiError::AmiFilesNotFound)
         ));
     }
 }

@@ -1,30 +1,14 @@
-pub mod ami_patcher;
-pub mod ffs_assembler;
-pub mod ifr_builder;
-pub mod schema;
-pub mod string_pack;
-
 use std::collections::HashMap;
 
 use crate::ops;
 use crate::types::*;
-use ami_patcher::QuestionAmiRecord;
-use ifr_builder::*;
-use thiserror::Error;
 
-#[derive(Debug, Error)]
-pub enum SetupAdvancedError {
-    #[error("invalid schema: {0}")]
-    InvalidSchema(String),
-    #[error("string package not found")]
-    StringPackageNotFound,
-    #[error("AMI files not found (setupdataBin/amitseSct)")]
-    AmiFilesNotFound,
-    #[error("IFR build error: {0}")]
-    IfrBuildError(String),
-    #[error("FFS assembly error: {0}")]
-    FfsAssemblyError(String),
-}
+use super::HiiError;
+use super::ami_patcher::{self, QuestionAmiRecord};
+use super::ffs_assembler;
+use super::ifr_builder::*;
+use super::schema;
+use super::string_pack;
 
 pub struct AddSetupResult {
     pub new_ffs_guid: Guid,
@@ -36,14 +20,14 @@ pub fn add_setup_formset(
     image: &mut Image,
     schema: &schema::FormSetSchema,
     target_ffs_guid: Option<&Guid>,
-) -> Result<AddSetupResult, SetupAdvancedError> {
+) -> Result<AddSetupResult, HiiError> {
     let formset_guid: Guid = Guid::try_parse(&schema.formset_guid)
-        .map_err(|e| SetupAdvancedError::InvalidSchema(e.to_string()))?;
+        .map_err(|e| HiiError::InvalidSchema(e.to_string()))?;
     let new_ffs_guid = Guid::try_parse(&format!(
         "{:08X}-BEEF-1234-8000-000000000001",
         0xB00B0000 + image.root.children.len() as u32,
     ))
-    .map_err(|e| SetupAdvancedError::IfrBuildError(e.to_string()))?;
+    .map_err(|e| HiiError::IfrBuildError(e.to_string()))?;
     let mut strings: Vec<String> = Vec::new();
     strings.push(schema.title.clone());
     strings.push(schema.help.clone());
@@ -82,7 +66,7 @@ pub fn add_setup_formset(
     )?;
     let target = Target::Path(vec![0]);
     ops::insert(&mut image.root, &target, &ffs_bytes, ops::InsertMode::Into)
-        .map_err(|e| SetupAdvancedError::FfsAssemblyError(e.to_string()))?;
+        .map_err(|e| HiiError::FfsAssemblyError(e.to_string()))?;
     Ok(AddSetupResult {
         new_ffs_guid,
         inserted_form_ids: form_ids,
@@ -135,10 +119,10 @@ fn collect_item_strings(item: &schema::ItemSchema, strings: &mut Vec<String>) {
 fn build_ifr(
     schema: &schema::FormSetSchema,
     string_ids: &HashMap<String, u16>,
-) -> Result<Vec<u8>, SetupAdvancedError> {
+) -> Result<Vec<u8>, HiiError> {
     let mut b = IfrBuilder::new();
     let formset_guid: Guid = Guid::try_parse(&schema.formset_guid)
-        .map_err(|e| SetupAdvancedError::InvalidSchema(e.to_string()))?;
+        .map_err(|e| HiiError::InvalidSchema(e.to_string()))?;
     let title_id = string_ids[&schema.title];
     let help_id = string_ids[&schema.help];
     let class_guids: Vec<Guid> = schema
@@ -148,8 +132,8 @@ fn build_ifr(
         .collect();
     b.emit_form_set(&formset_guid, title_id, help_id, &class_guids);
     for vs in &schema.varstores {
-        let g: Guid = Guid::try_parse(&vs.guid)
-            .map_err(|e| SetupAdvancedError::InvalidSchema(e.to_string()))?;
+        let g: Guid =
+            Guid::try_parse(&vs.guid).map_err(|e| HiiError::InvalidSchema(e.to_string()))?;
         b.emit_var_store(vs.id, &g, vs.size, &vs.name);
     }
     for ds in &schema.default_stores {
@@ -317,7 +301,7 @@ fn extract_question(item: &schema::ItemSchema) -> Option<(u16, Option<u16>, u8, 
 fn find_string_package_section(
     image: &Image,
     ffs_guid: Option<&Guid>,
-) -> Result<(usize, usize, usize), SetupAdvancedError> {
+) -> Result<(usize, usize, usize), HiiError> {
     for (vi, vol) in image.root.children.iter().enumerate() {
         for (fi, file) in vol.children.iter().enumerate() {
             if let Some(g) = ffs_guid
@@ -332,5 +316,5 @@ fn find_string_package_section(
             }
         }
     }
-    Err(SetupAdvancedError::StringPackageNotFound)
+    Err(HiiError::StringPackageNotFound)
 }
