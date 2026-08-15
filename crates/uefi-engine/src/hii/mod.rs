@@ -5,6 +5,7 @@ pub mod formset_add;
 pub mod ifr;
 pub mod ifr_builder;
 pub mod package_list;
+pub mod pe_resource;
 pub mod schema;
 pub mod string_pack;
 pub mod strings;
