@@ -10,6 +10,7 @@ pub mod schema;
 pub mod string_pack;
 pub mod strings;
 
+use crate::ffs::{EFI_SECTION_COMPRESSION, EFI_SECTION_GUID_DEFINED, EFI_SECTION_RAW};
 use crate::ops;
 use crate::types::*;
 use thiserror::Error;
@@ -32,6 +33,12 @@ pub enum HiiError {
     IfrBuildError(String),
     #[error("FFS assembly error: {0}")]
     FfsAssemblyError(String),
+    #[error("image is not writable (open in Write mode first)")]
+    NotWritable,
+    #[error(
+        "target is behind a compressed/guided section; mutation requires recompression (planned next phase)"
+    )]
+    MutationBehindCompression,
 }
 
 #[tracing::instrument(level = "debug", skip(image), fields(item_id = %item_id, visible), err)]
@@ -40,14 +47,29 @@ pub fn set_item_visibility(
     item_id: &str,
     visible: bool,
 ) -> Result<(), HiiError> {
+    if image.mode != ImageMode::Write {
+        return Err(HiiError::NotWritable);
+    }
     let target = crate::parser::target::parse_target(item_id).map_err(|_| HiiError::NotFound)?;
     let path =
         crate::parser::target::find_item_path(&image.root, &target).ok_or(HiiError::NotFound)?;
+    let mut ancestor = &image.root;
+    for &i in &path[..path.len() - 1] {
+        ancestor = &ancestor.children[i];
+        if ancestor.node_type == FfsType::Section
+            && (ancestor.subtype == EFI_SECTION_COMPRESSION
+                || ancestor.subtype == EFI_SECTION_GUID_DEFINED)
+        {
+            return Err(HiiError::MutationBehindCompression);
+        }
+    }
     let mut changed = false;
     {
         let node = crate::parser::target::find_item_mut(&mut image.root, &target)
             .map_err(|_| HiiError::NotFound)?;
-        if node.node_type != FfsType::Section {
+        if node.node_type != FfsType::Section
+            || (node.subtype != EFI_SECTION_RAW && !ifr::is_form_package(&node.body))
+        {
             return Err(HiiError::NotASetupItem);
         }
         if visible && let Some(scope) = ifr::find_suppress_if_scopes(&node.body).into_iter().next()
@@ -111,11 +133,12 @@ mod tests {
     }
 
     fn sample_image_with_ifr() -> Image {
-        let section = mk_node(
+        let mut section = mk_node(
             FfsType::Section,
             vec![0x0A, 0x82, 0x12, 0x03, 0x40, 0x29, 0x02],
             vec![],
         );
+        section.subtype = 0x19;
         let file = mk_node(FfsType::File, vec![], vec![section]);
         let volume = mk_node(FfsType::Volume, vec![], vec![file]);
         let root = mk_node(FfsType::Image, vec![], vec![volume]);
@@ -180,5 +203,70 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, HiiError::NotFound));
+    }
+
+    #[test]
+    fn set_item_visibility_refuses_read_only_mode() {
+        let mut image = sample_image_with_ifr_guid();
+        image.mode = ImageMode::Read;
+        let err = set_item_visibility(
+            &mut image,
+            "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:0",
+            true,
+        )
+        .unwrap_err();
+        assert!(matches!(err, HiiError::NotWritable));
+    }
+
+    #[test]
+    fn set_item_visibility_refuses_mutation_behind_compression() {
+        let mut inner = mk_node(
+            FfsType::Section,
+            vec![0x0A, 0x82, 0x12, 0x03, 0x40, 0x29, 0x02],
+            vec![],
+        );
+        inner.subtype = 0x19;
+        let mut wrapper = mk_node(FfsType::Section, vec![], vec![inner]);
+        wrapper.subtype = 0x02;
+        let mut file = mk_node(FfsType::File, vec![], vec![wrapper]);
+        file.guid = Some(Guid::from_str(FILE_GUID_STR).unwrap());
+        let volume = mk_node(FfsType::Volume, vec![], vec![file]);
+        let root = mk_node(FfsType::Image, vec![], vec![volume]);
+        let mut image = Image {
+            image_id: "img".into(),
+            session_id: "s".into(),
+            root,
+            mode: ImageMode::Write,
+        };
+        let err = set_item_visibility(
+            &mut image,
+            "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:0",
+            true,
+        )
+        .unwrap_err();
+        assert!(matches!(err, HiiError::MutationBehindCompression));
+    }
+
+    #[test]
+    fn set_item_visibility_refuses_uncompressed_pe32_target() {
+        let mut section = mk_node(FfsType::Section, vec![b'M', b'Z', 0, 0], vec![]);
+        section.subtype = 0x10;
+        let mut file = mk_node(FfsType::File, vec![], vec![section]);
+        file.guid = Some(Guid::from_str(FILE_GUID_STR).unwrap());
+        let volume = mk_node(FfsType::Volume, vec![], vec![file]);
+        let root = mk_node(FfsType::Image, vec![], vec![volume]);
+        let mut image = Image {
+            image_id: "img".into(),
+            session_id: "s".into(),
+            root,
+            mode: ImageMode::Write,
+        };
+        let err = set_item_visibility(
+            &mut image,
+            "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x10:0",
+            true,
+        )
+        .unwrap_err();
+        assert!(matches!(err, HiiError::NotASetupItem));
     }
 }

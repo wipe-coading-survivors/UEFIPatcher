@@ -678,5 +678,10 @@ fn real_image_hii_form_visibility_round_trip() {
         "form target must resolve to a Section"
     );
 
-    set_item_visibility(&mut img, &form_id, true).expect("set_item_visibility on real form target");
+    let err = set_item_visibility(&mut img, &form_id, true)
+        .expect_err("HNX99TF HII lives inside LZMA-guided wrappers; mutation must be refused until the recompression phase (spec §6)");
+    assert!(matches!(
+        err,
+        uefi_engine::hii::HiiError::MutationBehindCompression
+    ));
 }
