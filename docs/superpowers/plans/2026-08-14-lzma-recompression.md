@@ -214,11 +214,14 @@ git commit -m "feat(uefi-engine): compress_lzma primitive (EDK2 alone header, kn
 В `builder/mod.rs` рядом с `is_compressed_or_guided` (`:133`) добавить заглушку:
 
 ```rust
+#[expect(dead_code)]
 fn subtree_dirty(node: &FfsNode) -> bool {
     let _ = node;
     false
 }
 ```
+
+(Атрибут `#[expect(dead_code)]` обязателен: до Task 3 у приватной `subtree_dirty` нет продакшн-вызовов — без него clippy `-D warnings` на lib-таргете падает по dead_code. Task 3 Step 3 удаляет атрибут.)
 
 В `ffs.rs`, в модуль `tests`, добавить:
 
@@ -249,22 +252,21 @@ Expected: FAIL — `subtree_dirty_true_for_dirty_descendant`, `subtree_dirty_tru
 
 - [ ] **Step 3: Реализация**
 
-Заменить заглушку в `builder/mod.rs`:
+Заменить заглушку в `builder/mod.rs` (атрибут `#[expect(dead_code)]` сохранить — снимается в Task 3):
 
 ```rust
+#[expect(dead_code)]
 fn subtree_dirty(node: &FfsNode) -> bool {
     node.action != Action::NoAction || node.children.iter().any(subtree_dirty)
 }
 ```
 
-Заменить заглушку в `ffs.rs`:
+Заменить заглушку в `ffs.rs` (однострочный chain — rustfmt не принимает перенос при запасе до 100 колонок):
 
 ```rust
 pub fn is_recompressable_lzma_guid(g: &Guid) -> bool {
     let b = g.to_bytes();
-    b == lzma_guid().to_bytes()
-        || b == lzma_hp_guid().to_bytes()
-        || b == lzma_ms_guid().to_bytes()
+    b == lzma_guid().to_bytes() || b == lzma_hp_guid().to_bytes() || b == lzma_ms_guid().to_bytes()
 }
 ```
 
@@ -431,6 +433,8 @@ Run: `cargo test -p uefi-engine builder::`
 Expected: FAIL — `guided_lzma_dirty_child_recompresses_and_materializes`, `guided_lzma_noaction_with_dirty_descendant_recompresses` (сегодняшний код эммитит verbatim → `out == section`), `guided_lzma_remove_only_child_errors_empty_input`, `guided_lzma_replace_body_only_errors_without_children`, `dirty_tiano_guided_…`, `dirty_compression_section_…` (сегодня `build_section` возвращает `Ok`). `guided_lzma_clean_tree_builds_verbatim` PASS уже сейчас.
 
 - [ ] **Step 3: Реализация**
+
+Перед заменой `build_section` удалить строку `#[expect(dead_code)]` над `subtree_dirty` (появляется продакшн-вызов — unfulfilled expectation сломал бы clippy-гейт).
 
 Заменить в `builder/mod.rs` функцию `build_section` целиком на:
 
