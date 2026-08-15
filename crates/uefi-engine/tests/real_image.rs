@@ -119,6 +119,69 @@ fn scan_ffs_files(body: &[u8], erase: u8, revision: u8) -> Vec<FfsNode> {
     out
 }
 
+fn find_guided_ui_target(
+    node: &FfsNode,
+    path: &mut Vec<usize>,
+    out: &mut Option<(Vec<usize>, String)>,
+) {
+    if out.is_some() {
+        return;
+    }
+    if node.node_type == FfsType::Section
+        && node.subtype == EFI_SECTION_GUID_DEFINED
+        && matches!(
+            &node.parsing_data,
+            ParsingData::GuidedSection(d)
+                if uefi_engine::ffs::is_recompressable_lzma_guid(&d.guid)
+        )
+    {
+        for (i, child) in node.children.iter().enumerate() {
+            if child.node_type == FfsType::Section
+                && child.subtype == uefi_engine::ffs::EFI_SECTION_UI
+            {
+                let units: Vec<u16> = child
+                    .body
+                    .chunks_exact(2)
+                    .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                    .collect();
+                let name = String::from_utf16_lossy(&units)
+                    .trim_end_matches('\0')
+                    .to_string();
+                let mut ui_path = path.clone();
+                ui_path.push(i);
+                *out = Some((ui_path, name));
+                return;
+            }
+        }
+    }
+    for (i, child) in node.children.iter().enumerate() {
+        path.push(i);
+        find_guided_ui_target(child, path, out);
+        path.pop();
+        if out.is_some() {
+            return;
+        }
+    }
+}
+
+fn collect_ui_names(node: &FfsNode, out: &mut Vec<String>) {
+    if node.node_type == FfsType::Section && node.subtype == uefi_engine::ffs::EFI_SECTION_UI {
+        let units: Vec<u16> = node
+            .body
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        out.push(
+            String::from_utf16_lossy(&units)
+                .trim_end_matches('\0')
+                .to_string(),
+        );
+    }
+    for child in &node.children {
+        collect_ui_names(child, out);
+    }
+}
+
 #[test]
 #[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
 fn real_image_parses_ffs_files() {
@@ -684,4 +747,56 @@ fn real_image_hii_form_visibility_round_trip() {
         err,
         uefi_engine::hii::HiiError::MutationBehindCompression
     ));
+}
+
+#[test]
+#[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
+fn real_image_recompress_remove_ui_inside_lzma() {
+    use uefi_engine::builder::build_image;
+    use uefi_engine::ops::remove;
+    use uefi_engine::types::{ImageMode, Target};
+
+    let data = load_fw();
+    assert_eq!(data.len(), 0x0100_0000, "16 MiB image expected");
+    let mut img = parse_image(&data, ImageMode::Write, "img1", "s1").expect("parse_image");
+
+    let mut found = None;
+    let mut path = vec![];
+    find_guided_ui_target(&img.root, &mut path, &mut found);
+    let (ui_path, ui_name) = found.expect("guided LZMA section with a UI child");
+    assert!(!ui_name.is_empty());
+
+    let mut before_names = vec![];
+    collect_ui_names(&img.root, &mut before_names);
+    let occurrences_before = before_names.iter().filter(|n| **n == ui_name).count();
+    assert!(occurrences_before >= 1);
+
+    remove(&mut img.root, &Target::Path(ui_path)).unwrap();
+
+    let built = build_image(&img).expect("build_image after remove inside LZMA");
+    assert_eq!(
+        built.len(),
+        data.len(),
+        "total flash length must be preserved"
+    );
+    assert_eq!(
+        &built[..0x890000],
+        &data[..0x890000],
+        "bytes before FV1 must be untouched"
+    );
+    assert_eq!(
+        &built[0xd60000..],
+        &data[0xd60000..],
+        "bytes after FV1 must be untouched"
+    );
+
+    let re_img = parse_image(&built, ImageMode::Read, "img1", "s1").expect("re-parse");
+    let mut after_names = vec![];
+    collect_ui_names(&re_img.root, &mut after_names);
+    let occurrences_after = after_names.iter().filter(|n| **n == ui_name).count();
+    assert_eq!(
+        occurrences_after,
+        occurrences_before - 1,
+        "removed UI section '{ui_name}' must be materialized as absent"
+    );
 }
