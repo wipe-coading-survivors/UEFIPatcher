@@ -75,16 +75,18 @@ pub fn parse_form_package(body: &[u8]) -> Option<FormSetInfo> {
     if !is_form_package(body) {
         return None;
     }
+    let plen = body[0] as usize | (body[1] as usize) << 8 | (body[2] as usize) << 16;
+    let end = plen.min(body.len());
     let mut guid = None;
     let mut title: StringId = 0;
     let mut forms = Vec::new();
     let mut scope_stack: Vec<u8> = Vec::new();
     let mut i = 4;
-    while i + 2 <= body.len() {
+    while i + 2 <= end {
         let op_code = body[i];
         let length_and_scope = body[i + 1];
         let length = (length_and_scope & 0x7F) as usize;
-        if length < 2 || i + length > body.len() {
+        if length < 2 || i + length > end {
             return None;
         }
         match op_code {
@@ -238,5 +240,36 @@ mod tests {
         assert!(
             parse_form_package(&[0x00, 0x00, 0x00, PACKAGE_STRINGS, IFR_FORM_SET_OP]).is_none()
         );
+    }
+
+    #[test]
+    fn parse_ignores_tail_beyond_declared_length() {
+        let g = Guid::from_str(FORMSET_GUID).unwrap();
+        let mut ifr = form_set(&g, 7);
+        ifr.extend(form(1, 10));
+        ifr.extend(end());
+        ifr.extend(end());
+        let mut pkg = package(&ifr);
+        let declared = pkg.len();
+        pkg.extend(vec![0xAA; 16]);
+        let fs = parse_form_package(&pkg).unwrap();
+        assert_eq!(fs.guid, g);
+        assert_eq!(fs.forms.len(), 1);
+        assert_eq!(declared, pkg.len() - 16);
+    }
+
+    #[test]
+    fn parse_returns_none_when_declared_length_cuts_mid_opcode() {
+        let g = Guid::from_str(FORMSET_GUID).unwrap();
+        let mut ifr = form_set(&g, 7);
+        ifr.extend(form(1, 10));
+        ifr.extend(end());
+        ifr.extend(end());
+        let mut pkg = package(&ifr);
+        let shrinked = (pkg.len() - 5) as u32;
+        pkg[0] = (shrinked & 0xFF) as u8;
+        pkg[1] = ((shrinked >> 8) & 0xFF) as u8;
+        pkg[2] = ((shrinked >> 16) & 0xFF) as u8;
+        assert!(parse_form_package(&pkg).is_none());
     }
 }
