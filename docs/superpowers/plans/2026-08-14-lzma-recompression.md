@@ -308,12 +308,14 @@ pub enum BuilderError {
     ChecksumFailed,
     #[error(transparent)]
     Compression(#[from] crate::compress::CompressError),
-    #[error("compressed/guided section cannot be rebuilt: unsupported algorithm (Tiano, LZMAF86, standard compression, unknown GUID) or no decompressed children")]
+    #[error(
+        "compressed/guided section cannot be rebuilt: unsupported algorithm (Tiano, LZMAF86, standard compression, unknown GUID) or no decompressed children"
+    )]
     RecompressionUnsupported,
 }
 ```
 
-и добавить импорт после `use crate::ffs::*;`:
+и добавить импорт (в отсортированной позиции — до `use crate::ffs::*;`, rustfmt `reorder_imports` не допускает буквальное «после»):
 
 ```rust
 use crate::compress::compress_lzma;
