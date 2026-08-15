@@ -32,6 +32,22 @@ fn builder_error_status(e: crate::builder::BuilderError) -> Status {
         crate::builder::BuilderError::RecompressionUnsupported => {
             Status::failed_precondition(e.to_string())
         }
+        crate::builder::BuilderError::Compression(crate::compress::CompressError::EmptyInput) => {
+            Status::failed_precondition(e.to_string())
+        }
+        _ => Status::internal(e.to_string()),
+    }
+}
+
+fn hii_error_status(e: crate::hii::HiiError) -> Status {
+    match e {
+        crate::hii::HiiError::NotFound | crate::hii::HiiError::StringPackageNotFound => {
+            Status::not_found(e.to_string())
+        }
+        crate::hii::HiiError::NotASetupItem => Status::invalid_argument(e.to_string()),
+        crate::hii::HiiError::NotWritable | crate::hii::HiiError::MutationBehindCompression => {
+            Status::failed_precondition(e.to_string())
+        }
         _ => Status::internal(e.to_string()),
     }
 }
@@ -645,7 +661,7 @@ impl EngineService for EngineServer {
                 .get_mut(&r.image_id)
                 .ok_or_else(|| Status::not_found("image not found"))?;
             crate::hii::set_item_visibility(img_slot, &r.item_id, r.visible)
-                .map_err(|e| Status::internal(e.to_string()))?;
+                .map_err(hii_error_status)?;
         }
         self.flush_image(&r.image_id).await?;
         let _ = self.sm.touch(&img.session_id);
@@ -681,8 +697,7 @@ impl EngineService for EngineServer {
     async fn image_save(&self, req: Request<ImageSaveRequest>) -> RpcResult<Empty> {
         let r = req.into_inner();
         let img = self.get_or_load_image(&r.image_id).await?;
-        let bytes =
-            crate::builder::build_image(&img).map_err(|e| Status::internal(e.to_string()))?;
+        let bytes = crate::builder::build_image(&img).map_err(builder_error_status)?;
         fs::write(&r.output_path, &bytes).map_err(|e| Status::internal(e.to_string()))?;
         Ok(Response::new(Empty {}))
     }
@@ -833,6 +848,36 @@ mod tests {
         assert_eq!(st.code(), tonic::Code::FailedPrecondition);
         assert!(st.message().contains("cannot be rebuilt"));
         let st = builder_error_status(crate::builder::BuilderError::SizeMismatch);
+        assert_eq!(st.code(), tonic::Code::Internal);
+    }
+
+    #[test]
+    fn builder_error_status_maps_empty_input_to_failed_precondition() {
+        let st = builder_error_status(crate::builder::BuilderError::Compression(
+            crate::compress::CompressError::EmptyInput,
+        ));
+        assert_eq!(st.code(), tonic::Code::FailedPrecondition);
+        assert!(st.message().contains("empty"));
+        let st = builder_error_status(crate::builder::BuilderError::Compression(
+            crate::compress::CompressError::RoundTripFailed,
+        ));
+        assert_eq!(st.code(), tonic::Code::Internal);
+    }
+
+    #[test]
+    fn hii_error_status_maps_preconditions_not_found_and_bad_target() {
+        let st = hii_error_status(crate::hii::HiiError::NotWritable);
+        assert_eq!(st.code(), tonic::Code::FailedPrecondition);
+        let st = hii_error_status(crate::hii::HiiError::MutationBehindCompression);
+        assert_eq!(st.code(), tonic::Code::FailedPrecondition);
+        assert!(st.message().contains("recompressed"));
+        let st = hii_error_status(crate::hii::HiiError::NotASetupItem);
+        assert_eq!(st.code(), tonic::Code::InvalidArgument);
+        let st = hii_error_status(crate::hii::HiiError::NotFound);
+        assert_eq!(st.code(), tonic::Code::NotFound);
+        let st = hii_error_status(crate::hii::HiiError::StringPackageNotFound);
+        assert_eq!(st.code(), tonic::Code::NotFound);
+        let st = hii_error_status(crate::hii::HiiError::InvalidIfr);
         assert_eq!(st.code(), tonic::Code::Internal);
     }
 
