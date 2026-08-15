@@ -265,6 +265,31 @@
   вложенные 0x19-секции разрешались; туда же — зелёный тест на
   `section_index: Some(n>0)` через `find_item_path`.
 
+### Фаза 6 PE-resource extraction: nested-FV HII отложен (2026-08-14)
+
+> Находка финальной верификации Task 9 фазы 6 (branch
+> `fix/cycle6-reimplent`). Спека `2026-08-14-hii-pe-resource-extraction`
+> §8 ожидала, что rk3588-образ пройдёт `real_image_hii_forms_and_strings`
+> через bare/resource-каналы — фактически HII этого образа недостижим на
+> уровне дерева: контр-зеркальная дисциплина §4.6 (не спускаться в 0x17)
+> побеждает. Основной acceptance HNX99TF не затронут (real-image тесты
+> зелёные, включая оба HII).
+
+* [ ] **ENGINE: nested-FV HII extraction (спуск в 0x17 FV-image секции)**
+  — EDK2-образы типа rk3588 держат весь HII (bare form-пакеты, включая
+  `642237C7…`, + .rsrc string-пакеты) внутри FV-image (0x17) секций,
+  вложенных в LZMA GUID_DEFINED-обёртку; обход фазы 6 (спека
+  `2026-08-14-hii-pe-resource-extraction` §4.6) в 0x17 сознательно не
+  спускается, поэтому `collect_forms`/`collect_strings` на таких образах
+  видят 0 элементов (`real_image_hii_forms_and_strings` падает на «expected
+  forms in real image» — задокументированное ограничение, не регрессия).
+  Нужен nested-FV expansion: парсить FV внутри тел 0x17-секций в
+  Volume-узлы, расширить счётчик-зеркальную нумерацию (§4.6) и резолюцию
+  `find_item`/`find_item_path`, решить гейты мутабельности для FV-nested
+  таргетов. Контекст: evidence верификации Task 9 фазы 6 (hack/
+  `hii_probe.py` + engine-probe: probe-оффсеты были в сыром распакованном
+  блобе, не в PE-телах, достижимых без спуска в 0x17).
+
 ## ImageUpload RPC (docker-развертывание)
 
 `ImageOpen` читает файл с **серверной FS** по пути (`OpenImageRequest.path`).
