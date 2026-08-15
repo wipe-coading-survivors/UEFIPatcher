@@ -163,6 +163,14 @@ guided/compressed-обёрток**. На образах без обёрток н
 Несколько формсетов внутри одной PE32-секции дают один target (FormInfo —
 на форму, не на пакет).
 
+> **Поправка (nested-FV, 2026-08-14, коммит `721f045`).** Дисциплина «не
+> спускаться в 0x17» снята на уровне парсера: `parse_section` материализует
+> Volume-узел внутри FV-image (0x17) секции при валидном FVH и строгом
+> `vol_size == body.len()`. Файлы nested-FV получают собственные
+> `form_id` (свой file_guid, счётчики per-file) — нумерация внешних файлов
+> не меняется. Закрывает TODO «nested-FV HII extraction» (rk3588-образы);
+> живая rk3588-валидация отложена до появления образа в refs/fw.
+
 ## 5. Таргетинг по вложенным секциям
 
 GuidSection-arm в `find_item` и `find_item_path` (`parser/target.rs`):
@@ -197,6 +205,17 @@ bare-виде — `node.subtype == 0x19 || is_form_package(&node.body)`, ина�
 байтах PE и повредил образ. Поправка теста фазы 4
 (`sample_image_with_ifr`: секция получает subtype 0x19) оформляется тем же
 шагом плана, что и гейт.
+
+> **Поправка (PE-resident IFR-патчинг, 2026-08-14, коммит `8160c5e`).**
+> Третий гейт сужен: PE32-таргет с FORMS-пакетами в 'HII'-ресурсах
+> мутабелен — unsuppress выполняется in-place по месту в resource-блобе
+> (длина неизменна, PE-checksum не пересчитывается — как UEFITool).
+> Добавлен форм-дискриминатор item_id: `<target>#<form_id_ifr>` выбирает
+> скоуп, обёртывающий конкретную форму (`ifr::find_form_suppress_scope`);
+> без суффикса — первый скоуп (семантика фазы 4). Bare-канал
+> (конст-массивы в теле PE) остаётся read-only — TODO. Real-image
+> acceptance HNX99TF: `real_image_hii_form_visibility_round_trip` —
+> полный round-trip зелёный.
 
 Bare-путь (несжатая секция 0x19) — существующее поведение (unsuppress +
 Rebuild-каскад), тесты фаз 4–5 зелёные.

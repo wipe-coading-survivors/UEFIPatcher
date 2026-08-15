@@ -270,19 +270,15 @@
   (commit `7e654b0`, Task 6 — DFS-зеркало `find_item`/`find_item_path`
   через обёртки 0x01/0x02; требуемый кейс `section_index: Some(n>0)`
   покрыт тестами `find_item_path`).
-* [ ] **RPC: HiiError всплывает как `Status::internal` (blanket
-  `map_err`)** — варианты `HiiError::NotWritable` /
-  `HiiError::MutationBehindCompression` (гейты фазы 6, commit `5a1d543`)
-  в `hii_set_form_visibility` маппятся blanket-`map_err` в
-  `Status::internal` (`crates/uefi-engine/src/rpc/server.rs:639`);
-  семантически корректен `failed_precondition` для ошибок предусловий.
-  Туда же (находки фазы 7): `image_save` (`server.rs:681-688`) маппит
-  `RecompressionUnsupported` → `internal` вместо `failed_precondition`;
-  и `Compression(EmptyInput)` при удалении последнего ребёнка LZMA-
-  обёртки тоже уходит в `internal`. Контекст: находка финального ревью
-  фазы 6; свернуть в будущий error-mapping pass — фаза 7 (рекомпрессия)
-  добавляет `builder_error_status` ровно с этим различием для
-  `BuilderError`.
+* [x] **RPC: HiiError всплывает как `Status::internal` (blanket `map_err`)** — закрыто
+  error-mapping pass'ом (коммит `22fe28b`): `hii_error_status` (NotWritable/
+  MutationBehindCompression → `failed_precondition`, NotASetupItem →
+  `invalid_argument`, NotFound/StringPackageNotFound → `not_found`, прочие —
+  `internal`) в `hii_set_form_visibility`; `image_save` маппит через
+  `builder_error_status`; `Compression(EmptyInput)` → `failed_precondition`
+  (удаление последнего ребёнка LZMA-обёртки — предусловие, не internal).
+  `hii_form_set_add` сохраняет собственный богатый маппинг (InvalidSchema →
+  invalid_argument и т.п.) — сознательно не тронут.
 
 ### Фаза 6 PE-resource extraction: nested-FV HII отложен (2026-08-14)
 
@@ -294,26 +290,56 @@
 > побеждает. Основной acceptance HNX99TF не затронут (real-image тесты
 > зелёные, включая оба HII).
 
-* [ ] **ENGINE: nested-FV HII extraction (спуск в 0x17 FV-image секции)**
-  — EDK2-образы типа rk3588 держат весь HII (bare form-пакеты, включая
-  `642237C7…`, + .rsrc string-пакеты) внутри FV-image (0x17) секций,
-  вложенных в LZMA GUID_DEFINED-обёртку; обход фазы 6 (спека
-  `2026-08-14-hii-pe-resource-extraction-design.md` §4.6) в 0x17 сознательно не
-  спускается, поэтому `collect_forms`/`collect_strings` на таких образах
-  видят 0 элементов (`real_image_hii_forms_and_strings` падает на «expected
-  forms in real image» — задокументированное ограничение, не регрессия).
-  Нужен nested-FV expansion: парсить FV внутри тел 0x17-секций в
-  Volume-узлы, расширить счётчик-зеркальную нумерацию (§4.6) и резолюцию
-  `find_item`/`find_item_path`, решить гейты мутабельности для FV-nested
-  таргетов. Контекст: evidence верификации Task 9 фазы 6 (hack/
-  `hii_probe.py` + engine-probe: probe-оффсеты были в сыром распакованном
-  блобе, не в PE-телах, достижимых без спуска в 0x17).
-* [ ] **clippy: `cargo clippy -p uefi-engine --all-targets -- -D warnings`
-  падает (pre-existing)** — `clippy::manual_contains` в `#[cfg(test)]` коде
-  `hii/pe_resource.rs:239` (с фазы 6); канонические гейты
-  (`clippy --all`) не затронуты.
+* [x] **ENGINE: nested-FV HII extraction (спуск в 0x17 FV-image секции)**
+  — закрыто на уровне парсера (коммит `721f045`): `parse_section` для
+  0x17 с валидным FVH в теле материализует Volume-узел (переиспользован
+  `parse_firmware_volume` = parse_volume + parse_volume_files) при строгом
+  условии `vol_size == body.len()` (FV с хвостовым слаком не спускается —
+  гарантирует byte-фиделity rebuild). Walkers (`walk_files`/
+  `walk_for_string_package`) и `find_by_guid`/`find_item*` рекурсивны по
+  дереву — HII внутри nested-FV достижим без правок hii-модуля; нумерация
+  §4.6 не меняется (счётчики per-file, 0x17-дети — Volume-тип).
+  Мутабельность FV-nested таргетов: 0x17 не барьер (гейт-2 не срабатывает),
+  LZMA-обёртка выше — recompress (фаза 7); remove/rebuild покрыты тестом
+  `nested_fv_round_trips_and_removal_preserves_length`. Регрессия на живом
+  HNX99TF: 15/15 `#[ignore]`-тестов зелёные (full-flash round-trip
+  байт-идентичен). Ограничение: живая валидация на edk2-rk3588 не
+  проводилась (образ недоступен в refs/fw после фазы 6) — механизм покрыт
+  синтетикой; прогнать `real_image_hii_forms_and_strings` c
+  `UEFIPATCHER_TEST_FW=<rk3588.bin>` при появлении образа.
+* [x] **clippy: `cargo clippy -p uefi-engine --all-targets -- -D warnings`
+  падает (pre-existing)** — закрыто (коммит `2796c8a`: `manual_contains` в
+  тесте `bare_scan_drops_candidates_covered_by_resource_ranges`).
+
+### PE-resident IFR-патчинг: сделано 2026-08-14, отложенные миноры
+
+> Закрыто коммитом `8160c5e`: третий гейт `set_item_visibility` сужен —
+> PE32-таргет с FORMS-пакетами в 'HII'-ресурсах мутабелен; добавлен
+> форм-дискриминатор `item_id` (`<target>#<form_id_ifr>`, ищет скоуп,
+> обёртывающий конкретную форму, через `ifr::find_form_suppress_scope`);
+> `unsuppress` переписан на `&mut [u8]` (in-place, длина неизменна —
+> обязательное условие PE-resource патча; guard-false случай теперь no-op,
+> а не безусловная вставка FALSE). Acceptance: real-image
+> `real_image_hii_form_visibility_round_trip` на HNX99TF — полный цикл
+> (форма 901 Platform-formset → PE-патч → LZMA recompress → re-parse →
+> visible), 15/15 ignore-тестов зелёные.
+
+* [ ] **FormInfo не отдаёт готовый item_id с дискриминатором** — для
+  `setup form set-visibility` на конкретную форму пользователь должен сам
+  конкатенировать `#<form_id_ifr>`; поле в FormInfo (или конкатенация в
+  CLI/TUI) при подключении клиентов. Контекст: engine API поддерживает
+  оба синтаксиса, но в выводе списков дискриминатора нет.
+* [ ] **bare-канал FORM-пакетов (EDK2 конст-массивы в теле PE) не
+  мутабелен** — unsuppress работает только по resource-каналу ('HII');
+  для rk3588-подобных образов с suppressed-формами в bare-массивах нужен
+  offset-вариант `bare_form_packages`. Контекст: на живых данных таких
+  кейсов не встречено; расширение — точечное.
+* [ ] **PE checksum не пересчитывается после resource-патча** — как и
+  UEFITool; в firmware-PE поле обычно 0. Пересчёт при появлении живого
+  прецедента отказа.
 
 ## ImageUpload RPC (docker-развертывание)
+
 
 `ImageOpen` читает файл с **серверной FS** по пути (`OpenImageRequest.path`).
 В docker-развертывании (где client FS != server FS) это ломается: CLI/TUI
