@@ -246,29 +246,44 @@
   (`LANGUAGE_OFFSET=46`, граница `info_off`) уже корректен для реальных
   данных. Осталось: синтетические фикстуры фаз 3–4 пишут язык @+12 —
   выровнять под реальный layout в фазе 6.
-* [ ] **`real_image.rs`: ignore-строки разъехались** — 10 старых тестов
+* [x] **`real_image.rs`: ignore-строки разъехались** — 10 старых тестов
   используют `"... (gitignored)"`, 4 новых (full-flash + HII) — без
-  суффикса. Мелочь; унифицировать при следующем касании файла.
+  суффикса. Мелочь; унифицировать при следующем касании файла. Закрыто
+  фазой 6 (commit `d781aea`, Task 8 — все 14 ignore-строки приведены к
+  длинной форме `"(gitignored)"`).
 * [ ] **language-assert в `real_image_hii_forms_and_strings`** — предикат
   `all(...)`, а сообщение об ошибке семплирует только `first()`; при
   падении укажет не тот пакет. Verbatim из плана фазы 5; поправить при
   следующем касании.
-* [ ] **`set_item_visibility` не проверяет `ImageMode::Write`** перед
+* [x] **`set_item_visibility` не проверяет `ImageMode::Write`** перед
   мутацией (наследуется от Path-only версии, фаза 5 семантику сохраняла).
   Контекст: пункт финального ревью фазы 5; добавить гейт при следующем
-  касании `hii/mod.rs`.
-* [ ] **Формат таргета `guid:subtype:idx` не композируется по вложенным
+  касании `hii/mod.rs`. Закрыто фазой 6 (commit `5a1d543`, Task 7 —
+  NotWritable-гейт).
+* [x] **Формат таргета `guid:subtype:idx` не композируется по вложенным
   секциям** — `collect_forms` протаскивает file_guid внутрь guided/
   compressed-секций, а GuidSection-arm `find_item`/`find_item_path`
   сканирует только прямых детей файла (зеркально by design). Контекст:
   при фазе PE-resource extraction пересмотреть формат/обход, чтобы
   вложенные 0x19-секции разрешались; туда же — зелёный тест на
-  `section_index: Some(n>0)` через `find_item_path`.
+  `section_index: Some(n>0)` через `find_item_path`. Закрыто фазой 6
+  (commit `7e654b0`, Task 6 — DFS-зеркало `find_item`/`find_item_path`
+  через обёртки 0x01/0x02; требуемый кейс `section_index: Some(n>0)`
+  покрыт тестами `find_item_path`).
+* [ ] **RPC: HiiError всплывает как `Status::internal` (blanket
+  `map_err`)** — варианты `HiiError::NotWritable` /
+  `HiiError::MutationBehindCompression` (гейты фазы 6, commit `5a1d543`)
+  в `hii_set_form_visibility` маппятся blanket-`map_err` в
+  `Status::internal` (`crates/uefi-engine/src/rpc/server.rs:639`);
+  семантически корректен `failed_precondition` для ошибок предусловий.
+  Контекст: находка финального ревью фазы 6; свернуть в будущий
+  error-mapping pass — фаза 7 (рекомпрессия) добавляет
+  `builder_error_status` ровно с этим различием для `BuilderError`.
 
 ### Фаза 6 PE-resource extraction: nested-FV HII отложен (2026-08-14)
 
 > Находка финальной верификации Task 9 фазы 6 (branch
-> `fix/cycle6-reimplent`). Спека `2026-08-14-hii-pe-resource-extraction`
+> `fix/cycle6-reimplent`). Спека `2026-08-14-hii-pe-resource-extraction-design.md`
 > §8 ожидала, что rk3588-образ пройдёт `real_image_hii_forms_and_strings`
 > через bare/resource-каналы — фактически HII этого образа недостижим на
 > уровне дерева: контр-зеркальная дисциплина §4.6 (не спускаться в 0x17)
@@ -279,7 +294,7 @@
   — EDK2-образы типа rk3588 держат весь HII (bare form-пакеты, включая
   `642237C7…`, + .rsrc string-пакеты) внутри FV-image (0x17) секций,
   вложенных в LZMA GUID_DEFINED-обёртку; обход фазы 6 (спека
-  `2026-08-14-hii-pe-resource-extraction` §4.6) в 0x17 сознательно не
+  `2026-08-14-hii-pe-resource-extraction-design.md` §4.6) в 0x17 сознательно не
   спускается, поэтому `collect_forms`/`collect_strings` на таких образах
   видят 0 элементов (`real_image_hii_forms_and_strings` падает на «expected
   forms in real image» — задокументированное ограничение, не регрессия).
