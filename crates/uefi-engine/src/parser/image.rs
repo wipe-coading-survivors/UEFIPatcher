@@ -25,8 +25,8 @@ pub fn parse_image(
             off += FVH_SCAN_STEP;
             continue;
         }
-        match parse_volume(buf, off as u32) {
-            Ok(vol) => {
+        match parse_firmware_volume(buf, off) {
+            Some(vol) => {
                 let vol_size = vol.header.len() + vol.body.len();
                 if vol_size == 0 {
                     off += FVH_SCAN_STEP;
@@ -35,22 +35,11 @@ pub fn parse_image(
                 if off > last_end {
                     children.push(make_padding_node(buf, last_end, off));
                 }
-                let (erase, rev) = match &vol.parsing_data {
-                    ParsingData::Volume(vd) => (vd.empty_byte, vd.revision),
-                    _ => (0xFF, 2),
-                };
-                let mut vol_with_files = vol.clone();
-                let header_len = vol.header.len();
-                let body_start = off + header_len;
-                let body_end = off + vol_size;
-                vol_with_files.children =
-                    parse_volume_files(&buf[body_start..body_end], body_start, erase, rev);
-                children.push(vol_with_files);
+                children.push(vol);
                 last_end = off + vol_size;
                 off += vol_size;
             }
-            Err(e) => {
-                tracing::debug!("not a volume at {off:#x}: {e}");
+            None => {
                 off += FVH_SCAN_STEP;
             }
         }
@@ -84,6 +73,26 @@ pub fn parse_image(
         "image parsed"
     );
     Ok(img)
+}
+
+pub(crate) fn parse_firmware_volume(buf: &[u8], off: usize) -> Option<FfsNode> {
+    let mut vol = match parse_volume(buf, off as u32) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::debug!("not a volume at {off:#x}: {e}");
+            return None;
+        }
+    };
+    let vol_size = vol.header.len() + vol.body.len();
+    let (erase, rev) = match &vol.parsing_data {
+        ParsingData::Volume(vd) => (vd.empty_byte, vd.revision),
+        _ => (0xFF, 2),
+    };
+    let header_len = vol.header.len();
+    let body_start = off + header_len;
+    let body_end = off + vol_size;
+    vol.children = parse_volume_files(&buf[body_start..body_end], body_start, erase, rev);
+    Some(vol)
 }
 
 fn count_files(node: &FfsNode) -> usize {

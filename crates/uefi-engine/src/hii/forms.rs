@@ -489,4 +489,43 @@ mod tests {
         assert_eq!(node.subtype, 0x10);
         assert_eq!(node.node_type, FfsType::Section);
     }
+
+    #[test]
+    fn collect_forms_sees_forms_inside_nested_fv() {
+        let inner_file_guid = "899407d7-92a6-4174-968f-6f0b47f86a99";
+        let str_sec = mk_node(None, FfsType::Section, 0x19, string_pkg(), vec![]);
+        let form_sec = mk_node(None, FfsType::Section, 0x19, form_pkg(1), vec![]);
+        let inner_file = mk_node(
+            Some(Guid::from_str(inner_file_guid).unwrap()),
+            FfsType::File,
+            0x07,
+            vec![],
+            vec![str_sec, form_sec],
+        );
+        let inner_vol = mk_node(None, FfsType::Volume, 0, vec![], vec![inner_file]);
+        let fv_sec = mk_node(None, FfsType::Section, 0x17, vec![], vec![inner_vol]);
+        let outer_file = mk_node(
+            Some(Guid::from_str(FILE_GUID).unwrap()),
+            FfsType::File,
+            0x07,
+            vec![],
+            vec![fv_sec],
+        );
+        let volume = mk_node(None, FfsType::Volume, 0, vec![], vec![outer_file]);
+        let root = mk_node(None, FfsType::Image, 0, vec![], vec![volume]);
+        let image = Image {
+            image_id: "img".into(),
+            session_id: "s".into(),
+            root,
+            mode: ImageMode::Read,
+        };
+        let forms = collect_forms(&image);
+        assert_eq!(forms.len(), 2);
+        assert_eq!(forms[0].form_id, format!("{inner_file_guid}:0x19:1"));
+        assert_eq!(forms[0].title, "Main");
+        assert!(!forms[1].visible);
+        let t = crate::parser::target::parse_target(&forms[1].form_id).unwrap();
+        let node = crate::parser::target::find_item(&image.root, &t).unwrap();
+        assert_eq!(node.subtype, 0x19);
+    }
 }

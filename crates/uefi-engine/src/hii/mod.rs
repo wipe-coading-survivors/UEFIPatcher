@@ -317,4 +317,42 @@ mod tests {
         .unwrap_err();
         assert!(matches!(err, HiiError::NotASetupItem));
     }
+
+    #[test]
+    fn set_item_visibility_targets_form_inside_nested_fv() {
+        let inner_file_guid = "899407D7-92A6-4174-968F-6F0B47F86A99";
+        let mut section = mk_node(
+            FfsType::Section,
+            vec![0x0A, 0x82, 0x12, 0x03, 0x40, 0x29, 0x02],
+            vec![],
+        );
+        section.subtype = 0x19;
+        let mut inner_file = mk_node(FfsType::File, vec![], vec![section.clone()]);
+        inner_file.guid = Some(Guid::from_str(inner_file_guid).unwrap());
+        let inner_vol = mk_node(FfsType::Volume, vec![], vec![inner_file]);
+        let mut fv_sec = mk_node(FfsType::Section, vec![], vec![inner_vol]);
+        fv_sec.subtype = 0x17;
+        let mut outer_file = mk_node(FfsType::File, vec![], vec![fv_sec.clone()]);
+        outer_file.guid = Some(Guid::from_str(FILE_GUID_STR).unwrap());
+        let volume = mk_node(FfsType::Volume, vec![], vec![outer_file]);
+        let root = mk_node(FfsType::Image, vec![], vec![volume]);
+        let mut image = Image {
+            image_id: "img".into(),
+            session_id: "s".into(),
+            root,
+            mode: ImageMode::Write,
+        };
+        set_item_visibility(
+            &mut image,
+            "899407D7-92A6-4174-968F-6F0B47F86A99:0x19:0",
+            true,
+        )
+        .unwrap();
+        let fv_sec_after = &image.root.children[0].children[0].children[0];
+        assert_eq!(fv_sec_after.subtype, 0x17);
+        assert_eq!(fv_sec_after.action, Action::Rebuild);
+        let section_after = &fv_sec_after.children[0].children[0].children[0];
+        assert_eq!(&section_after.body[0..4], &[0x0A, 0x82, 0x29, 0x02]);
+        assert_eq!(section_after.action, Action::Rebuild);
+    }
 }

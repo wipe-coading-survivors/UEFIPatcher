@@ -58,6 +58,7 @@ pub fn parse_section(buf: &[u8], offset: u32) -> Result<FfsNode, ParserError> {
                 ch,
             )
         }
+        EFI_SECTION_FV_IMAGE => (ParsingData::None, parse_nested_fv(&body)),
         _ => (ParsingData::None, vec![]),
     };
 
@@ -120,6 +121,17 @@ fn decompress_guided(guid: &Guid, body: &[u8], data_offset: usize) -> Vec<FfsNod
             vec![]
         }
     }
+}
+
+fn parse_nested_fv(body: &[u8]) -> Vec<FfsNode> {
+    let Some(vol) = crate::parser::image::parse_firmware_volume(body, 0) else {
+        return vec![];
+    };
+    if vol.header.len() + vol.body.len() != body.len() {
+        tracing::debug!("nested FV does not fill section body; skipped");
+        return vec![];
+    }
+    vec![vol]
 }
 
 pub fn parse_sections(buf: &[u8], start: u32) -> Vec<FfsNode> {
@@ -206,5 +218,101 @@ mod tests {
             total += child.header.len() + child.body.len() + child.tail.len();
         }
         assert!(total <= expected.len() + node.children.len() * 8);
+    }
+
+    fn section_bytes(stype: u8, body: &[u8]) -> Vec<u8> {
+        let mut v = Vec::with_capacity(4 + body.len());
+        v.extend_from_slice(&size_to_uint24((4 + body.len()) as u32));
+        v.push(stype);
+        v.extend_from_slice(body);
+        v
+    }
+
+    fn fv_bytes(file_guid: &Guid, sections: &[u8]) -> Vec<u8> {
+        let file_size = 24 + sections.len();
+        let total = (56 + file_size + 16) & !7;
+        let mut buf = vec![0xFFu8; total];
+        buf[32..40].copy_from_slice(&(total as u64).to_le_bytes());
+        buf[40..44].copy_from_slice(&EFI_FVH_SIGNATURE.to_le_bytes());
+        buf[44..48].copy_from_slice(&EFI_FVB2_ERASE_POLARITY.to_le_bytes());
+        buf[48..50].copy_from_slice(&56u16.to_le_bytes());
+        buf[55] = 2;
+        buf[56..72].copy_from_slice(&file_guid.to_bytes());
+        buf[74] = 0x07;
+        buf[76..79].copy_from_slice(&size_to_uint24(file_size as u32));
+        buf[80..80 + sections.len()].copy_from_slice(sections);
+        buf
+    }
+
+    fn inner_fv() -> Vec<u8> {
+        let guid = Guid::try_parse("899407d7-92a6-4174-968f-6f0b47f86a99").unwrap();
+        fv_bytes(&guid, &section_bytes(EFI_SECTION_RAW, &[0xAA; 8]))
+    }
+
+    #[test]
+    fn parse_fv_image_section_materializes_nested_volume() {
+        let outer = section_bytes(EFI_SECTION_FV_IMAGE, &inner_fv());
+        let nodes = parse_sections(&outer, 0);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].subtype, EFI_SECTION_FV_IMAGE);
+        let vol = &nodes[0].children[0];
+        assert_eq!(vol.node_type, FfsType::Volume);
+        let file = &vol.children[0];
+        assert_eq!(file.node_type, FfsType::File);
+        assert_eq!(
+            file.guid,
+            Some(Guid::try_parse("899407d7-92a6-4174-968f-6f0b47f86a99").unwrap())
+        );
+        let raw = &file.children[0];
+        assert_eq!(raw.subtype, EFI_SECTION_RAW);
+        assert_eq!(raw.body, vec![0xAA; 8]);
+    }
+
+    #[test]
+    fn parse_fv_image_section_without_fvh_stays_leaf() {
+        let outer = section_bytes(EFI_SECTION_FV_IMAGE, &[0x11; 64]);
+        let nodes = parse_sections(&outer, 0);
+        assert_eq!(nodes.len(), 1);
+        assert!(nodes[0].children.is_empty());
+        assert_eq!(nodes[0].body, vec![0x11; 64]);
+    }
+
+    #[test]
+    fn parse_fv_image_section_with_slack_stays_leaf() {
+        let mut body = inner_fv();
+        body.extend_from_slice(&[0xFF; 8]);
+        let outer = section_bytes(EFI_SECTION_FV_IMAGE, &body);
+        let nodes = parse_sections(&outer, 0);
+        assert_eq!(nodes.len(), 1);
+        assert!(nodes[0].children.is_empty());
+    }
+
+    #[test]
+    fn nested_fv_round_trips_and_removal_preserves_length() {
+        let outer_guid = Guid::try_parse("5c60f367-a505-419a-859e-2a4ff6ca6fe5").unwrap();
+        let inner_guid = Guid::try_parse("899407d7-92a6-4174-968f-6f0b47f86a99").unwrap();
+        let outer = fv_bytes(
+            &outer_guid,
+            &section_bytes(EFI_SECTION_FV_IMAGE, &inner_fv()),
+        );
+        let mut img = crate::parser::image::parse_image(&outer, ImageMode::Write, "i", "s")
+            .expect("parse_image");
+        let built = crate::builder::build_image(&img).expect("clean build");
+        assert_eq!(
+            built, outer,
+            "clean nested-FV tree must round-trip verbatim"
+        );
+
+        let t = crate::types::Target::Guid(inner_guid);
+        let path = crate::parser::target::find_item_path(&img.root, &t).expect("inner file path");
+        crate::ops::remove(&mut img.root, &crate::types::Target::Path(path)).unwrap();
+        let built2 = crate::builder::build_image(&img).expect("build after remove");
+        assert_eq!(built2.len(), outer.len(), "flash length must be preserved");
+        assert!(
+            !built2.windows(4).any(|w| w == [0xAA, 0xAA, 0xAA, 0xAA]),
+            "removed inner RAW body must not appear in output"
+        );
+        let re = crate::parser::image::parse_image(&built2, ImageMode::Read, "i2", "s2").unwrap();
+        assert!(crate::parser::target::find_item(&re.root, &t).is_err());
     }
 }
