@@ -36,7 +36,7 @@ pub enum HiiError {
     #[error("image is not writable (open in Write mode first)")]
     NotWritable,
     #[error(
-        "target is behind a compressed/guided section; mutation requires recompression (planned next phase)"
+        "target is behind a compressed/guided section that cannot be recompressed (Tiano, LZMAF86, standard compression, unknown GUID)"
     )]
     MutationBehindCompression,
 }
@@ -59,6 +59,11 @@ pub fn set_item_visibility(
         if ancestor.node_type == FfsType::Section
             && (ancestor.subtype == EFI_SECTION_COMPRESSION
                 || ancestor.subtype == EFI_SECTION_GUID_DEFINED)
+            && !matches!(
+                &ancestor.parsing_data,
+                crate::types::ParsingData::GuidedSection(d)
+                    if crate::ffs::is_recompressable_lzma_guid(&d.guid)
+            )
         {
             return Err(HiiError::MutationBehindCompression);
         }
@@ -245,6 +250,49 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, HiiError::MutationBehindCompression));
+    }
+
+    #[test]
+    fn set_item_visibility_allows_lzma_backed_wrapper() {
+        let mut inner = mk_node(
+            FfsType::Section,
+            vec![0x0A, 0x82, 0x12, 0x03, 0x40, 0x29, 0x02],
+            vec![],
+        );
+        inner.subtype = 0x19;
+        let mut wrapper = mk_node(FfsType::Section, vec![], vec![inner]);
+        wrapper.subtype = 0x02;
+        wrapper.parsing_data =
+            crate::types::ParsingData::GuidedSection(crate::types::GuidedSectionParsingData {
+                guid: crate::ffs::lzma_guid(),
+                dictionary_size: 0x0080_0000,
+            });
+        let mut file = mk_node(FfsType::File, vec![], vec![wrapper]);
+        file.guid = Some(Guid::from_str(FILE_GUID_STR).unwrap());
+        let volume = mk_node(FfsType::Volume, vec![], vec![file]);
+        let root = mk_node(FfsType::Image, vec![], vec![volume]);
+        let mut image = Image {
+            image_id: "img".into(),
+            session_id: "s".into(),
+            root,
+            mode: ImageMode::Write,
+        };
+        let body_before = image.root.children[0].children[0].children[0].children[0]
+            .body
+            .clone();
+        set_item_visibility(
+            &mut image,
+            "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:0",
+            true,
+        )
+        .expect("lzma-backed wrapper is recompressable; mutation must be allowed");
+        let body_after = image.root.children[0].children[0].children[0].children[0]
+            .body
+            .clone();
+        assert_ne!(
+            body_before, body_after,
+            "unsuppress must patch the form body"
+        );
     }
 
     #[test]
