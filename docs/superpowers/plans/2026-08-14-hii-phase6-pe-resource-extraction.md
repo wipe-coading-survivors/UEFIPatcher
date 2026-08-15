@@ -958,7 +958,7 @@ In `strings.rs` tests append:
 - [ ] **Step 2: Run tests, verify new ones fail**
 
 Run: `cargo test -p uefi-engine hii::`
-Expected: the 6 new tests FAIL (resource/bare channels absent; per-file titles absent); pre-existing forms/strings tests PASS except those that now reference `string_pkg_with`/helpers not yet defined (compile errors count as failing).
+Expected: 5 of the 6 new tests FAIL (resource/bare channels absent; per-file titles absent); pre-existing forms/strings tests PASS except those that now reference `string_pkg_with`/helpers not yet defined (compile errors count as failing). The sixth, `collect_strings_ignores_bare_body_with_bogus_declared_length`, was already green with the old walker (it parses the 4-byte body as a zero-string package → empty output) and is kept as a hardening guard.
 
 - [ ] **Step 3: Implement `forms.rs` restructure**
 
