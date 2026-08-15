@@ -1,4 +1,5 @@
 pub mod builder;
+pub mod compress;
 pub mod decompress;
 pub mod ffs;
 pub mod hii;
