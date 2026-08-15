@@ -594,7 +594,7 @@ Append to the `tests` module in `ifr.rs`:
         ifr.extend(end());
         ifr.extend(end());
         let mut pkg = package(&ifr);
-        let shrinked = (pkg.len() - 3) as u32;
+        let shrinked = (pkg.len() - 5) as u32;
         pkg[0] = (shrinked & 0xFF) as u8;
         pkg[1] = ((shrinked >> 8) & 0xFF) as u8;
         pkg[2] = ((shrinked >> 16) & 0xFF) as u8;
@@ -605,7 +605,9 @@ Append to the `tests` module in `ifr.rs`:
 - [ ] **Step 2: Run tests, verify the new one fails**
 
 Run: `cargo test -p uefi-engine ifr`
-Expected: `parse_ignores_tail_beyond_declared_length` FAILS (current walker reads into the `0xAA` tail and returns `None`), `parse_returns_none_when_declared_length_cuts_mid_opcode` may pass already (truncation is caught today); all pre-existing ifr tests PASS.
+Expected: both new tests FAIL — `parse_ignores_tail_beyond_declared_length` (current walker reads into the `0xAA` tail and returns `None`) and `parse_returns_none_when_declared_length_cuts_mid_opcode` (current walker ignores the declared length, walks to body end and returns `Some`); all pre-existing ifr tests PASS.
+
+**Why shrink by 5 (not 3):** with `pkg.len() = 37`, a `- 3` shrink puts plen=34, cutting on byte 2 of the trailing `end` opcode — the loop-entry guard `i + 2 <= end` exits cleanly and the walker returns `Some`, so the inner `i + length > end` None-path is unreachable. With `- 5`, plen=32 and the `form` opcode at offset 27 (length 6) straddles the bound (27+6=33 > 32), firing the inner check → `None` — the None-path this test exists to cover.
 
 - [ ] **Step 3: Implement**
 
