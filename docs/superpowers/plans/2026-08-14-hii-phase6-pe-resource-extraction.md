@@ -1680,7 +1680,7 @@ Expected: all green.
 - [ ] **Step 2: Real-image acceptance on HNX99TF**
 
 ```bash
-UEFIPATCHER_TEST_FW=refs/fw/HNX99TF_200525_original_E5C88C6F.bin \
+UEFIPATCHER_TEST_FW=../../../refs/fw/HNX99TF_200525_original_E5C88C6F.bin \
   cargo test -p uefi-engine --test real_image -- --ignored
 ```
 
@@ -1697,7 +1697,7 @@ UEFIPATCHER_TEST_FW=/var/home/dsevosty/.local/share/uefipatcher/sessions/7a12646
   cargo test -p uefi-engine --test real_image real_image_hii_forms_and_strings -- --ignored
 ```
 
-Expected: passes — forms arrive via the bare channel (14+ formsets incl. `642237C7…`), strings via the resource channel (`en-US`). Other real-image tests are NOT expected to pass on this image (different flash layout) — run only the HII one. OVMF is not suitable for this check (no string resources — spec §8).
+Expected: fails — this check documents a KNOWN LIMITATION, not a pass expectation (the original "passes via the bare/resource channels" claim was a plan defect: the probe offsets were in the raw decompressed blob, not in PE bodies reachable in the tree without descending into 0x17). ALL of the rk3588 image's HII (bare form packages incl. `642237C7…`, .rsrc string packages) lives inside FV-image (0x17) sections nested in the single LZMA GUID_DEFINED section; phase 6's counter-mirror discipline (spec §4.6) deliberately never descends into 0x17, so `collect_forms` returns 0 forms on this image and `real_image_hii_forms_and_strings` fails at the "expected forms in real image" assert. This is the documented limitation (nested-FV HII extraction is deferred, see TODO.md), NOT a phase-6 regression; the command may still be run to confirm the failure mode is exactly this (0 forms, no crash). Other real-image tests are NOT expected to pass on this image either (different flash layout). OVMF is not suitable for this check (no string resources — spec §8).
 
 - [ ] **Step 4: CLI e2e unchanged**
 
