@@ -1,4 +1,5 @@
 use self::align::{align4, align8, pad_to};
+use crate::compress::compress_lzma;
 use crate::ffs::*;
 use crate::types::*;
 use thiserror::Error;
@@ -13,6 +14,12 @@ pub enum BuilderError {
     SizeMismatch,
     #[error("checksum failed")]
     ChecksumFailed,
+    #[error(transparent)]
+    Compression(#[from] crate::compress::CompressError),
+    #[error(
+        "compressed/guided section cannot be rebuilt: unsupported algorithm (Tiano, LZMAF86, standard compression, unknown GUID) or no decompressed children"
+    )]
+    RecompressionUnsupported,
 }
 
 #[tracing::instrument(level = "info", skip_all, err)]
@@ -106,7 +113,22 @@ fn build_section(node: &FfsNode, out: &mut Vec<u8>) -> Result<(), BuilderError> 
     if node.action == Action::Remove {
         return Ok(());
     }
-    if node.action == Action::NoAction || is_compressed_or_guided(node) {
+    if is_compressed_or_guided(node) {
+        if node.action == Action::NoAction && !subtree_dirty(node) {
+            out.extend_from_slice(&node.header);
+            out.extend_from_slice(&node.body);
+            out.extend_from_slice(&node.tail);
+            return Ok(());
+        }
+        if node.subtype == EFI_SECTION_GUID_DEFINED
+            && recompressable_guid(node)
+            && !node.children.is_empty()
+        {
+            return build_recompressed_guided(node, out);
+        }
+        return Err(BuilderError::RecompressionUnsupported);
+    }
+    if node.action == Action::NoAction {
         out.extend_from_slice(&node.header);
         out.extend_from_slice(&node.body);
         out.extend_from_slice(&node.tail);
@@ -130,11 +152,42 @@ fn build_section(node: &FfsNode, out: &mut Vec<u8>) -> Result<(), BuilderError> 
     Ok(())
 }
 
+fn recompressable_guid(node: &FfsNode) -> bool {
+    matches!(
+        &node.parsing_data,
+        ParsingData::GuidedSection(d) if is_recompressable_lzma_guid(&d.guid)
+    )
+}
+
+fn build_recompressed_guided(node: &FfsNode, out: &mut Vec<u8>) -> Result<(), BuilderError> {
+    let mut children = Vec::new();
+    for child in &node.children {
+        build_node(child, &mut children)?;
+        let target = align4(children.len());
+        pad_to(&mut children, target, 0x00);
+    }
+    let stream = compress_lzma(&children)?;
+    if node.body.len() < 18 {
+        return Err(BuilderError::RecompressionUnsupported);
+    }
+    let data_offset = u16::from_le_bytes([node.body[16], node.body[17]]) as usize;
+    let prefix_len = data_offset.wrapping_sub(4);
+    if !(20..=node.body.len()).contains(&prefix_len) {
+        return Err(BuilderError::RecompressionUnsupported);
+    }
+    let mut header = node.header.clone();
+    let total = header.len() + prefix_len + stream.len();
+    set_section_size(&mut header, total);
+    out.extend_from_slice(&header);
+    out.extend_from_slice(&node.body[..prefix_len]);
+    out.extend_from_slice(&stream);
+    Ok(())
+}
+
 fn is_compressed_or_guided(node: &FfsNode) -> bool {
     node.subtype == EFI_SECTION_COMPRESSION || node.subtype == EFI_SECTION_GUID_DEFINED
 }
 
-#[expect(dead_code)]
 fn subtree_dirty(node: &FfsNode) -> bool {
     node.action != Action::NoAction || node.children.iter().any(subtree_dirty)
 }
@@ -380,5 +433,109 @@ mod tests {
     #[test]
     fn subtree_dirty_true_for_own_action() {
         assert!(subtree_dirty(&leaf_section(Action::Rebuild)));
+    }
+
+    fn guided_node(guid: Guid, action: Action) -> FfsNode {
+        FfsNode {
+            guid: None,
+            node_type: FfsType::Section,
+            subtype: EFI_SECTION_GUID_DEFINED,
+            offset: 0,
+            header: vec![0u8; 4],
+            body: vec![],
+            tail: vec![],
+            children: vec![leaf_section(Action::NoAction)],
+            action,
+            parsing_data: ParsingData::GuidedSection(GuidedSectionParsingData {
+                guid,
+                dictionary_size: 0,
+            }),
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        }
+    }
+
+    #[test]
+    fn guided_lzma_clean_tree_builds_verbatim() {
+        let section = include_bytes!("../../../../tests/fixtures/lzma_guided_section.bin");
+        let node = crate::parser::section::parse_section(section, 0).unwrap();
+        assert!(!node.children.is_empty());
+        let mut out = Vec::new();
+        build_section(&node, &mut out).unwrap();
+        assert_eq!(out.as_slice(), &section[..]);
+    }
+
+    #[test]
+    fn guided_lzma_dirty_child_recompresses_and_materializes() {
+        let section = include_bytes!("../../../../tests/fixtures/lzma_guided_section.bin");
+        let mut node = crate::parser::section::parse_section(section, 0).unwrap();
+        let prefix_before = node.body[..20].to_vec();
+        let child = &mut node.children[0];
+        child.action = Action::Replace;
+        child.children.clear();
+        child.body = vec![0x42; 24];
+        node.action = Action::Rebuild;
+        let mut out = Vec::new();
+        build_section(&node, &mut out).unwrap();
+        assert_ne!(out.as_slice(), &section[..]);
+        assert_eq!(section_size(&out) as usize, out.len());
+        let rebuilt = crate::parser::section::parse_section(&out, 0).unwrap();
+        assert_eq!(&rebuilt.body[..20], &prefix_before[..]);
+        assert_eq!(rebuilt.children[0].body, vec![0x42; 24]);
+    }
+
+    #[test]
+    fn guided_lzma_noaction_with_dirty_descendant_recompresses() {
+        let section = include_bytes!("../../../../tests/fixtures/lzma_guided_section.bin");
+        let mut node = crate::parser::section::parse_section(section, 0).unwrap();
+        node.children[0].action = Action::Replace;
+        let mut out = Vec::new();
+        build_section(&node, &mut out).unwrap();
+        assert_ne!(out.as_slice(), &section[..]);
+        assert!(crate::parser::section::parse_section(&out, 0).is_ok());
+    }
+
+    #[test]
+    fn guided_lzma_remove_only_child_errors_empty_input() {
+        let section = include_bytes!("../../../../tests/fixtures/lzma_guided_section.bin");
+        let mut node = crate::parser::section::parse_section(section, 0).unwrap();
+        node.children[0].action = Action::Remove;
+        node.action = Action::Rebuild;
+        let mut out = Vec::new();
+        let err = build_section(&node, &mut out).unwrap_err();
+        assert!(matches!(
+            err,
+            BuilderError::Compression(crate::compress::CompressError::EmptyInput)
+        ));
+    }
+
+    #[test]
+    fn guided_lzma_replace_body_only_errors_without_children() {
+        let section = include_bytes!("../../../../tests/fixtures/lzma_guided_section.bin");
+        let mut node = crate::parser::section::parse_section(section, 0).unwrap();
+        node.action = Action::Replace;
+        node.children.clear();
+        let mut out = Vec::new();
+        let err = build_section(&node, &mut out).unwrap_err();
+        assert!(matches!(err, BuilderError::RecompressionUnsupported));
+    }
+
+    #[test]
+    fn dirty_tiano_guided_errors_recompression_unsupported() {
+        let node = guided_node(tiano_guid(), Action::Rebuild);
+        let mut out = Vec::new();
+        let err = build_section(&node, &mut out).unwrap_err();
+        assert!(matches!(err, BuilderError::RecompressionUnsupported));
+    }
+
+    #[test]
+    fn dirty_compression_section_errors_recompression_unsupported() {
+        let mut node = leaf_section(Action::Rebuild);
+        node.subtype = EFI_SECTION_COMPRESSION;
+        node.children = vec![leaf_section(Action::NoAction)];
+        let mut out = Vec::new();
+        let err = build_section(&node, &mut out).unwrap_err();
+        assert!(matches!(err, BuilderError::RecompressionUnsupported));
     }
 }
