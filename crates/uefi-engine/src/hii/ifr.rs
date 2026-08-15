@@ -46,11 +46,70 @@ pub fn find_suppress_if_scopes(body: &[u8]) -> Vec<SuppressScope> {
     scopes
 }
 
-pub fn unsuppress(ifr: &mut Vec<u8>, scope: &SuppressScope) {
-    if scope.end + 2 <= ifr.len() && ifr[scope.end] == 0x29 && ifr[scope.end + 1] == 0x02 {
-        ifr.drain(scope.end..scope.end + 2);
+pub fn unsuppress(ifr: &mut [u8], scope: &SuppressScope) {
+    if scope.end + 2 > ifr.len() || ifr[scope.end] != 0x29 || ifr[scope.end + 1] != 0x02 {
+        return;
     }
-    ifr.splice(scope.start..scope.start, [0x29, 0x02]);
+    for i in (scope.start..scope.end).rev() {
+        ifr[i + 2] = ifr[i];
+    }
+    ifr[scope.start] = 0x29;
+    ifr[scope.start + 1] = 0x02;
+}
+
+pub fn find_form_suppress_scope(body: &[u8], form_id: u16) -> Option<SuppressScope> {
+    let (start, end) = if is_form_package(body) {
+        let plen = body[0] as usize | (body[1] as usize) << 8 | (body[2] as usize) << 16;
+        (4, plen.min(body.len()))
+    } else {
+        (0, body.len())
+    };
+    let mut open: Vec<(u8, usize)> = Vec::new();
+    let mut i = start;
+    while i + 2 <= end {
+        let op_code = body[i];
+        let length_and_scope = body[i + 1];
+        let length = (length_and_scope & 0x7F) as usize;
+        if length < 2 || i + length > end {
+            return None;
+        }
+        if op_code == IFR_FORM_OP
+            && length >= 6
+            && u16::from_le_bytes([body[i + 2], body[i + 3]]) == form_id
+            && let Some(k) = open.iter().position(|(op, _)| *op == IFR_SUPPRESS_IF_OP)
+        {
+            let mut depth = open.len();
+            let mut j = i + length;
+            while j + 2 <= end {
+                let inner_op = body[j];
+                let inner_ls = body[j + 1];
+                let inner_len = (inner_ls & 0x7F) as usize;
+                if inner_len < 2 || j + inner_len > end {
+                    return None;
+                }
+                if inner_op == IFR_END_OP {
+                    depth -= 1;
+                    if depth == k {
+                        return Some(SuppressScope {
+                            start: open[k].1,
+                            end: j,
+                        });
+                    }
+                } else if inner_ls & 0x80 != 0 {
+                    depth += 1;
+                }
+                j += inner_len;
+            }
+            return None;
+        }
+        if op_code == IFR_END_OP {
+            open.pop();
+        } else if length_and_scope & 0x80 != 0 {
+            open.push((op_code, i + 2));
+        }
+        i += length;
+    }
+    None
 }
 
 #[derive(Debug, Clone)]
@@ -271,5 +330,64 @@ mod tests {
         pkg[1] = ((shrinked >> 8) & 0xFF) as u8;
         pkg[2] = ((shrinked >> 16) & 0xFF) as u8;
         assert!(parse_form_package(&pkg).is_none());
+    }
+
+    #[test]
+    fn unsuppress_rewrites_slice_in_place_preserving_length() {
+        let mut buf = vec![0xEE; 4];
+        buf.extend_from_slice(&[0x0A, 0x82, 0x12, 0x03, 0x40, 0x29, 0x02]);
+        buf.extend_from_slice(&[0xDD; 4]);
+        let scopes = find_suppress_if_scopes(&buf[4..11]);
+        assert_eq!(scopes.len(), 1);
+        unsuppress(&mut buf[4..11], &scopes[0]);
+        assert_eq!(buf.len(), 15);
+        assert_eq!(&buf[..4], &[0xEE; 4]);
+        assert_eq!(&buf[4..8], &[0x0A, 0x82, 0x29, 0x02]);
+        assert_eq!(&buf[8..11], &[0x12, 0x03, 0x40]);
+        assert_eq!(&buf[11..], &[0xDD; 4]);
+    }
+
+    #[test]
+    fn unsuppress_is_noop_when_scope_not_closed_by_end() {
+        let mut buf = vec![0x0A, 0x82, 0x12, 0x03, 0x40, 0x11, 0x22];
+        let scope = SuppressScope { start: 2, end: 5 };
+        unsuppress(&mut buf, &scope);
+        assert_eq!(buf, vec![0x0A, 0x82, 0x12, 0x03, 0x40, 0x11, 0x22]);
+    }
+
+    #[test]
+    fn find_form_suppress_scope_returns_outermost_wrapper() {
+        let mut ifr = Vec::new();
+        ifr.extend(opcode(IFR_SUPPRESS_IF_OP, true, &[]));
+        ifr.extend(form(1, 10));
+        ifr.extend(end());
+        ifr.extend(end());
+        ifr.extend(opcode(IFR_SUPPRESS_IF_OP, true, &[]));
+        ifr.extend(form(2, 20));
+        ifr.extend(end());
+        ifr.extend(end());
+        let scope1 = find_form_suppress_scope(&ifr, 1).unwrap();
+        let scope2 = find_form_suppress_scope(&ifr, 2).unwrap();
+        assert!(scope2.start > scope1.end);
+        assert!(find_form_suppress_scope(&ifr, 3).is_none());
+        unsuppress(&mut ifr, &scope2);
+        assert_eq!(&ifr[scope2.start..scope2.start + 2], &[0x29, 0x02]);
+        let after1 = find_form_suppress_scope(&ifr, 1).unwrap();
+        assert_eq!(after1.start, scope1.start);
+        assert!(find_form_suppress_scope(&ifr, 2).is_none());
+    }
+
+    #[test]
+    fn find_form_suppress_scope_walks_package_body() {
+        let mut ifr = form_set(&Guid::from_str(FORMSET_GUID).unwrap(), 7);
+        ifr.extend(opcode(IFR_SUPPRESS_IF_OP, true, &[]));
+        ifr.extend(form(5, 50));
+        ifr.extend(end());
+        ifr.extend(end());
+        ifr.extend(end());
+        let pkg = package(&ifr);
+        let scope = find_form_suppress_scope(&pkg, 5).unwrap();
+        assert_eq!(scope.start, find_suppress_if_scopes(&pkg)[0].start);
+        assert!(find_form_suppress_scope(&pkg, 6).is_none());
     }
 }

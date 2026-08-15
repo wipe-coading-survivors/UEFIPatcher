@@ -722,6 +722,7 @@ fn real_image_hii_forms_and_strings() {
 #[test]
 #[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
 fn real_image_hii_form_visibility_round_trip() {
+    use uefi_engine::builder::build_image;
     use uefi_engine::hii::forms::collect_forms;
     use uefi_engine::hii::set_item_visibility;
     use uefi_engine::types::ImageMode;
@@ -731,7 +732,13 @@ fn real_image_hii_form_visibility_round_trip() {
 
     let forms = collect_forms(&img);
     assert!(!forms.is_empty());
-    let form_id = forms[0].form_id.clone();
+    let hidden = forms
+        .iter()
+        .find(|f| !f.visible)
+        .expect("real image has suppressed forms");
+    let form_id = hidden.form_id.clone();
+    let form_id_ifr = hidden.form_id_ifr;
+    let item_id = format!("{form_id}#{form_id_ifr}");
 
     let t = parse_target(&form_id).expect("form_id parses as target");
     let node = find_item(&img.root, &t).expect("form_id resolves in tree");
@@ -740,11 +747,38 @@ fn real_image_hii_form_visibility_round_trip() {
         FfsType::Section,
         "form target must resolve to a Section"
     );
-
-    let err = set_item_visibility(&mut img, &form_id, true).expect_err(
-        "HNX99TF HII targets are PE32 sections behind LZMA; gate 2 passes (recompression available), gate 3 must refuse",
+    assert_eq!(
+        node.subtype, 0x10,
+        "HNX99TF HII targets are PE32 sections behind LZMA"
     );
-    assert!(matches!(err, uefi_engine::hii::HiiError::NotASetupItem));
+
+    set_item_visibility(&mut img, &item_id, true)
+        .expect("unsuppress specific form inside PE 'HII' resource behind recompressable LZMA");
+
+    let built = build_image(&img).expect("build_image after PE-resource unsuppress");
+    assert_eq!(
+        built.len(),
+        data.len(),
+        "total flash length must be preserved"
+    );
+    assert_eq!(
+        &built[..0x890000],
+        &data[..0x890000],
+        "bytes before FV1 must be untouched"
+    );
+    assert_eq!(
+        &built[0xd60000..],
+        &data[0xd60000..],
+        "bytes after FV1 must be untouched"
+    );
+
+    let re = parse_image(&built, ImageMode::Read, "img2", "s2").expect("re-parse");
+    let forms2 = collect_forms(&re);
+    let again = forms2
+        .iter()
+        .find(|f| f.form_id == form_id && f.form_id_ifr == form_id_ifr)
+        .expect("patched form survives rebuild");
+    assert!(again.visible, "form must be visible after round-trip");
 }
 
 #[test]
