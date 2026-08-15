@@ -102,6 +102,9 @@ pub fn replace(
 pub fn rebuild(root: &mut FfsNode, target: &Target) -> Result<(), OpsError> {
     let path = target_path(target)?;
     let node = find_mut(root, &path).ok_or(OpsError::NotFound)?;
+    if node.action == Action::Remove {
+        return Ok(());
+    }
     node.action = Action::Rebuild;
     mark_rebuild_to_root_by_path(root, &path);
     tracing::debug!(path = ?path, "marked for rebuild");
@@ -178,6 +181,23 @@ mod tests {
         rebuild(&mut img.root, &t).unwrap();
         assert_eq!(img.root.action, Action::Rebuild);
         assert_eq!(img.root.children[0].action, Action::Rebuild);
+    }
+
+    #[test]
+    fn rebuild_after_remove_keeps_remove() {
+        let buf = make_simple_image();
+        let mut img = parse_image(&buf, ImageMode::Read, "i", "s").unwrap();
+        let ffs = make_ffs_file();
+        let t = parse_target("0").unwrap();
+        insert(&mut img.root, &t, &ffs, InsertMode::Into).unwrap();
+        let file_target = parse_target("0/0").unwrap();
+        remove(&mut img.root, &file_target).unwrap();
+        rebuild(&mut img.root, &file_target).unwrap();
+        assert_eq!(
+            img.root.children[0].children[0].action,
+            Action::Remove,
+            "rebuild must not resurrect a removed node"
+        );
     }
 
     #[test]
