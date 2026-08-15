@@ -276,9 +276,13 @@
   в `hii_set_form_visibility` маппятся blanket-`map_err` в
   `Status::internal` (`crates/uefi-engine/src/rpc/server.rs:639`);
   семантически корректен `failed_precondition` для ошибок предусловий.
-  Контекст: находка финального ревью фазы 6; свернуть в будущий
-  error-mapping pass — фаза 7 (рекомпрессия) добавляет
-  `builder_error_status` ровно с этим различием для `BuilderError`.
+  Туда же (находки фазы 7): `image_save` (`server.rs:681-688`) маппит
+  `RecompressionUnsupported` → `internal` вместо `failed_precondition`;
+  и `Compression(EmptyInput)` при удалении последнего ребёнка LZMA-
+  обёртки тоже уходит в `internal`. Контекст: находка финального ревью
+  фазы 6; свернуть в будущий error-mapping pass — фаза 7 (рекомпрессия)
+  добавляет `builder_error_status` ровно с этим различием для
+  `BuilderError`.
 
 ### Фаза 6 PE-resource extraction: nested-FV HII отложен (2026-08-14)
 
@@ -304,6 +308,10 @@
   таргетов. Контекст: evidence верификации Task 9 фазы 6 (hack/
   `hii_probe.py` + engine-probe: probe-оффсеты были в сыром распакованном
   блобе, не в PE-телах, достижимых без спуска в 0x17).
+* [ ] **clippy: `cargo clippy -p uefi-engine --all-targets -- -D warnings`
+  падает (pre-existing)** — `clippy::manual_contains` в `#[cfg(test)]` коде
+  `hii/pe_resource.rs:239` (с фазы 6); канонические гейты
+  (`clippy --all`) не затронуты.
 
 ## ImageUpload RPC (docker-развертывание)
 

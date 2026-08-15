@@ -236,8 +236,8 @@ End-state после настоящей фазы: гейт сужается — 
 | Remove | ✅ | ✅ (дроп блоба целиком) | ✅ **recompress, материализуется** | сама ✅; внутри ❌ `RecompressionUnsupported` |
 | Rebuild | cosmetic | ✅ recompress | ✅ recompress | ❌ ошибка |
 | Insert Into | ✅ | ✅ recompress с новым ребёнком | — | ❌ ошибка |
-| Replace body-only | ✅ | ❌ **честная ошибка** (дети очищены; раньше — corrupt) | ❌ ошибка | ❌ ошибка |
-| Replace whole | `parse_file`-семантика (вне рамок) | ✅ recompress из распарсенных детей | ❌ ошибка | ❌ ошибка |
+| Replace body-only | ✅ | ❌ **честная ошибка** (дети очищены; раньше — corrupt) | ✅ recompress, материализуется | ❌ ошибка |
+| Replace whole | `parse_file`-семантика (вне рамок) | ✅ recompress из распарсенных детей | ✅ recompress | ❌ ошибка |
 
 Примечания: Replace whole на сжатой секции (`ops.rs:84-94`) кладёт
 распакованных детей от `parse_file` — recompress-ветка сериализует их и
