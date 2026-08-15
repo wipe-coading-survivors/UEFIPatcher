@@ -649,6 +649,8 @@ git commit -m "fix(uefi-engine): bound ifr walker to declared package length"
 pub fn bare_form_packages<'a>(pe: &'a [u8], exclude: &[(usize, usize)]) -> Vec<&'a [u8]>
 ```
 
+**Scan semantics:** the scan skips past `plen` on any shallow package-pattern match (accepted, covered, or deep-rejected); only a shallow non-match advances `pos` by one byte.
+
 - [ ] **Step 1: Write the failing tests**
 
 Append to the `tests` module in `pe_resource.rs`:
@@ -661,7 +663,7 @@ Append to the `tests` module in `pe_resource.rs`:
     fn bare_scan_finds_valid_form_package_in_pe_body() {
         let mut body = vec![0x11u8; 64];
         body.extend_from_slice(RK3588_BARE_FORM);
-        body.extend_from_slice(vec![0x22; 32]);
+        body.extend_from_slice(&[0x22; 32]);
         let found = bare_form_packages(&body, &[]);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0], RK3588_BARE_FORM);
@@ -671,7 +673,7 @@ Append to the `tests` module in `pe_resource.rs`:
     fn bare_scan_rejects_shallow_false_positive() {
         let mut body = vec![0u8; 16];
         body.extend_from_slice(&[27u8, 0, 0, 0x02, 0x0E]);
-        body.extend_from_slice(vec![0u8; 22]);
+        body.extend_from_slice(&[0u8; 22]);
         assert!(bare_form_packages(&body, &[]).is_empty());
     }
 
@@ -691,7 +693,7 @@ Append to the `tests` module in `pe_resource.rs`:
     fn bare_scan_skips_past_accepted_or_covered_pattern() {
         let mut body = vec![0u8; 8];
         body.extend_from_slice(RK3588_BARE_FORM);
-        body.extend_from_slice(vec![0x33; 4]);
+        body.extend_from_slice(&[0x33; 4]);
         assert_eq!(bare_form_packages(&body, &[(0, body.len())]).len(), 0);
         assert_eq!(bare_form_packages(&body, &[]).len(), 1);
     }
