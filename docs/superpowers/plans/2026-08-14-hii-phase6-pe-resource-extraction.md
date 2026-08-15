@@ -1239,6 +1239,21 @@ Append to the `tests` module in `target.rs`:
             compressed: false,
             alignment_bytes: vec![],
         };
+        let volume = FfsNode {
+            guid: None,
+            node_type: FfsType::Volume,
+            subtype: 0,
+            offset: 0,
+            header: vec![],
+            body: vec![],
+            tail: vec![],
+            children: vec![file],
+            action: Action::NoAction,
+            parsing_data: ParsingData::None,
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        };
         FfsNode {
             guid: None,
             node_type: FfsType::Image,
@@ -1247,7 +1262,7 @@ Append to the `tests` module in `target.rs`:
             header: vec![],
             body: vec![],
             tail: vec![],
-            children: vec![file],
+            children: vec![volume],
             action: Action::NoAction,
             parsing_data: ParsingData::None,
             fixed: false,
@@ -1294,7 +1309,10 @@ Append to the `tests` module in `target.rs`:
         let mut tree = wrapped_tree();
         let node = find_item_mut(&mut tree, &wrapped_target(Some(0))).unwrap();
         node.body.push(1);
-        assert_eq!(tree.children[0].children[0].children[0].body, vec![0xAA, 1]);
+        assert_eq!(
+            tree.children[0].children[0].children[0].children[0].body,
+            vec![0xAA, 1]
+        );
     }
 ```
 
