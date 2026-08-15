@@ -27,6 +27,15 @@ pub struct EngineServer {
 
 type RpcResult<T> = std::result::Result<Response<T>, Status>;
 
+fn builder_error_status(e: crate::builder::BuilderError) -> Status {
+    match e {
+        crate::builder::BuilderError::RecompressionUnsupported => {
+            Status::failed_precondition(e.to_string())
+        }
+        _ => Status::internal(e.to_string()),
+    }
+}
+
 impl EngineServer {
     async fn flush_image(&self, image_id: &str) -> Result<(), Status> {
         let (bytes, session_id) = {
@@ -34,8 +43,7 @@ impl EngineServer {
             let img = images
                 .get(image_id)
                 .ok_or_else(|| Status::not_found("image not found"))?;
-            let bytes =
-                crate::builder::build_image(img).map_err(|e| Status::internal(e.to_string()))?;
+            let bytes = crate::builder::build_image(img).map_err(builder_error_status)?;
             (bytes, img.session_id.clone())
         };
         let path = self
@@ -817,6 +825,15 @@ mod tests {
             .await
             .unwrap();
         (td, EngineServiceClient::new(channel))
+    }
+
+    #[test]
+    fn builder_error_status_maps_recompression_to_failed_precondition() {
+        let st = builder_error_status(crate::builder::BuilderError::RecompressionUnsupported);
+        assert_eq!(st.code(), tonic::Code::FailedPrecondition);
+        assert!(st.message().contains("cannot be rebuilt"));
+        let st = builder_error_status(crate::builder::BuilderError::SizeMismatch);
+        assert_eq!(st.code(), tonic::Code::Internal);
     }
 
     #[tokio::test]
