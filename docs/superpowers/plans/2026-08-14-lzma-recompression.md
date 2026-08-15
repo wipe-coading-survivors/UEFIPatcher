@@ -16,7 +16,7 @@
 - Module-first rule: `pub mod compress;` в `lib.rs` в ТОМ ЖЕ шаге, что создание файла, ДО запуска `cargo test`.
 - TDD порядок: тесты → красный прогон → реализация → зелёный прогон → commit.
 - После каждой задачи: `cargo test -p uefi-engine && cargo clippy -p uefi-engine -- -D warnings && cargo fmt -p uefi-engine -- --check`.
-- Real-image тесты — `#[ignore]` с длинной причиной: `#[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]`; запуск: `UEFIPATCHER_TEST_FW=refs/fw/HNX99TF_200525_original_E5C88C6F.bin cargo test -p uefi-engine --test real_image -- --ignored`.
+- Real-image тесты — `#[ignore]` с длинной причиной: `#[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]`; запуск: `UEFIPATCHER_TEST_FW=../../../refs/fw/HNX99TF_200525_original_E5C88C6F.bin cargo test -p uefi-engine --test real_image -- --ignored`.
 - Ветка `fix/cycle6-reimplent`; байты Lenovo в git не попадают (фикстуры уже в `tests/fixtures/`, синтетика в коде).
 - Этот план исполняется ТОЛЬКО после завершения фазы 6 (Task 7 опирается на её код: гейты `set_item_visibility`, helpers `mk_node`/`FILE_GUID_STR` в тестах `hii/mod.rs`, ожидание `MutationBehindCompression` в `real_image.rs`).
 
@@ -801,12 +801,12 @@ fn real_image_recompress_remove_ui_inside_lzma() {
 
 - [ ] **Step 2: Прогон (verification — задачи 1–3 уже дали поведение)**
 
-Run: `UEFIPATCHER_TEST_FW=refs/fw/HNX99TF_200525_original_E5C88C6F.bin cargo test -p uefi-engine --test real_image real_image_recompress_remove_ui_inside_lzma -- --ignored`
+Run: `UEFIPATCHER_TEST_FW=../../../refs/fw/HNX99TF_200525_original_E5C88C6F.bin cargo test -p uefi-engine --test real_image real_image_recompress_remove_ui_inside_lzma -- --ignored`
 Expected: PASS. Если FAIL — не ослаблять ассерты: разбирать (systematic-debugging), причина скорее всего в dispatch-порядке `build_section`.
 
 - [ ] **Step 3: Регрессии**
 
-Run: `UEFIPATCHER_TEST_FW=refs/fw/HNX99TF_200525_original_E5C88C6F.bin cargo test -p uefi-engine --test real_image -- --ignored`
+Run: `UEFIPATCHER_TEST_FW=../../../refs/fw/HNX99TF_200525_original_E5C88C6F.bin cargo test -p uefi-engine --test real_image -- --ignored`
 Expected: PASS все, ОБЯЗАТЕЛЬНО включая `real_image_full_flash_round_trip` и `real_image_full_flash_repatch_stability` (clean-дерево не пересжимается никогда) и пост-фазовые HII-тесты (с их текущими ожиданиями; visibility-тест ещё ждёт `MutationBehindCompression` — flip в Task 7).
 
 - [ ] **Step 4: Verify + commit**
@@ -923,12 +923,12 @@ Expected: PASS все, включая пост-фазовый `set_item_visibili
     assert!(matches!(err, uefi_engine::hii::HiiError::NotASetupItem));
 ```
 
-Run: `UEFIPATCHER_TEST_FW=refs/fw/HNX99TF_200525_original_E5C88C6F.bin cargo test -p uefi-engine --test real_image real_image_hii_form_visibility_round_trip -- --ignored`
+Run: `UEFIPATCHER_TEST_FW=../../../refs/fw/HNX99TF_200525_original_E5C88C6F.bin cargo test -p uefi-engine --test real_image real_image_hii_form_visibility_round_trip -- --ignored`
 Expected: PASS.
 
 - [ ] **Step 5: Verify + commit (код)**
 
-Run: `cargo test -p uefi-engine && cargo clippy -p uefi-engine -- -D warnings && cargo fmt -p uefi-engine -- --check && UEFIPATCHER_TEST_FW=refs/fw/HNX99TF_200525_original_E5C88C6F.bin cargo test -p uefi-engine --test real_image -- --ignored`
+Run: `cargo test -p uefi-engine && cargo clippy -p uefi-engine -- -D warnings && cargo fmt -p uefi-engine -- --check && UEFIPATCHER_TEST_FW=../../../refs/fw/HNX99TF_200525_original_E5C88C6F.bin cargo test -p uefi-engine --test real_image -- --ignored`
 
 ```bash
 git add crates/uefi-engine/src/hii/mod.rs crates/uefi-engine/tests/real_image.rs
@@ -972,7 +972,7 @@ git commit -m "docs: phase-6 spec gate amendment + TODO close-out (issue IV full
 cargo test --all
 cargo clippy --all -- -D warnings
 cargo fmt --all -- --check
-UEFIPATCHER_TEST_FW=refs/fw/HNX99TF_200525_original_E5C88C6F.bin cargo test -p uefi-engine --test real_image -- --ignored
+UEFIPATCHER_TEST_FW=../../../refs/fw/HNX99TF_200525_original_E5C88C6F.bin cargo test -p uefi-engine --test real_image -- --ignored
 cargo test -p uefi-cli
 ```
 
