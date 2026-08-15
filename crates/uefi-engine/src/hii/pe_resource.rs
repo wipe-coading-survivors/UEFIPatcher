@@ -236,7 +236,7 @@ mod tests {
         assert!(!exclude.is_empty());
         let found = bare_form_packages(&pe, &exclude);
         assert!(
-            !found.iter().any(|p| *p == RK3588_BARE_FORM),
+            !found.contains(&(RK3588_BARE_FORM as &[u8])),
             "resource-covered copy must be deduplicated"
         );
     }
