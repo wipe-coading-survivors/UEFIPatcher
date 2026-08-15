@@ -134,6 +134,11 @@ fn is_compressed_or_guided(node: &FfsNode) -> bool {
     node.subtype == EFI_SECTION_COMPRESSION || node.subtype == EFI_SECTION_GUID_DEFINED
 }
 
+#[expect(dead_code)]
+fn subtree_dirty(node: &FfsNode) -> bool {
+    node.action != Action::NoAction || node.children.iter().any(subtree_dirty)
+}
+
 fn set_ffs_size(header: &mut [u8], total: usize) {
     if header.len() >= 32 {
         header[24..32].copy_from_slice(&(total as u64).to_le_bytes());
@@ -340,5 +345,40 @@ mod tests {
         let body = vec![0x01u8, 0x02, 0x03];
         recompute_ffs_checksums(&mut header, &body);
         assert_eq!(header[17], calculate_checksum8(&body));
+    }
+
+    fn leaf_section(action: Action) -> FfsNode {
+        FfsNode {
+            guid: None,
+            node_type: FfsType::Section,
+            subtype: EFI_SECTION_RAW,
+            offset: 0,
+            header: vec![0u8; 4],
+            body: vec![0xAA; 8],
+            tail: vec![],
+            children: vec![],
+            action,
+            parsing_data: ParsingData::None,
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        }
+    }
+
+    #[test]
+    fn subtree_dirty_false_for_clean_tree() {
+        assert!(!subtree_dirty(&leaf_section(Action::NoAction)));
+    }
+
+    #[test]
+    fn subtree_dirty_true_for_dirty_descendant() {
+        let mut parent = leaf_section(Action::NoAction);
+        parent.children = vec![leaf_section(Action::Replace)];
+        assert!(subtree_dirty(&parent));
+    }
+
+    #[test]
+    fn subtree_dirty_true_for_own_action() {
+        assert!(subtree_dirty(&leaf_section(Action::Rebuild)));
     }
 }

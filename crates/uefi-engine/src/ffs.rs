@@ -43,6 +43,11 @@ pub fn is_lzma_guid(g: &Guid) -> bool {
         || b == lzmaf86_guid().to_bytes()
 }
 
+pub fn is_recompressable_lzma_guid(g: &Guid) -> bool {
+    let b = g.to_bytes();
+    b == lzma_guid().to_bytes() || b == lzma_hp_guid().to_bytes() || b == lzma_ms_guid().to_bytes()
+}
+
 pub fn is_tiano_guid(g: &Guid) -> bool {
     g.to_bytes() == tiano_guid().to_bytes()
 }
@@ -175,5 +180,14 @@ mod tests {
         assert!(is_lzma_guid(&lzmaf86_guid()));
         assert!(!is_lzma_guid(&tiano_guid()));
         assert!(is_tiano_guid(&tiano_guid()));
+    }
+
+    #[test]
+    fn is_recompressable_lzma_guid_excludes_f86_and_tiano() {
+        assert!(is_recompressable_lzma_guid(&lzma_guid()));
+        assert!(is_recompressable_lzma_guid(&lzma_hp_guid()));
+        assert!(is_recompressable_lzma_guid(&lzma_ms_guid()));
+        assert!(!is_recompressable_lzma_guid(&lzmaf86_guid()));
+        assert!(!is_recompressable_lzma_guid(&tiano_guid()));
     }
 }
