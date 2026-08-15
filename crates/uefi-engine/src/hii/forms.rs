@@ -1,52 +1,110 @@
 use std::collections::HashMap;
 
+use r_efi::hii::{PACKAGE_FORMS, PACKAGE_STRINGS};
 use uefi_proto::FormInfo;
 
-use crate::hii::ifr::parse_form_package;
-use crate::hii::strings::collect_strings;
+use crate::ffs::{
+    EFI_SECTION_COMPRESSION, EFI_SECTION_GUID_DEFINED, EFI_SECTION_PE32, EFI_SECTION_RAW,
+};
+use crate::hii::ifr::{FormSetInfo, parse_form_package};
+use crate::hii::package_list::parse_package_list;
+use crate::hii::pe_resource::{bare_form_packages, hii_resource_blobs, hii_resource_ranges};
+use crate::hii::strings::{declared_len_sane, parse_string_package};
 use crate::types::{FfsNode, FfsType, Guid, Image, guid_to_upper_string};
 
 pub fn collect_forms(image: &Image) -> Vec<FormInfo> {
-    let mut titles: HashMap<u16, String> = HashMap::new();
-    for s in collect_strings(image) {
-        titles.entry(s.string_id as u16).or_insert(s.text);
-    }
     let mut out = Vec::new();
-    walk(&image.root, None, &titles, &mut out);
+    walk_files(&image.root, &mut out);
     out
 }
 
-fn walk(
-    node: &FfsNode,
-    file_guid: Option<Guid>,
-    titles: &HashMap<u16, String>,
-    out: &mut Vec<FormInfo>,
-) {
-    let file_guid = if node.node_type == FfsType::File {
-        node.guid.or(file_guid)
-    } else {
-        file_guid
-    };
-    let mut counters: HashMap<u8, usize> = HashMap::new();
+fn walk_files(node: &FfsNode, out: &mut Vec<FormInfo>) {
     for child in &node.children {
+        if child.node_type == FfsType::File {
+            collect_file_forms(child, out);
+        }
+        walk_files(child, out);
+    }
+}
+
+fn collect_file_forms(file: &FfsNode, out: &mut Vec<FormInfo>) {
+    let Some(fg) = file.guid else {
+        return;
+    };
+    let mut titles: HashMap<u16, String> = HashMap::new();
+    let mut found: Vec<(String, FormSetInfo)> = Vec::new();
+    let mut counters: HashMap<u8, usize> = HashMap::new();
+    walk_sections(file, fg, &mut titles, &mut found, &mut counters);
+    for (target, fs) in found {
+        for raw in &fs.forms {
+            out.push(FormInfo {
+                form_id: target.clone(),
+                formset_guid: guid_to_upper_string(&fs.guid),
+                form_id_ifr: raw.form_id as u32,
+                title: titles.get(&raw.title).cloned().unwrap_or_default(),
+                visible: !raw.suppressed,
+            });
+        }
+    }
+}
+
+fn walk_sections(
+    node: &FfsNode,
+    fg: Guid,
+    titles: &mut HashMap<u16, String>,
+    found: &mut Vec<(String, FormSetInfo)>,
+    counters: &mut HashMap<u8, usize>,
+) {
+    for child in &node.children {
+        if child.node_type != FfsType::Section {
+            continue;
+        }
         let idx = *counters.entry(child.subtype).or_insert(0);
-        if child.node_type == FfsType::Section
-            && let Some(fs) = parse_form_package(&child.body)
-            && let Some(fg) = file_guid
-        {
-            let target = format!("{}:{:#04x}:{}", fg, child.subtype, idx);
-            for raw in &fs.forms {
-                out.push(FormInfo {
-                    form_id: target.clone(),
-                    formset_guid: guid_to_upper_string(&fs.guid),
-                    form_id_ifr: raw.form_id as u32,
-                    title: titles.get(&raw.title).cloned().unwrap_or_default(),
-                    visible: !raw.suppressed,
-                });
+        counters.insert(child.subtype, idx + 1);
+        let target = format!("{}:{:#04x}:{}", fg, child.subtype, idx);
+        if child.subtype == EFI_SECTION_RAW {
+            if declared_len_sane(&child.body)
+                && let Some(pkg) = parse_string_package(&child.body)
+            {
+                for (sid, text) in pkg.strings {
+                    titles.entry(sid).or_insert(text);
+                }
+            } else if let Some(fs) = parse_form_package(&child.body) {
+                found.push((target, fs));
+            }
+        } else if child.subtype == EFI_SECTION_PE32 {
+            let ranges = hii_resource_ranges(&child.body);
+            for blob in hii_resource_blobs(&child.body) {
+                let Some(list) = parse_package_list(blob) else {
+                    continue;
+                };
+                for pkg in &list.packages {
+                    match pkg.kind {
+                        PACKAGE_FORMS => {
+                            if let Some(fs) = parse_form_package(pkg.bytes) {
+                                found.push((target.clone(), fs));
+                            }
+                        }
+                        PACKAGE_STRINGS => {
+                            if let Some(sp) = parse_string_package(pkg.bytes) {
+                                for (sid, text) in sp.strings {
+                                    titles.entry(sid).or_insert(text);
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            for pkg in bare_form_packages(&child.body, &ranges) {
+                if let Some(fs) = parse_form_package(pkg) {
+                    found.push((target.clone(), fs));
+                }
             }
         }
-        counters.insert(child.subtype, idx + 1);
-        walk(child, file_guid, titles, out);
+        if child.subtype == EFI_SECTION_COMPRESSION || child.subtype == EFI_SECTION_GUID_DEFINED {
+            walk_sections(child, fg, titles, found, counters);
+        }
     }
 }
 
@@ -59,7 +117,6 @@ mod tests {
 
     const SIBT_STRING_SCSU: u8 = 0x10;
     const SIBT_END: u8 = 0x00;
-    const LANGUAGE_OFFSET: usize = 12;
     const FILE_GUID: &str = "899407d7-92a6-4174-968f-6f0b47f86a23";
     const FORMSET_GUID: &str = "5C60F367-A505-419A-859E-2A4FF6CA6FE5";
 
@@ -105,14 +162,15 @@ mod tests {
 
     fn string_pkg() -> Vec<u8> {
         let lang = "eng";
-        let info_off = LANGUAGE_OFFSET + lang.len() + 1;
+        let hdr_size: u32 = (46 + lang.len() + 1) as u32;
         let mut b = vec![0u8; 3];
         b.push(0x04);
-        b.extend_from_slice(&1u32.to_le_bytes());
-        b.extend_from_slice(&(info_off as u32).to_le_bytes());
-        while b.len() < LANGUAGE_OFFSET {
+        b.extend_from_slice(&hdr_size.to_le_bytes());
+        b.extend_from_slice(&hdr_size.to_le_bytes());
+        while b.len() < 44 {
             b.push(0);
         }
+        b.extend_from_slice(&0u16.to_le_bytes());
         b.extend_from_slice(lang.as_bytes());
         b.push(0);
         b.extend_from_slice(&[
@@ -247,5 +305,160 @@ mod tests {
             mode: ImageMode::Read,
         };
         assert!(collect_forms(&image).is_empty());
+    }
+
+    fn hii_list(form: &[u8], string: &[u8]) -> Vec<u8> {
+        let g = Guid::from_str(FILE_GUID).unwrap();
+        let mut b = g.to_bytes().to_vec();
+        let total = 20 + form.len() + string.len() + 4;
+        b.extend_from_slice(&(total as u32).to_le_bytes());
+        b.extend_from_slice(form);
+        b.extend_from_slice(string);
+        b.extend_from_slice(&[4, 0, 0, r_efi::hii::PACKAGE_END]);
+        b
+    }
+
+    fn string_pkg_with(text: &[u8]) -> Vec<u8> {
+        let lang = "eng";
+        let hdr_size: u32 = (46 + lang.len() + 1) as u32;
+        let mut b = vec![0u8; 3];
+        b.push(0x04);
+        b.extend_from_slice(&hdr_size.to_le_bytes());
+        b.extend_from_slice(&hdr_size.to_le_bytes());
+        while b.len() < 44 {
+            b.push(0);
+        }
+        b.extend_from_slice(&0u16.to_le_bytes());
+        b.extend_from_slice(lang.as_bytes());
+        b.push(0);
+        b.push(SIBT_STRING_SCSU);
+        b.extend_from_slice(text);
+        b.push(0);
+        b.push(SIBT_END);
+        let len = b.len() as u32;
+        b[0] = (len & 0xFF) as u8;
+        b[1] = ((len >> 8) & 0xFF) as u8;
+        b[2] = ((len >> 16) & 0xFF) as u8;
+        b
+    }
+
+    #[test]
+    fn collect_forms_titles_are_scoped_to_file() {
+        let mk_file = |guid: &str, text: &[u8]| {
+            let str_sec = mk_node(None, FfsType::Section, 0x19, string_pkg_with(text), vec![]);
+            let form_sec = mk_node(None, FfsType::Section, 0x19, form_pkg(1), vec![]);
+            mk_node(
+                Some(Guid::from_str(guid).unwrap()),
+                FfsType::File,
+                0x07,
+                vec![],
+                vec![str_sec, form_sec],
+            )
+        };
+        let f1 = mk_file(FILE_GUID, b"MainA");
+        let f2 = mk_file("899407d7-92a6-4174-968f-6f0b47f86a99", b"MainB");
+        let volume = mk_node(None, FfsType::Volume, 0, vec![], vec![f1, f2]);
+        let root = mk_node(None, FfsType::Image, 0, vec![], vec![volume]);
+        let image = Image {
+            image_id: "img".into(),
+            session_id: "s".into(),
+            root,
+            mode: ImageMode::Read,
+        };
+        let forms = collect_forms(&image);
+        assert_eq!(forms.len(), 4);
+        let main_a = forms.iter().find(|f| f.title == "MainA").unwrap();
+        let main_b = forms.iter().find(|f| f.title == "MainB").unwrap();
+        assert!(main_a.form_id.starts_with(FILE_GUID));
+        assert!(
+            main_b
+                .form_id
+                .starts_with("899407d7-92a6-4174-968f-6f0b47f86a99")
+        );
+    }
+
+    #[test]
+    fn collect_forms_sees_forms_inside_pe_resources() {
+        let list = hii_list(&form_pkg(1), &string_pkg());
+        let pe = crate::hii::pe_resource::synth_hii_pe("HII", &list);
+        let pe_sec = mk_node(None, FfsType::Section, 0x10, pe, vec![]);
+        let file = mk_node(
+            Some(Guid::from_str(FILE_GUID).unwrap()),
+            FfsType::File,
+            0x07,
+            vec![],
+            vec![pe_sec],
+        );
+        let volume = mk_node(None, FfsType::Volume, 0, vec![], vec![file]);
+        let root = mk_node(None, FfsType::Image, 0, vec![], vec![volume]);
+        let image = Image {
+            image_id: "img".into(),
+            session_id: "s".into(),
+            root,
+            mode: ImageMode::Read,
+        };
+        let forms = collect_forms(&image);
+        assert_eq!(forms.len(), 2);
+        assert_eq!(forms[0].form_id, format!("{FILE_GUID}:0x10:0"));
+        assert_eq!(forms[0].title, "Main");
+        assert_eq!(forms[0].formset_guid, FORMSET_GUID);
+    }
+
+    #[test]
+    fn collect_forms_sees_bare_form_package_in_pe_body() {
+        let mut body = vec![0x44u8; 16];
+        body.extend_from_slice(include_bytes!(
+            "../../tests/fixtures/hii_rk3588_bare_form.bin"
+        ));
+        let pe_sec = mk_node(None, FfsType::Section, 0x10, body, vec![]);
+        let file = mk_node(
+            Some(Guid::from_str(FILE_GUID).unwrap()),
+            FfsType::File,
+            0x07,
+            vec![],
+            vec![pe_sec],
+        );
+        let volume = mk_node(None, FfsType::Volume, 0, vec![], vec![file]);
+        let root = mk_node(None, FfsType::Image, 0, vec![], vec![volume]);
+        let image = Image {
+            image_id: "img".into(),
+            session_id: "s".into(),
+            root,
+            mode: ImageMode::Read,
+        };
+        let forms = collect_forms(&image);
+        assert!(!forms.is_empty());
+        assert_eq!(forms[0].form_id, format!("{FILE_GUID}:0x10:0"));
+        assert_eq!(
+            forms[0].formset_guid,
+            "642237C7-35D4-472D-8365-12E0CCF27A22"
+        );
+    }
+
+    #[test]
+    fn collect_forms_numbers_sections_through_wrappers() {
+        let list = hii_list(&form_pkg(1), &string_pkg());
+        let pe = crate::hii::pe_resource::synth_hii_pe("HII", &list);
+        let inner = mk_node(None, FfsType::Section, 0x10, pe, vec![]);
+        let wrapper = mk_node(None, FfsType::Section, 0x02, vec![], vec![inner]);
+        let direct = mk_node(None, FfsType::Section, 0x10, vec![0x55; 8], vec![]);
+        let file = mk_node(
+            Some(Guid::from_str(FILE_GUID).unwrap()),
+            FfsType::File,
+            0x07,
+            vec![],
+            vec![wrapper, direct],
+        );
+        let volume = mk_node(None, FfsType::Volume, 0, vec![], vec![file]);
+        let root = mk_node(None, FfsType::Image, 0, vec![], vec![volume]);
+        let image = Image {
+            image_id: "img".into(),
+            session_id: "s".into(),
+            root,
+            mode: ImageMode::Read,
+        };
+        let forms = collect_forms(&image);
+        assert!(!forms.is_empty());
+        assert_eq!(forms[0].form_id, format!("{FILE_GUID}:0x10:0"));
     }
 }

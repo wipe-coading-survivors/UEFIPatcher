@@ -1,8 +1,13 @@
 use std::collections::HashMap;
 
+use r_efi::hii::PACKAGE_STRINGS;
+use uefi_proto::StringInfo;
+
+use crate::ffs::EFI_SECTION_PE32;
+use crate::hii::package_list::parse_package_list;
+use crate::hii::pe_resource::hii_resource_blobs;
 use crate::hii::string_pack::is_string_package;
 use crate::types::{FfsNode, FfsType, Image};
-use uefi_proto::StringInfo;
 
 const SIBT_END: u8 = 0x00;
 const SIBT_STRING_SCSU: u8 = 0x10;
@@ -229,18 +234,20 @@ pub fn collect_strings(image: &Image) -> Vec<StringInfo> {
 }
 
 fn walk_for_string_package(node: &FfsNode, out: &mut Vec<StringInfo>) {
-    if node.node_type == FfsType::Section
-        && is_string_package(&node.body)
-        && let Some(pkg) = parse_string_package(&node.body)
-    {
-        for (sid, text) in pkg.strings {
-            out.push(StringInfo {
-                language: pkg.language.clone(),
-                string_id: sid as u32,
-                text,
-            });
+    if node.node_type == FfsType::Section {
+        if declared_len_sane(&node.body)
+            && is_string_package(&node.body)
+            && let Some(pkg) = parse_string_package(&node.body)
+        {
+            push_strings(pkg, out);
+            return;
         }
-        return;
+        if node.subtype == EFI_SECTION_PE32
+            && let Some(pkg) = first_resource_string_package(&node.body)
+        {
+            push_strings(pkg, out);
+            return;
+        }
     }
     for child in &node.children {
         walk_for_string_package(child, out);
@@ -248,6 +255,37 @@ fn walk_for_string_package(node: &FfsNode, out: &mut Vec<StringInfo>) {
             return;
         }
     }
+}
+
+fn push_strings(pkg: ParsedStringPackage, out: &mut Vec<StringInfo>) {
+    for (sid, text) in pkg.strings {
+        out.push(StringInfo {
+            language: pkg.language.clone(),
+            string_id: sid as u32,
+            text,
+        });
+    }
+}
+
+fn first_resource_string_package(pe: &[u8]) -> Option<ParsedStringPackage> {
+    for blob in hii_resource_blobs(pe) {
+        let Some(list) = parse_package_list(blob) else {
+            continue;
+        };
+        for pkg in &list.packages {
+            if pkg.kind == PACKAGE_STRINGS
+                && let Some(sp) = parse_string_package(pkg.bytes)
+            {
+                return Some(sp);
+            }
+        }
+    }
+    None
+}
+
+pub(crate) fn declared_len_sane(body: &[u8]) -> bool {
+    body.len() >= 4
+        && (body[0] as usize | (body[1] as usize) << 8 | (body[2] as usize) << 16) <= body.len()
 }
 
 #[cfg(test)]
@@ -448,6 +486,33 @@ mod tests {
     #[test]
     fn collect_strings_empty_when_no_package() {
         let image = mk_image(vec![0x00, 0x00, 0x00, 0x02]);
+        assert!(collect_strings(&image).is_empty());
+    }
+
+    #[test]
+    fn collect_strings_from_pe_resources() {
+        let blob = include_bytes!("../../tests/fixtures/hii_rk3588_string_res.bin");
+        let pe = crate::hii::pe_resource::synth_hii_pe("HII", blob);
+        let mut section = mk_node(FfsType::Section, pe, vec![]);
+        section.subtype = crate::ffs::EFI_SECTION_PE32;
+        let file = mk_node(FfsType::File, vec![], vec![section]);
+        let volume = mk_node(FfsType::Volume, vec![], vec![file]);
+        let root = mk_node(FfsType::Image, vec![], vec![volume]);
+        let image = Image {
+            image_id: "img".into(),
+            session_id: "s".into(),
+            root,
+            mode: ImageMode::Read,
+        };
+        let out = collect_strings(&image);
+        assert!(!out.is_empty());
+        assert_eq!(out[0].language, "en-US");
+    }
+
+    #[test]
+    fn collect_strings_ignores_bare_body_with_bogus_declared_length() {
+        let mut image = mk_image(vec![0x09, 0x00, 0x00, 0x04]);
+        image.root.children[0].children[0].children[0].subtype = crate::ffs::EFI_SECTION_RAW;
         assert!(collect_strings(&image).is_empty());
     }
 }
