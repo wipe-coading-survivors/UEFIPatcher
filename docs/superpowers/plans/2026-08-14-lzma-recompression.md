@@ -853,12 +853,11 @@ git commit -m "test(uefi-engine): real-image acceptance — remove UI inside LZM
         inner.subtype = 0x19;
         let mut wrapper = mk_node(FfsType::Section, vec![], vec![inner]);
         wrapper.subtype = 0x02;
-        wrapper.parsing_data = crate::types::ParsingData::GuidedSection(
-            crate::types::GuidedSectionParsingData {
+        wrapper.parsing_data =
+            crate::types::ParsingData::GuidedSection(crate::types::GuidedSectionParsingData {
                 guid: crate::ffs::lzma_guid(),
                 dictionary_size: 0x0080_0000,
-            },
-        );
+            });
         let mut file = mk_node(FfsType::File, vec![], vec![wrapper]);
         file.guid = Some(Guid::from_str(FILE_GUID_STR).unwrap());
         let volume = mk_node(FfsType::Volume, vec![], vec![file]);
@@ -869,15 +868,22 @@ git commit -m "test(uefi-engine): real-image acceptance — remove UI inside LZM
             root,
             mode: ImageMode::Write,
         };
-        let body_before = image.root.children[0].children[0].children[0].children[0].body.clone();
+        let body_before = image.root.children[0].children[0].children[0].children[0]
+            .body
+            .clone();
         set_item_visibility(
             &mut image,
             "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:0",
             true,
         )
         .expect("lzma-backed wrapper is recompressable; mutation must be allowed");
-        let body_after = image.root.children[0].children[0].children[0].children[0].body;
-        assert_ne!(body_before, body_after, "unsuppress must patch the form body");
+        let body_after = image.root.children[0].children[0].children[0].children[0]
+            .body
+            .clone();
+        assert_ne!(
+            body_before, body_after,
+            "unsuppress must patch the form body"
+        );
     }
 ```
 
@@ -911,7 +917,9 @@ Expected: FAIL — текущий гейт возвращает `MutationBehindC
 Display-текст варианта `MutationBehindCompression` заменить на:
 
 ```rust
-    #[error("target is behind a compressed/guided section that cannot be recompressed (Tiano, LZMAF86, standard compression, unknown GUID)")]
+    #[error(
+        "target is behind a compressed/guided section that cannot be recompressed (Tiano, LZMAF86, standard compression, unknown GUID)"
+    )]
     MutationBehindCompression,
 ```
 
