@@ -1,5 +1,8 @@
 use object::endian::LittleEndian;
 use object::read::pe::{ImageNtHeaders, PeFile, PeFile32, PeFile64, ResourceDirectoryEntryData};
+use r_efi::hii::{IFR_FORM_SET_OP, PACKAGE_FORMS};
+
+use crate::hii::ifr::parse_form_package;
 
 pub fn hii_resource_blobs(pe: &[u8]) -> Vec<&[u8]> {
     hii_resource_ranges(pe)
@@ -80,6 +83,28 @@ fn push_leaf<Pe: ImageNtHeaders>(
     out.push((off as usize, len));
 }
 
+pub fn bare_form_packages<'a>(pe: &'a [u8], exclude: &[(usize, usize)]) -> Vec<&'a [u8]> {
+    let mut out = Vec::new();
+    let mut pos = 0usize;
+    while pos + 5 <= pe.len() {
+        let plen = pe[pos] as usize | (pe[pos + 1] as usize) << 8 | (pe[pos + 2] as usize) << 16;
+        if pe[pos + 3] == PACKAGE_FORMS
+            && pe[pos + 4] == IFR_FORM_SET_OP
+            && plen >= 24
+            && pos + plen <= pe.len()
+        {
+            let covered = exclude.iter().any(|&(o, l)| o <= pos && pos < o + l);
+            if !covered && parse_form_package(&pe[pos..pos + plen]).is_some() {
+                out.push(&pe[pos..pos + plen]);
+            }
+            pos += plen;
+        } else {
+            pos += 1;
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 fn rsrc_dir_header(named_entries: u16, id_entries: u16) -> [u8; 16] {
     let mut header = [0u8; 16];
@@ -146,6 +171,8 @@ mod tests {
     const RK3588_STRING_RES: &[u8] =
         include_bytes!("../../tests/fixtures/hii_rk3588_string_res.bin");
 
+    const RK3588_BARE_FORM: &[u8] = include_bytes!("../../tests/fixtures/hii_rk3588_bare_form.bin");
+
     #[test]
     fn extracts_hii_blob_from_synthetic_pe() {
         let pe = synth_hii_pe("HII", RK3588_STRING_RES);
@@ -182,5 +209,44 @@ mod tests {
         let mut pe = synth_hii_pe("HII", RK3588_STRING_RES);
         pe[0xd8..0xdc].copy_from_slice(&0u32.to_le_bytes());
         assert!(hii_resource_blobs(&pe).is_empty());
+    }
+
+    #[test]
+    fn bare_scan_finds_valid_form_package_in_pe_body() {
+        let mut body = vec![0x11u8; 64];
+        body.extend_from_slice(RK3588_BARE_FORM);
+        body.extend_from_slice(&[0x22; 32]);
+        let found = bare_form_packages(&body, &[]);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0], RK3588_BARE_FORM);
+    }
+
+    #[test]
+    fn bare_scan_rejects_shallow_false_positive() {
+        let mut body = vec![0u8; 16];
+        body.extend_from_slice(&[27u8, 0, 0, 0x02, 0x0E]);
+        body.extend_from_slice(&[0u8; 22]);
+        assert!(bare_form_packages(&body, &[]).is_empty());
+    }
+
+    #[test]
+    fn bare_scan_drops_candidates_covered_by_resource_ranges() {
+        let pe = synth_hii_pe("HII", RK3588_BARE_FORM);
+        let exclude = hii_resource_ranges(&pe);
+        assert!(!exclude.is_empty());
+        let found = bare_form_packages(&pe, &exclude);
+        assert!(
+            !found.iter().any(|p| *p == RK3588_BARE_FORM),
+            "resource-covered copy must be deduplicated"
+        );
+    }
+
+    #[test]
+    fn bare_scan_skips_past_accepted_or_covered_pattern() {
+        let mut body = vec![0u8; 8];
+        body.extend_from_slice(RK3588_BARE_FORM);
+        body.extend_from_slice(&[0x33; 4]);
+        assert_eq!(bare_form_packages(&body, &[(0, body.len())]).len(), 0);
+        assert_eq!(bare_form_packages(&body, &[]).len(), 1);
     }
 }
