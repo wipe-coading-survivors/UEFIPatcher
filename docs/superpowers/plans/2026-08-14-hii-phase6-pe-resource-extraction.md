@@ -344,16 +344,24 @@ Create `crates/uefi-engine/src/hii/pe_resource.rs` containing ONLY the test modu
 
 ```rust
 #[cfg(test)]
+fn rsrc_dir_header(named_entries: u16, id_entries: u16) -> [u8; 16] {
+    let mut header = [0u8; 16];
+    header[12..14].copy_from_slice(&named_entries.to_le_bytes());
+    header[14..16].copy_from_slice(&id_entries.to_le_bytes());
+    header
+}
+
+#[cfg(test)]
 pub(crate) fn synth_hii_pe(type_name: &str, blob: &[u8]) -> Vec<u8> {
     let rsrc_rva: u32 = 0x1000;
     let mut rsrc = Vec::new();
-    rsrc.extend_from_slice(&[0u8; 16]);
+    rsrc.extend_from_slice(&rsrc_dir_header(1, 0));
     rsrc.extend_from_slice(&0x8000_0048u32.to_le_bytes());
     rsrc.extend_from_slice(&0x8000_0018u32.to_le_bytes());
-    rsrc.extend_from_slice(&[0u8; 16]);
+    rsrc.extend_from_slice(&rsrc_dir_header(0, 1));
     rsrc.extend_from_slice(&1u32.to_le_bytes());
     rsrc.extend_from_slice(&0x8000_0030u32.to_le_bytes());
-    rsrc.extend_from_slice(&[0u8; 16]);
+    rsrc.extend_from_slice(&rsrc_dir_header(0, 1));
     rsrc.extend_from_slice(&0x409u32.to_le_bytes());
     rsrc.extend_from_slice(&0x80u32.to_le_bytes());
     rsrc.extend_from_slice(&(type_name.len() as u16).to_le_bytes());
@@ -435,7 +443,7 @@ mod tests {
     #[test]
     fn pe_without_resource_directory_returns_empty() {
         let mut pe = synth_hii_pe("HII", RK3588_STRING_RES);
-        pe[0xd8..0xe0].copy_from_slice(&0u32.to_le_bytes());
+        pe[0xd8..0xdc].copy_from_slice(&0u32.to_le_bytes());
         assert!(hii_resource_blobs(&pe).is_empty());
     }
 }
