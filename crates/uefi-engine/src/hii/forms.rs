@@ -461,4 +461,32 @@ mod tests {
         assert!(!forms.is_empty());
         assert_eq!(forms[0].form_id, format!("{FILE_GUID}:0x10:0"));
     }
+
+    #[test]
+    fn collect_forms_wrapped_target_round_trips() {
+        let list = hii_list(&form_pkg(1), &string_pkg());
+        let pe = crate::hii::pe_resource::synth_hii_pe("HII", &list);
+        let inner = mk_node(None, FfsType::Section, 0x10, pe, vec![]);
+        let wrapper = mk_node(None, FfsType::Section, 0x02, vec![], vec![inner]);
+        let file = mk_node(
+            Some(Guid::from_str(FILE_GUID).unwrap()),
+            FfsType::File,
+            0x07,
+            vec![],
+            vec![wrapper],
+        );
+        let volume = mk_node(None, FfsType::Volume, 0, vec![], vec![file]);
+        let root = mk_node(None, FfsType::Image, 0, vec![], vec![volume]);
+        let image = Image {
+            image_id: "img".into(),
+            session_id: "s".into(),
+            root,
+            mode: ImageMode::Read,
+        };
+        let forms = collect_forms(&image);
+        let t = crate::parser::target::parse_target(&forms[0].form_id).unwrap();
+        let node = crate::parser::target::find_item(&image.root, &t).unwrap();
+        assert_eq!(node.subtype, 0x10);
+        assert_eq!(node.node_type, FfsType::Section);
+    }
 }

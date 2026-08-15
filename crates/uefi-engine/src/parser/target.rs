@@ -67,19 +67,20 @@ pub fn find_item<'a>(root: &'a FfsNode, target: &Target) -> Result<&'a FfsNode, 
         } => {
             let file = find_by_guid(root, guid)
                 .ok_or_else(|| ParserError::InvalidHeader(format!("guid {guid} not found")))?;
-            let wanted = *section_index;
             let mut count = 0usize;
-            for child in &file.children {
-                if child.subtype == *section_type {
-                    if wanted.is_none_or(|w| w == count) {
-                        return Ok(child);
-                    }
-                    count += 1;
-                }
-            }
-            Err(ParserError::InvalidHeader(format!(
-                "section type {section_type:#x} not found in {guid}"
-            )))
+            find_guid_section_dfs(
+                file,
+                *section_type,
+                *section_index,
+                &mut count,
+                &mut Vec::new(),
+            )
+            .map(|(node, _)| node)
+            .ok_or_else(|| {
+                ParserError::InvalidHeader(format!(
+                    "section type {section_type:#x} not found in {guid}"
+                ))
+            })
         }
     }
 }
@@ -101,18 +102,16 @@ pub fn find_item_path(root: &FfsNode, target: &Target) -> Option<Vec<usize>> {
         } => {
             let mut file_path = find_path_by_guid(root, guid, &mut Vec::new())?;
             let file = node_at_path(root, &file_path)?;
-            let wanted = *section_index;
             let mut count = 0usize;
-            for (i, child) in file.children.iter().enumerate() {
-                if child.subtype == *section_type {
-                    if wanted.is_none_or(|w| w == count) {
-                        file_path.push(i);
-                        return Some(file_path);
-                    }
-                    count += 1;
-                }
-            }
-            None
+            let (_, rel) = find_guid_section_dfs(
+                file,
+                *section_type,
+                *section_index,
+                &mut count,
+                &mut Vec::new(),
+            )?;
+            file_path.extend(rel);
+            Some(file_path)
         }
     }
 }
@@ -139,6 +138,38 @@ fn node_at_path<'a>(root: &'a FfsNode, path: &[usize]) -> Option<&'a FfsNode> {
         node = node.children.get(i)?;
     }
     Some(node)
+}
+
+fn find_guid_section_dfs<'a>(
+    node: &'a FfsNode,
+    section_type: u8,
+    wanted: Option<usize>,
+    count: &mut usize,
+    path: &mut Vec<usize>,
+) -> Option<(&'a FfsNode, Vec<usize>)> {
+    for (i, child) in node.children.iter().enumerate() {
+        if child.node_type != FfsType::Section {
+            continue;
+        }
+        let hit = child.subtype == section_type && wanted.is_none_or(|w| w == *count);
+        if child.subtype == section_type {
+            *count += 1;
+        }
+        if hit {
+            path.push(i);
+            return Some((child, path.clone()));
+        }
+        if child.subtype == crate::ffs::EFI_SECTION_COMPRESSION
+            || child.subtype == crate::ffs::EFI_SECTION_GUID_DEFINED
+        {
+            path.push(i);
+            if let Some(found) = find_guid_section_dfs(child, section_type, wanted, count, path) {
+                return Some(found);
+            }
+            path.pop();
+        }
+    }
+    None
 }
 
 fn find_path_by_guid(node: &FfsNode, g: &Guid, path: &mut Vec<usize>) -> Option<Vec<usize>> {
@@ -355,6 +386,143 @@ mod tests {
         let node = find_item_mut(&mut tree, &Target::Path(vec![0, 0, 0])).unwrap();
         node.body.push(1);
         assert_eq!(tree.children[0].children[0].children[0].body, vec![1]);
+    }
+
+    fn wrapped_tree() -> FfsNode {
+        let inner = FfsNode {
+            guid: None,
+            node_type: FfsType::Section,
+            subtype: 0x10,
+            offset: 0,
+            header: vec![],
+            body: vec![0xAA],
+            tail: vec![],
+            children: vec![],
+            action: Action::NoAction,
+            parsing_data: ParsingData::None,
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        };
+        let wrapper = FfsNode {
+            guid: None,
+            node_type: FfsType::Section,
+            subtype: 0x02,
+            offset: 0,
+            header: vec![],
+            body: vec![],
+            tail: vec![],
+            children: vec![inner],
+            action: Action::NoAction,
+            parsing_data: ParsingData::None,
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        };
+        let direct = FfsNode {
+            guid: None,
+            node_type: FfsType::Section,
+            subtype: 0x10,
+            offset: 0,
+            header: vec![],
+            body: vec![0xBB],
+            tail: vec![],
+            children: vec![],
+            action: Action::NoAction,
+            parsing_data: ParsingData::None,
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        };
+        let file = FfsNode {
+            guid: Some(Guid::from_str("5C60F367-A505-419A-859E-2A4FF6CA6FE5").unwrap()),
+            node_type: FfsType::File,
+            subtype: 0x07,
+            offset: 0,
+            header: vec![],
+            body: vec![],
+            tail: vec![],
+            children: vec![wrapper, direct],
+            action: Action::NoAction,
+            parsing_data: ParsingData::None,
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        };
+        let volume = FfsNode {
+            guid: None,
+            node_type: FfsType::Volume,
+            subtype: 0,
+            offset: 0,
+            header: vec![],
+            body: vec![],
+            tail: vec![],
+            children: vec![file],
+            action: Action::NoAction,
+            parsing_data: ParsingData::None,
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        };
+        FfsNode {
+            guid: None,
+            node_type: FfsType::Image,
+            subtype: 0,
+            offset: 0,
+            header: vec![],
+            body: vec![],
+            tail: vec![],
+            children: vec![volume],
+            action: Action::NoAction,
+            parsing_data: ParsingData::None,
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        }
+    }
+
+    fn wrapped_target(index: Option<usize>) -> Target {
+        Target::GuidSection {
+            guid: Guid::from_str("5C60F367-A505-419A-859E-2A4FF6CA6FE5").unwrap(),
+            section_type: 0x10,
+            section_index: index,
+        }
+    }
+
+    #[test]
+    fn find_item_resolves_sections_inside_guided_wrapper() {
+        let tree = wrapped_tree();
+        let inner = find_item(&tree, &wrapped_target(Some(0))).unwrap();
+        assert_eq!(inner.body, vec![0xAA]);
+        let direct = find_item(&tree, &wrapped_target(Some(1))).unwrap();
+        assert_eq!(direct.body, vec![0xBB]);
+        let first = find_item(&tree, &wrapped_target(None)).unwrap();
+        assert_eq!(first.body, vec![0xAA]);
+    }
+
+    #[test]
+    fn find_item_path_resolves_sections_inside_guided_wrapper() {
+        let tree = wrapped_tree();
+        assert_eq!(
+            find_item_path(&tree, &wrapped_target(Some(0))).unwrap(),
+            vec![0, 0, 0, 0]
+        );
+        assert_eq!(
+            find_item_path(&tree, &wrapped_target(Some(1))).unwrap(),
+            vec![0, 0, 1]
+        );
+        assert!(find_item_path(&tree, &wrapped_target(Some(2))).is_none());
+    }
+
+    #[test]
+    fn find_item_mut_reaches_wrapped_section() {
+        let mut tree = wrapped_tree();
+        let node = find_item_mut(&mut tree, &wrapped_target(Some(0))).unwrap();
+        node.body.push(1);
+        assert_eq!(
+            tree.children[0].children[0].children[0].children[0].body,
+            vec![0xAA, 1]
+        );
     }
 
     fn sample_tree() -> FfsNode {
