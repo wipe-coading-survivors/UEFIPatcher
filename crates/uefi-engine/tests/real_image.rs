@@ -568,7 +568,7 @@ fn real_image_search_finds_utf8_string_in_pe32() {
 }
 
 #[test]
-#[ignore = "requires external real BIOS image under refs/fw/"]
+#[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
 fn real_image_full_flash_round_trip() {
     use uefi_engine::builder::build_image;
     use uefi_engine::types::ImageMode;
@@ -590,7 +590,7 @@ fn real_image_full_flash_round_trip() {
 }
 
 #[test]
-#[ignore = "requires external real BIOS image under refs/fw/"]
+#[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
 fn real_image_full_flash_repatch_stability() {
     use uefi_engine::builder::build_image;
     use uefi_engine::types::ImageMode;
@@ -614,7 +614,7 @@ fn real_image_full_flash_repatch_stability() {
 }
 
 #[test]
-#[ignore = "requires external real BIOS image under refs/fw/"]
+#[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
 fn real_image_hii_forms_and_strings() {
     use std::collections::HashSet;
     use uefi_engine::hii::forms::collect_forms;
@@ -642,8 +642,8 @@ fn real_image_hii_forms_and_strings() {
         strings
             .iter()
             .all(|s| s.language.to_lowercase().starts_with("en")),
-        "primary language expected ~English (en/en-US/eng), got {:?}",
-        strings.first().map(|s| &s.language)
+        "expected primary language ~English (en/en-US/eng), got {:?}",
+        strings.first().map(|s| s.language.as_str())
     );
 
     eprintln!(
@@ -657,7 +657,7 @@ fn real_image_hii_forms_and_strings() {
 }
 
 #[test]
-#[ignore = "requires external real BIOS image under refs/fw/"]
+#[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
 fn real_image_hii_form_visibility_round_trip() {
     use uefi_engine::hii::forms::collect_forms;
     use uefi_engine::hii::set_item_visibility;
