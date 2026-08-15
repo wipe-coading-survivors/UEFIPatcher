@@ -182,6 +182,14 @@ direct-children-only) — документируется здесь. Тесты:
   (GUID_DEFINED). Сообщение упоминает необходимость рекомпрессии
   (следующая фаза).
 
+> **Поправка фазы 7** (рекомпрессия, спека
+> `2026-08-14-lzma-recompression-design.md` §5, реализована после фазы 6):
+> второй гейт сужен — `MutationBehindCompression` возвращается только для
+> обёрток, не являющихся GUIDed plain-LZMA (`is_recompressable_lzma_guid`);
+> за LZMA-обёрткой мутация разрешена (билдер пересожмёт). Ожидание
+> real-image теста `real_image_hii_form_visibility_round_trip` изменено на
+> `NotASetupItem` (целевой узел — PE32, третий гейт).
+
 Третий гейт (уточнён при написании плана): цель мутабельна только в
 bare-виде — `node.subtype == 0x19 || is_form_package(&node.body)`, иначе
 `NotASetupItem`. Без него unsuppress на теле PE32 (формы ресурс/bare-

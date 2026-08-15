@@ -534,19 +534,19 @@
 > же пути). Отдельный баг от issue II/II-bis — там байт-уровень и stale-tree,
 > тут — cancellation pending-операций.
 
-* [ ] **ENGINE: гард `Action::Remove` в `ops::rebuild` и `ops::replace`** —
-  `rebuild` (`ops.rs:104-105`) и `replace` (`ops.rs:95`) не должны молча
-  перезаписывать `Action::Remove`. Для `rebuild`: no-op, если узел уже Remove
-  (`if node.action == Action::Remove { return Ok(()); }` до `node.action =
-  Action::Rebuild;`) — rebuild не должен воскрешать удалённый узел. Для
-  `replace`: вопрос семантики (replace осмысленно «воскрешает» узел новым
-  содержимым) — как минимум задокументировать, что replace отменывает remove;
-  рассмотреть отказ с ошибкой `OpsError` если требуется явное подтверждение.
-  Аналогично проверить `insert` на тот же путь после Remove. Контекст: `Action`
-  enum в `types.rs:23-29` (`NoAction=50, Replace=53, Remove=54, Rebuild=55`).
-  Покрыть тестом: `remove` → `rebuild` того же пути → `action` остаётся
-  `Remove` (не `Rebuild`) → `build_image` узел отсутствует. Регрессия на
-  существующие `ops::rebuild`/`replace` тесты (`ops.rs:173-220`).
+* [x] **ENGINE: гейт `Action::Remove` в `ops::rebuild`** — закрыто для
+  rebuild (no-op guard, фаза рекомпрессии): `remove` → `rebuild` того же
+  пути → `action` остаётся `Remove` (не `Rebuild`) → `build_image` узел
+  отсутствует. Для `replace` семантика «воскрешает узел» задокументирована
+  в спеке рекомпрессии §6 (`2026-08-14-lzma-recompression-design.md`,
+  матрица мутаций end-state) — опциональный явный отказ остаётся отдельным
+  пунктом ниже.
+* [ ] **ENGINE: явный отказ `ops::replace`/`insert` на Remove-узле** —
+  опционально: отказ с ошибкой `OpsError`, если требуется явное
+  подтверждение (по умолчанию replace «воскрешает» узел новым содержимым —
+  спека рекомпрессии §6). Аналогично `insert` на тот же путь после Remove.
+  Контекст: `Action` enum в `types.rs:23-29` (`NoAction=50, Replace=53,
+  Remove=54, Rebuild=55`).
 
 ### Replace: конфликт режимов (issue III, ревизия 2026-08-13)
 
@@ -686,12 +686,12 @@ LZMA → как правило нельзя). Удалить можно: вес�
 
 #### Связанные баги (найдены при разборе)
 
-* [ ] **`ops::rebuild` перетирает `Action::Remove`** (`crates/uefi-engine/src/
+* [x] **`ops::rebuild` перетирает `Action::Remove`** (`crates/uefi-engine/src/
   ops.rs:95-101`) — `node.action = Action::Rebuild` безусловно. Поэтому
   `:rebuild` по Remove-узлу отменяет удаление (маркер красный → жёлтый).
   Фикс: не даунгрейдить Remove (и иные pending-операции) до Rebuild — rebuild
   должен быть no-op для уже-Remove-узла (или возвращать ошибку «узел помечен на
-  удаление»).
+  удаление»). Закрыто вместе с issue II-ter (фаза рекомпрессии).
 * [ ] **`build_file`/`build_volume` впустую ре-сериализуют детей сжатой секции**
   — при Rebuild-каскаде build_file пересобирает body из children, но сжатый
   child всё равно выбросит verbatim-body; ре-компутация size/checksum на
@@ -713,15 +713,20 @@ LZMA → как правило нельзя). Удалить можно: вес�
 сжатой секции (не на дочернем узле) барьер можно обойти уже сейчас —
 зафиксировать как разрешённый кейс.
 
-* [ ] **Минимум: BuilderError на мутации внутри compression barrier** —
+* [x] **Минимум: BuilderError на мутации внутри compression barrier** —
   покрыть тестом: `remove` секции `1/13/2/1`-вида → `build_image` возвращает
   ошибку (не silent-verbatim). Клиенту (CLI/TUI) показать человекочитаемое
   сообщение «cannot mutate inside compressed section without recompression».
-* [ ] **Минимум: `ops::rebuild` не перетирает `Action::Remove`** — unit-тест
-  `rebuild_after_remove_keeps_remove`.
-* [ ] **Спека: рекомпрессия LZMA/GUID_DEFINED в билдере** — декомпозиция,
+  Закрыто фазой рекомпрессии: `BuilderError::RecompressionUnsupported`
+  (Tiano/F86/COMPRESSION/unknown), LZMA — recompress.
+* [x] **Минимум: `ops::rebuild` не перетирает `Action::Remove`** — unit-тест
+  `rebuild_after_remove_keeps_remove`. Закрыто фазой рекомпрессии (no-op
+  guard).
+* [x] **Спека: рекомпрессия LZMA/GUID_DEFINED в билдере** — декомпозиция,
   референсы (`refs/UEFITool-ai-fork/common/ffsbuilder.cpp` — recompress path),
-  тест-фикстуры на `HNX99TF_200525_original_E5C88C6F.bin`.
+  тест-фикстуры на `HNX99TF_200525_original_E5C88C6F.bin`. Закрыто: спека
+  `2026-08-14-lzma-recompression-design.md` + план
+  `2026-08-14-lzma-recompression.md`.
 
 ### CRITICAL: Builder не round-tripит полный flash-образ (issue V, ревизия 2026-08-13)
 
