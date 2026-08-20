@@ -337,14 +337,15 @@
 * [ ] **PE checksum не пересчитывается после resource-патча** — как и
   UEFITool; в firmware-PE поле обычно 0. Пересчёт при появлении живого
   прецедента отказа.
-* [ ] **formset_add: вставка нового FFS в `Target::Path(vec![0])` теряет
-  файл на full-flash** — на gap-aware-образе `root.children[0]` —
-  Padding (IFD/ME), `build_node(Padding)` эммитит только body, дети
-  игнорируются: добавленный формсет-файл молча выпадает из сборки.
-  Найдено при планировании добавления форм (спека
-  `2026-08-14-hii-form-addition-design.md` §1.2); фикс — фаза A Task 1
-  плана `2026-08-14-hii-form-addition.md`. Там же: string-поиск только
-  bare-каналом (на HNX99TF — StringPackageNotFound) и отсутствие CLI.
+* [x] **formset_add: вставка нового FFS в `Target::Path(vec![0])` теряет
+  файл на full-flash** — исправлено в фазе A плана
+  `2026-08-14-hii-form-addition.md` (коммит `73c54b5`): insert-цель —
+  volume, в котором найден string-пакет. Там же закрыты: string-поиск
+  только bare-каналом (замена на walker — `f806d5a`, спуск через
+  обёртки; PE-resource-канал честно отказывает `StringPackageNotFound`
+  до фазы B) и отсутствие CLI (`hii formset add` — `08ff7b0`).
+  Осталось (фаза B/C плана): resource-канал для formset_add, форма в
+  существующий формсет.
 
 ## ImageUpload RPC (docker-развертывание)
 
