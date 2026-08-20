@@ -2,6 +2,10 @@ use std::collections::HashMap;
 
 use super::HiiError;
 use super::strings::declared_len_sane;
+use crate::hii::package_list::parse_package_list;
+use crate::hii::pe_resource::{
+    hii_entry_locations, plan_rsrc_blob_growth, try_grow_rsrc_tail, write_length_chain,
+};
 use crate::ops;
 use crate::types::*;
 
@@ -51,6 +55,47 @@ fn add_strings_to_body(body: &mut Vec<u8>, strings: &[String]) -> HashMap<String
     }
     update_package_length(body);
     mapping
+}
+
+pub fn add_strings_to_resource(
+    pe: &mut Vec<u8>,
+    strings: &[String],
+) -> Option<HashMap<String, u16>> {
+    let (_, blob_off, blob_len) = hii_entry_locations(pe).first().copied()?;
+    let blob = pe.get(blob_off..blob_off.checked_add(blob_len)?)?;
+    let parsed = parse_package_list(blob)?;
+    let idx = parsed
+        .packages
+        .iter()
+        .position(|p| p.kind == PACKAGE_STRINGS && is_string_package(p.bytes))?;
+    let prefix: usize = parsed.packages[..idx].iter().map(|p| p.bytes.len()).sum();
+    let old_len = parsed.packages[idx].bytes.len();
+    let mut grown = blob[20 + prefix..20 + prefix + old_len].to_vec();
+    let mapping = add_strings_to_body(&mut grown, strings);
+    let delta = grown.len() - old_len;
+    let sum: usize = parsed.packages.iter().map(|p| p.bytes.len()).sum();
+    let new_blob_len = blob_len.checked_add(delta)?;
+    let new_total = 20u64 + sum as u64 + delta as u64 + 4;
+    if new_total > u32::MAX as u64 || new_blob_len > u32::MAX as usize {
+        tracing::debug!("string package growth overflows list lengths");
+        return None;
+    }
+    let pkg_off = blob_off + 20 + prefix;
+    let blob_end = blob_off + blob_len;
+    let plan = plan_rsrc_blob_growth(pe, delta)?;
+    if plan.grow > 0 && !try_grow_rsrc_tail(pe, plan.grow) {
+        return None;
+    }
+    pe.copy_within(pkg_off + old_len..blob_end, pkg_off + grown.len());
+    pe[pkg_off..pkg_off + grown.len()].copy_from_slice(&grown);
+    write_length_chain(
+        pe,
+        plan.entry_off,
+        plan.blob_off,
+        new_blob_len as u32,
+        new_total as u32,
+    );
+    Some(mapping)
 }
 
 pub fn string_package_section_path(root: &FfsNode, ffs_guid: Option<&Guid>) -> Option<Vec<usize>> {
@@ -435,6 +480,193 @@ mod tests {
         let real = &image.root.children[0].children[1].children[0];
         assert_eq!(real.action, Action::Rebuild);
         assert!(real.body.len() > pkg_len);
+    }
+
+    fn pkg(kind: u8, payload: &[u8]) -> Vec<u8> {
+        let len = 4 + payload.len();
+        let mut b = vec![
+            (len & 0xFF) as u8,
+            ((len >> 8) & 0xFF) as u8,
+            ((len >> 16) & 0xFF) as u8,
+            kind,
+        ];
+        b.extend_from_slice(payload);
+        b
+    }
+
+    fn res_list(guid: &Guid, pkgs: &[&[u8]]) -> Vec<u8> {
+        let total = 20 + 4 + pkgs.iter().map(|p| p.len()).sum::<usize>();
+        let mut b = guid.to_bytes().to_vec();
+        b.extend_from_slice(&(total as u32).to_le_bytes());
+        for p in pkgs {
+            b.extend_from_slice(p);
+        }
+        b.extend_from_slice(&[0x04, 0x00, 0x00, r_efi::hii::PACKAGE_END]);
+        b
+    }
+
+    fn le_u32(b: &[u8], off: usize) -> u32 {
+        u32::from_le_bytes(b[off..off + 4].try_into().unwrap())
+    }
+
+    #[test]
+    fn add_strings_to_resource_grows_mid_list() {
+        let g = Guid::try_parse("899407D7-99FE-43D8-9A21-79EC328CAC21").unwrap();
+        let form = pkg(
+            r_efi::hii::PACKAGE_FORMS,
+            &[0x0Eu8, 0x17, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0x11],
+        );
+        let string = make_string_package(&["first", "second"]);
+        let blob = res_list(&g, &[&form, &string]);
+        assert_eq!(blob.len() % 16, 0);
+        let mut pe = crate::hii::pe_resource::synth_hii_pe("HII", &blob);
+        let len_before = pe.len();
+        let file_align = le_u32(&pe, 0x7c) as usize;
+        let (entry_off, blob_off, blob_len) = crate::hii::pe_resource::hii_entry_locations(&pe)[0];
+        let strings = vec!["alpha".to_string(), "beta".to_string()];
+        let delta = strings.iter().map(|s| s.len() + 2).sum::<usize>();
+        let mapping = add_strings_to_resource(&mut pe, &strings).unwrap();
+        assert_eq!(mapping["alpha"], 3);
+        assert_eq!(mapping["beta"], 4);
+        assert_eq!(pe.len() - len_before, delta.next_multiple_of(file_align));
+        assert_eq!(pe.len(), (le_u32(&pe, 0x15c) + le_u32(&pe, 0x158)) as usize);
+        assert_eq!(
+            crate::hii::pe_resource::hii_resource_ranges(&pe),
+            [(blob_off, blob_len + delta)]
+        );
+        assert_eq!(le_u32(&pe, entry_off + 4), (blob_len + delta) as u32);
+        let new_blob = &pe[blob_off..blob_off + blob_len + delta];
+        let parsed = crate::hii::package_list::parse_package_list(new_blob).unwrap();
+        assert_eq!(
+            parsed.packages.iter().map(|p| p.kind).collect::<Vec<_>>(),
+            [r_efi::hii::PACKAGE_FORMS, PACKAGE_STRINGS]
+        );
+        assert_eq!(parsed.packages[0].bytes, &form[..]);
+        let new_string = parsed.packages[1].bytes;
+        let stored =
+            new_string[0] as usize | (new_string[1] as usize) << 8 | (new_string[2] as usize) << 16;
+        assert_eq!(stored, new_string.len());
+        assert_eq!(new_string.len(), string.len() + delta);
+        assert_eq!(
+            le_u32(new_blob, 16),
+            (20 + form.len() + string.len() + delta + 4) as u32
+        );
+        assert_eq!(
+            &new_blob[new_blob.len() - 4..],
+            &[0x04, 0x00, 0x00, r_efi::hii::PACKAGE_END]
+        );
+    }
+
+    #[test]
+    fn add_strings_to_resource_preserves_old_ids_and_shifts_following_packages() {
+        let g = Guid::try_parse("899407D7-99FE-43D8-9A21-79EC328CAC21").unwrap();
+        let form = pkg(r_efi::hii::PACKAGE_FORMS, &[0x0Eu8, 0x17, 0xAA]);
+        let string = make_string_package(&["first", "second"]);
+        let form2 = pkg(r_efi::hii::PACKAGE_FORMS, &[0x0Eu8, 0x17, 0xBB, 0xCC]);
+        let blob = res_list(&g, &[&form, &string, &form2]);
+        let mut pe = crate::hii::pe_resource::synth_hii_pe("HII", &blob);
+        let (_, blob_off, blob_len) = crate::hii::pe_resource::hii_entry_locations(&pe)[0];
+        let delta = "alpha".len() + 2;
+        let mapping = add_strings_to_resource(&mut pe, &["alpha".to_string()]).unwrap();
+        assert_eq!(mapping["alpha"], 3);
+        let new_blob = &pe[blob_off..blob_off + blob_len + delta];
+        let parsed = crate::hii::package_list::parse_package_list(new_blob).unwrap();
+        assert_eq!(
+            parsed.packages.iter().map(|p| p.kind).collect::<Vec<_>>(),
+            [
+                r_efi::hii::PACKAGE_FORMS,
+                PACKAGE_STRINGS,
+                r_efi::hii::PACKAGE_FORMS
+            ]
+        );
+        assert_eq!(parsed.packages[0].bytes, &form[..]);
+        assert_eq!(parsed.packages[2].bytes, &form2[..]);
+        let sp = crate::hii::strings::parse_string_package(parsed.packages[1].bytes).unwrap();
+        assert_eq!(
+            sp.strings,
+            vec![
+                (1, "first".to_string()),
+                (2, "second".to_string()),
+                (3, "alpha".to_string())
+            ]
+        );
+        assert_eq!(
+            &new_blob[new_blob.len() - 4..],
+            &[0x04, 0x00, 0x00, r_efi::hii::PACKAGE_END]
+        );
+    }
+
+    #[test]
+    fn add_strings_to_resource_without_hii_resource_returns_none_untouched() {
+        let g = Guid::try_parse("899407D7-99FE-43D8-9A21-79EC328CAC21").unwrap();
+        let string = make_string_package(&["first"]);
+        let blob = res_list(&g, &[&string]);
+        let mut pe = crate::hii::pe_resource::synth_hii_pe("REGISTRY", &blob);
+        let snapshot = pe.clone();
+        assert!(add_strings_to_resource(&mut pe, &["x".to_string()]).is_none());
+        assert_eq!(pe, snapshot);
+    }
+
+    #[test]
+    fn add_strings_to_resource_without_string_package_returns_none_untouched() {
+        let g = Guid::try_parse("899407D7-99FE-43D8-9A21-79EC328CAC21").unwrap();
+        let form = pkg(r_efi::hii::PACKAGE_FORMS, &[0x0Eu8, 0x17, 0xAA]);
+        let blob = res_list(&g, &[&form]);
+        let mut pe = crate::hii::pe_resource::synth_hii_pe("HII", &blob);
+        let snapshot = pe.clone();
+        assert!(add_strings_to_resource(&mut pe, &["x".to_string()]).is_none());
+        assert_eq!(pe, snapshot);
+    }
+
+    #[test]
+    fn add_strings_to_resource_consumes_slack_without_growing_file() {
+        let g = Guid::try_parse("899407D7-99FE-43D8-9A21-79EC328CAC21").unwrap();
+        let form = pkg(r_efi::hii::PACKAGE_FORMS, &[0x0Eu8, 0x17, 0xAA]);
+        let string = make_string_package(&["first"]);
+        let blob = res_list(&g, &[&form, &string]);
+        let mut pe = crate::hii::pe_resource::synth_hii_pe("HII", &blob);
+        assert!(crate::hii::pe_resource::try_grow_rsrc_tail(&mut pe, 1));
+        let len_after_pregrow = pe.len();
+        let (entry_off, blob_off, blob_len) = crate::hii::pe_resource::hii_entry_locations(&pe)[0];
+        let delta = "alpha".len() + 2;
+        assert!(add_strings_to_resource(&mut pe, &["alpha".to_string()]).is_some());
+        assert_eq!(pe.len(), len_after_pregrow);
+        assert_eq!(le_u32(&pe, entry_off + 4), (blob_len + delta) as u32);
+        let new_blob = &pe[blob_off..blob_off + blob_len + delta];
+        let parsed = crate::hii::package_list::parse_package_list(new_blob).unwrap();
+        assert_eq!(parsed.packages.len(), 2);
+        assert_eq!(
+            le_u32(new_blob, 16),
+            (20 + form.len() + string.len() + delta + 4) as u32
+        );
+        let sp = crate::hii::strings::parse_string_package(parsed.packages[1].bytes).unwrap();
+        assert_eq!(sp.strings.len(), 2);
+    }
+
+    #[test]
+    fn add_strings_to_resource_with_empty_slice_is_noop() {
+        let g = Guid::try_parse("899407D7-99FE-43D8-9A21-79EC328CAC21").unwrap();
+        let form = pkg(r_efi::hii::PACKAGE_FORMS, &[0x0Eu8, 0x17, 0xAA]);
+        let string = make_string_package(&["first"]);
+        let blob = res_list(&g, &[&form, &string]);
+        let mut pe = crate::hii::pe_resource::synth_hii_pe("HII", &blob);
+        let snapshot = pe.clone();
+        let mapping = add_strings_to_resource(&mut pe, &[]).unwrap();
+        assert!(mapping.is_empty());
+        assert_eq!(pe, snapshot);
+    }
+
+    #[test]
+    fn add_strings_to_resource_refuses_overlay_tail() {
+        let g = Guid::try_parse("899407D7-99FE-43D8-9A21-79EC328CAC21").unwrap();
+        let form = pkg(r_efi::hii::PACKAGE_FORMS, &[0x0Eu8, 0x17, 0xAA]);
+        let string = make_string_package(&["first"]);
+        let blob = res_list(&g, &[&form, &string]);
+        let mut pe = crate::hii::pe_resource::synth_hii_pe("HII", &blob);
+        pe.extend_from_slice(&[0xEEu8; 8]);
+        let snapshot = pe.clone();
+        assert!(add_strings_to_resource(&mut pe, &["x".to_string()]).is_none());
+        assert_eq!(pe, snapshot);
     }
 
     #[test]

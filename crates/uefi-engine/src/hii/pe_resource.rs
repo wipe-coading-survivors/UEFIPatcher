@@ -312,6 +312,58 @@ pub fn append_package_to_resource(pe: &mut Vec<u8>, pkg_bytes: &[u8]) -> bool {
     plan.apply(pe, pkg_bytes)
 }
 
+pub(crate) struct RsrcBlobGrowthPlan {
+    pub(crate) entry_off: usize,
+    pub(crate) blob_off: usize,
+    pub(crate) blob_len: usize,
+    pub(crate) grow: usize,
+}
+
+pub(crate) fn plan_rsrc_blob_growth(pe: &[u8], added: usize) -> Option<RsrcBlobGrowthPlan> {
+    if let Ok(file) = PeFile64::parse(pe) {
+        return plan_rsrc_blob_growth_for(&file, pe, added);
+    }
+    if let Ok(file) = PeFile32::parse(pe) {
+        return plan_rsrc_blob_growth_for(&file, pe, added);
+    }
+    tracing::debug!("not a PE image; refusing blob growth");
+    None
+}
+
+fn plan_rsrc_blob_growth_for<Pe: ImageNtHeaders>(
+    file: &PeFile<'_, Pe>,
+    pe: &[u8],
+    added: usize,
+) -> Option<RsrcBlobGrowthPlan> {
+    let leaves = resource_leaf_locations(file);
+    let (entry_off, blob_off, blob_len) =
+        leaves.iter().find_map(|(type_name, entry, off, len)| {
+            (type_name.as_deref() == Some("HII")).then_some((*entry, *off, *len))
+        })?;
+    for (_, entry, off, len) in &leaves {
+        if (*entry, *off, *len) == (entry_off, blob_off, blob_len) {
+            continue;
+        }
+        if off.checked_add(*len)? > blob_off {
+            tracing::debug!("resource leaf data after target HII blob; refusing append");
+            return None;
+        }
+    }
+    let blob_end = blob_off.checked_add(blob_len)?.checked_add(added)?;
+    let raw_end = usize::try_from(rsrc_raw_end(file)?).ok()?;
+    let grow = blob_end.saturating_sub(raw_end);
+    if grow == 0 && pe.len() != raw_end {
+        tracing::debug!("rsrc raw extent != file end; refusing append without growth");
+        return None;
+    }
+    Some(RsrcBlobGrowthPlan {
+        entry_off,
+        blob_off,
+        blob_len,
+        grow,
+    })
+}
+
 fn append_plan(pe: &[u8], pkg_bytes: &[u8]) -> Option<AppendPlan> {
     let pkg_len = package_len(pkg_bytes)?;
     if let Ok(file) = PeFile64::parse(pe) {
@@ -377,44 +429,24 @@ fn append_plan_for<Pe: ImageNtHeaders>(
     pe: &[u8],
     pkg_len: usize,
 ) -> Option<AppendPlan> {
-    let leaves = resource_leaf_locations(file);
-    let (entry_off, blob_off, blob_len) =
-        leaves.iter().find_map(|(type_name, entry, off, len)| {
-            (type_name.as_deref() == Some("HII")).then_some((*entry, *off, *len))
-        })?;
-    for (_, entry, off, len) in &leaves {
-        if (*entry, *off, *len) == (entry_off, blob_off, blob_len) {
-            continue;
-        }
-        if off.checked_add(*len)? > blob_off {
-            tracing::debug!("resource leaf data after target HII blob; refusing append");
-            return None;
-        }
-    }
-    let blob = pe.get(blob_off..blob_off.checked_add(blob_len)?)?;
+    let growth = plan_rsrc_blob_growth_for(file, pe, pkg_len)?;
+    let blob = pe.get(growth.blob_off..growth.blob_off.checked_add(growth.blob_len)?)?;
     let packages = parse_package_list(blob)?.packages;
     let sum = packages.iter().map(|p| p.bytes.len()).sum::<usize>();
-    let insert_off = blob_off.checked_add(20)?.checked_add(sum)?;
+    let insert_off = growth.blob_off.checked_add(20)?.checked_add(sum)?;
     let new_total = 20u64 + sum as u64 + pkg_len as u64 + 4;
-    let new_entry_size = blob_len.checked_add(pkg_len)?;
+    let new_entry_size = growth.blob_len.checked_add(pkg_len)?;
     if new_total > u32::MAX as u64 || new_entry_size > u32::MAX as usize {
         tracing::debug!("package list length overflow; refusing append");
         return None;
     }
-    let blob_end = blob_off.checked_add(blob_len)?;
-    let raw_end = usize::try_from(rsrc_raw_end(file)?).ok()?;
-    let grow = blob_end.checked_add(pkg_len)?.saturating_sub(raw_end);
-    if grow == 0 && pe.len() != raw_end {
-        tracing::debug!("rsrc raw extent != file end; refusing append without growth");
-        return None;
-    }
     Some(AppendPlan {
         insert_off,
-        entry_off,
-        blob_off,
+        entry_off: growth.entry_off,
+        blob_off: growth.blob_off,
         new_entry_size: new_entry_size as u32,
         new_total: new_total as u32,
-        grow,
+        grow: growth.grow,
     })
 }
 
