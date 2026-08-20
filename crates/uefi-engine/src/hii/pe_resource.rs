@@ -31,6 +31,17 @@ pub(crate) fn hii_entry_locations(pe: &[u8]) -> Vec<(usize, usize, usize)> {
 }
 
 fn hii_entries<Pe: ImageNtHeaders>(file: &PeFile<'_, Pe>) -> Vec<(usize, usize, usize)> {
+    resource_leaf_locations(file)
+        .into_iter()
+        .filter_map(|(type_name, entry_off, off, len)| {
+            (type_name.as_deref() == Some("HII")).then_some((entry_off, off, len))
+        })
+        .collect()
+}
+
+fn resource_leaf_locations<Pe: ImageNtHeaders>(
+    file: &PeFile<'_, Pe>,
+) -> Vec<(Option<String>, usize, usize, usize)> {
     let sections = file.section_table();
     let Ok(Some(rsrc)) = file
         .data_directories()
@@ -54,15 +65,10 @@ fn hii_entries<Pe: ImageNtHeaders>(file: &PeFile<'_, Pe>) -> Vec<(usize, usize, 
     };
     let mut out = Vec::new();
     for type_entry in root.entries {
-        let Some(name) = type_entry.name_or_id().name() else {
-            continue;
-        };
-        let Ok(type_name) = name.to_string_lossy(rsrc) else {
-            continue;
-        };
-        if type_name != "HII" {
-            continue;
-        }
+        let type_name = type_entry
+            .name_or_id()
+            .name()
+            .and_then(|name| name.to_string_lossy(rsrc).ok());
         let Ok(ResourceDirectoryEntryData::Table(name_table)) = type_entry.data(rsrc) else {
             continue;
         };
@@ -77,6 +83,7 @@ fn hii_entries<Pe: ImageNtHeaders>(file: &PeFile<'_, Pe>) -> Vec<(usize, usize, 
                 push_leaf(
                     file,
                     dir_off,
+                    type_name.clone(),
                     lang_entry.data_offset() as usize,
                     d.offset_to_data.get(LittleEndian),
                     d.size.get(LittleEndian),
@@ -91,10 +98,11 @@ fn hii_entries<Pe: ImageNtHeaders>(file: &PeFile<'_, Pe>) -> Vec<(usize, usize, 
 fn push_leaf<Pe: ImageNtHeaders>(
     file: &PeFile<'_, Pe>,
     dir_off: usize,
+    type_name: Option<String>,
     entry_rel: usize,
     rva: u32,
     size: u32,
-    out: &mut Vec<(usize, usize, usize)>,
+    out: &mut Vec<(Option<String>, usize, usize, usize)>,
 ) {
     let Some((off, avail)) = file.section_table().pe_file_range_at(rva) else {
         tracing::debug!(rva, "resource RVA outside sections; skipped");
@@ -104,7 +112,7 @@ fn push_leaf<Pe: ImageNtHeaders>(
         return;
     };
     let len = (size as usize).min(avail as usize);
-    out.push((entry_off, off as usize, len));
+    out.push((type_name, entry_off, off as usize, len));
 }
 
 pub fn bare_form_packages<'a>(pe: &'a [u8], exclude: &[(usize, usize)]) -> Vec<&'a [u8]> {
@@ -369,21 +377,37 @@ fn append_plan_for<Pe: ImageNtHeaders>(
     pe: &[u8],
     pkg_len: usize,
 ) -> Option<AppendPlan> {
-    let (entry_off, blob_off, blob_len) = *hii_entries(file).first()?;
+    let leaves = resource_leaf_locations(file);
+    let (entry_off, blob_off, blob_len) =
+        leaves.iter().find_map(|(type_name, entry, off, len)| {
+            (type_name.as_deref() == Some("HII")).then_some((*entry, *off, *len))
+        })?;
+    for (_, entry, off, len) in &leaves {
+        if (*entry, *off, *len) == (entry_off, blob_off, blob_len) {
+            continue;
+        }
+        if off.checked_add(*len)? > blob_off {
+            tracing::debug!("resource leaf data after target HII blob; refusing append");
+            return None;
+        }
+    }
     let blob = pe.get(blob_off..blob_off.checked_add(blob_len)?)?;
     let packages = parse_package_list(blob)?.packages;
     let sum = packages.iter().map(|p| p.bytes.len()).sum::<usize>();
     let insert_off = blob_off.checked_add(20)?.checked_add(sum)?;
     let new_total = 20u64 + sum as u64 + pkg_len as u64 + 4;
-    let old_entry_size = u64::from(read_le_u32(pe, entry_off.checked_add(4)?)?);
-    let new_entry_size = old_entry_size.checked_add(pkg_len as u64)?;
-    if new_total > u32::MAX as u64 || new_entry_size > u32::MAX as u64 {
+    let new_entry_size = blob_len.checked_add(pkg_len)?;
+    if new_total > u32::MAX as u64 || new_entry_size > u32::MAX as usize {
         tracing::debug!("package list length overflow; refusing append");
         return None;
     }
     let blob_end = blob_off.checked_add(blob_len)?;
     let raw_end = usize::try_from(rsrc_raw_end(file)?).ok()?;
     let grow = blob_end.checked_add(pkg_len)?.saturating_sub(raw_end);
+    if grow == 0 && pe.len() != raw_end {
+        tracing::debug!("rsrc raw extent != file end; refusing append without growth");
+        return None;
+    }
     Some(AppendPlan {
         insert_off,
         entry_off,
@@ -820,5 +844,158 @@ mod tests {
         let end_pkg = [0x04u8, 0x00, 0x00, PACKAGE_END];
         assert!(!append_package_to_resource(&mut pe, &end_pkg));
         assert_eq!(pe, snapshot);
+    }
+
+    #[test]
+    fn append_refuses_rsrc_size_overclaim_beyond_eof() {
+        let g = Guid::from_str(LIST_GUID).unwrap();
+        let form = pkg(PACKAGE_FORMS, &[0x0Eu8, 0x17, 0xAA]);
+        let string = pkg(PACKAGE_STRINGS, &[0u8; 8]);
+        let form2 = pkg(
+            PACKAGE_FORMS,
+            &[
+                0x0Eu8, 0x17, 0xBB, 0xCC, 0xDD, 0xEE, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66,
+            ],
+        );
+        let blob = list(&g, &[&form, &string]);
+        let mut pe = synth_hii_pe("HII", &blob);
+        let overclaim = le_u32(&pe, 0x158) + 0x100;
+        pe[0x158..0x15c].copy_from_slice(&overclaim.to_le_bytes());
+        assert_eq!(hii_entry_locations(&pe).len(), 1);
+        let snapshot = pe.clone();
+        assert!(!append_package_to_resource(&mut pe, &form2));
+        assert_eq!(pe, snapshot);
+    }
+
+    fn synth_two_leaf_pe(hii_blob: &[u8], tail_leaf: &[u8]) -> Vec<u8> {
+        let rsrc_rva: u32 = 0x1000;
+        let hii_off = 0xa8;
+        let mut rsrc = Vec::new();
+        rsrc.extend_from_slice(&rsrc_dir_header(1, 1));
+        rsrc.extend_from_slice(&0x8000_0080u32.to_le_bytes());
+        rsrc.extend_from_slice(&0x8000_0020u32.to_le_bytes());
+        rsrc.extend_from_slice(&16u32.to_le_bytes());
+        rsrc.extend_from_slice(&0x8000_0038u32.to_le_bytes());
+        rsrc.extend_from_slice(&rsrc_dir_header(0, 1));
+        rsrc.extend_from_slice(&1u32.to_le_bytes());
+        rsrc.extend_from_slice(&0x8000_0050u32.to_le_bytes());
+        rsrc.extend_from_slice(&rsrc_dir_header(0, 1));
+        rsrc.extend_from_slice(&1u32.to_le_bytes());
+        rsrc.extend_from_slice(&0x8000_0068u32.to_le_bytes());
+        rsrc.extend_from_slice(&rsrc_dir_header(0, 1));
+        rsrc.extend_from_slice(&0x409u32.to_le_bytes());
+        rsrc.extend_from_slice(&0x88u32.to_le_bytes());
+        rsrc.extend_from_slice(&rsrc_dir_header(0, 1));
+        rsrc.extend_from_slice(&0x409u32.to_le_bytes());
+        rsrc.extend_from_slice(&0x98u32.to_le_bytes());
+        rsrc.extend_from_slice(&3u16.to_le_bytes());
+        for u in "HII".encode_utf16() {
+            rsrc.extend_from_slice(&u.to_le_bytes());
+        }
+        rsrc.extend_from_slice(&(rsrc_rva + hii_off as u32).to_le_bytes());
+        rsrc.extend_from_slice(&(hii_blob.len() as u32).to_le_bytes());
+        rsrc.extend_from_slice(&0u32.to_le_bytes());
+        rsrc.extend_from_slice(&0u32.to_le_bytes());
+        rsrc.extend_from_slice(&(rsrc_rva + hii_off as u32 + hii_blob.len() as u32).to_le_bytes());
+        rsrc.extend_from_slice(&(tail_leaf.len() as u32).to_le_bytes());
+        rsrc.extend_from_slice(&0u32.to_le_bytes());
+        rsrc.extend_from_slice(&0u32.to_le_bytes());
+        rsrc.extend_from_slice(hii_blob);
+        rsrc.extend_from_slice(tail_leaf);
+        while rsrc.len() % 16 != 0 {
+            rsrc.push(0);
+        }
+
+        let size_of_image = (rsrc_rva + rsrc.len() as u32).next_multiple_of(0x1000);
+        let mut pe = vec![0u8; 0x170];
+        pe[0] = b'M';
+        pe[1] = b'Z';
+        pe[0x3c..0x40].copy_from_slice(&0x40u32.to_le_bytes());
+        pe[0x40..0x44].copy_from_slice(b"PE\0\0");
+        pe[0x44..0x46].copy_from_slice(&0x8664u16.to_le_bytes());
+        pe[0x46..0x48].copy_from_slice(&1u16.to_le_bytes());
+        pe[0x54..0x56].copy_from_slice(&240u16.to_le_bytes());
+        pe[0x58..0x5a].copy_from_slice(&0x20bu16.to_le_bytes());
+        pe[0x78..0x7c].copy_from_slice(&0x1000u32.to_le_bytes());
+        pe[0x7c..0x80].copy_from_slice(&16u32.to_le_bytes());
+        pe[0x90..0x94].copy_from_slice(&size_of_image.to_le_bytes());
+        pe[0xc4..0xc8].copy_from_slice(&16u32.to_le_bytes());
+        pe[0xd8..0xdc].copy_from_slice(&rsrc_rva.to_le_bytes());
+        pe[0xdc..0xe0].copy_from_slice(&(rsrc.len() as u32).to_le_bytes());
+        pe[0x148..0x14f].copy_from_slice(b".rsrc\0\0");
+        pe[0x150..0x154].copy_from_slice(&(rsrc.len() as u32).to_le_bytes());
+        pe[0x154..0x158].copy_from_slice(&rsrc_rva.to_le_bytes());
+        pe[0x158..0x15c].copy_from_slice(&(rsrc.len() as u32).to_le_bytes());
+        pe[0x15c..0x160].copy_from_slice(&0x170u32.to_le_bytes());
+        pe[0x16c..0x170].copy_from_slice(&0x4000_0040u32.to_le_bytes());
+        pe.extend_from_slice(&rsrc);
+        pe
+    }
+
+    #[test]
+    fn append_refuses_foreign_leaf_after_hii_blob() {
+        let g = Guid::from_str(LIST_GUID).unwrap();
+        let form = pkg(PACKAGE_FORMS, &[0x0Eu8, 0x17, 0xAA]);
+        let string = pkg(PACKAGE_STRINGS, &[0u8; 8]);
+        let form2 = pkg(
+            PACKAGE_FORMS,
+            &[
+                0x0Eu8, 0x17, 0xBB, 0xCC, 0xDD, 0xEE, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66,
+            ],
+        );
+        let blob = list(&g, &[&form, &string]);
+        let mut pe = synth_two_leaf_pe(&blob, &[0x55u8; 32]);
+        assert_eq!(hii_entry_locations(&pe).len(), 1);
+        let (_, blob_off, _) = hii_entry_locations(&pe)[0];
+        assert_eq!(&pe[blob_off..blob_off + blob.len()], &blob[..]);
+        let snapshot = pe.clone();
+        assert!(!append_package_to_resource(&mut pe, &form2));
+        assert_eq!(pe, snapshot);
+    }
+
+    #[test]
+    fn append_refuses_overlay_tail_despite_slack() {
+        let g = Guid::from_str(LIST_GUID).unwrap();
+        let form = pkg(PACKAGE_FORMS, &[0x0Eu8, 0x17, 0xAA]);
+        let string = pkg(PACKAGE_STRINGS, &[0u8; 8]);
+        let form2 = pkg(
+            PACKAGE_FORMS,
+            &[
+                0x0Eu8, 0x17, 0xBB, 0xCC, 0xDD, 0xEE, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66,
+            ],
+        );
+        let blob = list(&g, &[&form, &string]);
+        let mut pe = synth_hii_pe("HII", &blob);
+        assert!(try_grow_rsrc_tail(&mut pe, form2.len()));
+        pe.extend_from_slice(&[0xEEu8; 8]);
+        let snapshot = pe.clone();
+        assert!(!append_package_to_resource(&mut pe, &form2));
+        assert_eq!(pe, snapshot);
+    }
+
+    #[test]
+    fn append_rewrites_wrong_entry_size_to_exact_length() {
+        let g = Guid::from_str(LIST_GUID).unwrap();
+        let form = pkg(PACKAGE_FORMS, &[0x0Eu8, 0x17, 0xAA]);
+        let string = pkg(PACKAGE_STRINGS, &[0u8; 8]);
+        let form2 = pkg(
+            PACKAGE_FORMS,
+            &[
+                0x0Eu8, 0x17, 0xBB, 0xCC, 0xDD, 0xEE, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66,
+            ],
+        );
+        let blob = list(&g, &[&form, &string]);
+        let mut pe = synth_hii_pe("HII", &blob);
+        let (entry_off, _, _) = hii_entry_locations(&pe)[0];
+        pe[entry_off + 4..entry_off + 8].copy_from_slice(&0x100u32.to_le_bytes());
+        let (entry_off, blob_off, blob_len) = hii_entry_locations(&pe)[0];
+        assert_eq!(blob_len, pe.len() - blob_off);
+        assert!(blob_len < 0x100usize);
+        assert!(append_package_to_resource(&mut pe, &form2));
+        assert_eq!(le_u32(&pe, entry_off + 4), (blob_len + form2.len()) as u32);
+        assert_eq!(
+            hii_resource_ranges(&pe),
+            [(blob_off, blob_len + form2.len())]
+        );
     }
 }
