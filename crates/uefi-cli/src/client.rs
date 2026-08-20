@@ -314,6 +314,25 @@ impl Client {
         Ok(())
     }
 
+    pub async fn hii_form_set_add(
+        &mut self,
+        image_id: &str,
+        schema_json: &str,
+        target_ffs_guid: Option<&str>,
+    ) -> Result<(String, Vec<u32>), AppError> {
+        let req = HiiFormSetAddRequest {
+            image_id: image_id.into(),
+            schema_json: schema_json.into(),
+            target_ffs_guid: target_ffs_guid.unwrap_or("").into(),
+        };
+        let resp = self
+            .inner
+            .hii_form_set_add(auth_req(&self.state, req))
+            .await?
+            .into_inner();
+        Ok((resp.new_ffs_id, resp.inserted_form_ids))
+    }
+
     pub async fn image_save(&mut self, image_id: &str, output_path: &str) -> Result<(), AppError> {
         let req = ImageSaveRequest {
             image_id: image_id.into(),

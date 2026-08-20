@@ -162,6 +162,20 @@ pub fn print_node_id(item_id: &str, format: OutputFormat) {
     }
 }
 
+pub fn print_formset_add(new_ffs_id: &str, form_ids: &[u32], format: OutputFormat) {
+    let ids = form_ids
+        .iter()
+        .map(|i| i.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    match format {
+        OutputFormat::Json => {
+            println!("{{\"new_ffs_id\":\"{new_ffs_id}\",\"inserted_form_ids\":[{ids}]}}")
+        }
+        _ => println!("{new_ffs_id}\t{ids}"),
+    }
+}
+
 #[allow(dead_code)]
 pub fn print_text(text: &str) {
     print!("{text}");
@@ -181,6 +195,16 @@ mod tests {
     #[test]
     fn session_created_json() {
         print_session_created("s1", "t1", OutputFormat::Json);
+    }
+
+    #[test]
+    fn formset_add_print_smoke() {
+        print_formset_add(
+            "B00B0002-BEEF-1234-8000-000000000001",
+            &[1, 2],
+            OutputFormat::Json,
+        );
+        print_formset_add("X", &[], OutputFormat::Text);
     }
 
     #[test]

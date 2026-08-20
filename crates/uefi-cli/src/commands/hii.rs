@@ -1,6 +1,7 @@
 use crate::client::Client;
 use crate::output::OutputFormat;
 use uefi_common::error::AppError;
+use uefi_common::error::ErrKind;
 use uefi_common::state;
 
 pub async fn form_list(cli_sock: Option<&str>, format: OutputFormat) -> Result<(), AppError> {
@@ -34,5 +35,23 @@ pub async fn string_list(cli_sock: Option<&str>, format: OutputFormat) -> Result
     let image_id = client.active_image()?;
     let strings = client.hii_list_strings(&image_id).await?;
     crate::output::print_strings(&strings, format);
+    Ok(())
+}
+
+pub async fn formset_add(
+    file: &str,
+    ffs: Option<&str>,
+    cli_sock: Option<&str>,
+    format: OutputFormat,
+) -> Result<(), AppError> {
+    let schema_json = std::fs::read_to_string(file)
+        .map_err(|e| AppError::new(ErrKind::IoError, format!("{file}: {e}")))?;
+    let st = state::require_state()?;
+    let mut client = Client::connect(cli_sock, st).await?;
+    let image_id = client.active_image()?;
+    let (new_ffs_id, form_ids) = client
+        .hii_form_set_add(&image_id, &schema_json, ffs)
+        .await?;
+    crate::output::print_formset_add(&new_ffs_id, &form_ids, format);
     Ok(())
 }

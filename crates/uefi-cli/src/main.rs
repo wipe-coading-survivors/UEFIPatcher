@@ -178,6 +178,11 @@ enum HiiCmd {
         #[command(subcommand)]
         sub: HiiFormCmd,
     },
+    #[command(name = "formset")]
+    FormSet {
+        #[command(subcommand)]
+        sub: HiiFormSetCmd,
+    },
     String {
         #[command(subcommand)]
         sub: HiiStringCmd,
@@ -193,6 +198,16 @@ enum HiiFormCmd {
         visible: bool,
         #[arg(long)]
         hidden: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum HiiFormSetCmd {
+    Add {
+        #[arg(long)]
+        file: String,
+        #[arg(long)]
+        ffs: Option<String>,
     },
 }
 
@@ -332,9 +347,65 @@ async fn dispatch(cli: &Cli, format: output::OutputFormat) -> Result<(), error::
                     commands::hii::form_set_visibility(form_id, vis, sock, format).await
                 }
             },
+            HiiCmd::FormSet { sub } => match sub {
+                HiiFormSetCmd::Add { file, ffs } => {
+                    commands::hii::formset_add(file, ffs.as_deref(), sock, format).await
+                }
+            },
             HiiCmd::String { sub } => match sub {
                 HiiStringCmd::List => commands::hii::string_list(sock, format).await,
             },
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_hii_formset_add_args() {
+        let cli =
+            Cli::try_parse_from(["uefi-cli", "hii", "formset", "add", "--file", "schema.json"])
+                .unwrap();
+        match cli.cmd {
+            Cmd::Hii {
+                sub:
+                    HiiCmd::FormSet {
+                        sub: HiiFormSetCmd::Add { file, ffs },
+                    },
+            } => {
+                assert_eq!(file, "schema.json");
+                assert!(ffs.is_none());
+            }
+            _ => panic!("expected hii formset add"),
+        }
+    }
+
+    #[test]
+    fn parse_hii_formset_add_with_ffs() {
+        let cli = Cli::try_parse_from([
+            "uefi-cli",
+            "hii",
+            "formset",
+            "add",
+            "--file",
+            "s.json",
+            "--ffs",
+            "5C60F367-A505-419A-859E-2A4FF6CA6FE5",
+        ])
+        .unwrap();
+        match cli.cmd {
+            Cmd::Hii {
+                sub:
+                    HiiCmd::FormSet {
+                        sub: HiiFormSetCmd::Add { file, ffs },
+                    },
+            } => {
+                assert_eq!(file, "s.json");
+                assert_eq!(ffs.as_deref(), Some("5C60F367-A505-419A-859E-2A4FF6CA6FE5"));
+            }
+            _ => panic!("expected hii formset add"),
+        }
     }
 }

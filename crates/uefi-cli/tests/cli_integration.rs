@@ -63,3 +63,41 @@ async fn no_state_errors() {
         .failure()
         .code(3);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn formset_add_flow() {
+    let (td, sock) = setup_env().await;
+    let cwd = td.path();
+
+    cli(&sock, cwd).args(["session", "init"]).assert().success();
+    cli(&sock, cwd)
+        .args(["image", "open", "/dev/null", "--mode", "write"])
+        .assert()
+        .success();
+
+    let schema = r#"{
+        "formset_guid": "A1B2C3D4-E5F6-7890-ABCD-EF1234567890",
+        "title": "T", "help": "H", "class_guids": [],
+        "varstores": [], "default_stores": [],
+        "forms": [{"id": 1, "title": "Main", "items": []}]
+    }"#;
+    let schema_path = cwd.join("schema.json");
+    std::fs::write(&schema_path, schema).unwrap();
+
+    cli(&sock, cwd)
+        .args([
+            "hii",
+            "formset",
+            "add",
+            "--file",
+            schema_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("mock"));
+
+    cli(&sock, cwd)
+        .args(["session", "destroy"])
+        .assert()
+        .success();
+}
