@@ -137,22 +137,52 @@ pub fn bare_form_packages<'a>(pe: &'a [u8], exclude: &[(usize, usize)]) -> Vec<&
     out
 }
 
+struct RawShift {
+    header_off: usize,
+    start: usize,
+    len: usize,
+}
+
+struct VirtShift {
+    header_off: usize,
+    old_va: u32,
+    vsize: u32,
+}
+
 struct RsrcGrowPlan {
     section_off: usize,
     size_of_image_off: usize,
+    zero_off: usize,
     old_virt: u32,
     old_raw: u32,
     pad: u32,
-    new_image: Option<u32>,
+    vshift: u32,
+    raw_shifts: Vec<RawShift>,
+    virt_shifts: Vec<VirtShift>,
+    dir_shifts: Vec<(usize, u32)>,
+    new_image: u32,
 }
 
 impl RsrcGrowPlan {
-    fn apply(self, pe: &mut Vec<u8>) {
-        pe.resize(pe.len() + self.pad as usize, 0);
+    fn apply(mut self, pe: &mut Vec<u8>) {
+        let pad = self.pad as usize;
+        pe.resize(pe.len() + pad, 0);
+        self.raw_shifts.sort_by_key(|s| s.start);
+        for s in self.raw_shifts.iter().rev() {
+            pe.copy_within(s.start..s.start + s.len, s.start + pad);
+        }
+        for s in &self.raw_shifts {
+            write_le_u32(pe, s.header_off + 20, (s.start + pad) as u32);
+        }
+        pe[self.zero_off..self.zero_off + pad].fill(0);
+        for v in &self.virt_shifts {
+            write_le_u32(pe, v.header_off + 12, v.old_va + self.vshift);
+        }
         write_le_u32(pe, self.section_off + 8, self.old_virt + self.pad);
         write_le_u32(pe, self.section_off + 16, self.old_raw + self.pad);
-        if let Some(image) = self.new_image {
-            write_le_u32(pe, self.size_of_image_off, image);
+        write_le_u32(pe, self.size_of_image_off, self.new_image);
+        for (off, rva) in &self.dir_shifts {
+            write_le_u32(pe, *off, *rva);
         }
     }
 }
@@ -190,6 +220,11 @@ fn rsrc_grow_plan<Pe: ImageNtHeaders>(
     let opt_off = pe_off.checked_add(24)?;
     let opt_size = read_le_u16(pe, pe_off.checked_add(20)?)? as usize;
     let table_off = opt_off.checked_add(opt_size)?;
+    let dir_table_off = opt_off.checked_add(if read_le_u16(pe, opt_off)? == 0x20b {
+        112
+    } else {
+        96
+    })?;
     let rsrc_dir = file
         .data_directories()
         .get(object::pe::IMAGE_DIRECTORY_ENTRY_RESOURCE)?;
@@ -198,45 +233,75 @@ fn rsrc_grow_plan<Pe: ImageNtHeaders>(
         tracing::debug!("no resource data directory; refusing rsrc tail growth");
         return None;
     }
-    let mut rsrc = None;
-    for (idx, section) in file.section_table().iter().enumerate() {
-        let va = section.virtual_address.get(LittleEndian);
-        let span = section
-            .virtual_size
-            .get(LittleEndian)
-            .max(section.size_of_raw_data.get(LittleEndian));
-        if let Some(off) = rsrc_rva.checked_sub(va)
-            && off < span
-        {
-            rsrc = Some((idx, va));
-            break;
-        }
-    }
-    let (rsrc_idx, rsrc_va) = rsrc?;
-    let rsrc_header = file.section_table().iter().nth(rsrc_idx)?;
-    let raw_ptr = rsrc_header.pointer_to_raw_data.get(LittleEndian) as u64;
-    let raw_size = rsrc_header.size_of_raw_data.get(LittleEndian) as u64;
-    let virt_size = rsrc_header.virtual_size.get(LittleEndian) as u64;
-    let rsrc_end = raw_ptr.checked_add(raw_size)?;
-    if pe.len() as u64 != rsrc_end {
-        tracing::debug!("rsrc raw data does not end at file end; refusing tail growth");
-        return None;
-    }
-    let mut last_by_rva = true;
-    for section in file.section_table().iter() {
-        if section.virtual_address.get(LittleEndian) > rsrc_va {
-            last_by_rva = false;
-        }
-        let size = section.size_of_raw_data.get(LittleEndian) as u64;
-        if size == 0 {
-            continue;
-        }
-        let end = section.pointer_to_raw_data.get(LittleEndian) as u64 + size;
-        if end > rsrc_end {
-            tracing::debug!("section raw range extends beyond rsrc; refusing tail growth");
+    if dir_table_off.checked_add(40)? <= table_off {
+        let cert_rva = read_le_u32(pe, dir_table_off.checked_add(32)?)?;
+        let cert_size = read_le_u32(pe, dir_table_off.checked_add(36)?)?;
+        if cert_rva != 0 || cert_size != 0 {
+            tracing::debug!("security directory present; refusing rsrc tail growth");
             return None;
         }
     }
+    let sections: Vec<(usize, u32, u32, u32, u32)> = file
+        .section_table()
+        .iter()
+        .enumerate()
+        .map(|(idx, section)| {
+            (
+                table_off + idx * 40,
+                section.virtual_address.get(LittleEndian),
+                section.virtual_size.get(LittleEndian),
+                section.size_of_raw_data.get(LittleEndian),
+                section.pointer_to_raw_data.get(LittleEndian),
+            )
+        })
+        .collect();
+    let mut rsrc_idx = None;
+    for (i, (_, va, vsize, raw_size, _)) in sections.iter().enumerate() {
+        let span = (*vsize).max(*raw_size);
+        if let Some(off) = rsrc_rva.checked_sub(*va)
+            && off < span
+        {
+            rsrc_idx = Some(i);
+            break;
+        }
+    }
+    let rsrc_idx = rsrc_idx?;
+    let (section_off, rsrc_va, rsrc_vsize, rsrc_raw_size, rsrc_raw_ptr) = sections[rsrc_idx];
+    let rsrc_raw_end = (u64::from(rsrc_raw_ptr)).checked_add(u64::from(rsrc_raw_size))?;
+
+    let mut raw_ranges: Vec<(u64, u64)> = Vec::new();
+    let mut last_raw_end = 0u64;
+    for (_, _, _, raw_size, raw_ptr) in &sections {
+        if *raw_size == 0 {
+            continue;
+        }
+        let start = u64::from(*raw_ptr);
+        let end = start.checked_add(u64::from(*raw_size))?;
+        for &(prev_start, prev_end) in &raw_ranges {
+            if start < prev_end && prev_start < end {
+                tracing::debug!("overlapping section raw ranges; refusing rsrc tail growth");
+                return None;
+            }
+        }
+        raw_ranges.push((start, end));
+        last_raw_end = last_raw_end.max(end);
+    }
+    if pe.len() as u64 != last_raw_end {
+        tracing::debug!("overlay beyond last section raw extent; refusing rsrc tail growth");
+        return None;
+    }
+    for (i, (_, va, _, raw_size, raw_ptr)) in sections.iter().enumerate() {
+        if i == rsrc_idx || *raw_size == 0 {
+            continue;
+        }
+        let raw_follows = u64::from(*raw_ptr) >= rsrc_raw_end;
+        let virt_follows = *va > rsrc_va;
+        if raw_follows != virt_follows {
+            tracing::debug!("section raw/virtual order mismatch; refusing rsrc tail growth");
+            return None;
+        }
+    }
+
     let file_align = pow2_or_one(read_le_u32(pe, opt_off.checked_add(36)?)?);
     let section_align_raw = read_le_u32(pe, opt_off.checked_add(32)?)?;
     let section_align = if section_align_raw.is_power_of_two() {
@@ -247,30 +312,93 @@ fn rsrc_grow_plan<Pe: ImageNtHeaders>(
     let pad = (delta as u64)
         .div_ceil(u64::from(file_align))
         .checked_mul(u64::from(file_align))?;
-    let new_raw = raw_size.checked_add(pad)?;
-    let new_virt = virt_size.checked_add(pad)?;
-    if new_raw > u32::MAX as u64 || new_virt > u32::MAX as u64 {
+    let vshift = (delta as u64)
+        .div_ceil(u64::from(section_align))
+        .checked_mul(u64::from(section_align))?;
+    let new_raw = u64::from(rsrc_raw_size).checked_add(pad)?;
+    let new_virt = u64::from(rsrc_vsize).checked_add(pad)?;
+    if new_raw > u32::MAX as u64 || new_virt > u32::MAX as u64 || vshift > u32::MAX as u64 {
         return None;
     }
-    let new_image = if last_by_rva {
-        let end = u64::from(rsrc_va)
-            .checked_add(new_virt)?
-            .div_ceil(u64::from(section_align))
-            .checked_mul(u64::from(section_align))?;
-        if end > u32::MAX as u64 {
-            return None;
+
+    let mut raw_shifts = Vec::new();
+    let mut virt_shifts = Vec::new();
+    for (i, &(header_off, va, vsize, raw_size, raw_ptr)) in sections.iter().enumerate() {
+        if i == rsrc_idx {
+            continue;
         }
-        Some(end as u32)
-    } else {
-        None
-    };
+        if raw_size > 0 && u64::from(raw_ptr) >= rsrc_raw_end {
+            if u64::from(raw_ptr) + pad > u32::MAX as u64 {
+                return None;
+            }
+            raw_shifts.push(RawShift {
+                header_off,
+                start: raw_ptr as usize,
+                len: raw_size as usize,
+            });
+        }
+        if va > rsrc_va {
+            if u64::from(va) + vshift > u32::MAX as u64 {
+                return None;
+            }
+            virt_shifts.push(VirtShift {
+                header_off,
+                old_va: va,
+                vsize,
+            });
+        }
+    }
+
+    let mut dir_shifts = Vec::new();
+    let dir_count = read_le_u32(pe, dir_table_off.checked_sub(4)?)?.min(16) as usize;
+    if dir_table_off.checked_add(dir_count * 8)? > table_off {
+        return None;
+    }
+    for i in 0..dir_count {
+        let off = dir_table_off + i * 8;
+        let dir_rva = read_le_u32(pe, off)?;
+        if dir_rva == 0 {
+            continue;
+        }
+        let inside_shifted = virt_shifts
+            .iter()
+            .any(|v| dir_rva >= v.old_va && u64::from(dir_rva - v.old_va) < u64::from(v.vsize));
+        if inside_shifted {
+            dir_shifts.push((off, dir_rva.checked_add(vshift as u32)?));
+        }
+    }
+
+    let mut max_extent = u64::from(rsrc_va).checked_add(new_virt)?;
+    for (i, (_, va, vsize, raw_size, _)) in sections.iter().enumerate() {
+        if i == rsrc_idx {
+            continue;
+        }
+        let final_va = if *va > rsrc_va {
+            u64::from(*va).checked_add(vshift)?
+        } else {
+            u64::from(*va)
+        };
+        let extent = final_va.checked_add(u64::from((*vsize).max(*raw_size)))?;
+        max_extent = max_extent.max(extent);
+    }
+    let new_image = max_extent
+        .div_ceil(u64::from(section_align))
+        .checked_mul(u64::from(section_align))?;
+    if new_image > u32::MAX as u64 {
+        return None;
+    }
     Some(RsrcGrowPlan {
-        section_off: table_off + rsrc_idx * 40,
+        section_off,
         size_of_image_off: opt_off + 56,
-        old_virt: virt_size as u32,
-        old_raw: raw_size as u32,
+        zero_off: rsrc_raw_end as usize,
+        old_virt: rsrc_vsize,
+        old_raw: rsrc_raw_size,
         pad: pad as u32,
-        new_image,
+        vshift: vshift as u32,
+        raw_shifts,
+        virt_shifts,
+        dir_shifts,
+        new_image: new_image as u32,
     })
 }
 
@@ -352,8 +480,9 @@ fn plan_rsrc_blob_growth_for<Pe: ImageNtHeaders>(
     let blob_end = blob_off.checked_add(blob_len)?.checked_add(added)?;
     let raw_end = usize::try_from(rsrc_raw_end(file)?).ok()?;
     let grow = blob_end.saturating_sub(raw_end);
-    if grow == 0 && pe.len() != raw_end {
-        tracing::debug!("rsrc raw extent != file end; refusing append without growth");
+    let last_end = usize::try_from(last_raw_end(file)?).ok()?;
+    if pe.len() != last_end {
+        tracing::debug!("overlay beyond last section raw extent; refusing append");
         return None;
     }
     Some(RsrcBlobGrowthPlan {
@@ -397,6 +526,7 @@ fn package_len(pkg_bytes: &[u8]) -> Option<usize> {
 
 struct AppendPlan {
     insert_off: usize,
+    insert_tail: usize,
     entry_off: usize,
     blob_off: usize,
     new_entry_size: u32,
@@ -410,8 +540,7 @@ impl AppendPlan {
             return false;
         }
         let pkg_len = pkg_bytes.len();
-        let tail_off = pe.len() - pkg_len;
-        pe.copy_within(self.insert_off..tail_off, self.insert_off + pkg_len);
+        pe.copy_within(self.insert_off..self.insert_tail, self.insert_off + pkg_len);
         pe[self.insert_off..self.insert_off + pkg_len].copy_from_slice(pkg_bytes);
         write_length_chain(
             pe,
@@ -434,6 +563,14 @@ fn append_plan_for<Pe: ImageNtHeaders>(
     let packages = parse_package_list(blob)?.packages;
     let sum = packages.iter().map(|p| p.bytes.len()).sum::<usize>();
     let insert_off = growth.blob_off.checked_add(20)?.checked_add(sum)?;
+    let insert_tail = usize::try_from(rsrc_raw_end(file)?)
+        .ok()?
+        .checked_add(growth.grow)?
+        .checked_sub(pkg_len)?;
+    if insert_off > insert_tail {
+        tracing::debug!("package insert beyond rsrc raw extent; refusing append");
+        return None;
+    }
     let new_total = 20u64 + sum as u64 + pkg_len as u64 + 4;
     let new_entry_size = growth.blob_len.checked_add(pkg_len)?;
     if new_total > u32::MAX as u64 || new_entry_size > u32::MAX as usize {
@@ -442,6 +579,7 @@ fn append_plan_for<Pe: ImageNtHeaders>(
     }
     Some(AppendPlan {
         insert_off,
+        insert_tail,
         entry_off: growth.entry_off,
         blob_off: growth.blob_off,
         new_entry_size: new_entry_size as u32,
@@ -472,6 +610,20 @@ fn rsrc_raw_end<Pe: ImageNtHeaders>(file: &PeFile<'_, Pe>) -> Option<u64> {
         }
     }
     None
+}
+
+fn last_raw_end<Pe: ImageNtHeaders>(file: &PeFile<'_, Pe>) -> Option<u64> {
+    let mut last = 0u64;
+    for section in file.section_table().iter() {
+        let size = section.size_of_raw_data.get(LittleEndian);
+        if size == 0 {
+            continue;
+        }
+        let end = u64::from(section.pointer_to_raw_data.get(LittleEndian))
+            .checked_add(u64::from(size))?;
+        last = last.max(end);
+    }
+    Some(last)
 }
 
 #[cfg(test)]
@@ -537,6 +689,86 @@ pub(crate) fn synth_hii_pe(type_name: &str, blob: &[u8]) -> Vec<u8> {
     pe[0x15c..0x160].copy_from_slice(&0x170u32.to_le_bytes());
     pe[0x16c..0x170].copy_from_slice(&0x4000_0040u32.to_le_bytes());
     pe.extend_from_slice(&rsrc);
+    pe
+}
+
+#[cfg(test)]
+fn reloc_block() -> Vec<u8> {
+    let mut b = vec![0u8; 0x40];
+    b[0..4].copy_from_slice(&0x1000u32.to_le_bytes());
+    b[4..8].copy_from_slice(&0x40u32.to_le_bytes());
+    for (i, byte) in b.iter_mut().enumerate().skip(8) {
+        *byte = (0xA0 + i) as u8;
+    }
+    b
+}
+
+#[cfg(test)]
+pub(crate) fn synth_reloc_hii_pe(type_name: &str, blob: &[u8]) -> Vec<u8> {
+    let rsrc_rva: u32 = 0x1000;
+    let mut rsrc = Vec::new();
+    rsrc.extend_from_slice(&rsrc_dir_header(1, 0));
+    rsrc.extend_from_slice(&0x8000_0048u32.to_le_bytes());
+    rsrc.extend_from_slice(&0x8000_0018u32.to_le_bytes());
+    rsrc.extend_from_slice(&rsrc_dir_header(0, 1));
+    rsrc.extend_from_slice(&1u32.to_le_bytes());
+    rsrc.extend_from_slice(&0x8000_0030u32.to_le_bytes());
+    rsrc.extend_from_slice(&rsrc_dir_header(0, 1));
+    rsrc.extend_from_slice(&0x409u32.to_le_bytes());
+    rsrc.extend_from_slice(&0x80u32.to_le_bytes());
+    rsrc.extend_from_slice(&(type_name.len() as u16).to_le_bytes());
+    for u in type_name.encode_utf16() {
+        rsrc.extend_from_slice(&u.to_le_bytes());
+    }
+    while rsrc.len() < 0x80 {
+        rsrc.push(0);
+    }
+    rsrc.extend_from_slice(&(rsrc_rva + 0x90).to_le_bytes());
+    rsrc.extend_from_slice(&(blob.len() as u32).to_le_bytes());
+    rsrc.extend_from_slice(&0u32.to_le_bytes());
+    rsrc.extend_from_slice(&0u32.to_le_bytes());
+    while rsrc.len() < 0x90 {
+        rsrc.push(0);
+    }
+    rsrc.extend_from_slice(blob);
+    while rsrc.len() % 16 != 0 {
+        rsrc.push(0);
+    }
+    let reloc = reloc_block();
+    let reloc_rva = (rsrc_rva + rsrc.len() as u32).next_multiple_of(0x1000);
+    let size_of_image = (reloc_rva + reloc.len() as u32).next_multiple_of(0x1000);
+    let rsrc_raw = 0x198u32;
+    let reloc_raw = rsrc_raw + rsrc.len() as u32;
+    let mut pe = vec![0u8; 0x198];
+    pe[0] = b'M';
+    pe[1] = b'Z';
+    pe[0x3c..0x40].copy_from_slice(&0x40u32.to_le_bytes());
+    pe[0x40..0x44].copy_from_slice(b"PE\0\0");
+    pe[0x44..0x46].copy_from_slice(&0x8664u16.to_le_bytes());
+    pe[0x46..0x48].copy_from_slice(&2u16.to_le_bytes());
+    pe[0x54..0x56].copy_from_slice(&240u16.to_le_bytes());
+    pe[0x58..0x5a].copy_from_slice(&0x20bu16.to_le_bytes());
+    pe[0x78..0x7c].copy_from_slice(&0x1000u32.to_le_bytes());
+    pe[0x7c..0x80].copy_from_slice(&16u32.to_le_bytes());
+    pe[0x90..0x94].copy_from_slice(&size_of_image.to_le_bytes());
+    pe[0xc4..0xc8].copy_from_slice(&16u32.to_le_bytes());
+    pe[0xd8..0xdc].copy_from_slice(&rsrc_rva.to_le_bytes());
+    pe[0xdc..0xe0].copy_from_slice(&(rsrc.len() as u32).to_le_bytes());
+    pe[0xf0..0xf4].copy_from_slice(&reloc_rva.to_le_bytes());
+    pe[0xf4..0xf8].copy_from_slice(&(reloc.len() as u32).to_le_bytes());
+    pe[0x148..0x14f].copy_from_slice(b".rsrc\0\0");
+    pe[0x150..0x154].copy_from_slice(&(rsrc.len() as u32).to_le_bytes());
+    pe[0x154..0x158].copy_from_slice(&rsrc_rva.to_le_bytes());
+    pe[0x158..0x15c].copy_from_slice(&(rsrc.len() as u32).to_le_bytes());
+    pe[0x15c..0x160].copy_from_slice(&rsrc_raw.to_le_bytes());
+    pe[0x16c..0x170].copy_from_slice(&0x4000_0040u32.to_le_bytes());
+    pe[0x170..0x177].copy_from_slice(b".reloc\0");
+    pe[0x178..0x17c].copy_from_slice(&(reloc.len() as u32).to_le_bytes());
+    pe[0x17c..0x180].copy_from_slice(&reloc_rva.to_le_bytes());
+    pe[0x180..0x184].copy_from_slice(&(reloc.len() as u32).to_le_bytes());
+    pe[0x184..0x188].copy_from_slice(&reloc_raw.to_le_bytes());
+    pe.extend_from_slice(&rsrc);
+    pe.extend_from_slice(&reloc);
     pe
 }
 
@@ -667,7 +899,55 @@ mod tests {
     }
 
     #[test]
-    fn grow_rsrc_tail_refuses_when_rsrc_not_last_section() {
+    fn grow_rsrc_tail_shifts_trailing_reloc_raw_and_virtual() {
+        let mut pe = synth_reloc_hii_pe("HII", RK3588_STRING_RES);
+        let before = pe.clone();
+        let ranges_before = hii_resource_ranges(&pe);
+        assert_eq!(ranges_before.len(), 1);
+        let reloc_len = le_u32(&pe, 0x178) as usize;
+        let old_reloc_ptr = le_u32(&pe, 0x184) as usize;
+        let old_reloc_va = le_u32(&pe, 0x17c);
+        let old_reloc_dir = le_u32(&pe, 0xf0);
+        let old_soi = le_u32(&pe, 0x90);
+        let old_rsrc_ptr = le_u32(&pe, 0x15c);
+        let reloc_snapshot = pe[old_reloc_ptr..old_reloc_ptr + reloc_len].to_vec();
+        assert_eq!(old_reloc_ptr + reloc_len, before.len());
+        assert!(try_grow_rsrc_tail(&mut pe, 64));
+        let delta_raw = 64usize.next_multiple_of(le_u32(&pe, 0x7c) as usize);
+        let vshift = 64u32.next_multiple_of(le_u32(&pe, 0x78));
+        let new_reloc_ptr = le_u32(&pe, 0x184) as usize;
+        assert_eq!(new_reloc_ptr, old_reloc_ptr + delta_raw);
+        assert_eq!(
+            &pe[new_reloc_ptr..new_reloc_ptr + reloc_len],
+            &reloc_snapshot[..]
+        );
+        assert!(
+            pe[old_reloc_ptr..old_reloc_ptr + delta_raw]
+                .iter()
+                .all(|&b| b == 0),
+            "stale slack left by the raw shift must be zeroed"
+        );
+        assert_eq!(le_u32(&pe, 0x17c), old_reloc_va + vshift);
+        assert_eq!(le_u32(&pe, 0xf0), old_reloc_dir + vshift);
+        assert_eq!(pe[0xd8..0xe0], before[0xd8..0xe0]);
+        assert_eq!(le_u32(&pe, 0x90), old_soi + vshift);
+        assert_eq!(
+            le_u32(&pe, 0x150),
+            le_u32(&before, 0x150) + delta_raw as u32
+        );
+        assert_eq!(
+            le_u32(&pe, 0x158),
+            le_u32(&before, 0x158) + delta_raw as u32
+        );
+        assert_eq!(le_u32(&pe, 0x15c), old_rsrc_ptr);
+        assert_eq!(pe.len(), new_reloc_ptr + reloc_len);
+        let (blob_off, blob_len) = ranges_before[0];
+        assert_eq!(&pe[blob_off..blob_off + blob_len], RK3588_STRING_RES);
+        assert_eq!(hii_resource_ranges(&pe), ranges_before);
+    }
+
+    #[test]
+    fn grow_rsrc_tail_refuses_raw_virtual_order_mismatch() {
         let base = synth_hii_pe("HII", RK3588_STRING_RES);
         let raw_size = le_u32(&base, 0x158) as usize;
         let mut pe = Vec::with_capacity(base.len() + 40 + 0x40);
@@ -679,9 +959,49 @@ mod tests {
         pe[0x15c..0x160].copy_from_slice(&0x198u32.to_le_bytes());
         pe[0x170..0x174].copy_from_slice(b".dmy");
         pe[0x178..0x17c].copy_from_slice(&0x40u32.to_le_bytes());
-        pe[0x17c..0x180].copy_from_slice(&0x2000u32.to_le_bytes());
+        pe[0x17c..0x180].copy_from_slice(&0x900u32.to_le_bytes());
         pe[0x180..0x184].copy_from_slice(&0x40u32.to_le_bytes());
         pe[0x184..0x188].copy_from_slice(&(0x198u32 + raw_size as u32).to_le_bytes());
+        assert_eq!(hii_resource_ranges(&pe).len(), 1);
+        let snapshot = pe.clone();
+        assert!(!try_grow_rsrc_tail(&mut pe, 64));
+        assert_eq!(pe, snapshot);
+    }
+
+    #[test]
+    fn grow_rsrc_tail_refuses_security_directory() {
+        let mut pe = synth_hii_pe("HII", RK3588_STRING_RES);
+        pe[0xe8..0xec].copy_from_slice(&0x5000u32.to_le_bytes());
+        let snapshot = pe.clone();
+        assert!(!try_grow_rsrc_tail(&mut pe, 64));
+        assert_eq!(pe, snapshot);
+    }
+
+    #[test]
+    fn grow_rsrc_tail_refuses_overlay_beyond_last_raw_end() {
+        let mut pe = synth_reloc_hii_pe("HII", RK3588_STRING_RES);
+        pe.extend_from_slice(&[0xEEu8; 8]);
+        let snapshot = pe.clone();
+        assert!(!try_grow_rsrc_tail(&mut pe, 64));
+        assert_eq!(pe, snapshot);
+    }
+
+    #[test]
+    fn grow_rsrc_tail_refuses_overlapping_raw_ranges() {
+        let base = synth_hii_pe("HII", RK3588_STRING_RES);
+        let raw_size = le_u32(&base, 0x158) as usize;
+        let mut pe = Vec::with_capacity(base.len() + 40 + 0x30);
+        pe.extend_from_slice(&base[..0x170]);
+        pe.extend_from_slice(&[0u8; 40]);
+        pe.extend_from_slice(&base[0x170..]);
+        pe.extend_from_slice(&[0u8; 0x30]);
+        pe[0x46..0x48].copy_from_slice(&2u16.to_le_bytes());
+        pe[0x15c..0x160].copy_from_slice(&0x198u32.to_le_bytes());
+        pe[0x170..0x174].copy_from_slice(b".dmy");
+        pe[0x178..0x17c].copy_from_slice(&0x40u32.to_le_bytes());
+        pe[0x17c..0x180].copy_from_slice(&0x900u32.to_le_bytes());
+        pe[0x180..0x184].copy_from_slice(&0x40u32.to_le_bytes());
+        pe[0x184..0x188].copy_from_slice(&(0x198u32 + raw_size as u32 - 0x10).to_le_bytes());
         assert_eq!(hii_resource_ranges(&pe).len(), 1);
         let snapshot = pe.clone();
         assert!(!try_grow_rsrc_tail(&mut pe, 64));
@@ -1029,5 +1349,103 @@ mod tests {
             hii_resource_ranges(&pe),
             [(blob_off, blob_len + form2.len())]
         );
+    }
+
+    fn string_pkg(existing: &[&str]) -> Vec<u8> {
+        let sibt_start = 12u32;
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&[0u8; 3]);
+        buf.push(PACKAGE_STRINGS);
+        buf.extend_from_slice(&sibt_start.to_le_bytes());
+        buf.extend_from_slice(&sibt_start.to_le_bytes());
+        for s in existing {
+            buf.push(0x10);
+            buf.extend_from_slice(s.as_bytes());
+            buf.push(0x00);
+        }
+        buf.push(0x00);
+        let len = buf.len() as u32;
+        buf[0] = (len & 0xFF) as u8;
+        buf[1] = ((len >> 8) & 0xFF) as u8;
+        buf[2] = ((len >> 16) & 0xFF) as u8;
+        buf
+    }
+
+    #[test]
+    fn append_package_shifts_trailing_reloc() {
+        let g = Guid::from_str(LIST_GUID).unwrap();
+        let form = pkg(PACKAGE_FORMS, &[0x0Eu8, 0x17, 0xAA]);
+        let string = pkg(PACKAGE_STRINGS, &[0u8; 8]);
+        let form2 = pkg(
+            PACKAGE_FORMS,
+            &[
+                0x0Eu8, 0x17, 0xBB, 0xCC, 0xDD, 0xEE, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66,
+            ],
+        );
+        let blob = list(&g, &[&form, &string]);
+        let mut pe = synth_reloc_hii_pe("HII", &blob);
+        let reloc_len = le_u32(&pe, 0x178) as usize;
+        let old_reloc_ptr = le_u32(&pe, 0x184) as usize;
+        let old_reloc_va = le_u32(&pe, 0x17c);
+        let reloc_snapshot = pe[old_reloc_ptr..old_reloc_ptr + reloc_len].to_vec();
+        let (_, blob_off, blob_len) = hii_entry_locations(&pe)[0];
+        assert!(append_package_to_resource(&mut pe, &form2));
+        let new_reloc_ptr = le_u32(&pe, 0x184) as usize;
+        assert!(new_reloc_ptr > old_reloc_ptr);
+        assert_eq!(
+            &pe[new_reloc_ptr..new_reloc_ptr + reloc_len],
+            &reloc_snapshot[..]
+        );
+        assert!(le_u32(&pe, 0x17c) > old_reloc_va);
+        assert_eq!(pe.len(), new_reloc_ptr + reloc_len);
+        assert_eq!(
+            hii_resource_ranges(&pe),
+            [(blob_off, blob_len + form2.len())]
+        );
+        let new_blob = &pe[blob_off..blob_off + blob_len + form2.len()];
+        let parsed = parse_package_list(new_blob).unwrap();
+        assert_eq!(parsed.packages.len(), 3);
+        assert_eq!(parsed.packages.last().unwrap().bytes, &form2[..]);
+    }
+
+    #[test]
+    fn add_strings_then_append_compose_on_reloc_pe() {
+        let g = Guid::from_str(LIST_GUID).unwrap();
+        let form = pkg(PACKAGE_FORMS, &[0x0Eu8, 0x17, 0xAA]);
+        let string = string_pkg(&["first"]);
+        let form2 = pkg(PACKAGE_FORMS, &[0x0Eu8, 0x17, 0xBB]);
+        let blob = list(&g, &[&form, &string]);
+        let mut pe = synth_reloc_hii_pe("HII", &blob);
+        let reloc_len = le_u32(&pe, 0x178) as usize;
+        let mut reloc_snapshot = pe[pe.len() - reloc_len..].to_vec();
+        let mapping =
+            crate::hii::string_pack::add_strings_to_resource(&mut pe, &["alpha".to_string()])
+                .unwrap();
+        assert_eq!(mapping["alpha"], 2);
+        assert_eq!(
+            &pe[le_u32(&pe, 0x184) as usize..pe.len()],
+            &reloc_snapshot[..]
+        );
+        assert_eq!(pe.len(), le_u32(&pe, 0x184) as usize + reloc_len);
+        reloc_snapshot = pe[pe.len() - reloc_len..].to_vec();
+        assert!(append_package_to_resource(&mut pe, &form2));
+        assert_eq!(
+            &pe[le_u32(&pe, 0x184) as usize..pe.len()],
+            &reloc_snapshot[..]
+        );
+        assert_eq!(pe.len(), le_u32(&pe, 0x184) as usize + reloc_len);
+        let (_, blob_off, blob_len) = hii_entry_locations(&pe)[0];
+        let new_blob = &pe[blob_off..blob_off + blob_len];
+        let parsed = parse_package_list(new_blob).unwrap();
+        assert_eq!(
+            parsed.packages.iter().map(|p| p.kind).collect::<Vec<_>>(),
+            [PACKAGE_FORMS, PACKAGE_STRINGS, PACKAGE_FORMS]
+        );
+        let sp = crate::hii::strings::parse_string_package(parsed.packages[1].bytes).unwrap();
+        assert_eq!(
+            sp.strings,
+            vec![(1, "first".to_string()), (2, "alpha".to_string())]
+        );
+        assert_eq!(parsed.packages.last().unwrap().bytes, &form2[..]);
     }
 }

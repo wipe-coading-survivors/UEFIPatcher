@@ -41,7 +41,7 @@ pub enum HiiError {
         "target is behind a compressed/guided section that cannot be recompressed (Tiano, LZMAF86, standard compression, unknown GUID)"
     )]
     MutationBehindCompression,
-    #[error("cannot grow PE resource section: .rsrc is not the last section")]
+    #[error("cannot grow PE resource section")]
     PeGrowthUnsupported,
 }
 
@@ -152,6 +152,14 @@ mod tests {
     use super::*;
     use crate::types::{Action, FfsNode, FfsType, Image, ImageMode, ParsingData};
     use std::str::FromStr;
+
+    #[test]
+    fn pe_growth_unsupported_display() {
+        assert_eq!(
+            HiiError::PeGrowthUnsupported.to_string(),
+            "cannot grow PE resource section"
+        );
+    }
 
     #[test]
     fn unsuppress_makes_block_empty() {

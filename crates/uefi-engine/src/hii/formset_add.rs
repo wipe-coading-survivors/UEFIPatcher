@@ -644,6 +644,14 @@ mod tests {
         crate::hii::pe_resource::synth_hii_pe("HII", &blob)
     }
 
+    fn resource_reloc_hii_pe() -> Vec<u8> {
+        let g = Guid::try_parse(LIST_GUID).unwrap();
+        let form = hii_pkg(PACKAGE_FORMS, &[0x0Eu8, 0x17, 0xAA]);
+        let string = string_package_bytes();
+        let blob = hii_list(&g, &[&form, &string]);
+        crate::hii::pe_resource::synth_reloc_hii_pe("HII", &blob)
+    }
+
     fn resource_flash_image(with_ami: bool) -> Vec<u8> {
         let mut files = vec![ffs_file_bytes(
             &Guid::try_parse(STR_GUID).unwrap(),
@@ -726,6 +734,48 @@ mod tests {
             .iter()
             .find(|f| f.formset_guid == FORMSET_GUID)
             .expect("added formset must be visible after round-trip");
+        assert_eq!(added.title, "Main");
+        assert_eq!(added.form_id_ifr, 1);
+    }
+
+    #[test]
+    fn add_setup_formset_grows_reloc_bearing_pe_resource_channel() {
+        let mut files = vec![ffs_file_bytes(
+            &Guid::try_parse(STR_GUID).unwrap(),
+            &section_bytes(EFI_SECTION_PE32, &resource_reloc_hii_pe()),
+        )];
+        files.push(ffs_file_bytes(
+            &Guid::try_parse(SETUPDATA_GUID).unwrap(),
+            &[0u8; 108],
+        ));
+        files.push(ffs_file_bytes(
+            &Guid::try_parse(AMITSE_GUID).unwrap(),
+            &[0u8; 108],
+        ));
+        let data = flash_with_files(files);
+        let mut img = parse_image(&data, ImageMode::Write, "i", "s").unwrap();
+        let pe_before = resource_pe_section(&img).body.clone();
+        let packages_before = resource_forms_count(&pe_before);
+
+        let res = add_setup_formset(&mut img, &test_schema(), None).unwrap();
+        assert_eq!(res.inserted_form_ids, vec![1]);
+        let pe_sec = resource_pe_section(&img);
+        assert_eq!(pe_sec.action, Action::Rebuild);
+        assert!(pe_sec.body.len() > pe_before.len());
+        assert_eq!(
+            resource_forms_count(&pe_sec.body),
+            packages_before + 1,
+            "strings + formset append must compose on a .reloc-bearing PE"
+        );
+
+        let built = build_image(&img).unwrap();
+        assert_eq!(built.len(), data.len());
+        let re = parse_image(&built, ImageMode::Read, "i2", "s2").unwrap();
+        let forms = collect_forms(&re);
+        let added = forms
+            .iter()
+            .find(|f| f.formset_guid == FORMSET_GUID)
+            .expect("added formset must survive rebuild in reloc-bearing PE");
         assert_eq!(added.title, "Main");
         assert_eq!(added.form_id_ifr, 1);
     }
