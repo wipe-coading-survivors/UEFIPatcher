@@ -29,9 +29,14 @@
    (синтетика из фикстуры `lzma_guided_section*` или дерево) —
    `add_strings` находит; PE-resource-канал (`synth_hii_pe("HII", …)` в
    0x10-секции) → `StringPackageNotFound` (честный отказ фазы A).
-2. Реализация: `find_string_package` — DFS по дереву (все секции всех
-   subtype с `is_string_package`, спуск через обёртки); отдельная
-   функция `string_package_section_path`, `add_strings` возвращает путь.
+2. Реализация: `find_string_package` — DFS по дереву (все leaf-секции
+   всех subtype с `is_string_package`, спуск через обёртки); отдельная
+   функция `string_package_section_path` (pub), `add_strings` использует
+   путь внутренне — сигнатура не меняется: путь потребителям не нужен,
+   `find_string_package_section` в formset_add остаётся bare
+   (см. «Отложенное»). Уточнение 2026-08-20: изначальная формулировка
+   «add_strings возвращает путь» отброшена — возвращённый путь был бы
+   мёртвым API (вызывающая сторона formset_add игнорирует его).
 3. Green; commit `feat(uefi-engine): string_pack finds packages through
    wrappers (walker-based)`.
 
