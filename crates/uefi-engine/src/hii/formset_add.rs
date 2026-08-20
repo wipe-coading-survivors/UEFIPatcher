@@ -40,9 +40,12 @@ pub fn add_setup_formset(
             collect_item_strings(item, &mut strings);
         }
     }
+    let sp_path = string_pack::string_package_section_path(&image.root, target_ffs_guid)
+        .filter(|p| p.len() == 3)
+        .ok_or(HiiError::StringPackageNotFound)?;
+    let (sp_vi, sp_fi, sp_si) = (sp_path[0], sp_path[1], sp_path[2]);
     let string_ids = string_pack::add_strings(image, target_ffs_guid, &strings)?;
     let ifr_bytes = build_ifr(schema, &string_ids)?;
-    let (sp_vi, sp_fi, sp_si) = find_string_package_section(image, target_ffs_guid)?;
     let strpkg_bytes = image.root.children[sp_vi].children[sp_fi].children[sp_si]
         .body
         .clone();
@@ -298,27 +301,6 @@ fn extract_question(item: &schema::ItemSchema) -> Option<(u16, Option<u16>, u8, 
     }
 }
 
-fn find_string_package_section(
-    image: &Image,
-    ffs_guid: Option<&Guid>,
-) -> Result<(usize, usize, usize), HiiError> {
-    for (vi, vol) in image.root.children.iter().enumerate() {
-        for (fi, file) in vol.children.iter().enumerate() {
-            if let Some(g) = ffs_guid
-                && file.guid != Some(*g)
-            {
-                continue;
-            }
-            for (si, sec) in file.children.iter().enumerate() {
-                if string_pack::is_string_package(&sec.body) {
-                    return Ok((vi, fi, si));
-                }
-            }
-        }
-    }
-    Err(HiiError::StringPackageNotFound)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -326,6 +308,24 @@ mod tests {
     use crate::ffs::{EFI_FVB2_ERASE_POLARITY, EFI_FVH_SIGNATURE, EFI_SECTION_RAW, size_to_uint24};
     use crate::parser::image::parse_image;
     use crate::parser::target::find_item_path;
+
+    fn mk_node(node_type: FfsType, body: Vec<u8>, children: Vec<FfsNode>) -> FfsNode {
+        FfsNode {
+            guid: None,
+            node_type,
+            subtype: 0,
+            offset: 0,
+            header: vec![],
+            body,
+            tail: vec![],
+            children,
+            action: Action::NoAction,
+            parsing_data: ParsingData::None,
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        }
+    }
 
     const STR_GUID: &str = "5C60F367-A505-419A-859E-2A4FF6CA6FE5";
     const SETUPDATA_GUID: &str = "12345678-90AB-CDEF-1234-567890ABCDEF";
@@ -437,5 +437,34 @@ mod tests {
             "new FFS must live inside the Volume, not the Padding"
         );
         assert_eq!(res.inserted_form_ids, vec![1]);
+    }
+
+    #[test]
+    fn add_setup_formset_fails_cleanly_when_package_is_wrapped() {
+        let pkg = string_package_bytes();
+        let pkg_len = pkg.len();
+        let inner = mk_node(FfsType::Section, pkg, vec![]);
+        let wrapper = mk_node(FfsType::Section, vec![], vec![inner]);
+        let mut file_node = mk_node(FfsType::File, vec![], vec![wrapper]);
+        file_node.guid = Some(Guid::try_parse(STR_GUID).unwrap());
+        let volume = mk_node(FfsType::Volume, vec![], vec![file_node]);
+        let root = mk_node(FfsType::Image, vec![], vec![volume]);
+        let mut img = Image {
+            image_id: "i".into(),
+            session_id: "s".into(),
+            root,
+            mode: ImageMode::Write,
+        };
+
+        assert!(matches!(
+            add_setup_formset(&mut img, &test_schema(), None),
+            Err(HiiError::StringPackageNotFound)
+        ));
+        let inner = &img.root.children[0].children[0].children[0].children[0];
+        assert_eq!(inner.body.len(), pkg_len);
+        assert_eq!(inner.action, Action::NoAction);
+        assert_eq!(img.root.children[0].children[0].action, Action::NoAction);
+        assert_eq!(img.root.children[0].action, Action::NoAction);
+        assert_eq!(img.root.action, Action::NoAction);
     }
 }

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use super::HiiError;
+use super::strings::declared_len_sane;
 use crate::ops;
 use crate::types::*;
 
@@ -70,6 +71,7 @@ fn walk_for_string_package(
         };
         if child.node_type == FfsType::Section
             && child.children.is_empty()
+            && declared_len_sane(&child.body)
             && is_string_package(&child.body)
             && ffs_guid.is_none_or(|g| owner == Some(g))
         {
@@ -398,6 +400,41 @@ mod tests {
         ));
         let same = Guid::try_parse("5C60F367-A505-419A-859E-2A4FF6CA6FE5").unwrap();
         assert!(add_strings(&mut image, Some(&same), &["x".to_string()]).is_ok());
+    }
+
+    #[test]
+    fn add_strings_skips_leaf_with_bogus_declared_length() {
+        let pkg = make_string_package(&["first"]);
+        let pkg_len = pkg.len();
+        let bogus = [0x09u8, 0x00, 0x00, 0x04];
+        let bad_file = mk_node(
+            FfsType::File,
+            vec![],
+            vec![mk_node(FfsType::Section, bogus.to_vec(), vec![])],
+        );
+        let mut real_file = mk_node(
+            FfsType::File,
+            vec![],
+            vec![mk_node(FfsType::Section, pkg, vec![])],
+        );
+        real_file.guid = Some(Guid::try_parse("5C60F367-A505-419A-859E-2A4FF6CA6FE5").unwrap());
+        let volume = mk_node(FfsType::Volume, vec![], vec![bad_file, real_file]);
+        let root = mk_node(FfsType::Image, vec![], vec![volume]);
+        let mut image = Image {
+            image_id: "img".into(),
+            session_id: "s".into(),
+            root,
+            mode: ImageMode::Write,
+        };
+
+        let mapping = add_strings(&mut image, None, &["x".to_string()]).unwrap();
+        assert_eq!(mapping["x"], 2);
+        let bad = &image.root.children[0].children[0].children[0];
+        assert_eq!(bad.action, Action::NoAction);
+        assert_eq!(bad.body, bogus.to_vec());
+        let real = &image.root.children[0].children[1].children[0];
+        assert_eq!(real.action, Action::Rebuild);
+        assert!(real.body.len() > pkg_len);
     }
 
     #[test]
