@@ -22,7 +22,15 @@
    Volume: `build_node(Padding)` эммитит только `body`, дети
    игнорируются — вставленный файл молча теряется при сборке.
 3. **Нет CLI-команды**: RPC есть, в `uefi-cli` вызова нет (только
-   `setup form {list,set-visibility}`, `setup string {list}`).
+   `hii form {list,set-visibility}`, `hii string {list}`).
+
+   > Поправка 2026-08-20: инвентаризация §1 писалась до Plan A
+   > proto-rename — группы CLI уже называются `hii`/`hii string`, не
+   > `setup`/`setup string`. Новые команды ниже переименованы
+   > соответственно: `hii formset add` (фаза A), `hii form add` (фаза C).
+   > Client-обёртки `hii_form_set_add` в `uefi-cli/src/client.rs` нет —
+   > есть только proto-RPC, server-handler и mock; обёртка добавляется в
+   > Task 3.
 4. **Нет PE-resource writer**: чтение/локализация есть (фаза 6 + коммит
    `8160c5e`), но рост resource-блоба (добавление пакета/строк) не
    поддерживается нигде.
@@ -39,13 +47,13 @@
 
 **Цели:**
 
-1. `setup formset add` работает end-to-end на синтетике (bare-канал) и
+1. `hii formset add` работает end-to-end на синтетике (bare-канал) и
    на живом HNX99TF (PE-resource-канал): новая форма появляется в
    `collect_forms` после build+re-parse.
 2. Строки новой формы добавляются в string-пакет того же package list,
    что и целевой формсет (без дублирующего снапшота в новом FFS, где
    канал это позволяет).
-3. `setup form add` — вставка формы (и вопросов) в существующий формсет
+3. `hii form add` — вставка формы (и вопросов) в существующий формсет
    целевого файла.
 4. Честные ошибки на неподдерживаемых лейаутах (PE-рост невозможен,
    .rsrc не последняя секция, EDK2 bare-конст-массивы и т.п.).
@@ -82,9 +90,11 @@
    `collect_strings`/`walk_sections` (спуск через обёртки; bare-секции
    всехsubtype с валидным пакетом). PE-resource-канал на фазе A —
    честный `StringPackageNotFound` (расширение в фазе B).
-3. **CLI**: `setup formset add --file <schema.json> [--image <id>]
-   [--ffs <guid>]` → `HiiFormSetAdd`; вывод `new_ffs_id` +
-   `inserted_form_ids`. Mock e2e + интеграционный тест.
+3. **CLI**: `hii formset add --file <schema.json> [--ffs <guid>]` →
+   `HiiFormSetAdd`; вывод `new_ffs_id` + `inserted_form_ids`. Mock e2e +
+   интеграционный тест. (Поправка 2026-08-20: `--image <id>` убран —
+   CLI везде разрешает активный образ через `client.active_image()`;
+   client-обёртку `hii_form_set_add` добавить — в `client.rs` её нет.)
 
 ### 4.B Фаза B — PE-resource writer (рост)
 
@@ -128,7 +138,7 @@
    формсета в пакете (дискриминатор `#<n>`, симметрично `8160c5e`).
 2. **Строки** — та же схема §4.B3 (новые id, map для сборки IFR).
 3. **RPC/CLI**: `HiiFormAdd` (`image_id`, `target`, `schema_json`) →
-   `setup form add --target <form_id> --file <schema.json>`.
+   `hii form add --target <form_id> --file <schema.json>`.
 4. **Acceptance**: синтетика — форма в формсет ресурса → build →
    re-parse: форма с новыми question-строками; real HNX99TF (Setup).
 
@@ -174,11 +184,11 @@
 |---|---|------|
 | A | 1 | Фикс insert-цели (Volume-узел) + тест gap-aware |
 | A | 2 | String-поиск через walker + тесты (вкл. честный отказ resource) |
-| A | 3 | CLI `setup formset add` + e2e |
+| A | 3 | CLI `hii formset add` + e2e |
 | B | 4 | `try_grow_rsrc_tail` (TDD) |
 | B | 5 | `append_package_to_resource` (TDD) |
 | B | 6 | string-append в resource-канале (TDD) |
 | B | 7 | wiring `add_setup_formset` (resource-ветка) + real-image acceptance |
 | C | 8 | `insert_form_into_package` (TDD) |
-| C | 9 | RPC `HiiFormAdd` + CLI `setup form add` |
+| C | 9 | RPC `HiiFormAdd` + CLI `hii form add` |
 | C | 10 | real-image acceptance + финальные гейты |

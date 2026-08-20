@@ -40,14 +40,16 @@
 3. Green; commit `feat(uefi-engine): string_pack finds packages through
    wrappers (walker-based)`.
 
-### Task 3: CLI `setup formset add`
+### Task 3: CLI `hii formset add`
 
-1. Proto-клиент метод уже есть (`hii_form_set_add`). CLI: подкоманда
-   `setup formset add --file <schema.json> [--ffs <guid>]`; вывод
-   new_ffs_id + form ids (output.rs).
+1. Proto-RPC, server-handler и mock-ответ `hii_form_set_add` уже есть;
+   client-обёртки в `client.rs` нет — добавить вместе с подкомандой.
+   CLI: `hii formset add --file <schema.json> [--ffs <guid>]` (активный
+   образ через `client.active_image()`, как у остальных hii-команд);
+   вывод new_ffs_id + form ids (output.rs).
 2. Тесты: unit-парсер аргументов; mock e2e (существующий
    `cli_integration`-паттерн).
-3. Green; commit `feat(uefi-cli): setup formset add subcommand`.
+3. Green; commit `feat(uefi-cli): hii formset add subcommand`.
 
 ## Фаза B — PE-resource writer
 
@@ -111,7 +113,7 @@
    engine-функция `hii::add_form` (строки Task 6 + вставка Task 8);
    маппинг ошибок через `hii_error_status` + `PeGrowthUnsupported` →
    `failed_precondition`.
-2. CLI `setup form add --target <form_id> --file <schema.json>`.
+2. CLI `hii form add --target <form_id> --file <schema.json>`.
 3. Green; commit `feat(uefi-engine,uefi-cli): form add RPC + subcommand`.
 
 ### Task 10: acceptance + финал
