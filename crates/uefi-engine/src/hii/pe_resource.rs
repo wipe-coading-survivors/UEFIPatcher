@@ -105,6 +105,163 @@ pub fn bare_form_packages<'a>(pe: &'a [u8], exclude: &[(usize, usize)]) -> Vec<&
     out
 }
 
+struct RsrcGrowPlan {
+    section_off: usize,
+    size_of_image_off: usize,
+    old_virt: u32,
+    old_raw: u32,
+    pad: u32,
+    new_image: Option<u32>,
+}
+
+impl RsrcGrowPlan {
+    fn apply(self, pe: &mut Vec<u8>) {
+        pe.resize(pe.len() + self.pad as usize, 0);
+        write_le_u32(pe, self.section_off + 8, self.old_virt + self.pad);
+        write_le_u32(pe, self.section_off + 16, self.old_raw + self.pad);
+        if let Some(image) = self.new_image {
+            write_le_u32(pe, self.size_of_image_off, image);
+        }
+    }
+}
+
+pub fn try_grow_rsrc_tail(pe: &mut Vec<u8>, delta: usize) -> bool {
+    if delta == 0 {
+        return true;
+    }
+    let data: &[u8] = pe.as_slice();
+    let plan = match PeFile64::parse(data) {
+        Ok(file) => rsrc_grow_plan(&file, data, delta),
+        Err(_) => match PeFile32::parse(data) {
+            Ok(file) => rsrc_grow_plan(&file, data, delta),
+            Err(_) => {
+                tracing::debug!("not a PE image; refusing rsrc tail growth");
+                None
+            }
+        },
+    };
+    match plan {
+        Some(plan) => {
+            plan.apply(pe);
+            true
+        }
+        None => false,
+    }
+}
+
+fn rsrc_grow_plan<Pe: ImageNtHeaders>(
+    file: &PeFile<'_, Pe>,
+    pe: &[u8],
+    delta: usize,
+) -> Option<RsrcGrowPlan> {
+    let pe_off = read_le_u32(pe, 0x3c)? as usize;
+    let opt_off = pe_off.checked_add(24)?;
+    let opt_size = read_le_u16(pe, pe_off.checked_add(20)?)? as usize;
+    let table_off = opt_off.checked_add(opt_size)?;
+    let rsrc_dir = file
+        .data_directories()
+        .get(object::pe::IMAGE_DIRECTORY_ENTRY_RESOURCE)?;
+    let (rsrc_rva, _) = rsrc_dir.address_range();
+    if rsrc_rva == 0 {
+        tracing::debug!("no resource data directory; refusing rsrc tail growth");
+        return None;
+    }
+    let mut rsrc = None;
+    for (idx, section) in file.section_table().iter().enumerate() {
+        let va = section.virtual_address.get(LittleEndian);
+        let span = section
+            .virtual_size
+            .get(LittleEndian)
+            .max(section.size_of_raw_data.get(LittleEndian));
+        if let Some(off) = rsrc_rva.checked_sub(va)
+            && off < span
+        {
+            rsrc = Some((idx, va));
+            break;
+        }
+    }
+    let (rsrc_idx, rsrc_va) = rsrc?;
+    let rsrc_header = file.section_table().iter().nth(rsrc_idx)?;
+    let raw_ptr = rsrc_header.pointer_to_raw_data.get(LittleEndian) as u64;
+    let raw_size = rsrc_header.size_of_raw_data.get(LittleEndian) as u64;
+    let virt_size = rsrc_header.virtual_size.get(LittleEndian) as u64;
+    let rsrc_end = raw_ptr.checked_add(raw_size)?;
+    if pe.len() as u64 != rsrc_end {
+        tracing::debug!("rsrc raw data does not end at file end; refusing tail growth");
+        return None;
+    }
+    let mut last_by_rva = true;
+    for section in file.section_table().iter() {
+        if section.virtual_address.get(LittleEndian) > rsrc_va {
+            last_by_rva = false;
+        }
+        let size = section.size_of_raw_data.get(LittleEndian) as u64;
+        if size == 0 {
+            continue;
+        }
+        let end = section.pointer_to_raw_data.get(LittleEndian) as u64 + size;
+        if end > rsrc_end {
+            tracing::debug!("section raw range extends beyond rsrc; refusing tail growth");
+            return None;
+        }
+    }
+    let file_align = pow2_or_one(read_le_u32(pe, opt_off.checked_add(36)?)?);
+    let section_align_raw = read_le_u32(pe, opt_off.checked_add(32)?)?;
+    let section_align = if section_align_raw.is_power_of_two() {
+        section_align_raw
+    } else {
+        file_align
+    };
+    let pad = (delta as u64)
+        .div_ceil(u64::from(file_align))
+        .checked_mul(u64::from(file_align))?;
+    let new_raw = raw_size.checked_add(pad)?;
+    let new_virt = virt_size.checked_add(pad)?;
+    if new_raw > u32::MAX as u64 || new_virt > u32::MAX as u64 {
+        return None;
+    }
+    let new_image = if last_by_rva {
+        let end = u64::from(rsrc_va)
+            .checked_add(new_virt)?
+            .div_ceil(u64::from(section_align))
+            .checked_mul(u64::from(section_align))?;
+        if end > u32::MAX as u64 {
+            return None;
+        }
+        Some(end as u32)
+    } else {
+        None
+    };
+    Some(RsrcGrowPlan {
+        section_off: table_off + rsrc_idx * 40,
+        size_of_image_off: opt_off + 56,
+        old_virt: virt_size as u32,
+        old_raw: raw_size as u32,
+        pad: pad as u32,
+        new_image,
+    })
+}
+
+fn pow2_or_one(value: u32) -> u32 {
+    if value.is_power_of_two() { value } else { 1 }
+}
+
+fn read_le_u32(pe: &[u8], off: usize) -> Option<u32> {
+    Some(u32::from_le_bytes(
+        pe.get(off..off.checked_add(4)?)?.try_into().ok()?,
+    ))
+}
+
+fn read_le_u16(pe: &[u8], off: usize) -> Option<u16> {
+    Some(u16::from_le_bytes(
+        pe.get(off..off.checked_add(2)?)?.try_into().ok()?,
+    ))
+}
+
+fn write_le_u32(pe: &mut [u8], off: usize, value: u32) {
+    pe[off..off + 4].copy_from_slice(&value.to_le_bytes());
+}
+
 #[cfg(test)]
 fn rsrc_dir_header(named_entries: u16, id_entries: u16) -> [u8; 16] {
     let mut header = [0u8; 16];
@@ -141,7 +298,11 @@ pub(crate) fn synth_hii_pe(type_name: &str, blob: &[u8]) -> Vec<u8> {
         rsrc.push(0);
     }
     rsrc.extend_from_slice(blob);
+    while rsrc.len() % 16 != 0 {
+        rsrc.push(0);
+    }
 
+    let size_of_image = (rsrc_rva + rsrc.len() as u32).next_multiple_of(0x1000);
     let mut pe = vec![0u8; 0x170];
     pe[0] = b'M';
     pe[1] = b'Z';
@@ -151,6 +312,9 @@ pub(crate) fn synth_hii_pe(type_name: &str, blob: &[u8]) -> Vec<u8> {
     pe[0x46..0x48].copy_from_slice(&1u16.to_le_bytes());
     pe[0x54..0x56].copy_from_slice(&240u16.to_le_bytes());
     pe[0x58..0x5a].copy_from_slice(&0x20bu16.to_le_bytes());
+    pe[0x78..0x7c].copy_from_slice(&0x1000u32.to_le_bytes());
+    pe[0x7c..0x80].copy_from_slice(&16u32.to_le_bytes());
+    pe[0x90..0x94].copy_from_slice(&size_of_image.to_le_bytes());
     pe[0xc4..0xc8].copy_from_slice(&16u32.to_le_bytes());
     pe[0xd8..0xdc].copy_from_slice(&rsrc_rva.to_le_bytes());
     pe[0xdc..0xe0].copy_from_slice(&(rsrc.len() as u32).to_le_bytes());
@@ -248,5 +412,90 @@ mod tests {
         body.extend_from_slice(&[0x33; 4]);
         assert_eq!(bare_form_packages(&body, &[(0, body.len())]).len(), 0);
         assert_eq!(bare_form_packages(&body, &[]).len(), 1);
+    }
+
+    fn le_u32(b: &[u8], off: usize) -> u32 {
+        u32::from_le_bytes(b[off..off + 4].try_into().unwrap())
+    }
+
+    #[test]
+    fn grow_rsrc_tail_updates_headers_and_keeps_ranges() {
+        let mut pe = synth_hii_pe("HII", RK3588_STRING_RES);
+        let before = pe.clone();
+        let ranges_before = hii_resource_ranges(&pe);
+        assert_eq!(ranges_before.len(), 1);
+        let file_align = le_u32(&pe, 0x7c) as usize;
+        let old_virt = le_u32(&pe, 0x150);
+        let old_raw = le_u32(&pe, 0x158);
+        assert!(try_grow_rsrc_tail(&mut pe, 64));
+        let growth = 64usize.next_multiple_of(file_align);
+        assert_eq!(pe.len(), before.len() + growth);
+        assert_eq!(le_u32(&pe, 0x150), old_virt + growth as u32);
+        assert_eq!(le_u32(&pe, 0x158), old_raw + growth as u32);
+        assert_eq!(le_u32(&pe, 0x15c), 0x170);
+        assert_eq!(
+            le_u32(&pe, 0x90),
+            (0x1000 + old_virt + growth as u32).next_multiple_of(0x1000)
+        );
+        assert_eq!(pe[0xd8..0xe0], before[0xd8..0xe0]);
+        assert!(pe[before.len()..].iter().all(|&b| b == 0));
+        let (blob_off, blob_len) = ranges_before[0];
+        assert_eq!(&pe[blob_off..blob_off + blob_len], RK3588_STRING_RES);
+        assert_eq!(hii_resource_ranges(&pe), ranges_before);
+    }
+
+    #[test]
+    fn grow_rsrc_tail_refuses_non_pe_input() {
+        let mut empty: Vec<u8> = Vec::new();
+        assert!(!try_grow_rsrc_tail(&mut empty, 64));
+        assert!(empty.is_empty());
+        let mut junk = b"MZnotape".to_vec();
+        assert!(!try_grow_rsrc_tail(&mut junk, 64));
+        assert_eq!(junk, b"MZnotape");
+    }
+
+    #[test]
+    fn grow_rsrc_tail_refuses_when_rsrc_not_last_section() {
+        let base = synth_hii_pe("HII", RK3588_STRING_RES);
+        let raw_size = le_u32(&base, 0x158) as usize;
+        let mut pe = Vec::with_capacity(base.len() + 40 + 0x40);
+        pe.extend_from_slice(&base[..0x170]);
+        pe.extend_from_slice(&[0u8; 40]);
+        pe.extend_from_slice(&base[0x170..]);
+        pe.extend_from_slice(&[0u8; 0x40]);
+        pe[0x46..0x48].copy_from_slice(&2u16.to_le_bytes());
+        pe[0x15c..0x160].copy_from_slice(&0x198u32.to_le_bytes());
+        pe[0x170..0x174].copy_from_slice(b".dmy");
+        pe[0x178..0x17c].copy_from_slice(&0x40u32.to_le_bytes());
+        pe[0x17c..0x180].copy_from_slice(&0x2000u32.to_le_bytes());
+        pe[0x180..0x184].copy_from_slice(&0x40u32.to_le_bytes());
+        pe[0x184..0x188].copy_from_slice(&(0x198u32 + raw_size as u32).to_le_bytes());
+        assert_eq!(hii_resource_ranges(&pe).len(), 1);
+        let snapshot = pe.clone();
+        assert!(!try_grow_rsrc_tail(&mut pe, 64));
+        assert_eq!(pe, snapshot);
+    }
+
+    #[test]
+    fn grow_rsrc_tail_zero_delta_is_noop() {
+        let mut pe = synth_hii_pe("HII", RK3588_STRING_RES);
+        let before = pe.clone();
+        assert!(try_grow_rsrc_tail(&mut pe, 0));
+        assert_eq!(pe, before);
+    }
+
+    #[test]
+    fn grow_rsrc_tail_accumulates_across_calls() {
+        let mut pe = synth_hii_pe("HII", RK3588_STRING_RES);
+        let before = pe.clone();
+        let ranges_before = hii_resource_ranges(&pe);
+        let file_align = le_u32(&pe, 0x7c) as usize;
+        let old_raw = le_u32(&pe, 0x158);
+        assert!(try_grow_rsrc_tail(&mut pe, 20));
+        assert!(try_grow_rsrc_tail(&mut pe, 30));
+        let growth = 20usize.next_multiple_of(file_align) + 30usize.next_multiple_of(file_align);
+        assert_eq!(pe.len(), before.len() + growth);
+        assert_eq!(le_u32(&pe, 0x158), old_raw + growth as u32);
+        assert_eq!(hii_resource_ranges(&pe), ranges_before);
     }
 }
