@@ -110,17 +110,31 @@
 
 1. **Примитив роста PE** (`hii/pe_resource.rs`):
    `try_grow_rsrc_tail(pe: &mut Vec<u8>, delta: usize) -> bool` —
-   добавить `delta` байт к хвосту .rsrc. Гварды: .rsrc — последняя
-   raw-секция в файле (иначе `false`: сдвиг последующих секций меняет
-   RVAs каталога ресурсов); обновления: section header
+   добавить `delta` байт к хвосту .rsrc. Обновления: section header
    `SizeOfRawData`/`VirtualSize` (выравнивание до file-align),
-   `SizeOfImage` (если .rsrc последняя виртуальная), ресурсные data
-   entry НЕ трогаем (RVA/смещения прежние). Тесты на `synth_hii_pe`
-   (хвост растёт, старые смещения валидны). (Поправка 2026-08-20,
-   префлайт фазы B: data entry Size исключён из обновлений примитива —
-   точную новую длину записи знает только операция уровня блоба
-   §4.B2/§4.B3; автоприращение «последней» записи портит чужие entry на
-   реальных PE, где HII не последняя.)
+   `SizeOfImage`, ресурсные data entry НЕ трогаем (RVA/смещения
+   прежние). Тесты на `synth_hii_pe` (хвост растёт, старые смещения
+   валидны). (Поправка 2026-08-20, префлайт фазы B: data entry Size
+   исключён из обновлений примитива — точную новую длину записи знает
+   только операция уровня блоба §4.B2/§4.B3; автоприращение
+   «последней» записи портит чужие entry на реальных PE, где HII не
+   последняя.) (Поправка 2026-08-20 №2, по факту фазы B, решение
+   пользователя: гвард «.rsrc — последняя raw-секция» ЗАМЕНЁН на
+   reloc-aware рост. Изначальное обоснование «сдвиг последующих секций
+   меняет RVAs каталога ресурсов» неверно: raw-сдвиг не меняет RVA.
+   Реальность HNX99TF: все 6 HII-PE32 имеют .reloc ПОСЛЕ .rsrc (ревью
+   Task 7, независимый full-tree probe), старый гвард делал
+   позитивный acceptance §4.B5 недостижимым. Новая семантика: секции
+   с raw-данными после .rsrc сдвигаются raw-вправо
+   (PointerToRawData += delta_raw, copy_within); секции с RVA после
+   .rsrc — виртуально (RVA += vshift = align_up(delta,
+   section-align); без виртуального сдвига выросший VirtualSize .rsrc
+   перекрыл бы виртуальный диапазон .reloc); data-directory RVA,
+   попадающие в сдвинутые виртуальные диапазоны (обычно reloc-dir),
+   += vshift; SizeOfImage += vshift. Отказы (`false`): не-PE, нет
+   .rsrc, cert-table (security directory) ненулевой, несовместный
+   raw/virtual порядок секций, overlay-хвост за последней raw-секцией,
+   пересекающиеся raw-диапазоны.)
 2. **Append-пакета в список ресурса**: `append_package_to_resource(
    pe_body, form_pkg_bytes) -> bool` — найти 'HII'-список (первый),
    вставить пакет перед конечным `PACKAGE_END`, пересчитать u32 total
@@ -168,9 +182,10 @@
 
 - `HiiError::StringPackageNotFound` — целевой string-пакет не найден
   (фаза A: PE-resource не поддержан; фаза B: нет 'HII'-ресурса).
-- Новый `HiiError::PeGrowthUnsupported` — .rsrc не последняя секция /
-  PE-геометрия не позволяет рост (Display: "cannot grow PE resource
-  section: .rsrc is not the last section").
+- Новый `HiiError::PeGrowthUnsupported` — PE-геометрия не позволяет
+  рост (Display: "cannot grow PE resource section"). (Поправка
+  2026-08-20 №2: хвост «: .rsrc is not the last section» убран — с
+  reloc-aware ростом §4.B1 это больше не причина отказа.)
 - `InvalidSchema` — как сейчас. RPC-маппинг: PeGrowthUnsupported →
   `failed_precondition` (по образцу `hii_error_status`, коммит
   `22fe28b`).

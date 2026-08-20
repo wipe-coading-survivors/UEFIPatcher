@@ -82,6 +82,16 @@
    уровня блоба (Task 5/6), автоприращение «записи, кончающейся на
    старом конце секции», портит чужие entry на реальных PE, где HII не
    последняя. Утверждение «data-entry size» перенесено в Task 5.
+   Поправка 2026-08-20 №2 (по факту фазы B, решение пользователя —
+   reloc-aware рост): `try_grow_rsrc_tail` расширена — секции с raw
+   после .rsrc сдвигаются raw-вправо (PointerToRawData += delta_raw),
+   секции с RVA после .rsrc — виртуально (RVA += vshift =
+   align_up(delta, section-align)), data-directory RVA в сдвинутых
+   диапазонах += vshift, SizeOfImage += vshift; отказы: cert-table,
+   несовместный raw/virtual порядок, overlay, пересечения. Причина:
+   на HNX99TF все 6 HII-PE32 имеют .reloc после .rsrc — старый гвард
+   «.rsrc последняя» делал позитивный acceptance Task 7
+   недостижимым (ревью Task 7, независимый probe).
 3. Green; commit `feat(uefi-engine): pe_resource try_grow_rsrc_tail`.
 
 ### Task 5: `append_package_to_resource`
@@ -124,6 +134,10 @@
 2. Real-image `#[ignore]` тест: HNX99TF — добавить формсет в список
    ресурса Platform-файла → build → длина сохранена, вне-FV1 байты
    идентичны, re-parse: формсет в `collect_forms`.
+   (Поправка 2026-08-20 №2: первый заход сдал negative acceptance —
+   все 6 HII-PE32 имели .reloc после .rsrc и старый гвард запрещал
+   рост; с reloc-aware ростом (поправка №2 Task 4) тест заменяется
+   на позитивный.)
 3. Green (вкл. регрессию round-trip); commit `feat(uefi-engine):
    add_setup_formset works on PE-resource layouts (HNX99TF acceptance)`.
 
