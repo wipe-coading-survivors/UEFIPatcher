@@ -93,6 +93,13 @@
    `collect_strings`/`walk_sections` (спуск через обёртки; bare-секции
    всехsubtype с валидным пакетом). PE-resource-канал на фазе A —
    честный `StringPackageNotFound` (расширение в фазе B).
+   (Поправка 2026-08-20, ревью фазы A: «валидный пакет» =
+   `declared_len_sane` + `is_string_package` — голый `body[3]==0x04`
+   даёт ложные срабатывания на мусорных leaf-секциях с последующей
+   тихой порчей; `add_setup_formset` использует тот же walker-поиск
+   с ограничением `path.len()==3` (домен bare-канала) и ДО мутации —
+   расхождение walker/bare давало частичную мутацию при ошибке и
+   снапшот не того пакета.)
 3. **CLI**: `hii formset add --file <schema.json> [--ffs <guid>]` →
    `HiiFormSetAdd`; вывод `new_ffs_id` + `inserted_form_ids`. Mock e2e +
    интеграционный тест. (Поправка 2026-08-20: `--image <id>` убран —

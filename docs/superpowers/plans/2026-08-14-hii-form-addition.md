@@ -34,13 +34,23 @@
    `add_strings` находит; PE-resource-канал (`synth_hii_pe("HII", …)` в
    0x10-секции) → `StringPackageNotFound` (честный отказ фазы A).
 2. Реализация: `find_string_package` — DFS по дереву (все leaf-секции
-   всех subtype с `is_string_package`, спуск через обёртки); отдельная
+   всех subtype с `declared_len_sane` + `is_string_package` — валидный
+   пакет по семантике §4.A2 спеки, спуск через обёртки); отдельная
    функция `string_package_section_path` (pub), `add_strings` использует
-   путь внутренне — сигнатура не меняется: путь потребителям не нужен,
-   `find_string_package_section` в formset_add остаётся bare
-   (см. «Отложенное»). Уточнение 2026-08-20: изначальная формулировка
-   «add_strings возвращает путь» отброшена — возвращённый путь был бы
-   мёртвым API (вызывающая сторона formset_add игнорирует его).
+   путь внутренне — сигнатура не меняется: путь потребителям не нужен.
+   Уточнение 2026-08-20: изначальная формулировка «add_strings
+   возвращает путь» отброшена — возвращённый путь был бы мёртвым API
+   (вызывающая сторона formset_add игнорирует его).
+   Поправка 2026-08-20 (ревью фазы A): «`find_string_package_section`
+   в formset_add остаётся bare» отброшено — formset_add использует
+   ЕДИНЫЙ walker-поиск (`string_package_section_path` с ограничением
+   `path.len()==3` — домен bare-канала), и ДО любой мутации. Два
+   расходящихся поиска давали: (а) Err после мутации, когда walker
+   находит пакет в обёртке, а bare-поиск — нет (частичная мутация
+   образа в сессии, дубли строк при retry); (б) безошибочную порчу —
+   walker мутирует DFS-ранний пакет в обёртке, bare возвращает прямую
+   секцию, снапшот для нового FFS собирается без добавленных строк
+   (битые string-id в IFR).
 3. Green; commit `feat(uefi-engine): string_pack finds packages through
    wrappers (walker-based)`.
 
@@ -134,4 +144,6 @@
 - EDK2 bare-конст-массивы: мутация канала (§2 не-цели спеки).
 - TUI/WebUI обёртки над новыми RPC.
 - Перенос `find_string_package_section` (formset_add.rs:301) на общий
-  walker после Task 2 (остаётся для FFS-ветки bare-канала).
+  walker после Task 2 — выполнен досрочно по ревью фазы A: formset_add
+  использует `string_package_section_path` с `path.len()==3`,
+  `find_string_package_section` удалён.
