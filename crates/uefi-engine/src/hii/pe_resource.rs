@@ -1,8 +1,9 @@
 use object::endian::LittleEndian;
 use object::read::pe::{ImageNtHeaders, PeFile, PeFile32, PeFile64, ResourceDirectoryEntryData};
-use r_efi::hii::{IFR_FORM_SET_OP, PACKAGE_FORMS};
+use r_efi::hii::{IFR_FORM_SET_OP, PACKAGE_END, PACKAGE_FORMS};
 
 use crate::hii::ifr::parse_form_package;
+use crate::hii::package_list::parse_package_list;
 
 pub fn hii_resource_blobs(pe: &[u8]) -> Vec<&[u8]> {
     hii_resource_ranges(pe)
@@ -12,6 +13,13 @@ pub fn hii_resource_blobs(pe: &[u8]) -> Vec<&[u8]> {
 }
 
 pub fn hii_resource_ranges(pe: &[u8]) -> Vec<(usize, usize)> {
+    hii_entry_locations(pe)
+        .into_iter()
+        .map(|(_, off, len)| (off, len))
+        .collect()
+}
+
+pub(crate) fn hii_entry_locations(pe: &[u8]) -> Vec<(usize, usize, usize)> {
     if let Ok(file) = PeFile64::parse(pe) {
         return hii_entries(&file);
     }
@@ -22,7 +30,7 @@ pub fn hii_resource_ranges(pe: &[u8]) -> Vec<(usize, usize)> {
     Vec::new()
 }
 
-fn hii_entries<Pe: ImageNtHeaders>(file: &PeFile<'_, Pe>) -> Vec<(usize, usize)> {
+fn hii_entries<Pe: ImageNtHeaders>(file: &PeFile<'_, Pe>) -> Vec<(usize, usize, usize)> {
     let sections = file.section_table();
     let Ok(Some(rsrc)) = file
         .data_directories()
@@ -33,6 +41,15 @@ fn hii_entries<Pe: ImageNtHeaders>(file: &PeFile<'_, Pe>) -> Vec<(usize, usize)>
     };
     let Ok(root) = rsrc.root() else {
         tracing::debug!("invalid .rsrc root; no HII resources");
+        return Vec::new();
+    };
+    let Some(dir_off) = file
+        .data_directories()
+        .get(object::pe::IMAGE_DIRECTORY_ENTRY_RESOURCE)
+        .and_then(|dir| sections.pe_file_range_at(dir.virtual_address.get(LittleEndian)))
+        .map(|(off, _)| off as usize)
+    else {
+        tracing::debug!("resource directory not file-mapped; no HII resources");
         return Vec::new();
     };
     let mut out = Vec::new();
@@ -59,6 +76,8 @@ fn hii_entries<Pe: ImageNtHeaders>(file: &PeFile<'_, Pe>) -> Vec<(usize, usize)>
                 };
                 push_leaf(
                     file,
+                    dir_off,
+                    lang_entry.data_offset() as usize,
                     d.offset_to_data.get(LittleEndian),
                     d.size.get(LittleEndian),
                     &mut out,
@@ -71,16 +90,21 @@ fn hii_entries<Pe: ImageNtHeaders>(file: &PeFile<'_, Pe>) -> Vec<(usize, usize)>
 
 fn push_leaf<Pe: ImageNtHeaders>(
     file: &PeFile<'_, Pe>,
+    dir_off: usize,
+    entry_rel: usize,
     rva: u32,
     size: u32,
-    out: &mut Vec<(usize, usize)>,
+    out: &mut Vec<(usize, usize, usize)>,
 ) {
     let Some((off, avail)) = file.section_table().pe_file_range_at(rva) else {
         tracing::debug!(rva, "resource RVA outside sections; skipped");
         return;
     };
+    let Some(entry_off) = dir_off.checked_add(entry_rel) else {
+        return;
+    };
     let len = (size as usize).min(avail as usize);
-    out.push((off as usize, len));
+    out.push((entry_off, off as usize, len));
 }
 
 pub fn bare_form_packages<'a>(pe: &'a [u8], exclude: &[(usize, usize)]) -> Vec<&'a [u8]> {
@@ -260,6 +284,138 @@ fn read_le_u16(pe: &[u8], off: usize) -> Option<u16> {
 
 fn write_le_u32(pe: &mut [u8], off: usize, value: u32) {
     pe[off..off + 4].copy_from_slice(&value.to_le_bytes());
+}
+
+pub(crate) fn write_length_chain(
+    pe: &mut [u8],
+    entry_off: usize,
+    blob_off: usize,
+    entry_size: u32,
+    total: u32,
+) {
+    write_le_u32(pe, entry_off + 4, entry_size);
+    write_le_u32(pe, blob_off + 16, total);
+}
+
+pub fn append_package_to_resource(pe: &mut Vec<u8>, pkg_bytes: &[u8]) -> bool {
+    let Some(plan) = append_plan(pe.as_slice(), pkg_bytes) else {
+        return false;
+    };
+    plan.apply(pe, pkg_bytes)
+}
+
+fn append_plan(pe: &[u8], pkg_bytes: &[u8]) -> Option<AppendPlan> {
+    let pkg_len = package_len(pkg_bytes)?;
+    if let Ok(file) = PeFile64::parse(pe) {
+        return append_plan_for(&file, pe, pkg_len);
+    }
+    if let Ok(file) = PeFile32::parse(pe) {
+        return append_plan_for(&file, pe, pkg_len);
+    }
+    tracing::debug!("not a PE image; refusing package append");
+    None
+}
+
+fn package_len(pkg_bytes: &[u8]) -> Option<usize> {
+    let pkg_len = pkg_bytes.len();
+    if pkg_len < 4 {
+        tracing::debug!("appended package shorter than its 4-byte header");
+        return None;
+    }
+    let declared =
+        pkg_bytes[0] as usize | (pkg_bytes[1] as usize) << 8 | (pkg_bytes[2] as usize) << 16;
+    if declared != pkg_len {
+        tracing::debug!(declared, pkg_len, "appended package length header mismatch");
+        return None;
+    }
+    if pkg_bytes[3] == PACKAGE_END {
+        tracing::debug!("refusing to append END package into list");
+        return None;
+    }
+    Some(pkg_len)
+}
+
+struct AppendPlan {
+    insert_off: usize,
+    entry_off: usize,
+    blob_off: usize,
+    new_entry_size: u32,
+    new_total: u32,
+    grow: usize,
+}
+
+impl AppendPlan {
+    fn apply(self, pe: &mut Vec<u8>, pkg_bytes: &[u8]) -> bool {
+        if self.grow > 0 && !try_grow_rsrc_tail(pe, self.grow) {
+            return false;
+        }
+        let pkg_len = pkg_bytes.len();
+        let tail_off = pe.len() - pkg_len;
+        pe.copy_within(self.insert_off..tail_off, self.insert_off + pkg_len);
+        pe[self.insert_off..self.insert_off + pkg_len].copy_from_slice(pkg_bytes);
+        write_length_chain(
+            pe,
+            self.entry_off,
+            self.blob_off,
+            self.new_entry_size,
+            self.new_total,
+        );
+        true
+    }
+}
+
+fn append_plan_for<Pe: ImageNtHeaders>(
+    file: &PeFile<'_, Pe>,
+    pe: &[u8],
+    pkg_len: usize,
+) -> Option<AppendPlan> {
+    let (entry_off, blob_off, blob_len) = *hii_entries(file).first()?;
+    let blob = pe.get(blob_off..blob_off.checked_add(blob_len)?)?;
+    let packages = parse_package_list(blob)?.packages;
+    let sum = packages.iter().map(|p| p.bytes.len()).sum::<usize>();
+    let insert_off = blob_off.checked_add(20)?.checked_add(sum)?;
+    let new_total = 20u64 + sum as u64 + pkg_len as u64 + 4;
+    let old_entry_size = u64::from(read_le_u32(pe, entry_off.checked_add(4)?)?);
+    let new_entry_size = old_entry_size.checked_add(pkg_len as u64)?;
+    if new_total > u32::MAX as u64 || new_entry_size > u32::MAX as u64 {
+        tracing::debug!("package list length overflow; refusing append");
+        return None;
+    }
+    let blob_end = blob_off.checked_add(blob_len)?;
+    let raw_end = usize::try_from(rsrc_raw_end(file)?).ok()?;
+    let grow = blob_end.checked_add(pkg_len)?.saturating_sub(raw_end);
+    Some(AppendPlan {
+        insert_off,
+        entry_off,
+        blob_off,
+        new_entry_size: new_entry_size as u32,
+        new_total: new_total as u32,
+        grow,
+    })
+}
+
+fn rsrc_raw_end<Pe: ImageNtHeaders>(file: &PeFile<'_, Pe>) -> Option<u64> {
+    let rsrc_dir = file
+        .data_directories()
+        .get(object::pe::IMAGE_DIRECTORY_ENTRY_RESOURCE)?;
+    let (rsrc_rva, _) = rsrc_dir.address_range();
+    if rsrc_rva == 0 {
+        return None;
+    }
+    for section in file.section_table().iter() {
+        let va = section.virtual_address.get(LittleEndian);
+        let span = section
+            .virtual_size
+            .get(LittleEndian)
+            .max(section.size_of_raw_data.get(LittleEndian));
+        if let Some(off) = rsrc_rva.checked_sub(va)
+            && off < span
+        {
+            return u64::from(section.pointer_to_raw_data.get(LittleEndian))
+                .checked_add(u64::from(section.size_of_raw_data.get(LittleEndian)));
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -497,5 +653,172 @@ mod tests {
         assert_eq!(pe.len(), before.len() + growth);
         assert_eq!(le_u32(&pe, 0x158), old_raw + growth as u32);
         assert_eq!(hii_resource_ranges(&pe), ranges_before);
+    }
+
+    use crate::hii::package_list::parse_package_list;
+    use crate::types::Guid;
+    use r_efi::hii::{PACKAGE_END, PACKAGE_STRINGS};
+    use std::str::FromStr;
+
+    const LIST_GUID: &str = "899407D7-99FE-43D8-9A21-79EC328CAC21";
+
+    fn pkg(kind: u8, payload: &[u8]) -> Vec<u8> {
+        let len = 4 + payload.len();
+        let mut b = vec![
+            (len & 0xFF) as u8,
+            ((len >> 8) & 0xFF) as u8,
+            ((len >> 16) & 0xFF) as u8,
+            kind,
+        ];
+        b.extend_from_slice(payload);
+        b
+    }
+
+    fn list(guid: &Guid, pkgs: &[&[u8]]) -> Vec<u8> {
+        let total = 20 + 4 + pkgs.iter().map(|p| p.len()).sum::<usize>();
+        let mut b = guid.to_bytes().to_vec();
+        b.extend_from_slice(&(total as u32).to_le_bytes());
+        for p in pkgs {
+            b.extend_from_slice(p);
+        }
+        b.extend_from_slice(&[0x04, 0x00, 0x00, PACKAGE_END]);
+        b
+    }
+
+    #[test]
+    fn appends_form_package_to_hii_resource_list() {
+        let g = Guid::from_str(LIST_GUID).unwrap();
+        let form = pkg(PACKAGE_FORMS, &[0x0Eu8, 0x17, 0xAA]);
+        let string = pkg(PACKAGE_STRINGS, &[0u8; 8]);
+        let form2 = pkg(
+            PACKAGE_FORMS,
+            &[
+                0x0Eu8, 0x17, 0xBB, 0xCC, 0xDD, 0xEE, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66,
+            ],
+        );
+        let blob = list(&g, &[&form, &string]);
+        let mut pe = synth_hii_pe("HII", &blob);
+        let len_before = pe.len();
+        let file_align = le_u32(&pe, 0x7c) as usize;
+        let (entry_off, blob_off, blob_len) = hii_entry_locations(&pe)[0];
+        assert_eq!(le_u32(&pe, entry_off + 4), blob_len as u32);
+        assert!(append_package_to_resource(&mut pe, &form2));
+        assert_eq!(
+            hii_resource_ranges(&pe),
+            [(blob_off, blob_len + form2.len())]
+        );
+        let new_blob = &pe[blob_off..blob_off + blob_len + form2.len()];
+        let parsed = parse_package_list(new_blob).unwrap();
+        assert_eq!(
+            parsed.packages.iter().map(|p| p.kind).collect::<Vec<_>>(),
+            [PACKAGE_FORMS, PACKAGE_STRINGS, PACKAGE_FORMS]
+        );
+        assert_eq!(parsed.packages[0].bytes, &form[..]);
+        assert_eq!(parsed.packages[1].bytes, &string[..]);
+        assert_eq!(parsed.packages[2].bytes, &form2[..]);
+        assert_eq!(
+            le_u32(new_blob, 16),
+            (20 + form.len() + string.len() + form2.len() + 4) as u32
+        );
+        assert_eq!(le_u32(&pe, entry_off + 4), (blob_len + form2.len()) as u32);
+        assert_eq!(
+            &new_blob[new_blob.len() - 4..],
+            &[0x04, 0x00, 0x00, PACKAGE_END]
+        );
+        assert_eq!(
+            pe.len() - len_before,
+            form2.len().next_multiple_of(file_align)
+        );
+        assert_eq!(pe.len(), (le_u32(&pe, 0x15c) + le_u32(&pe, 0x158)) as usize);
+    }
+
+    #[test]
+    fn append_without_hii_resource_returns_false_untouched() {
+        let g = Guid::from_str(LIST_GUID).unwrap();
+        let form = pkg(PACKAGE_FORMS, &[0x0Eu8, 0x17, 0xAA]);
+        let blob = list(&g, &[&form]);
+        let mut pe = synth_hii_pe("REGISTRY", &blob);
+        let snapshot = pe.clone();
+        assert!(!append_package_to_resource(&mut pe, &form));
+        assert_eq!(pe, snapshot);
+    }
+
+    #[test]
+    fn append_to_list_without_end_returns_false_untouched() {
+        let g = Guid::from_str(LIST_GUID).unwrap();
+        let form = pkg(PACKAGE_FORMS, &[0x0Eu8, 0x17, 0xCC]);
+        let mut malformed = g.to_bytes().to_vec();
+        malformed.extend_from_slice(&24u32.to_le_bytes());
+        malformed.extend_from_slice(&form);
+        let mut pe = synth_hii_pe("HII", &malformed);
+        let snapshot = pe.clone();
+        assert!(!append_package_to_resource(&mut pe, &form));
+        assert_eq!(pe, snapshot);
+    }
+
+    #[test]
+    fn append_keeps_old_package_bytes_in_place() {
+        let g = Guid::from_str(LIST_GUID).unwrap();
+        let form = pkg(PACKAGE_FORMS, &[0x0Eu8, 0x17, 0xAA]);
+        let string = pkg(PACKAGE_STRINGS, &[0x77u8; 8]);
+        let form2 = pkg(PACKAGE_FORMS, &[0x0Eu8, 0x17, 0xBB]);
+        let blob = list(&g, &[&form, &string]);
+        let mut pe = synth_hii_pe("HII", &blob);
+        let (_, blob_off, _) = hii_entry_locations(&pe)[0];
+        assert!(append_package_to_resource(&mut pe, &form2));
+        let new_blob = &pe[blob_off..];
+        assert_eq!(&new_blob[..16], g.to_bytes().as_slice());
+        assert_eq!(&new_blob[20..20 + form.len()], &form[..]);
+        assert_eq!(
+            &new_blob[20 + form.len()..20 + form.len() + string.len()],
+            &string[..]
+        );
+    }
+
+    #[test]
+    fn append_consumes_slack_without_growing_file() {
+        let g = Guid::from_str(LIST_GUID).unwrap();
+        let form = pkg(PACKAGE_FORMS, &[0x0Eu8, 0x17, 0xAA]);
+        let string = pkg(PACKAGE_STRINGS, &[0u8; 8]);
+        let form2 = pkg(
+            PACKAGE_FORMS,
+            &[
+                0x0Eu8, 0x17, 0xBB, 0xCC, 0xDD, 0xEE, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66,
+            ],
+        );
+        let blob = list(&g, &[&form, &string]);
+        let mut pe = synth_hii_pe("HII", &blob);
+        assert!(try_grow_rsrc_tail(&mut pe, 1));
+        let len_after_pregrow = pe.len();
+        let (entry_off, blob_off, blob_len) = hii_entry_locations(&pe)[0];
+        assert!(append_package_to_resource(&mut pe, &form2));
+        assert_eq!(pe.len(), len_after_pregrow);
+        assert_eq!(le_u32(&pe, entry_off + 4), (blob_len + form2.len()) as u32);
+        let new_blob = &pe[blob_off..blob_off + blob_len + form2.len()];
+        let parsed = parse_package_list(new_blob).unwrap();
+        assert_eq!(parsed.packages.len(), 3);
+        assert_eq!(
+            le_u32(new_blob, 16),
+            (20 + form.len() + string.len() + form2.len() + 4) as u32
+        );
+        assert_eq!(pe.len(), (le_u32(&pe, 0x15c) + le_u32(&pe, 0x158)) as usize);
+    }
+
+    #[test]
+    fn append_rejects_malformed_package_bytes() {
+        let g = Guid::from_str(LIST_GUID).unwrap();
+        let form = pkg(PACKAGE_FORMS, &[0x0Eu8, 0x17, 0xAA]);
+        let blob = list(&g, &[&form]);
+        let mut pe = synth_hii_pe("HII", &blob);
+        let snapshot = pe.clone();
+        let short = [0x02u8, 0x00, 0x00, PACKAGE_FORMS];
+        assert!(!append_package_to_resource(&mut pe, &short));
+        assert_eq!(pe, snapshot);
+        let bad_len = [0x09u8, 0x00, 0x00, PACKAGE_FORMS, 0x0E, 0x17];
+        assert!(!append_package_to_resource(&mut pe, &bad_len));
+        assert_eq!(pe, snapshot);
+        let end_pkg = [0x04u8, 0x00, 0x00, PACKAGE_END];
+        assert!(!append_package_to_resource(&mut pe, &end_pkg));
+        assert_eq!(pe, snapshot);
     }
 }
