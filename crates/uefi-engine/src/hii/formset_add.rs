@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use crate::ffs::{EFI_SECTION_COMPRESSION, EFI_SECTION_GUID_DEFINED, EFI_SECTION_PE32};
 use crate::ops;
 use crate::types::*;
 
@@ -7,8 +8,11 @@ use super::HiiError;
 use super::ami_patcher::{self, QuestionAmiRecord};
 use super::ffs_assembler;
 use super::ifr_builder::*;
+use super::package_list::parse_package_list;
+use super::pe_resource;
 use super::schema;
 use super::string_pack;
+use r_efi::hii::PACKAGE_FORMS;
 
 pub struct AddSetupResult {
     pub new_ffs_guid: Guid,
@@ -23,11 +27,6 @@ pub fn add_setup_formset(
 ) -> Result<AddSetupResult, HiiError> {
     let formset_guid: Guid = Guid::try_parse(&schema.formset_guid)
         .map_err(|e| HiiError::InvalidSchema(e.to_string()))?;
-    let new_ffs_guid = Guid::try_parse(&format!(
-        "{:08X}-BEEF-1234-8000-000000000001",
-        0xB00B0000 + image.root.children.len() as u32,
-    ))
-    .map_err(|e| HiiError::IfrBuildError(e.to_string()))?;
     let mut strings: Vec<String> = Vec::new();
     strings.push(schema.title.clone());
     strings.push(schema.help.clone());
@@ -40,17 +39,6 @@ pub fn add_setup_formset(
             collect_item_strings(item, &mut strings);
         }
     }
-    let sp_path = string_pack::string_package_section_path(&image.root, target_ffs_guid)
-        .filter(|p| p.len() == 3)
-        .ok_or(HiiError::StringPackageNotFound)?;
-    let (sp_vi, sp_fi, sp_si) = (sp_path[0], sp_path[1], sp_path[2]);
-    let string_ids = string_pack::add_strings(image, target_ffs_guid, &strings)?;
-    let ifr_bytes = build_ifr(schema, &string_ids)?;
-    let strpkg_bytes = image.root.children[sp_vi].children[sp_fi].children[sp_si]
-        .body
-        .clone();
-    let ffs_bytes = ffs_assembler::assemble_ffs(&ifr_bytes, &strpkg_bytes, &new_ffs_guid)?;
-    let (form_ids, questions) = extract_form_ids_and_questions(schema);
     let setupdata_guid = schema
         .setupdata_guid
         .as_ref()
@@ -59,21 +47,154 @@ pub fn add_setup_formset(
         .amitse_guid
         .as_ref()
         .and_then(|s| Guid::try_parse(s).ok());
-    ami_patcher::patch_ami(
-        image,
-        &formset_guid,
-        &form_ids,
-        &questions,
-        setupdata_guid.as_ref(),
-        amitse_guid.as_ref(),
-    )?;
-    let target = Target::Path(vec![sp_vi]);
-    ops::insert(&mut image.root, &target, &ffs_bytes, ops::InsertMode::Into)
-        .map_err(|e| HiiError::FfsAssemblyError(e.to_string()))?;
-    Ok(AddSetupResult {
-        new_ffs_guid,
-        inserted_form_ids: form_ids,
-        string_ids,
+    let (form_ids, questions) = extract_form_ids_and_questions(schema);
+    let sp_path = string_pack::string_package_section_path(&image.root, target_ffs_guid)
+        .filter(|p| p.len() == 3);
+    if let Some(sp_path) = sp_path {
+        ami_patcher::precheck_ami_modules(image, setupdata_guid.as_ref(), amitse_guid.as_ref())?;
+        let (sp_vi, sp_fi, sp_si) = (sp_path[0], sp_path[1], sp_path[2]);
+        let string_ids = string_pack::add_strings(image, target_ffs_guid, &strings)?;
+        let ifr_bytes = build_ifr(schema, &string_ids)?;
+        let strpkg_bytes = image.root.children[sp_vi].children[sp_fi].children[sp_si]
+            .body
+            .clone();
+        let new_ffs_guid = Guid::try_parse(&format!(
+            "{:08X}-BEEF-1234-8000-000000000001",
+            0xB00B0000 + image.root.children.len() as u32,
+        ))
+        .map_err(|e| HiiError::IfrBuildError(e.to_string()))?;
+        let ffs_bytes = ffs_assembler::assemble_ffs(&ifr_bytes, &strpkg_bytes, &new_ffs_guid)?;
+        ami_patcher::patch_ami(
+            image,
+            &formset_guid,
+            &form_ids,
+            &questions,
+            setupdata_guid.as_ref(),
+            amitse_guid.as_ref(),
+        )?;
+        let target = Target::Path(vec![sp_vi]);
+        ops::insert(&mut image.root, &target, &ffs_bytes, ops::InsertMode::Into)
+            .map_err(|e| HiiError::FfsAssemblyError(e.to_string()))?;
+        Ok(AddSetupResult {
+            new_ffs_guid,
+            inserted_form_ids: form_ids,
+            string_ids,
+        })
+    } else {
+        let pe_path = pe_resource_channel_path(&image.root, target_ffs_guid)?;
+        let Some(pe_path) = pe_path else {
+            return Err(HiiError::StringPackageNotFound);
+        };
+        ami_patcher::precheck_ami_modules(image, setupdata_guid.as_ref(), amitse_guid.as_ref())?;
+        let string_ids = {
+            let mut node = &mut image.root;
+            for &i in &pe_path {
+                node = &mut node.children[i];
+            }
+            let string_ids = string_pack::add_strings_to_resource(&mut node.body, &strings)
+                .ok_or(HiiError::StringPackageNotFound)?;
+            let ifr_bytes = build_ifr(schema, &string_ids)?;
+            let form_pkg_len = 4 + ifr_bytes.len();
+            let mut form_pkg = Vec::with_capacity(form_pkg_len);
+            form_pkg.push((form_pkg_len & 0xFF) as u8);
+            form_pkg.push(((form_pkg_len >> 8) & 0xFF) as u8);
+            form_pkg.push(((form_pkg_len >> 16) & 0xFF) as u8);
+            form_pkg.push(PACKAGE_FORMS);
+            form_pkg.extend_from_slice(&ifr_bytes);
+            if !pe_resource::append_package_to_resource(&mut node.body, &form_pkg) {
+                return Err(HiiError::PeGrowthUnsupported);
+            }
+            string_ids
+        };
+        ami_patcher::patch_ami(
+            image,
+            &formset_guid,
+            &form_ids,
+            &questions,
+            setupdata_guid.as_ref(),
+            amitse_guid.as_ref(),
+        )?;
+        ops::mark_rebuild_to_root_by_path(&mut image.root, &pe_path);
+        Ok(AddSetupResult {
+            new_ffs_guid: formset_guid,
+            inserted_form_ids: form_ids,
+            string_ids,
+        })
+    }
+}
+
+fn pe_resource_channel_path(
+    root: &FfsNode,
+    ffs_guid: Option<&Guid>,
+) -> Result<Option<Vec<usize>>, HiiError> {
+    walk_for_pe_resource_channel(root, ffs_guid, None, false, &mut Vec::new())
+}
+
+fn walk_for_pe_resource_channel(
+    node: &FfsNode,
+    ffs_guid: Option<&Guid>,
+    owner: Option<&Guid>,
+    behind_bad_wrapper: bool,
+    path: &mut Vec<usize>,
+) -> Result<Option<Vec<usize>>, HiiError> {
+    for (i, child) in node.children.iter().enumerate() {
+        let child_owner = if child.node_type == FfsType::File {
+            child.guid.as_ref()
+        } else {
+            owner
+        };
+        if child.node_type == FfsType::Section
+            && child.children.is_empty()
+            && child.subtype == EFI_SECTION_PE32
+            && ffs_guid.is_none_or(|g| owner == Some(g))
+            && pe_resource_has_string_package(&child.body)
+        {
+            if behind_bad_wrapper {
+                return Err(HiiError::MutationBehindCompression);
+            }
+            path.push(i);
+            return Ok(Some(path.clone()));
+        }
+        path.push(i);
+        if let Some(found) = walk_for_pe_resource_channel(
+            child,
+            ffs_guid,
+            child_owner,
+            behind_bad_wrapper || is_non_recompressable_wrapper(child),
+            path,
+        )? {
+            return Ok(Some(found));
+        }
+        path.pop();
+    }
+    Ok(None)
+}
+
+fn is_non_recompressable_wrapper(node: &FfsNode) -> bool {
+    node.node_type == FfsType::Section
+        && (node.subtype == EFI_SECTION_COMPRESSION || node.subtype == EFI_SECTION_GUID_DEFINED)
+        && !matches!(
+            &node.parsing_data,
+            crate::types::ParsingData::GuidedSection(d)
+                if crate::ffs::is_recompressable_lzma_guid(&d.guid)
+        )
+}
+
+fn pe_resource_has_string_package(body: &[u8]) -> bool {
+    let Some((_, blob_off, blob_len)) = pe_resource::hii_entry_locations(body).first().copied()
+    else {
+        return false;
+    };
+    let Some(end) = blob_off.checked_add(blob_len) else {
+        return false;
+    };
+    let Some(blob) = body.get(blob_off..end) else {
+        return false;
+    };
+    parse_package_list(blob).is_some_and(|list| {
+        list.packages.iter().any(|p| {
+            p.kind == string_pack::PACKAGE_STRINGS && string_pack::is_string_package(p.bytes)
+        })
     })
 }
 
@@ -305,9 +426,18 @@ fn extract_question(item: &schema::ItemSchema) -> Option<(u16, Option<u16>, u8, 
 mod tests {
     use super::*;
     use crate::builder::build_image;
-    use crate::ffs::{EFI_FVB2_ERASE_POLARITY, EFI_FVH_SIGNATURE, EFI_SECTION_RAW, size_to_uint24};
+    use crate::ffs::{
+        EFI_FVB2_ERASE_POLARITY, EFI_FVH_SIGNATURE, EFI_SECTION_PE32, EFI_SECTION_RAW,
+        size_to_uint24,
+    };
+    use crate::hii::forms::collect_forms;
+    use crate::hii::package_list::parse_package_list;
+    use crate::hii::pe_resource::hii_entry_locations;
+    use crate::hii::strings::parse_string_package;
     use crate::parser::image::parse_image;
     use crate::parser::target::find_item_path;
+    use crate::types::GuidedSectionParsingData;
+    use r_efi::hii::{PACKAGE_END, PACKAGE_FORMS};
 
     fn mk_node(node_type: FfsType, body: Vec<u8>, children: Vec<FfsNode>) -> FfsNode {
         FfsNode {
@@ -364,16 +494,9 @@ mod tests {
         buf
     }
 
-    fn gap_aware_image() -> Vec<u8> {
-        let string_file = ffs_file_bytes(
-            &Guid::try_parse(STR_GUID).unwrap(),
-            &section_bytes(EFI_SECTION_RAW, &string_package_bytes()),
-        );
-        let setupdata = ffs_file_bytes(&Guid::try_parse(SETUPDATA_GUID).unwrap(), &[0u8; 108]);
-        let amitse = ffs_file_bytes(&Guid::try_parse(AMITSE_GUID).unwrap(), &[0u8; 108]);
-
+    fn flash_with_files(files: Vec<Vec<u8>>) -> Vec<u8> {
         let mut body = Vec::new();
-        for f in [string_file, setupdata, amitse] {
+        for f in files {
             let aligned = (body.len() + 7) & !7;
             body.resize(aligned, 0xFF);
             body.extend_from_slice(&f);
@@ -390,6 +513,25 @@ mod tests {
         fv[55] = 2;
         fv[56..].copy_from_slice(&body);
         buf
+    }
+
+    fn gap_aware_image(with_ami: bool) -> Vec<u8> {
+        let string_file = ffs_file_bytes(
+            &Guid::try_parse(STR_GUID).unwrap(),
+            &section_bytes(EFI_SECTION_RAW, &string_package_bytes()),
+        );
+        let mut files = vec![string_file];
+        if with_ami {
+            files.push(ffs_file_bytes(
+                &Guid::try_parse(SETUPDATA_GUID).unwrap(),
+                &[0u8; 108],
+            ));
+            files.push(ffs_file_bytes(
+                &Guid::try_parse(AMITSE_GUID).unwrap(),
+                &[0u8; 108],
+            ));
+        }
+        flash_with_files(files)
     }
 
     fn test_schema() -> schema::FormSetSchema {
@@ -416,7 +558,7 @@ mod tests {
 
     #[test]
     fn add_setup_formset_inserts_into_volume_on_gap_aware_image() {
-        let data = gap_aware_image();
+        let data = gap_aware_image(true);
         let mut img = parse_image(&data, ImageMode::Write, "i", "s").unwrap();
         assert_eq!(img.root.children[0].node_type, FfsType::Padding);
         assert_eq!(img.root.children[1].node_type, FfsType::Volume);
@@ -466,5 +608,220 @@ mod tests {
         assert_eq!(img.root.children[0].children[0].action, Action::NoAction);
         assert_eq!(img.root.children[0].action, Action::NoAction);
         assert_eq!(img.root.action, Action::NoAction);
+    }
+
+    const LIST_GUID: &str = "899407D7-99FE-43D8-9A21-79EC328CAC21";
+    const FORMSET_GUID: &str = "A1B2C3D4-E5F6-7890-ABCD-EF1234567890";
+
+    fn hii_pkg(kind: u8, payload: &[u8]) -> Vec<u8> {
+        let len = 4 + payload.len();
+        let mut b = vec![
+            (len & 0xFF) as u8,
+            ((len >> 8) & 0xFF) as u8,
+            ((len >> 16) & 0xFF) as u8,
+            kind,
+        ];
+        b.extend_from_slice(payload);
+        b
+    }
+
+    fn hii_list(guid: &Guid, pkgs: &[&[u8]]) -> Vec<u8> {
+        let total = 20 + 4 + pkgs.iter().map(|p| p.len()).sum::<usize>();
+        let mut b = guid.to_bytes().to_vec();
+        b.extend_from_slice(&(total as u32).to_le_bytes());
+        for p in pkgs {
+            b.extend_from_slice(p);
+        }
+        b.extend_from_slice(&[0x04, 0x00, 0x00, PACKAGE_END]);
+        b
+    }
+
+    fn resource_hii_pe() -> Vec<u8> {
+        let g = Guid::try_parse(LIST_GUID).unwrap();
+        let form = hii_pkg(PACKAGE_FORMS, &[0x0Eu8, 0x17, 0xAA]);
+        let string = string_package_bytes();
+        let blob = hii_list(&g, &[&form, &string]);
+        crate::hii::pe_resource::synth_hii_pe("HII", &blob)
+    }
+
+    fn resource_flash_image(with_ami: bool) -> Vec<u8> {
+        let mut files = vec![ffs_file_bytes(
+            &Guid::try_parse(STR_GUID).unwrap(),
+            &section_bytes(EFI_SECTION_PE32, &resource_hii_pe()),
+        )];
+        if with_ami {
+            files.push(ffs_file_bytes(
+                &Guid::try_parse(SETUPDATA_GUID).unwrap(),
+                &[0u8; 108],
+            ));
+            files.push(ffs_file_bytes(
+                &Guid::try_parse(AMITSE_GUID).unwrap(),
+                &[0u8; 108],
+            ));
+        }
+        flash_with_files(files)
+    }
+
+    fn resource_pe_section(img: &Image) -> &FfsNode {
+        &img.root.children[1].children[0].children[0]
+    }
+
+    fn resource_forms_count(pe: &[u8]) -> usize {
+        let (_, blob_off, blob_len) = hii_entry_locations(pe)[0];
+        let blob = &pe[blob_off..blob_off + blob_len];
+        parse_package_list(blob).unwrap().packages.len()
+    }
+
+    #[test]
+    fn add_setup_formset_appends_to_pe_resource_channel() {
+        let data = resource_flash_image(true);
+        let mut img = parse_image(&data, ImageMode::Write, "i", "s").unwrap();
+        let files_before = img.root.children[1].children.len();
+        let pe_before = resource_pe_section(&img).body.clone();
+        let packages_before = resource_forms_count(&pe_before);
+
+        let res = add_setup_formset(&mut img, &test_schema(), None).unwrap();
+        assert_eq!(
+            res.new_ffs_guid,
+            Guid::try_parse(FORMSET_GUID).unwrap(),
+            "resource branch reports the added formset id"
+        );
+        assert_eq!(res.inserted_form_ids, vec![1]);
+        assert_eq!(
+            img.root.children[1].children.len(),
+            files_before,
+            "resource branch must not insert a new FFS"
+        );
+
+        let vol = &img.root.children[1];
+        let pe_sec = resource_pe_section(&img);
+        assert_eq!(pe_sec.action, Action::Rebuild);
+        assert_eq!(vol.children[0].action, Action::Rebuild);
+        assert_eq!(vol.action, Action::Rebuild);
+        assert!(pe_sec.body.len() > pe_before.len());
+
+        let (_, blob_off, blob_len) = hii_entry_locations(&pe_sec.body)[0];
+        let blob = &pe_sec.body[blob_off..blob_off + blob_len];
+        let parsed = parse_package_list(blob).unwrap();
+        assert_eq!(parsed.packages.len(), packages_before + 1);
+        assert_eq!(parsed.packages.last().unwrap().kind, PACKAGE_FORMS);
+        let sp = parsed
+            .packages
+            .iter()
+            .find(|p| p.kind == string_pack::PACKAGE_STRINGS)
+            .unwrap();
+        let strings = parse_string_package(sp.bytes).unwrap();
+        for want in ["T", "H", "Main", "P1", "H1", "X1"] {
+            assert!(
+                strings.strings.iter().any(|(_, s)| s == want),
+                "string {want} missing from resource string package"
+            );
+        }
+
+        let built = build_image(&img).unwrap();
+        assert_eq!(built.len(), data.len());
+        let re = parse_image(&built, ImageMode::Read, "i2", "s2").unwrap();
+        let forms = collect_forms(&re);
+        let added = forms
+            .iter()
+            .find(|f| f.formset_guid == FORMSET_GUID)
+            .expect("added formset must be visible after round-trip");
+        assert_eq!(added.title, "Main");
+        assert_eq!(added.form_id_ifr, 1);
+    }
+
+    #[test]
+    fn add_setup_formset_ami_precheck_blocks_resource_mutation() {
+        let data = resource_flash_image(false);
+        let mut img = parse_image(&data, ImageMode::Write, "i", "s").unwrap();
+        let pe_snapshot = resource_pe_section(&img).body.clone();
+
+        assert!(matches!(
+            add_setup_formset(&mut img, &test_schema(), None),
+            Err(HiiError::AmiFilesNotFound)
+        ));
+        assert_eq!(resource_pe_section(&img).body, pe_snapshot);
+        assert_eq!(img.root.children[1].children[0].action, Action::NoAction);
+        assert_eq!(img.root.children[1].action, Action::NoAction);
+        assert_eq!(img.root.action, Action::NoAction);
+    }
+
+    #[test]
+    fn add_setup_formset_ami_precheck_blocks_bare_mutation() {
+        let data = gap_aware_image(false);
+        let mut img = parse_image(&data, ImageMode::Write, "i", "s").unwrap();
+        let sp_snapshot = img.root.children[1].children[0].children[0].body.clone();
+
+        assert!(matches!(
+            add_setup_formset(&mut img, &test_schema(), None),
+            Err(HiiError::AmiFilesNotFound)
+        ));
+        assert_eq!(
+            img.root.children[1].children[0].children[0].body,
+            sp_snapshot
+        );
+        assert_eq!(img.root.children[1].children[0].action, Action::NoAction);
+        assert_eq!(img.root.action, Action::NoAction);
+    }
+
+    fn wrapped_resource_node_image(wrapper_guid: Guid) -> Image {
+        let mut inner = mk_node(FfsType::Section, resource_hii_pe(), vec![]);
+        inner.subtype = EFI_SECTION_PE32;
+        let mut wrapper = mk_node(FfsType::Section, vec![], vec![inner]);
+        wrapper.subtype = crate::ffs::EFI_SECTION_GUID_DEFINED;
+        wrapper.parsing_data = ParsingData::GuidedSection(GuidedSectionParsingData {
+            guid: wrapper_guid,
+            dictionary_size: 0x0080_0000,
+        });
+        let mut file = mk_node(FfsType::File, vec![], vec![wrapper]);
+        file.guid = Some(Guid::try_parse(STR_GUID).unwrap());
+        let mut setupdata = mk_node(FfsType::File, vec![0u8; 108], vec![]);
+        setupdata.guid = Some(Guid::try_parse(SETUPDATA_GUID).unwrap());
+        let mut amitse = mk_node(FfsType::File, vec![0u8; 108], vec![]);
+        amitse.guid = Some(Guid::try_parse(AMITSE_GUID).unwrap());
+        let volume = mk_node(FfsType::Volume, vec![], vec![file, setupdata, amitse]);
+        let root = mk_node(FfsType::Image, vec![], vec![volume]);
+        Image {
+            image_id: "i".into(),
+            session_id: "s".into(),
+            root,
+            mode: ImageMode::Write,
+        }
+    }
+
+    #[test]
+    fn add_setup_formset_refuses_non_recompressable_wrapper() {
+        let mut img = wrapped_resource_node_image(crate::ffs::tiano_guid());
+        let pe_snapshot = img.root.children[0].children[0].children[0].children[0]
+            .body
+            .clone();
+
+        assert!(matches!(
+            add_setup_formset(&mut img, &test_schema(), None),
+            Err(HiiError::MutationBehindCompression)
+        ));
+        assert_eq!(
+            img.root.children[0].children[0].children[0].children[0].body,
+            pe_snapshot
+        );
+    }
+
+    #[test]
+    fn add_setup_formset_resource_channel_behind_lzma_wrapper() {
+        let mut img = wrapped_resource_node_image(crate::ffs::lzma_guid());
+        let pe_before = img.root.children[0].children[0].children[0].children[0]
+            .body
+            .clone();
+
+        let res = add_setup_formset(&mut img, &test_schema(), None).unwrap();
+        assert_eq!(res.inserted_form_ids, vec![1]);
+
+        let pe_sec = &img.root.children[0].children[0].children[0].children[0];
+        assert_eq!(pe_sec.action, Action::Rebuild);
+        assert!(pe_sec.body.len() > pe_before.len());
+        assert_eq!(
+            resource_forms_count(&pe_sec.body),
+            resource_forms_count(&pe_before) + 1
+        );
     }
 }

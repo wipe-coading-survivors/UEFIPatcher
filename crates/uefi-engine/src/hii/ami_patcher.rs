@@ -65,6 +65,16 @@ pub fn patch_ami(
     Ok(())
 }
 
+pub(crate) fn precheck_ami_modules(
+    image: &Image,
+    setupdata_guid: Option<&Guid>,
+    amitse_guid: Option<&Guid>,
+) -> Result<(), HiiError> {
+    find_ami_module(image, setupdata_guid, "setupdata")?;
+    find_ami_module(image, amitse_guid, "AMITSE")?;
+    Ok(())
+}
+
 fn find_ami_module(
     image: &Image,
     guid: Option<&Guid>,

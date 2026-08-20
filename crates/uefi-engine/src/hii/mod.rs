@@ -41,6 +41,8 @@ pub enum HiiError {
         "target is behind a compressed/guided section that cannot be recompressed (Tiano, LZMAF86, standard compression, unknown GUID)"
     )]
     MutationBehindCompression,
+    #[error("cannot grow PE resource section: .rsrc is not the last section")]
+    PeGrowthUnsupported,
 }
 
 #[tracing::instrument(level = "debug", skip(image), fields(item_id = %item_id, visible), err)]

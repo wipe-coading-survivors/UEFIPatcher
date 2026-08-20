@@ -6,7 +6,7 @@ use uefi_engine::parser::image::{list_items, parse_image, search};
 use uefi_engine::parser::section::parse_sections;
 use uefi_engine::parser::target::{find_item, parse_target};
 use uefi_engine::parser::volume::parse_volume;
-use uefi_engine::types::{Action, FfsNode, FfsType, ParsingData};
+use uefi_engine::types::{Action, FfsNode, FfsType, Guid, ParsingData};
 
 fn fw_path() -> PathBuf {
     if let Ok(p) = std::env::var("UEFIPATCHER_TEST_FW") {
@@ -179,6 +179,76 @@ fn collect_ui_names(node: &FfsNode, out: &mut Vec<String>) {
     }
     for child in &node.children {
         collect_ui_names(child, out);
+    }
+}
+
+fn collect_ui_owners(node: &FfsNode, owner: Option<Guid>, out: &mut Vec<(String, Guid)>) {
+    let owner = if node.node_type == FfsType::File {
+        node.guid
+    } else {
+        owner
+    };
+    if node.node_type == FfsType::Section
+        && node.subtype == uefi_engine::ffs::EFI_SECTION_UI
+        && let Some(g) = owner
+    {
+        let units: Vec<u16> = node
+            .body
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        let name = String::from_utf16_lossy(&units)
+            .trim_end_matches('\0')
+            .to_string();
+        out.push((name, g));
+    }
+    for child in &node.children {
+        collect_ui_owners(child, owner, out);
+    }
+}
+
+fn first_hii_blob_has_string_package(pe: &[u8]) -> bool {
+    let blobs = uefi_engine::hii::pe_resource::hii_resource_blobs(pe);
+    let Some(blob) = blobs.first() else {
+        return false;
+    };
+    uefi_engine::hii::package_list::parse_package_list(blob).is_some_and(|list| {
+        list.packages
+            .iter()
+            .any(|p| p.kind == uefi_engine::hii::string_pack::PACKAGE_STRINGS)
+    })
+}
+
+fn find_hii_string_pe32_path(
+    node: &FfsNode,
+    owner: Option<Guid>,
+    path: &mut Vec<usize>,
+    out: &mut Option<Vec<usize>>,
+) {
+    if out.is_some() {
+        return;
+    }
+    let owner = if node.node_type == FfsType::File {
+        node.guid
+    } else {
+        owner
+    };
+    if node.node_type == FfsType::Section
+        && node.subtype == EFI_SECTION_PE32
+        && node.children.is_empty()
+        && owner.is_some()
+        && first_hii_blob_has_string_package(&node.body)
+    {
+        *out = Some(path.clone());
+        return;
+    }
+    for (i, child) in node.children.iter().enumerate() {
+        path.push(i);
+        find_hii_string_pe32_path(child, owner, path, out);
+        path.pop();
+        if out.is_some() {
+            return;
+        }
     }
 }
 
@@ -779,6 +849,146 @@ fn real_image_hii_form_visibility_round_trip() {
         .find(|f| f.form_id == form_id && f.form_id_ifr == form_id_ifr)
         .expect("patched form survives rebuild");
     assert!(again.visible, "form must be visible after round-trip");
+}
+
+#[test]
+#[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
+fn real_image_hii_formset_add_pe_resource_refused_by_geometry() {
+    use uefi_engine::builder::build_image;
+    use uefi_engine::guid_to_upper_string;
+    use uefi_engine::hii::formset_add::add_setup_formset;
+    use uefi_engine::hii::pe_resource::try_grow_rsrc_tail;
+    use uefi_engine::hii::schema;
+    use uefi_engine::types::ImageMode;
+
+    const FORMSET_GUID: &str = "6A7C8B9D-4E5F-4A61-B2C3-9ABCDEF01234";
+    const FORM_ID: u16 = 0x7A11;
+
+    let data = load_fw();
+    assert_eq!(data.len(), 0x0100_0000, "16 MiB image expected");
+    let mut img = parse_image(&data, ImageMode::Write, "img1", "s1").expect("parse_image");
+
+    let vol_idx = img
+        .root
+        .children
+        .iter()
+        .position(|c| c.offset == 0x890000)
+        .expect("main FV @0x890000");
+
+    let mut hii_owner = None;
+    let mut walk_path = vec![vol_idx];
+    find_hii_string_pe32_path(
+        &img.root.children[vol_idx],
+        None,
+        &mut walk_path,
+        &mut hii_owner,
+    );
+    let pe_path = hii_owner.expect("FV1 PE32 'HII' resource with a STRING package");
+    let target_guid = img.root.children[vol_idx].children[pe_path[1]]
+        .guid
+        .unwrap();
+    let target_prefix = guid_to_upper_string(&target_guid);
+
+    let mut ui_owners = vec![];
+    collect_ui_owners(&img.root, None, &mut ui_owners);
+    let find_ui = |needle: &str| {
+        ui_owners
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(needle))
+            .map(|(_, g)| *g)
+    };
+    let setupdata_guid = find_ui("AMITSESetupData").expect("AMITSESetupData UI-named file");
+    let amitse_guid = find_ui("AMITSE").expect("AMITSE UI-named file");
+    let bogus_ami = Guid::try_parse("00000000-0000-0000-0000-00000000DEAD").unwrap();
+
+    let mut node = &img.root;
+    for &i in &pe_path {
+        node = &node.children[i];
+    }
+    assert_eq!(node.node_type, FfsType::Section);
+    assert_eq!(node.subtype, EFI_SECTION_PE32);
+    let pe_snapshot = node.body.clone();
+    let mut pe_probe = node.body.clone();
+    assert!(
+        !try_grow_rsrc_tail(&mut pe_probe, 16),
+        "HNX99TF HII PE images have .reloc after .rsrc; growth is refused by design"
+    );
+    assert_eq!(pe_probe, pe_snapshot);
+
+    let mk_schema = |sd: Guid, am: Guid| schema::FormSetSchema {
+        formset_guid: FORMSET_GUID.into(),
+        title: "PATCHER ACCEPTANCE FORMSET".into(),
+        help: "PATCHER ACCEPTANCE HELP".into(),
+        class_guids: vec![],
+        varstores: vec![],
+        default_stores: vec![],
+        forms: vec![schema::FormSchema {
+            id: FORM_ID,
+            title: "PATCHER ACCEPTANCE".into(),
+            items: vec![schema::ItemSchema::Text(schema::TextItem {
+                prompt: "PATCHER PROMPT".into(),
+                help: "PATCHER ITEM HELP".into(),
+                text_two: "PATCHER TEXT TWO".into(),
+            })],
+        }],
+        setupdata_guid: Some(guid_to_upper_string(&sd)),
+        amitse_guid: Some(guid_to_upper_string(&am)),
+    };
+
+    let err = add_setup_formset(
+        &mut img,
+        &mk_schema(bogus_ami, bogus_ami),
+        Some(&target_guid),
+    )
+    .map(|_| ());
+    assert!(
+        matches!(err, Err(uefi_engine::hii::HiiError::AmiFilesNotFound)),
+        "AMI pre-check must fire before any mutation, got {err:?}"
+    );
+
+    let err = add_setup_formset(
+        &mut img,
+        &mk_schema(setupdata_guid, amitse_guid),
+        Some(&target_guid),
+    )
+    .map(|_| ());
+    assert!(
+        matches!(err, Err(uefi_engine::hii::HiiError::StringPackageNotFound)),
+        "add_strings_to_resource refusal (non-growable .rsrc) maps to StringPackageNotFound, got {err:?}"
+    );
+
+    let mut node = &img.root;
+    for &i in &pe_path {
+        node = &node.children[i];
+    }
+    assert_eq!(node.body, pe_snapshot, "PE body must stay byte-identical");
+    assert_all_no_action(&img.root);
+
+    let built = build_image(&img).expect("build_image of unmutated image");
+    assert_eq!(
+        built.len(),
+        data.len(),
+        "total flash length must be preserved"
+    );
+    assert_eq!(&built[..0x890000], &data[..0x890000]);
+    assert_eq!(&built[0xd60000..], &data[0xd60000..]);
+    assert_eq!(
+        built, data,
+        "refused mutation must leave the image untouched"
+    );
+
+    eprintln!(
+        "real_image formset-add refusal: target={target_prefix} (ui-backed PE32 'HII' file), setupdata={} (AMITSESetupData), amitse={} (AMITSE), err=StringPackageNotFound via .rsrc-not-last growth guard",
+        guid_to_upper_string(&setupdata_guid),
+        guid_to_upper_string(&amitse_guid)
+    );
+}
+
+fn assert_all_no_action(node: &FfsNode) {
+    assert_eq!(node.action, Action::NoAction);
+    for child in &node.children {
+        assert_all_no_action(child);
+    }
 }
 
 #[test]
