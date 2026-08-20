@@ -64,7 +64,7 @@ pub fn add_setup_formset(
         setupdata_guid.as_ref(),
         amitse_guid.as_ref(),
     )?;
-    let target = Target::Path(vec![0]);
+    let target = Target::Path(vec![sp_vi]);
     ops::insert(&mut image.root, &target, &ffs_bytes, ops::InsertMode::Into)
         .map_err(|e| HiiError::FfsAssemblyError(e.to_string()))?;
     Ok(AddSetupResult {
@@ -317,4 +317,125 @@ fn find_string_package_section(
         }
     }
     Err(HiiError::StringPackageNotFound)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::builder::build_image;
+    use crate::ffs::{EFI_FVB2_ERASE_POLARITY, EFI_FVH_SIGNATURE, EFI_SECTION_RAW, size_to_uint24};
+    use crate::parser::image::parse_image;
+    use crate::parser::target::find_item_path;
+
+    const STR_GUID: &str = "5C60F367-A505-419A-859E-2A4FF6CA6FE5";
+    const SETUPDATA_GUID: &str = "12345678-90AB-CDEF-1234-567890ABCDEF";
+    const AMITSE_GUID: &str = "87654321-FEDC-BA09-8765-432109FEDCBA";
+
+    fn section_bytes(stype: u8, body: &[u8]) -> Vec<u8> {
+        let mut v = Vec::with_capacity(4 + body.len());
+        v.extend_from_slice(&size_to_uint24((4 + body.len()) as u32));
+        v.push(stype);
+        v.extend_from_slice(body);
+        v
+    }
+
+    fn ffs_file_bytes(guid: &Guid, content: &[u8]) -> Vec<u8> {
+        let mut buf = vec![0u8; 24];
+        buf[0..16].copy_from_slice(&guid.to_bytes());
+        buf[18] = crate::ffs::EFI_FV_FILETYPE_RAW;
+        buf[20..23].copy_from_slice(&size_to_uint24((24 + content.len()) as u32));
+        buf.extend_from_slice(content);
+        buf
+    }
+
+    fn string_package_bytes() -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&[0x00, 0x00, 0x00, string_pack::PACKAGE_STRINGS]);
+        buf.extend_from_slice(&12u32.to_le_bytes());
+        buf.extend_from_slice(&12u32.to_le_bytes());
+        buf.push(0x10);
+        buf.extend_from_slice(b"first");
+        buf.push(0x00);
+        buf.push(0x00);
+        let len = buf.len() as u32;
+        buf[0] = (len & 0xFF) as u8;
+        buf[1] = ((len >> 8) & 0xFF) as u8;
+        buf[2] = ((len >> 16) & 0xFF) as u8;
+        buf
+    }
+
+    fn gap_aware_image() -> Vec<u8> {
+        let string_file = ffs_file_bytes(
+            &Guid::try_parse(STR_GUID).unwrap(),
+            &section_bytes(EFI_SECTION_RAW, &string_package_bytes()),
+        );
+        let setupdata = ffs_file_bytes(&Guid::try_parse(SETUPDATA_GUID).unwrap(), &[0u8; 108]);
+        let amitse = ffs_file_bytes(&Guid::try_parse(AMITSE_GUID).unwrap(), &[0u8; 108]);
+
+        let mut body = Vec::new();
+        for f in [string_file, setupdata, amitse] {
+            let aligned = (body.len() + 7) & !7;
+            body.resize(aligned, 0xFF);
+            body.extend_from_slice(&f);
+        }
+        body.extend_from_slice(&[0xFF; 1024]);
+
+        let total = 56 + body.len();
+        let mut buf = vec![0xFFu8; 32 + total];
+        let fv = &mut buf[32..];
+        fv[32..40].copy_from_slice(&(total as u64).to_le_bytes());
+        fv[40..44].copy_from_slice(&EFI_FVH_SIGNATURE.to_le_bytes());
+        fv[44..48].copy_from_slice(&EFI_FVB2_ERASE_POLARITY.to_le_bytes());
+        fv[48..50].copy_from_slice(&56u16.to_le_bytes());
+        fv[55] = 2;
+        fv[56..].copy_from_slice(&body);
+        buf
+    }
+
+    fn test_schema() -> schema::FormSetSchema {
+        schema::FormSetSchema {
+            formset_guid: "A1B2C3D4-E5F6-7890-ABCD-EF1234567890".into(),
+            title: "T".into(),
+            help: "H".into(),
+            class_guids: vec![],
+            varstores: vec![],
+            default_stores: vec![],
+            forms: vec![schema::FormSchema {
+                id: 1,
+                title: "Main".into(),
+                items: vec![schema::ItemSchema::Text(schema::TextItem {
+                    prompt: "P1".into(),
+                    help: "H1".into(),
+                    text_two: "X1".into(),
+                })],
+            }],
+            setupdata_guid: Some(SETUPDATA_GUID.into()),
+            amitse_guid: Some(AMITSE_GUID.into()),
+        }
+    }
+
+    #[test]
+    fn add_setup_formset_inserts_into_volume_on_gap_aware_image() {
+        let data = gap_aware_image();
+        let mut img = parse_image(&data, ImageMode::Write, "i", "s").unwrap();
+        assert_eq!(img.root.children[0].node_type, FfsType::Padding);
+        assert_eq!(img.root.children[1].node_type, FfsType::Volume);
+
+        let res = add_setup_formset(&mut img, &test_schema(), None).unwrap();
+        let built = build_image(&img).unwrap();
+        assert_eq!(built.len(), data.len());
+        let guid_bytes = res.new_ffs_guid.to_bytes();
+        assert!(
+            built.windows(16).any(|w| w == guid_bytes),
+            "new FFS must be present in built image"
+        );
+
+        let re = parse_image(&built, ImageMode::Read, "i2", "s2").unwrap();
+        let path = find_item_path(&re.root, &Target::Guid(res.new_ffs_guid)).unwrap();
+        assert_eq!(
+            path[0], 1,
+            "new FFS must live inside the Volume, not the Padding"
+        );
+        assert_eq!(res.inserted_form_ids, vec![1]);
+    }
 }
