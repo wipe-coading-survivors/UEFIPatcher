@@ -346,6 +346,20 @@
   до фазы B) и отсутствие CLI (`hii formset add` — `08ff7b0`).
   Осталось (фаза B/C плана): resource-канал для formset_add, форма в
   существующий формсет.
+* [ ] **add_setup_formset: частичная мутация при ошибке patch_ami** —
+  строки добавляются до `patch_ami`; если AMI-модули не найдены, функция
+  вернёт Err с уже мутированным string-пакетом в сессии. Найдено на
+  ревью фазы A (устранена расхождение-версия для string-поиска — коммит
+  `804fdac`, единый walker-поиск до мутации); pre-check AMI-целей до
+  `add_strings` — вместе с фазой B (Task 7 wiring).
+* [ ] **Ревью фазы A, minors** — (1) коллизия имён
+  `walk_for_string_package` в `hii/strings.rs` (чтение) и
+  `hii/string_pack.rs` (путь для мутации) — переименовать одну (напр.
+  `locate_string_package_section`); (2) mock-сервер не эхоит поля
+  запроса — CLI e2e `formset_add_flow` не проверяет доставку
+  `schema_json`/`target_ffs_guid`, `--ffs` не покрыт e2e; (3) тест
+  gap-aware может дополнительно проверять рост string-пакета и
+  видимость формсета в `collect_forms` после re-parse.
 
 ## ImageUpload RPC (docker-развертывание)
 
