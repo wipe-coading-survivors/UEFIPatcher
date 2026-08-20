@@ -27,10 +27,13 @@ pub fn add_strings(
     ffs_guid: Option<&Guid>,
     strings: &[String],
 ) -> Result<HashMap<String, u16>, HiiError> {
-    let (vi, fi, si) = find_string_package(image, ffs_guid)?;
-    let path = vec![vi, fi, si];
-    let body = &mut image.root.children[vi].children[fi].children[si].body;
-    let mapping = add_strings_to_body(body, strings);
+    let path = string_package_section_path(&image.root, ffs_guid)
+        .ok_or(HiiError::StringPackageNotFound)?;
+    let mut node = &mut image.root;
+    for &i in &path {
+        node = &mut node.children[i];
+    }
+    let mapping = add_strings_to_body(&mut node.body, strings);
     ops::mark_rebuild_to_root_by_path(&mut image.root, &path);
     Ok(mapping)
 }
@@ -49,25 +52,37 @@ fn add_strings_to_body(body: &mut Vec<u8>, strings: &[String]) -> HashMap<String
     mapping
 }
 
-fn find_string_package(
-    image: &Image,
+pub fn string_package_section_path(root: &FfsNode, ffs_guid: Option<&Guid>) -> Option<Vec<usize>> {
+    walk_for_string_package(root, ffs_guid, None, &mut Vec::new())
+}
+
+fn walk_for_string_package(
+    node: &FfsNode,
     ffs_guid: Option<&Guid>,
-) -> Result<(usize, usize, usize), HiiError> {
-    for (vi, vol) in image.root.children.iter().enumerate() {
-        for (fi, file) in vol.children.iter().enumerate() {
-            if let Some(g) = ffs_guid
-                && file.guid != Some(*g)
-            {
-                continue;
-            }
-            for (si, sec) in file.children.iter().enumerate() {
-                if is_string_package(&sec.body) {
-                    return Ok((vi, fi, si));
-                }
-            }
+    owner: Option<&Guid>,
+    path: &mut Vec<usize>,
+) -> Option<Vec<usize>> {
+    for (i, child) in node.children.iter().enumerate() {
+        let child_owner = if child.node_type == FfsType::File {
+            child.guid.as_ref()
+        } else {
+            owner
+        };
+        if child.node_type == FfsType::Section
+            && child.children.is_empty()
+            && is_string_package(&child.body)
+            && ffs_guid.is_none_or(|g| owner == Some(g))
+        {
+            path.push(i);
+            return Some(path.clone());
         }
+        path.push(i);
+        if let Some(found) = walk_for_string_package(child, ffs_guid, child_owner, path) {
+            return Some(found);
+        }
+        path.pop();
     }
-    Err(HiiError::StringPackageNotFound)
+    None
 }
 
 pub fn is_string_package(body: &[u8]) -> bool {
@@ -333,6 +348,92 @@ mod tests {
     #[test]
     fn add_strings_returns_error_when_no_package() {
         let mut image = make_image(vec![0x00, 0x00, 0x00, 0x02]);
+        assert!(matches!(
+            add_strings(&mut image, None, &["x".to_string()]),
+            Err(HiiError::StringPackageNotFound)
+        ));
+    }
+
+    fn make_wrapped_image(pkg_body: Vec<u8>, file_guid: &str) -> Image {
+        let inner = mk_node(FfsType::Section, pkg_body, vec![]);
+        let wrapper = mk_node(FfsType::Section, vec![], vec![inner]);
+        let mut file_node = mk_node(FfsType::File, vec![], vec![wrapper]);
+        file_node.guid = Some(Guid::try_parse(file_guid).unwrap());
+        let volume = mk_node(FfsType::Volume, vec![], vec![file_node]);
+        let root = mk_node(FfsType::Image, vec![], vec![volume]);
+        Image {
+            image_id: "img".into(),
+            session_id: "s".into(),
+            root,
+            mode: ImageMode::Write,
+        }
+    }
+
+    #[test]
+    fn add_strings_finds_package_inside_wrapper_section() {
+        let pkg = make_string_package(&["first"]);
+        let mut image = make_wrapped_image(pkg, "5C60F367-A505-419A-859E-2A4FF6CA6FE5");
+        let mapping = add_strings(&mut image, None, &["x".to_string()]).unwrap();
+        assert_eq!(mapping["x"], 2);
+        let inner = &image.root.children[0].children[0].children[0].children[0];
+        assert!(inner.body.len() > 20);
+        assert_eq!(*inner.body.last().unwrap(), SIBT_END);
+        assert_eq!(inner.action, Action::Rebuild);
+        assert_eq!(
+            image.root.children[0].children[0].children[0].action,
+            Action::Rebuild
+        );
+        assert_eq!(image.root.children[0].children[0].action, Action::Rebuild);
+        assert_eq!(image.root.children[0].action, Action::Rebuild);
+    }
+
+    #[test]
+    fn add_strings_guid_filter_applies_through_wrapper() {
+        let pkg = make_string_package(&["first"]);
+        let mut image = make_wrapped_image(pkg, "5C60F367-A505-419A-859E-2A4FF6CA6FE5");
+        let other = Guid::try_parse("899407D7-92A6-4174-968F-6F0B47F86A23").unwrap();
+        assert!(matches!(
+            add_strings(&mut image, Some(&other), &["x".to_string()]),
+            Err(HiiError::StringPackageNotFound)
+        ));
+        let same = Guid::try_parse("5C60F367-A505-419A-859E-2A4FF6CA6FE5").unwrap();
+        assert!(add_strings(&mut image, Some(&same), &["x".to_string()]).is_ok());
+    }
+
+    #[test]
+    fn add_strings_refuses_pe_resource_channel() {
+        let pkg = make_string_package(&["first"]);
+        let g = Guid::try_parse("5C60F367-A505-419A-859E-2A4FF6CA6FE5").unwrap();
+        let mut list = g.to_bytes().to_vec();
+        let total = 20 + pkg.len() + 4;
+        list.extend_from_slice(&(total as u32).to_le_bytes());
+        list.extend_from_slice(&pkg);
+        list.extend_from_slice(&[4, 0, 0, r_efi::hii::PACKAGE_END]);
+        let pe = crate::hii::pe_resource::synth_hii_pe("HII", &list);
+        assert!(
+            !crate::hii::pe_resource::hii_resource_ranges(&pe).is_empty(),
+            "sanity: resource channel must hold the list"
+        );
+        let mut blob_range = crate::hii::pe_resource::hii_resource_ranges(&pe)[0];
+        blob_range.1 += blob_range.0;
+        let blob = &pe[blob_range.0..blob_range.1];
+        let parsed = crate::hii::package_list::parse_package_list(blob).unwrap();
+        assert!(
+            parsed.packages.iter().any(|p| p.kind == PACKAGE_STRINGS),
+            "sanity: STRING package must be inside the resource blob"
+        );
+
+        let pe_sec = mk_node(FfsType::Section, pe, vec![]);
+        let mut file = mk_node(FfsType::File, vec![], vec![pe_sec]);
+        file.guid = Some(g);
+        let volume = mk_node(FfsType::Volume, vec![], vec![file]);
+        let root = mk_node(FfsType::Image, vec![], vec![volume]);
+        let mut image = Image {
+            image_id: "img".into(),
+            session_id: "s".into(),
+            root,
+            mode: ImageMode::Write,
+        };
         assert!(matches!(
             add_strings(&mut image, None, &["x".to_string()]),
             Err(HiiError::StringPackageNotFound)
