@@ -70,11 +70,18 @@
 ### Task 4: `try_grow_rsrc_tail`
 
 1. Тесты (`pe_resource.rs`): `synth_hii_pe` → grow(64) → длина +64×k
-   (file-align), SizeOfRawData/VirtualSize/SizeOfImage/data-entry size
-   обновлены, старые resource-смещения читаются; не-PE и «.rsrc не
-   последняя» → false, байты не тронуты.
+   (file-align), SizeOfRawData/VirtualSize/SizeOfImage обновлены, старые
+   resource-смещения читаются; не-PE и «.rsrc не последняя» → false,
+   байты не тронуты.
 2. Реализация через `object`-структуры (read) + точечные правки
-   заголовков (write).
+   заголовков (write). Поправка 2026-08-20 (префлайт фазы B):
+   `try_grow_rsrc_tail` дописывает `delta` нулевых байт в хвост файла и
+   обновляет ТОЛЬКО заголовки (SizeOfRawData/VirtualSize по file-align,
+   SizeOfImage при последней виртуальной секции); resource data entry
+   Size НЕ трогает — точную новую длину записи знает только операция
+   уровня блоба (Task 5/6), автоприращение «записи, кончающейся на
+   старом конце секции», портит чужие entry на реальных PE, где HII не
+   последняя. Утверждение «data-entry size» перенесено в Task 5.
 3. Green; commit `feat(uefi-engine): pe_resource try_grow_rsrc_tail`.
 
 ### Task 5: `append_package_to_resource`
@@ -93,15 +100,27 @@
    длины пакета/списка/ресурса согласованы, старые id сохранены, новые
    id последовательны.
 2. Реализация: цепочка смещений resource→list→package; переиспользовать
-   `add_strings_to_body`.
+   `add_strings_to_body`. Поправка 2026-08-20 (префлайт фазы B): точка
+   входа — `pub fn add_strings_to_resource(pe: &mut Vec<u8>, strings:
+   &[String]) -> Option<HashMap<String, u16>>` в `string_pack.rs`
+   (рост/пересчёт длин — общий helper из Task 5); image-level
+   `add_strings` остаётся bare-only — фазо-A тест честного отказа
+   `add_strings_refuses_pe_resource_channel` сохраняется, resource-ветку
+   подключает Task 7 в formset_add.
 3. Green; commit `feat(uefi-engine): append strings to resource-backed
    string package`.
 
 ### Task 7: wiring + acceptance
 
-1. `add_setup_formset`: ветка resource-канала (strings → Task 6, формсет
-   → append Task 5, новый FFS не собирается); mark_rebuild-каскад на
-   PE32-секцию.
+1. `add_setup_formset`: pre-check AMI-целей ДО любой мутации — обе
+   находки через логику `find_ami_module` (pub(crate)-обёртка), Err
+   `AmiFilesNotFound` до `add_strings`; закрывает TODO «частичная мутация
+   при ошибке patch_ami» (поправка 2026-08-20 по префлайту фазы B, по
+   решению пользователя). Ветка resource-канала (strings → Task 6,
+   формсет → append Task 5, новый FFS не собирается);
+   mark_rebuild-каскад на PE32-секцию; новый
+   `HiiError::PeGrowthUnsupported` (Display по §5 спеки) — отказ роста
+   из Tasks 5/6 маппится в него.
 2. Real-image `#[ignore]` тест: HNX99TF — добавить формсет в список
    ресурса Platform-файла → build → длина сохранена, вне-FV1 байты
    идентичны, re-parse: формсет в `collect_forms`.
