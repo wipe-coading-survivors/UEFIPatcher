@@ -18,8 +18,12 @@
    → `build_image` → в выводе есть новый FFS (по new_ffs_guid), длина
    образа сохранена. Red.
 2. Реализация: в `add_setup_formset` заменить `Target::Path(vec![0])` на
-   путь первого `FfsType::Volume`-узла (обход `image.root.children`);
-   если `target_ffs_guid` задан — volume, содержащий файл с этим GUID.
+   индекс volume, в котором найден string-пакет (`sp_vi` из
+   `find_string_package_section`; фильтр по `target_ffs_guid` уже внутри
+   поиска). Поправка 2026-08-20 (ревью фазы A): изначальная формулировка
+   «первый `FfsType::Volume`-узел» отброшена — новый FFS ко-лоцируется
+   с volume string-пакета, из которого берётся снапшот; Padding-узлы
+   парсера без детей, поэтому цель всегда Volume.
 3. Green; commit `fix(uefi-engine): formset add inserts into a Volume
    node, not raw child[0]`.
 
