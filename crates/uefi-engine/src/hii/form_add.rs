@@ -65,9 +65,24 @@ pub fn add_form(
             return Err(HiiError::NotASetupItem);
         }
         if node.subtype == EFI_SECTION_RAW && ifr::is_form_package(&node.body) {
+            if !ifr::formset_at(&node.body, formset_idx) {
+                return Err(HiiError::NotFound);
+            }
             true
-        } else if node.subtype == EFI_SECTION_PE32 && resource_forms_package(&node.body).is_some() {
-            false
+        } else if node.subtype == EFI_SECTION_PE32 {
+            match resource_forms_package(&node.body) {
+                None => return Err(HiiError::NotASetupItem),
+                Some((off, len)) => {
+                    if !node
+                        .body
+                        .get(off..off + len)
+                        .is_some_and(|pkg| ifr::formset_at(pkg, formset_idx))
+                    {
+                        return Err(HiiError::NotFound);
+                    }
+                    false
+                }
+            }
         } else {
             return Err(HiiError::NotASetupItem);
         }
@@ -672,10 +687,13 @@ mod tests {
     }
 
     #[test]
-    fn add_form_bare_out_of_range_ordinal_is_invalid_ifr() {
+    fn add_form_bare_out_of_range_ordinal_is_not_found() {
         let data = bare_flash_image();
         let mut img = parse_image(&data, ImageMode::Write, "i", "s").unwrap();
         let pkg_before = section_of(&img, "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:1")
+            .body
+            .clone();
+        let str_before = section_of(&img, "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:0")
             .body
             .clone();
         let err = add_form(
@@ -684,31 +702,43 @@ mod tests {
             &add_form_schema(),
         )
         .unwrap_err();
-        assert!(matches!(err, HiiError::InvalidIfr));
+        assert!(matches!(err, HiiError::NotFound));
         assert_eq!(
             section_of(&img, "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:1").body,
             pkg_before
         );
+        assert_eq!(
+            section_of(&img, "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:0").body,
+            str_before
+        );
+        assert_eq!(
+            section_of(&img, "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:0").action,
+            Action::NoAction
+        );
     }
 
     #[test]
-    fn add_form_resource_out_of_range_ordinal_is_invalid_ifr() {
+    fn add_form_resource_out_of_range_ordinal_is_not_found() {
         let data = resource_flash_image(synth_hii_pe("HII", &resource_blob()));
         let mut img = parse_image(&data, ImageMode::Write, "i", "s").unwrap();
-        let pkg_before =
-            resource_blob_of(&section_of(&img, "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x10:0").body)
-                [20..20 + bare_form_package().len()]
-                .to_vec();
+        let pe_before = section_of(&img, "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x10:0")
+            .body
+            .clone();
         let err = add_form(
             &mut img,
             "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x10:0#1",
             &add_form_schema(),
         )
         .unwrap_err();
-        assert!(matches!(err, HiiError::InvalidIfr));
-        let blob =
-            resource_blob_of(&section_of(&img, "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x10:0").body);
-        assert_eq!(&blob[20..20 + pkg_before.len()], &pkg_before[..]);
+        assert!(matches!(err, HiiError::NotFound));
+        assert_eq!(
+            section_of(&img, "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x10:0").body,
+            pe_before
+        );
+        assert_eq!(
+            section_of(&img, "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x10:0").action,
+            Action::NoAction
+        );
     }
 
     #[test]

@@ -131,6 +131,10 @@ pub fn insert_form_into_package(
     true
 }
 
+pub(crate) fn formset_at(pkg: &[u8], formset_idx: usize) -> bool {
+    locate_formset_insert_points(pkg, formset_idx).is_some()
+}
+
 fn locate_formset_insert_points(body: &[u8], formset_idx: usize) -> Option<(usize, usize)> {
     if !is_form_package(body) {
         return None;
@@ -539,6 +543,34 @@ mod tests {
             fs.forms.iter().map(|f| f.form_id).collect::<Vec<_>>(),
             vec![1, 2, 99]
         );
+    }
+
+    #[test]
+    fn formset_at_reports_formset_presence() {
+        let (_, single) = single_formset_package();
+        assert!(formset_at(&single, 0));
+        assert!(!formset_at(&single, 1));
+
+        let g = Guid::from_str(FORMSET_GUID).unwrap();
+        let mut fs1 = form_set(&g, 7);
+        fs1.extend(form(1, 10));
+        fs1.extend(end());
+        fs1.extend(end());
+        let mut fs2 = form_set(&g, 8);
+        fs2.extend(form(2, 20));
+        fs2.extend(end());
+        fs2.extend(end());
+        let mut ifr = fs1.clone();
+        ifr.extend(&fs2);
+        let two = package(&ifr);
+        assert!(formset_at(&two, 0));
+        assert!(formset_at(&two, 1));
+        assert!(!formset_at(&two, 2));
+
+        let (_, mut truncated) = single_formset_package();
+        truncated.truncate(truncated.len() - 7);
+        assert!(!formset_at(&truncated, 0));
+        assert!(!formset_at(&[0x00, 0x00, 0x00, PACKAGE_FORMS], 0));
     }
 
     #[test]

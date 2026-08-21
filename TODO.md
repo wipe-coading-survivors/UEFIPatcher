@@ -445,6 +445,17 @@
 * [ ] **TUI/WebUI обёртки над `HiiFormAdd`/`HiiFormsetAdd` RPC** — CLI-обёртки
   есть (`hii form add`, `hii formset add`), интерактивных/WebUI-путей нет;
   отложено планом фазы C (§«Отложенное»).
+* [ ] **FormInfo: formset-порядковый номер не виден в `hii form list`** —
+  дискриминатор `#<n>` таргета `hii form add` не дискаверибелен: FormInfo не
+  несёт formset ordinal, на multi-formset-пакетах пользователь не может
+  узнать `n` (промах `#1` на single-formset-пакете — лёгкий first-attempt
+  typo). Кандидат — расширить FormInfo (engine+proto+CLI) formset-порядковым
+  номером или селектором по anchor-форме. Дополняет pre-check I1: неверный
+  ordinal теперь отбивается NotFound до мутации строк.
+* [ ] **add_form: `default_stores` игнорируются by design (решение R2)** — v1
+  сознательно не обрабатывает `default_stores` (и прочие formset-level поля
+  схемы); автор схемы не получает фидбека, что поле отброшено. Вернуться к
+  вопросу при появлении живого use case.
 
 ## ImageUpload RPC (docker-развертывание)
 
