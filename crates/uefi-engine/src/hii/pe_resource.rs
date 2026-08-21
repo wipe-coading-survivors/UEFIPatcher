@@ -30,18 +30,28 @@ pub(crate) fn hii_entry_locations(pe: &[u8]) -> Vec<(usize, usize, usize)> {
     Vec::new()
 }
 
+struct LeafRef {
+    type_name: Option<String>,
+    entry_off: usize,
+    off: usize,
+    len: usize,
+    rva: u32,
+}
+
 fn hii_entries<Pe: ImageNtHeaders>(file: &PeFile<'_, Pe>) -> Vec<(usize, usize, usize)> {
     resource_leaf_locations(file)
         .into_iter()
-        .filter_map(|(type_name, entry_off, off, len)| {
-            (type_name.as_deref() == Some("HII")).then_some((entry_off, off, len))
+        .filter_map(|leaf| {
+            (leaf.type_name.as_deref() == Some("HII")).then_some((
+                leaf.entry_off,
+                leaf.off,
+                leaf.len,
+            ))
         })
         .collect()
 }
 
-fn resource_leaf_locations<Pe: ImageNtHeaders>(
-    file: &PeFile<'_, Pe>,
-) -> Vec<(Option<String>, usize, usize, usize)> {
+fn resource_leaf_locations<Pe: ImageNtHeaders>(file: &PeFile<'_, Pe>) -> Vec<LeafRef> {
     let sections = file.section_table();
     let Ok(Some(rsrc)) = file
         .data_directories()
@@ -102,7 +112,7 @@ fn push_leaf<Pe: ImageNtHeaders>(
     entry_rel: usize,
     rva: u32,
     size: u32,
-    out: &mut Vec<(Option<String>, usize, usize, usize)>,
+    out: &mut Vec<LeafRef>,
 ) {
     let Some((off, avail)) = file.section_table().pe_file_range_at(rva) else {
         tracing::debug!(rva, "resource RVA outside sections; skipped");
@@ -112,7 +122,13 @@ fn push_leaf<Pe: ImageNtHeaders>(
         return;
     };
     let len = (size as usize).min(avail as usize);
-    out.push((type_name, entry_off, off as usize, len));
+    out.push(LeafRef {
+        type_name,
+        entry_off,
+        off: off as usize,
+        len,
+        rva,
+    });
 }
 
 pub fn bare_form_packages<'a>(pe: &'a [u8], exclude: &[(usize, usize)]) -> Vec<&'a [u8]> {
@@ -464,30 +480,37 @@ fn plan_rsrc_blob_growth_for<Pe: ImageNtHeaders>(
     added: usize,
 ) -> Option<RsrcBlobGrowthPlan> {
     let leaves = resource_leaf_locations(file);
-    let (entry_off, blob_off, blob_len) =
-        leaves.iter().find_map(|(type_name, entry, off, len)| {
-            (type_name.as_deref() == Some("HII")).then_some((*entry, *off, *len))
-        })?;
-    for (_, entry, off, len) in &leaves {
-        if (*entry, *off, *len) == (entry_off, blob_off, blob_len) {
+    let target = leaves
+        .iter()
+        .find(|l| l.type_name.as_deref() == Some("HII"))?;
+    for leaf in &leaves {
+        if leaf.entry_off == target.entry_off {
             continue;
         }
-        if off.checked_add(*len)? > blob_off {
+        if leaf.off.checked_add(leaf.len)? > target.off {
             tracing::debug!("resource leaf data after target HII blob; refusing append");
             return None;
         }
     }
-    let blob_end = blob_off.checked_add(blob_len)?.checked_add(added)?;
-    let raw_end = usize::try_from(rsrc_raw_end(file)?).ok()?;
-    let grow = blob_end.saturating_sub(raw_end);
+    let blob_len = target.len;
+    let raw_end = rsrc_raw_end(file)?;
+    let virt_end = rsrc_virt_end(file)?;
+    let file_end = u64::try_from(target.off.checked_add(blob_len)?.checked_add(added)?).ok()?;
+    let virt_need = u64::from(target.rva)
+        .checked_add(u64::try_from(blob_len).ok()?)?
+        .checked_add(added as u64)?;
+    let grow = file_end
+        .saturating_sub(raw_end)
+        .max(virt_need.saturating_sub(virt_end));
+    let grow = usize::try_from(grow).ok()?;
     let last_end = usize::try_from(last_raw_end(file)?).ok()?;
     if pe.len() != last_end {
         tracing::debug!("overlay beyond last section raw extent; refusing append");
         return None;
     }
     Some(RsrcBlobGrowthPlan {
-        entry_off,
-        blob_off,
+        entry_off: target.entry_off,
+        blob_off: target.off,
         blob_len,
         grow,
     })
@@ -607,6 +630,29 @@ fn rsrc_raw_end<Pe: ImageNtHeaders>(file: &PeFile<'_, Pe>) -> Option<u64> {
         {
             return u64::from(section.pointer_to_raw_data.get(LittleEndian))
                 .checked_add(u64::from(section.size_of_raw_data.get(LittleEndian)));
+        }
+    }
+    None
+}
+
+fn rsrc_virt_end<Pe: ImageNtHeaders>(file: &PeFile<'_, Pe>) -> Option<u64> {
+    let rsrc_dir = file
+        .data_directories()
+        .get(object::pe::IMAGE_DIRECTORY_ENTRY_RESOURCE)?;
+    let (rsrc_rva, _) = rsrc_dir.address_range();
+    if rsrc_rva == 0 {
+        return None;
+    }
+    for section in file.section_table().iter() {
+        let va = section.virtual_address.get(LittleEndian);
+        let span = section
+            .virtual_size
+            .get(LittleEndian)
+            .max(section.size_of_raw_data.get(LittleEndian));
+        if let Some(off) = rsrc_rva.checked_sub(va)
+            && off < span
+        {
+            return u64::from(va).checked_add(u64::from(section.virtual_size.get(LittleEndian)));
         }
     }
     None
@@ -1446,6 +1492,53 @@ mod tests {
             sp.strings,
             vec![(1, "first".to_string()), (2, "alpha".to_string())]
         );
+        assert_eq!(parsed.packages.last().unwrap().bytes, &form2[..]);
+    }
+
+    fn with_rsrc_raw_slack(pe: Vec<u8>, slack: usize) -> Vec<u8> {
+        let rsrc_ptr = le_u32(&pe, 0x15c) as usize;
+        let rsrc_len = le_u32(&pe, 0x158) as usize;
+        let mut out = Vec::with_capacity(pe.len() + slack);
+        out.extend_from_slice(&pe[..rsrc_ptr + rsrc_len]);
+        out.resize(rsrc_ptr + rsrc_len + slack, 0);
+        out.extend_from_slice(&pe[rsrc_ptr + rsrc_len..]);
+        let raw = le_u32(&pe, 0x158) + slack as u32;
+        out[0x158..0x15c].copy_from_slice(&raw.to_le_bytes());
+        let reloc_ptr = le_u32(&pe, 0x184) + slack as u32;
+        out[0x184..0x188].copy_from_slice(&reloc_ptr.to_le_bytes());
+        out
+    }
+
+    #[test]
+    fn blob_growth_covers_tight_rsrc_virtual_extent() {
+        let g = Guid::from_str(LIST_GUID).unwrap();
+        let form = pkg(PACKAGE_FORMS, &[0x0Eu8, 0x17, 0xAA]);
+        let string = string_pkg(&["first"]);
+        let form2 = pkg(PACKAGE_FORMS, &[0x0Eu8, 0x17, 0xBB]);
+        let blob = list(&g, &[&form, &string]);
+        let mut pe = with_rsrc_raw_slack(synth_reloc_hii_pe("HII", &blob), 0x20);
+        assert_eq!(
+            le_u32(&pe, 0x150),
+            le_u32(&pe, 0x158) - 0x20,
+            "fixture: .rsrc virtual extent must be tighter than its raw extent"
+        );
+        let (entry_off, _, _) = hii_entry_locations(&pe)[0];
+        let mapping =
+            crate::hii::string_pack::add_strings_to_resource(&mut pe, &["alpha".to_string()])
+                .unwrap();
+        assert_eq!(mapping["alpha"], 2);
+        let entry_size = le_u32(&pe, entry_off + 4) as usize;
+        let (off, len) = hii_resource_ranges(&pe)[0];
+        assert_eq!(
+            len, entry_size,
+            "leaf must not be clamped by the .rsrc virtual extent after growth"
+        );
+        let parsed = parse_package_list(&pe[off..off + len]).unwrap();
+        assert_eq!(parsed.packages.len(), 2);
+        assert!(append_package_to_resource(&mut pe, &form2));
+        let (off, len) = hii_resource_ranges(&pe)[0];
+        let parsed = parse_package_list(&pe[off..off + len]).unwrap();
+        assert_eq!(parsed.packages.len(), 3);
         assert_eq!(parsed.packages.last().unwrap().bytes, &form2[..]);
     }
 }
