@@ -1,5 +1,6 @@
 pub mod ami_patcher;
 pub mod ffs_assembler;
+pub mod form_add;
 pub mod forms;
 pub mod formset_add;
 pub mod ifr;

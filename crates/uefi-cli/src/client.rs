@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use http::Uri;
 use hyper_util::rt::TokioIo;
 use tonic::Request;
@@ -331,6 +333,25 @@ impl Client {
             .await?
             .into_inner();
         Ok((resp.new_ffs_id, resp.inserted_form_ids))
+    }
+
+    pub async fn hii_form_add(
+        &mut self,
+        image_id: &str,
+        target: &str,
+        schema_json: &str,
+    ) -> Result<(Vec<u32>, HashMap<String, u32>), AppError> {
+        let req = HiiFormAddRequest {
+            image_id: image_id.into(),
+            target: target.into(),
+            schema_json: schema_json.into(),
+        };
+        let resp = self
+            .inner
+            .hii_form_add(auth_req(&self.state, req))
+            .await?
+            .into_inner();
+        Ok((resp.inserted_form_ids, resp.string_ids))
     }
 
     pub async fn image_save(&mut self, image_id: &str, output_path: &str) -> Result<(), AppError> {

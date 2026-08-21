@@ -199,6 +199,12 @@ enum HiiFormCmd {
         #[arg(long)]
         hidden: bool,
     },
+    Add {
+        #[arg(long)]
+        target: String,
+        #[arg(long)]
+        file: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -346,6 +352,9 @@ async fn dispatch(cli: &Cli, format: output::OutputFormat) -> Result<(), error::
                     };
                     commands::hii::form_set_visibility(form_id, vis, sock, format).await
                 }
+                HiiFormCmd::Add { target, file } => {
+                    commands::hii::form_add(target, file, sock, format).await
+                }
             },
             HiiCmd::FormSet { sub } => match sub {
                 HiiFormSetCmd::Add { file, ffs } => {
@@ -406,6 +415,33 @@ mod tests {
                 assert_eq!(ffs.as_deref(), Some("5C60F367-A505-419A-859E-2A4FF6CA6FE5"));
             }
             _ => panic!("expected hii formset add"),
+        }
+    }
+
+    #[test]
+    fn parse_hii_form_add_args() {
+        let cli = Cli::try_parse_from([
+            "uefi-cli",
+            "hii",
+            "form",
+            "add",
+            "--target",
+            "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:1",
+            "--file",
+            "schema.json",
+        ])
+        .unwrap();
+        match cli.cmd {
+            Cmd::Hii {
+                sub:
+                    HiiCmd::Form {
+                        sub: HiiFormCmd::Add { target, file },
+                    },
+            } => {
+                assert_eq!(target, "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:1");
+                assert_eq!(file, "schema.json");
+            }
+            _ => panic!("expected hii form add"),
         }
     }
 }

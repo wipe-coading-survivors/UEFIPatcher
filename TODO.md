@@ -363,16 +363,17 @@
   `schema_json`/`target_ffs_guid`, `--ffs` не покрыт e2e; (3) тест
   gap-aware может дополнительно проверять рост string-пакета и
   видимость формсета в `collect_forms` после re-parse.
-* [ ] **add_strings_to_resource: дискриминатор отказа роста** — на
-  негrowable-геометрии PE `add_setup_formset` возвращает
-  `StringPackageNotFound`, хотя пакет найден (отказался рост);
-  вернуть причину из `add_strings_to_resource` и маппить в
-  `PeGrowthUnsupported`. Туда же: дублирование предиката
-  `pe_resource_has_string_package` (formset_add.rs) vs internals
-  `add_strings_to_resource` (string_pack.rs) — риск дрейфа; и
-  first-match семантика walker'а (первый DFS-кандидат за
-  non-recompressable обёрткой глушит поздние годные кандидаты).
-  Вместе с Task 9 фазы C.
+* [x] **add_strings_to_resource: дискриминатор отказа роста** — закрыто
+  в Task 9 фазы C плана `2026-08-14-hii-form-addition.md` (коммит
+  `feat(uefi-engine,uefi-cli): form add RPC + subcommand`):
+  `add_strings_to_resource` возвращает
+  `Result<_, AddStringsToResourceError>` (NotFound |
+  GrowthUnsupported), formset_add-вызов маппит отказ роста в
+  `PeGrowthUnsupported` (не `StringPackageNotFound`); предикат
+  `pe_resource_has_string_package` единый pub(crate) в string_pack.rs;
+  walker formset_add пропускает PE32-кандидатов за non-recompressable
+  обёрткой и продолжает поиск (нет годных, есть заблокированные →
+  `MutationBehindCompression`).
 * [ ] **string_pack: исчерпание string-id 0xFFFF** — `wrapping_add` в
   `scan_sibt`/`add_strings_to_body` заворачивает `next_id` в 0
   (невалидный HII string id); возвращать ошибку при исчерпании.

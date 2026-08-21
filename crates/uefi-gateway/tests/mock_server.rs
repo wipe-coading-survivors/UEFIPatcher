@@ -197,6 +197,15 @@ impl EngineService for MockEngine {
             string_ids: std::collections::HashMap::new(),
         }))
     }
+    async fn hii_form_add(
+        &self,
+        _req: Request<HiiFormAddRequest>,
+    ) -> Result<Response<HiiFormAddResponse>, Status> {
+        Ok(Response::new(HiiFormAddResponse {
+            inserted_form_ids: vec![],
+            string_ids: std::collections::HashMap::new(),
+        }))
+    }
 }
 
 pub async fn start_mock(sock: &Path) -> JoinHandle<()> {

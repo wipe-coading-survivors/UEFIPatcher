@@ -176,6 +176,30 @@ pub fn print_formset_add(new_ffs_id: &str, form_ids: &[u32], format: OutputForma
     }
 }
 
+pub fn print_form_add(
+    form_ids: &[u32],
+    string_ids: &std::collections::HashMap<String, u32>,
+    format: OutputFormat,
+) {
+    let ids = form_ids
+        .iter()
+        .map(|i| i.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    match format {
+        OutputFormat::Json => {
+            let sids = serde_json::to_string(string_ids).unwrap_or_else(|_| "{}".into());
+            println!("{{\"inserted_form_ids\":[{ids}],\"string_ids\":{sids}}}")
+        }
+        _ => {
+            println!("inserted_form_ids\t{ids}");
+            for (name, sid) in string_ids {
+                println!("string_id\t{name}\t{sid}");
+            }
+        }
+    }
+}
+
 #[allow(dead_code)]
 pub fn print_text(text: &str) {
     print!("{text}");
@@ -205,6 +229,14 @@ mod tests {
             OutputFormat::Json,
         );
         print_formset_add("X", &[], OutputFormat::Text);
+    }
+
+    #[test]
+    fn form_add_print_smoke() {
+        let mut string_ids = std::collections::HashMap::new();
+        string_ids.insert("NewForm".to_string(), 3u32);
+        print_form_add(&[42], &string_ids, OutputFormat::Json);
+        print_form_add(&[], &string_ids, OutputFormat::Text);
     }
 
     #[test]

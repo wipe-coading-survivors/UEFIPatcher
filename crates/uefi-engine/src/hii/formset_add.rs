@@ -8,7 +8,6 @@ use super::HiiError;
 use super::ami_patcher::{self, QuestionAmiRecord};
 use super::ffs_assembler;
 use super::ifr_builder::*;
-use super::package_list::parse_package_list;
 use super::pe_resource;
 use super::schema;
 use super::string_pack;
@@ -92,7 +91,14 @@ pub fn add_setup_formset(
                 node = &mut node.children[i];
             }
             let string_ids = string_pack::add_strings_to_resource(&mut node.body, &strings)
-                .ok_or(HiiError::StringPackageNotFound)?;
+                .map_err(|e| match e {
+                    string_pack::AddStringsToResourceError::NotFound => {
+                        HiiError::StringPackageNotFound
+                    }
+                    string_pack::AddStringsToResourceError::GrowthUnsupported => {
+                        HiiError::PeGrowthUnsupported
+                    }
+                })?;
             let ifr_bytes = build_ifr(schema, &string_ids)?;
             let form_pkg_len = 4 + ifr_bytes.len();
             let mut form_pkg = Vec::with_capacity(form_pkg_len);
@@ -127,7 +133,20 @@ fn pe_resource_channel_path(
     root: &FfsNode,
     ffs_guid: Option<&Guid>,
 ) -> Result<Option<Vec<usize>>, HiiError> {
-    walk_for_pe_resource_channel(root, ffs_guid, None, false, &mut Vec::new())
+    let mut skipped_behind_bad_wrapper = false;
+    let found = walk_for_pe_resource_channel(
+        root,
+        ffs_guid,
+        None,
+        false,
+        &mut Vec::new(),
+        &mut skipped_behind_bad_wrapper,
+    );
+    match found {
+        Some(path) => Ok(Some(path)),
+        None if skipped_behind_bad_wrapper => Err(HiiError::MutationBehindCompression),
+        None => Ok(None),
+    }
 }
 
 fn walk_for_pe_resource_channel(
@@ -136,7 +155,8 @@ fn walk_for_pe_resource_channel(
     owner: Option<&Guid>,
     behind_bad_wrapper: bool,
     path: &mut Vec<usize>,
-) -> Result<Option<Vec<usize>>, HiiError> {
+    skipped_behind_bad_wrapper: &mut bool,
+) -> Option<Vec<usize>> {
     for (i, child) in node.children.iter().enumerate() {
         let child_owner = if child.node_type == FfsType::File {
             child.guid.as_ref()
@@ -147,13 +167,14 @@ fn walk_for_pe_resource_channel(
             && child.children.is_empty()
             && child.subtype == EFI_SECTION_PE32
             && ffs_guid.is_none_or(|g| owner == Some(g))
-            && pe_resource_has_string_package(&child.body)
+            && string_pack::pe_resource_has_string_package(&child.body)
         {
             if behind_bad_wrapper {
-                return Err(HiiError::MutationBehindCompression);
+                *skipped_behind_bad_wrapper = true;
+                continue;
             }
             path.push(i);
-            return Ok(Some(path.clone()));
+            return Some(path.clone());
         }
         path.push(i);
         if let Some(found) = walk_for_pe_resource_channel(
@@ -162,12 +183,13 @@ fn walk_for_pe_resource_channel(
             child_owner,
             behind_bad_wrapper || is_non_recompressable_wrapper(child),
             path,
-        )? {
-            return Ok(Some(found));
+            skipped_behind_bad_wrapper,
+        ) {
+            return Some(found);
         }
         path.pop();
     }
-    Ok(None)
+    None
 }
 
 fn is_non_recompressable_wrapper(node: &FfsNode) -> bool {
@@ -180,25 +202,7 @@ fn is_non_recompressable_wrapper(node: &FfsNode) -> bool {
         )
 }
 
-fn pe_resource_has_string_package(body: &[u8]) -> bool {
-    let Some((_, blob_off, blob_len)) = pe_resource::hii_entry_locations(body).first().copied()
-    else {
-        return false;
-    };
-    let Some(end) = blob_off.checked_add(blob_len) else {
-        return false;
-    };
-    let Some(blob) = body.get(blob_off..end) else {
-        return false;
-    };
-    parse_package_list(blob).is_some_and(|list| {
-        list.packages.iter().any(|p| {
-            p.kind == string_pack::PACKAGE_STRINGS && string_pack::is_string_package(p.bytes)
-        })
-    })
-}
-
-fn collect_item_strings(item: &schema::ItemSchema, strings: &mut Vec<String>) {
+pub(crate) fn collect_item_strings(item: &schema::ItemSchema, strings: &mut Vec<String>) {
     match item {
         schema::ItemSchema::OneOf(o) => {
             strings.push(o.prompt.clone());
@@ -263,16 +267,24 @@ fn build_ifr(
     for ds in &schema.default_stores {
         b.emit_default_store(string_ids[&ds.name], ds.id);
     }
+    emit_forms(&mut b, schema, string_ids);
+    b.emit_end();
+    Ok(b.build())
+}
+
+pub(crate) fn emit_forms(
+    b: &mut IfrBuilder,
+    schema: &schema::FormSetSchema,
+    string_ids: &HashMap<String, u16>,
+) {
     for form in &schema.forms {
         let title_id = string_ids[&form.title];
         b.emit_form(form.id, title_id);
         for item in &form.items {
-            emit_item(&mut b, item, string_ids);
+            emit_item(b, item, string_ids);
         }
         b.emit_end();
     }
-    b.emit_end();
-    Ok(b.build())
 }
 
 fn emit_item(b: &mut IfrBuilder, item: &schema::ItemSchema, string_ids: &HashMap<String, u16>) {
@@ -872,6 +884,88 @@ mod tests {
         assert_eq!(
             resource_forms_count(&pe_sec.body),
             resource_forms_count(&pe_before) + 1
+        );
+    }
+
+    fn plain_resource_node_image(pe_body: Vec<u8>) -> Image {
+        let mut pe_sec = mk_node(FfsType::Section, pe_body, vec![]);
+        pe_sec.subtype = EFI_SECTION_PE32;
+        let mut file = mk_node(FfsType::File, vec![], vec![pe_sec]);
+        file.guid = Some(Guid::try_parse(STR_GUID).unwrap());
+        let mut setupdata = mk_node(FfsType::File, vec![0u8; 108], vec![]);
+        setupdata.guid = Some(Guid::try_parse(SETUPDATA_GUID).unwrap());
+        let mut amitse = mk_node(FfsType::File, vec![0u8; 108], vec![]);
+        amitse.guid = Some(Guid::try_parse(AMITSE_GUID).unwrap());
+        let volume = mk_node(FfsType::Volume, vec![], vec![file, setupdata, amitse]);
+        let root = mk_node(FfsType::Image, vec![], vec![volume]);
+        Image {
+            image_id: "i".into(),
+            session_id: "s".into(),
+            root,
+            mode: ImageMode::Write,
+        }
+    }
+
+    #[test]
+    fn add_setup_formset_maps_string_growth_refusal_to_pe_growth_unsupported() {
+        let mut pe = resource_hii_pe();
+        pe[0xe8..0xec].copy_from_slice(&0x5000u32.to_le_bytes());
+        let mut img = plain_resource_node_image(pe);
+
+        assert!(matches!(
+            add_setup_formset(&mut img, &test_schema(), None),
+            Err(HiiError::PeGrowthUnsupported)
+        ));
+    }
+
+    fn two_candidate_resource_image(wrapper_guid: Guid) -> Image {
+        let mut inner = mk_node(FfsType::Section, resource_hii_pe(), vec![]);
+        inner.subtype = EFI_SECTION_PE32;
+        let mut wrapper = mk_node(FfsType::Section, vec![], vec![inner]);
+        wrapper.subtype = crate::ffs::EFI_SECTION_GUID_DEFINED;
+        wrapper.parsing_data = ParsingData::GuidedSection(GuidedSectionParsingData {
+            guid: wrapper_guid,
+            dictionary_size: 0x0080_0000,
+        });
+        let mut blocked_file = mk_node(FfsType::File, vec![], vec![wrapper]);
+        blocked_file.guid = Some(Guid::try_parse("11111111-1111-1111-1111-111111111111").unwrap());
+        let mut good_pe = mk_node(FfsType::Section, resource_hii_pe(), vec![]);
+        good_pe.subtype = EFI_SECTION_PE32;
+        let mut good_file = mk_node(FfsType::File, vec![], vec![good_pe]);
+        good_file.guid = Some(Guid::try_parse("22222222-2222-2222-2222-222222222222").unwrap());
+        let mut setupdata = mk_node(FfsType::File, vec![0u8; 108], vec![]);
+        setupdata.guid = Some(Guid::try_parse(SETUPDATA_GUID).unwrap());
+        let mut amitse = mk_node(FfsType::File, vec![0u8; 108], vec![]);
+        amitse.guid = Some(Guid::try_parse(AMITSE_GUID).unwrap());
+        let volume = mk_node(
+            FfsType::Volume,
+            vec![],
+            vec![blocked_file, good_file, setupdata, amitse],
+        );
+        let root = mk_node(FfsType::Image, vec![], vec![volume]);
+        Image {
+            image_id: "i".into(),
+            session_id: "s".into(),
+            root,
+            mode: ImageMode::Write,
+        }
+    }
+
+    #[test]
+    fn add_setup_formset_skips_blocked_candidate_and_uses_later_good_one() {
+        let mut img = two_candidate_resource_image(crate::ffs::tiano_guid());
+
+        let res = add_setup_formset(&mut img, &test_schema(), None).unwrap();
+        assert_eq!(res.inserted_form_ids, vec![1]);
+
+        let blocked_pe = &img.root.children[0].children[0].children[0].children[0];
+        assert_eq!(blocked_pe.action, Action::NoAction);
+        assert_eq!(blocked_pe.body, resource_hii_pe());
+        let good_pe = &img.root.children[0].children[1].children[0];
+        assert_eq!(good_pe.action, Action::Rebuild);
+        assert_eq!(
+            resource_forms_count(&good_pe.body),
+            resource_forms_count(&resource_hii_pe()) + 1
         );
     }
 }

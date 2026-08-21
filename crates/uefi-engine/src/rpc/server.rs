@@ -44,10 +44,12 @@ fn hii_error_status(e: crate::hii::HiiError) -> Status {
         crate::hii::HiiError::NotFound | crate::hii::HiiError::StringPackageNotFound => {
             Status::not_found(e.to_string())
         }
-        crate::hii::HiiError::NotASetupItem => Status::invalid_argument(e.to_string()),
-        crate::hii::HiiError::NotWritable | crate::hii::HiiError::MutationBehindCompression => {
-            Status::failed_precondition(e.to_string())
+        crate::hii::HiiError::NotASetupItem | crate::hii::HiiError::InvalidSchema(_) => {
+            Status::invalid_argument(e.to_string())
         }
+        crate::hii::HiiError::NotWritable
+        | crate::hii::HiiError::MutationBehindCompression
+        | crate::hii::HiiError::PeGrowthUnsupported => Status::failed_precondition(e.to_string()),
         _ => Status::internal(e.to_string()),
     }
 }
@@ -756,6 +758,37 @@ impl EngineService for EngineServer {
                 .collect(),
         }))
     }
+
+    #[tracing::instrument(skip(self, req), err)]
+    async fn hii_form_add(&self, req: Request<HiiFormAddRequest>) -> RpcResult<HiiFormAddResponse> {
+        let r = req.into_inner();
+        let schema = crate::hii::schema::parse_schema(&r.schema_json)
+            .map_err(|e| Status::invalid_argument(e.to_string()))?;
+        let img = self.get_or_load_image(&r.image_id).await?;
+        let result = {
+            let mut images = self.images.lock().await;
+            let img_slot = images
+                .get_mut(&r.image_id)
+                .ok_or_else(|| Status::not_found("image not found"))?;
+            crate::hii::form_add::add_form(img_slot, &r.target, &schema)
+                .map_err(hii_error_status)?
+        };
+        self.flush_image(&r.image_id).await?;
+        let _ = self.sm.touch(&img.session_id);
+        tracing::info!(image_id = %r.image_id, target = %r.target, "form added to existing formset");
+        Ok(Response::new(HiiFormAddResponse {
+            inserted_form_ids: result
+                .inserted_form_ids
+                .into_iter()
+                .map(|f| f as u32)
+                .collect(),
+            string_ids: result
+                .string_ids
+                .into_iter()
+                .map(|(k, v)| (k, v as u32))
+                .collect(),
+        }))
+    }
 }
 
 #[cfg(unix)]
@@ -884,6 +917,11 @@ mod tests {
         assert_eq!(st.code(), tonic::Code::NotFound);
         let st = hii_error_status(crate::hii::HiiError::InvalidIfr);
         assert_eq!(st.code(), tonic::Code::Internal);
+        let st = hii_error_status(crate::hii::HiiError::InvalidSchema("bad".into()));
+        assert_eq!(st.code(), tonic::Code::InvalidArgument);
+        let st = hii_error_status(crate::hii::HiiError::PeGrowthUnsupported);
+        assert_eq!(st.code(), tonic::Code::FailedPrecondition);
+        assert!(st.message().contains("grow"));
     }
 
     const FORMSET_ADD_STR_GUID: &str = "5C60F367-A505-419A-859E-2A4FF6CA6FE5";
@@ -1054,6 +1092,219 @@ mod tests {
         let st = formset_add_status(formset_add_image(formset_add_cert_blocked_pe(), None)).await;
         assert_eq!(st.code(), tonic::Code::FailedPrecondition);
         assert!(st.message().contains("grow"));
+    }
+
+    const FORM_ADD_STR_GUID: &str = "5C60F367-A505-419A-859E-2A4FF6CA6FE5";
+    const FORM_ADD_SCHEMA_JSON: &str = r#"{
+        "formset_guid": "11111111-2222-3333-4444-555555555555",
+        "title": "T",
+        "help": "H",
+        "class_guids": [],
+        "varstores": [],
+        "default_stores": [],
+        "forms": [
+            {
+                "id": 42,
+                "title": "NewForm",
+                "items": [
+                    {"type": "text", "prompt": "P", "help": "H", "text_two": "X"}
+                ]
+            }
+        ]
+    }"#;
+
+    async fn form_add_status(img: Image, target: &str, schema_json: &str) -> Status {
+        let td = TempDir::new().unwrap();
+        let db = crate::storage::open_db(&td.path().join("db.sqlite")).unwrap();
+        let sm = Arc::new(SessionManager::new(
+            db,
+            td.path().to_path_buf(),
+            Duration::from_secs(864000),
+            Duration::from_secs(3600),
+            false,
+        ));
+        let server = EngineServer {
+            sm,
+            images: Arc::new(Mutex::new(HashMap::from([("i".to_string(), img)]))),
+            data_dir: td.path().to_path_buf(),
+        };
+        server
+            .hii_form_add(Request::new(HiiFormAddRequest {
+                image_id: "i".into(),
+                target: target.into(),
+                schema_json: schema_json.into(),
+            }))
+            .await
+            .unwrap_err()
+    }
+
+    fn form_add_string_package() -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&[0x00, 0x00, 0x00, crate::hii::string_pack::PACKAGE_STRINGS]);
+        buf.extend_from_slice(&12u32.to_le_bytes());
+        buf.extend_from_slice(&12u32.to_le_bytes());
+        buf.push(0x10);
+        buf.extend_from_slice(b"first");
+        buf.push(0x00);
+        buf.push(0x00);
+        let len = buf.len() as u32;
+        buf[0] = (len & 0xFF) as u8;
+        buf[1] = ((len >> 8) & 0xFF) as u8;
+        buf[2] = ((len >> 16) & 0xFF) as u8;
+        buf
+    }
+
+    fn form_add_bare_form_package() -> Vec<u8> {
+        use crate::hii::ifr_builder::IfrBuilder;
+        let mut b = IfrBuilder::new();
+        b.emit_form_set(
+            &Guid::try_parse("A1B2C3D4-E5F6-7890-ABCD-EF1234567890").unwrap(),
+            1,
+            1,
+            &[],
+        );
+        b.emit_form(1, 1);
+        b.emit_end();
+        b.emit_end();
+        let ifr = b.build();
+        formset_add_hii_pkg(r_efi::hii::PACKAGE_FORMS, &ifr)
+    }
+
+    fn form_add_section_bytes(stype: u8, body: &[u8]) -> Vec<u8> {
+        let mut v = Vec::with_capacity(4 + body.len());
+        v.extend_from_slice(&crate::ffs::size_to_uint24((4 + body.len()) as u32));
+        v.push(stype);
+        v.extend_from_slice(body);
+        v
+    }
+
+    fn form_add_bare_flash() -> Vec<u8> {
+        let mut content =
+            form_add_section_bytes(crate::ffs::EFI_SECTION_RAW, &form_add_string_package());
+        content.extend(form_add_section_bytes(
+            crate::ffs::EFI_SECTION_RAW,
+            &form_add_bare_form_package(),
+        ));
+        let mut file = vec![0u8; 24];
+        let g = Guid::try_parse(FORM_ADD_STR_GUID).unwrap();
+        file[0..16].copy_from_slice(&g.to_bytes());
+        file[18] = crate::ffs::EFI_FV_FILETYPE_RAW;
+        file[20..23].copy_from_slice(&crate::ffs::size_to_uint24((24 + content.len()) as u32));
+        file.extend_from_slice(&content);
+
+        let mut body = Vec::new();
+        let aligned = (body.len() + 7) & !7;
+        body.resize(aligned, 0xFF);
+        body.extend_from_slice(&file);
+        body.extend_from_slice(&[0xFF; 1024]);
+        let total = 56 + body.len();
+        let mut buf = vec![0xFFu8; 32 + total];
+        let fv = &mut buf[32..];
+        fv[32..40].copy_from_slice(&(total as u64).to_le_bytes());
+        fv[40..44].copy_from_slice(&crate::ffs::EFI_FVH_SIGNATURE.to_le_bytes());
+        fv[44..48].copy_from_slice(&crate::ffs::EFI_FVB2_ERASE_POLARITY.to_le_bytes());
+        fv[48..50].copy_from_slice(&56u16.to_le_bytes());
+        fv[55] = 2;
+        fv[56..].copy_from_slice(&body);
+        buf
+    }
+
+    async fn form_add_ok(img: Image, target: &str) -> HiiFormAddResponse {
+        let td = TempDir::new().unwrap();
+        let db = crate::storage::open_db(&td.path().join("db.sqlite")).unwrap();
+        let sm = Arc::new(SessionManager::new(
+            db,
+            td.path().to_path_buf(),
+            Duration::from_secs(864000),
+            Duration::from_secs(3600),
+            false,
+        ));
+        let server = EngineServer {
+            sm,
+            images: Arc::new(Mutex::new(HashMap::from([("i".to_string(), img)]))),
+            data_dir: td.path().to_path_buf(),
+        };
+        server
+            .hii_form_add(Request::new(HiiFormAddRequest {
+                image_id: "i".into(),
+                target: target.into(),
+                schema_json: FORM_ADD_SCHEMA_JSON.into(),
+            }))
+            .await
+            .unwrap()
+            .into_inner()
+    }
+
+    #[tokio::test]
+    async fn hii_form_add_round_trips_on_bare_channel() {
+        let data = form_add_bare_flash();
+        let img = crate::parser::image::parse_image(&data, ImageMode::Write, "i", "s").unwrap();
+        let resp = form_add_ok(img, "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:1").await;
+        assert_eq!(resp.inserted_form_ids, vec![42]);
+        assert!(resp.string_ids.contains_key("NewForm"));
+    }
+
+    fn form_add_resource_hii_pe() -> Vec<u8> {
+        let guid = Guid::try_parse(FORMSET_ADD_LIST_GUID).unwrap();
+        let form = form_add_bare_form_package();
+        let string_pkg = formset_add_string_package();
+        let blob = formset_add_hii_list(&guid, &[&form, &string_pkg]);
+        crate::hii::pe_resource::synth_hii_pe("HII", &blob)
+    }
+
+    fn form_add_cert_blocked_resource_pe() -> Vec<u8> {
+        let mut pe = form_add_resource_hii_pe();
+        pe[0xe8..0xec].copy_from_slice(&0x5000u32.to_le_bytes());
+        pe
+    }
+
+    #[tokio::test]
+    async fn hii_form_add_maps_pe_growth_unsupported_to_failed_precondition() {
+        let mut pe_sec = formset_add_node(
+            FfsType::Section,
+            form_add_cert_blocked_resource_pe(),
+            vec![],
+        );
+        pe_sec.subtype = crate::ffs::EFI_SECTION_PE32;
+        let mut file = formset_add_node(FfsType::File, vec![], vec![pe_sec]);
+        file.guid = Some(Guid::try_parse(FORM_ADD_STR_GUID).unwrap());
+        let volume = formset_add_node(FfsType::Volume, vec![], vec![file]);
+        let root = formset_add_node(FfsType::Image, vec![], vec![volume]);
+        let img = Image {
+            image_id: "i".into(),
+            session_id: "s".into(),
+            root,
+            mode: ImageMode::Write,
+        };
+        let st = form_add_status(
+            img,
+            "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x10:0",
+            FORM_ADD_SCHEMA_JSON,
+        )
+        .await;
+        assert_eq!(st.code(), tonic::Code::FailedPrecondition);
+        assert!(st.message().contains("grow"));
+    }
+
+    #[tokio::test]
+    async fn hii_form_add_maps_unknown_target_to_not_found() {
+        let data = form_add_bare_flash();
+        let img = crate::parser::image::parse_image(&data, ImageMode::Write, "i", "s").unwrap();
+        let st = form_add_status(
+            img,
+            "00000000-0000-0000-0000-000000000001:0x19:0",
+            FORM_ADD_SCHEMA_JSON,
+        )
+        .await;
+        assert_eq!(st.code(), tonic::Code::NotFound);
+    }
+
+    #[tokio::test]
+    async fn hii_form_add_maps_invalid_schema_to_invalid_argument() {
+        let data = form_add_bare_flash();
+        let img = crate::parser::image::parse_image(&data, ImageMode::Write, "i", "s").unwrap();
+        let st = form_add_status(img, "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:1", "{bad").await;
+        assert_eq!(st.code(), tonic::Code::InvalidArgument);
     }
 
     #[tokio::test]

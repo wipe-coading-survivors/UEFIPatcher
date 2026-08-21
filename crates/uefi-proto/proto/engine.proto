@@ -28,6 +28,7 @@ service EngineService {
   rpc HiiSetFormVisibility(HiiSetFormVisibilityRequest) returns (Empty);
   rpc HiiListStrings(HiiListStringsRequest)             returns (HiiListStringsResponse);
   rpc HiiFormSetAdd(HiiFormSetAddRequest)               returns (HiiFormSetAddResponse);
+  rpc HiiFormAdd(HiiFormAddRequest)                     returns (HiiFormAddResponse);
 }
 
 enum ImageMode { READ = 0; WRITE = 1; }
@@ -174,6 +175,16 @@ message HiiFormSetAddResponse {
   string new_ffs_id = 1;
   repeated uint32 inserted_form_ids = 2;
   map<string, uint32> string_ids = 3;
+}
+
+message HiiFormAddRequest {
+  string image_id = 1;
+  string target = 2;
+  string schema_json = 3;
+}
+message HiiFormAddResponse {
+  repeated uint32 inserted_form_ids = 1;
+  map<string, uint32> string_ids = 2;
 }
 
 message Empty {}

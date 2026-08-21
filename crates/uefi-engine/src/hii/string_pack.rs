@@ -57,34 +57,42 @@ fn add_strings_to_body(body: &mut Vec<u8>, strings: &[String]) -> HashMap<String
     mapping
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AddStringsToResourceError {
+    NotFound,
+    GrowthUnsupported,
+}
+
 pub fn add_strings_to_resource(
     pe: &mut Vec<u8>,
     strings: &[String],
-) -> Option<HashMap<String, u16>> {
-    let (_, blob_off, blob_len) = hii_entry_locations(pe).first().copied()?;
-    let blob = pe.get(blob_off..blob_off.checked_add(blob_len)?)?;
-    let parsed = parse_package_list(blob)?;
+) -> Result<HashMap<String, u16>, AddStringsToResourceError> {
+    use AddStringsToResourceError::{GrowthUnsupported, NotFound};
+    let (_, blob_off, blob_len) = hii_entry_locations(pe).first().copied().ok_or(NotFound)?;
+    let blob_end = blob_off.checked_add(blob_len).ok_or(NotFound)?;
+    let blob = pe.get(blob_off..blob_end).ok_or(NotFound)?;
+    let parsed = parse_package_list(blob).ok_or(NotFound)?;
     let idx = parsed
         .packages
         .iter()
-        .position(|p| p.kind == PACKAGE_STRINGS && is_string_package(p.bytes))?;
+        .position(|p| p.kind == PACKAGE_STRINGS && is_string_package(p.bytes))
+        .ok_or(NotFound)?;
     let prefix: usize = parsed.packages[..idx].iter().map(|p| p.bytes.len()).sum();
     let old_len = parsed.packages[idx].bytes.len();
     let mut grown = blob[20 + prefix..20 + prefix + old_len].to_vec();
     let mapping = add_strings_to_body(&mut grown, strings);
     let delta = grown.len() - old_len;
     let sum: usize = parsed.packages.iter().map(|p| p.bytes.len()).sum();
-    let new_blob_len = blob_len.checked_add(delta)?;
+    let new_blob_len = blob_len.checked_add(delta).ok_or(GrowthUnsupported)?;
     let new_total = 20u64 + sum as u64 + delta as u64 + 4;
     if new_total > u32::MAX as u64 || new_blob_len > u32::MAX as usize {
         tracing::debug!("string package growth overflows list lengths");
-        return None;
+        return Err(GrowthUnsupported);
     }
     let pkg_off = blob_off + 20 + prefix;
-    let blob_end = blob_off + blob_len;
-    let plan = plan_rsrc_blob_growth(pe, delta)?;
+    let plan = plan_rsrc_blob_growth(pe, delta).ok_or(GrowthUnsupported)?;
     if plan.grow > 0 && !try_grow_rsrc_tail(pe, plan.grow) {
-        return None;
+        return Err(GrowthUnsupported);
     }
     pe.copy_within(pkg_off + old_len..blob_end, pkg_off + grown.len());
     pe[pkg_off..pkg_off + grown.len()].copy_from_slice(&grown);
@@ -95,7 +103,7 @@ pub fn add_strings_to_resource(
         new_blob_len as u32,
         new_total as u32,
     );
-    Some(mapping)
+    Ok(mapping)
 }
 
 pub fn string_package_section_path(root: &FfsNode, ffs_guid: Option<&Guid>) -> Option<Vec<usize>> {
@@ -134,6 +142,23 @@ fn walk_for_string_package(
 
 pub fn is_string_package(body: &[u8]) -> bool {
     body.len() >= PACKAGE_HEADER_LEN && body[3] == PACKAGE_STRINGS
+}
+
+pub(crate) fn pe_resource_has_string_package(pe: &[u8]) -> bool {
+    let Some((_, blob_off, blob_len)) = hii_entry_locations(pe).first().copied() else {
+        return false;
+    };
+    let Some(end) = blob_off.checked_add(blob_len) else {
+        return false;
+    };
+    let Some(blob) = pe.get(blob_off..end) else {
+        return false;
+    };
+    parse_package_list(blob).is_some_and(|list| {
+        list.packages
+            .iter()
+            .any(|p| p.kind == PACKAGE_STRINGS && is_string_package(p.bytes))
+    })
 }
 
 fn string_info_offset(body: &[u8]) -> usize {
@@ -597,24 +622,50 @@ mod tests {
     }
 
     #[test]
-    fn add_strings_to_resource_without_hii_resource_returns_none_untouched() {
+    fn add_strings_to_resource_without_hii_resource_is_not_found() {
         let g = Guid::try_parse("899407D7-99FE-43D8-9A21-79EC328CAC21").unwrap();
         let string = make_string_package(&["first"]);
         let blob = res_list(&g, &[&string]);
         let mut pe = crate::hii::pe_resource::synth_hii_pe("REGISTRY", &blob);
         let snapshot = pe.clone();
-        assert!(add_strings_to_resource(&mut pe, &["x".to_string()]).is_none());
+        assert!(matches!(
+            add_strings_to_resource(&mut pe, &["x".to_string()]),
+            Err(AddStringsToResourceError::NotFound)
+        ));
         assert_eq!(pe, snapshot);
     }
 
     #[test]
-    fn add_strings_to_resource_without_string_package_returns_none_untouched() {
+    fn add_strings_to_resource_without_string_package_is_not_found() {
         let g = Guid::try_parse("899407D7-99FE-43D8-9A21-79EC328CAC21").unwrap();
         let form = pkg(r_efi::hii::PACKAGE_FORMS, &[0x0Eu8, 0x17, 0xAA]);
         let blob = res_list(&g, &[&form]);
         let mut pe = crate::hii::pe_resource::synth_hii_pe("HII", &blob);
         let snapshot = pe.clone();
-        assert!(add_strings_to_resource(&mut pe, &["x".to_string()]).is_none());
+        assert!(matches!(
+            add_strings_to_resource(&mut pe, &["x".to_string()]),
+            Err(AddStringsToResourceError::NotFound)
+        ));
+        assert_eq!(pe, snapshot);
+    }
+
+    #[test]
+    fn add_strings_to_resource_refuses_cert_blocked_growth() {
+        let g = Guid::try_parse("899407D7-99FE-43D8-9A21-79EC328CAC21").unwrap();
+        let form = pkg(r_efi::hii::PACKAGE_FORMS, &[0x0Eu8, 0x17, 0xAA]);
+        let string = make_string_package(&["first"]);
+        let blob = res_list(&g, &[&form, &string]);
+        let mut pe = crate::hii::pe_resource::synth_hii_pe("HII", &blob);
+        pe[0xe8..0xec].copy_from_slice(&0x5000u32.to_le_bytes());
+        let snapshot = pe.clone();
+        let strings = ["alpha", "beta", "gamma", "delta"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>();
+        assert!(matches!(
+            add_strings_to_resource(&mut pe, &strings),
+            Err(AddStringsToResourceError::GrowthUnsupported)
+        ));
         assert_eq!(pe, snapshot);
     }
 
@@ -629,7 +680,7 @@ mod tests {
         let len_after_pregrow = pe.len();
         let (entry_off, blob_off, blob_len) = crate::hii::pe_resource::hii_entry_locations(&pe)[0];
         let delta = "alpha".len() + 2;
-        assert!(add_strings_to_resource(&mut pe, &["alpha".to_string()]).is_some());
+        assert!(add_strings_to_resource(&mut pe, &["alpha".to_string()]).is_ok());
         assert_eq!(pe.len(), len_after_pregrow);
         assert_eq!(le_u32(&pe, entry_off + 4), (blob_len + delta) as u32);
         let new_blob = &pe[blob_off..blob_off + blob_len + delta];
@@ -665,7 +716,10 @@ mod tests {
         let mut pe = crate::hii::pe_resource::synth_hii_pe("HII", &blob);
         pe.extend_from_slice(&[0xEEu8; 8]);
         let snapshot = pe.clone();
-        assert!(add_strings_to_resource(&mut pe, &["x".to_string()]).is_none());
+        assert!(matches!(
+            add_strings_to_resource(&mut pe, &["x".to_string()]),
+            Err(AddStringsToResourceError::GrowthUnsupported)
+        ));
         assert_eq!(pe, snapshot);
     }
 
