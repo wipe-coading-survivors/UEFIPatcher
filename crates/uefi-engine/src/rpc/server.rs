@@ -733,6 +733,10 @@ impl EngineService for EngineServer {
                     crate::hii::HiiError::AmiFilesNotFound => {
                         Status::not_found("AMI setupdataBin/amitseSct not found")
                     }
+                    crate::hii::HiiError::MutationBehindCompression
+                    | crate::hii::HiiError::PeGrowthUnsupported => {
+                        Status::failed_precondition(e.to_string())
+                    }
                     _ => Status::internal(e.to_string()),
                 })?
         };
@@ -794,6 +798,7 @@ pub fn serve(
 #[cfg(unix)]
 mod tests {
     use super::*;
+    use crate::types::{Action, FfsNode, FfsType, GuidedSectionParsingData, ParsingData};
     use http::Uri;
     use hyper_util::rt::TokioIo;
     use tempfile::TempDir;
@@ -879,6 +884,176 @@ mod tests {
         assert_eq!(st.code(), tonic::Code::NotFound);
         let st = hii_error_status(crate::hii::HiiError::InvalidIfr);
         assert_eq!(st.code(), tonic::Code::Internal);
+    }
+
+    const FORMSET_ADD_STR_GUID: &str = "5C60F367-A505-419A-859E-2A4FF6CA6FE5";
+    const FORMSET_ADD_LIST_GUID: &str = "899407D7-99FE-43D8-9A21-79EC328CAC21";
+    const FORMSET_ADD_SETUPDATA_GUID: &str = "12345678-90AB-CDEF-1234-567890ABCDEF";
+    const FORMSET_ADD_AMITSE_GUID: &str = "87654321-FEDC-BA09-8765-432109FEDCBA";
+    const FORMSET_ADD_SCHEMA_JSON: &str = r#"{
+        "formset_guid": "A1B2C3D4-E5F6-7890-ABCD-EF1234567890",
+        "title": "T",
+        "help": "H",
+        "class_guids": [],
+        "varstores": [],
+        "default_stores": [],
+        "forms": [
+            {
+                "id": 1,
+                "title": "M",
+                "items": [
+                    {"type": "text", "prompt": "P", "help": "H", "text_two": "X"}
+                ]
+            }
+        ],
+        "setupdata_guid": "12345678-90AB-CDEF-1234-567890ABCDEF",
+        "amitse_guid": "87654321-FEDC-BA09-8765-432109FEDCBA"
+    }"#;
+
+    fn formset_add_node(node_type: FfsType, body: Vec<u8>, children: Vec<FfsNode>) -> FfsNode {
+        FfsNode {
+            guid: None,
+            node_type,
+            subtype: 0,
+            offset: 0,
+            header: vec![],
+            body,
+            tail: vec![],
+            children,
+            action: Action::NoAction,
+            parsing_data: ParsingData::None,
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        }
+    }
+
+    fn formset_add_string_package() -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&[0x00, 0x00, 0x00, crate::hii::string_pack::PACKAGE_STRINGS]);
+        buf.extend_from_slice(&12u32.to_le_bytes());
+        buf.extend_from_slice(&12u32.to_le_bytes());
+        buf.push(0x10);
+        buf.extend_from_slice(b"first");
+        buf.push(0x00);
+        buf.push(0x00);
+        let len = buf.len() as u32;
+        buf[0] = (len & 0xFF) as u8;
+        buf[1] = ((len >> 8) & 0xFF) as u8;
+        buf[2] = ((len >> 16) & 0xFF) as u8;
+        buf
+    }
+
+    fn formset_add_hii_pkg(kind: u8, payload: &[u8]) -> Vec<u8> {
+        let len = 4 + payload.len();
+        let mut b = vec![
+            (len & 0xFF) as u8,
+            ((len >> 8) & 0xFF) as u8,
+            ((len >> 16) & 0xFF) as u8,
+            kind,
+        ];
+        b.extend_from_slice(payload);
+        b
+    }
+
+    fn formset_add_hii_list(guid: &Guid, pkgs: &[&[u8]]) -> Vec<u8> {
+        let total = 20 + 4 + pkgs.iter().map(|p| p.len()).sum::<usize>();
+        let mut b = guid.to_bytes().to_vec();
+        b.extend_from_slice(&(total as u32).to_le_bytes());
+        for p in pkgs {
+            b.extend_from_slice(p);
+        }
+        b.extend_from_slice(&[0x04, 0x00, 0x00, r_efi::hii::PACKAGE_END]);
+        b
+    }
+
+    fn formset_add_hii_pe() -> Vec<u8> {
+        let guid = Guid::try_parse(FORMSET_ADD_LIST_GUID).unwrap();
+        let form = formset_add_hii_pkg(r_efi::hii::PACKAGE_FORMS, &[0x0Eu8, 0x17, 0xAA]);
+        let string_pkg = formset_add_string_package();
+        let blob = formset_add_hii_list(&guid, &[&form, &string_pkg]);
+        crate::hii::pe_resource::synth_hii_pe("HII", &blob)
+    }
+
+    fn formset_add_cert_blocked_pe() -> Vec<u8> {
+        let mut pe = formset_add_hii_pe();
+        assert!(crate::hii::pe_resource::try_grow_rsrc_tail(&mut pe, 32));
+        pe[0xe8..0xec].copy_from_slice(&0x1000u32.to_le_bytes());
+        pe[0xec..0xf0].copy_from_slice(&8u32.to_le_bytes());
+        pe
+    }
+
+    fn formset_add_image(pe: Vec<u8>, wrapper_guid: Option<Guid>) -> Image {
+        let mut pe_section = formset_add_node(FfsType::Section, pe, vec![]);
+        pe_section.subtype = crate::ffs::EFI_SECTION_PE32;
+        let section = if let Some(guid) = wrapper_guid {
+            let mut wrapper = formset_add_node(FfsType::Section, vec![], vec![pe_section]);
+            wrapper.subtype = crate::ffs::EFI_SECTION_GUID_DEFINED;
+            wrapper.parsing_data = ParsingData::GuidedSection(GuidedSectionParsingData {
+                guid,
+                dictionary_size: 0x0080_0000,
+            });
+            wrapper
+        } else {
+            pe_section
+        };
+        let mut file = formset_add_node(FfsType::File, vec![], vec![section]);
+        file.guid = Some(Guid::try_parse(FORMSET_ADD_STR_GUID).unwrap());
+        let mut setupdata = formset_add_node(FfsType::File, vec![0u8; 108], vec![]);
+        setupdata.guid = Some(Guid::try_parse(FORMSET_ADD_SETUPDATA_GUID).unwrap());
+        let mut amitse = formset_add_node(FfsType::File, vec![0u8; 108], vec![]);
+        amitse.guid = Some(Guid::try_parse(FORMSET_ADD_AMITSE_GUID).unwrap());
+        let volume = formset_add_node(FfsType::Volume, vec![], vec![file, setupdata, amitse]);
+        let root = formset_add_node(FfsType::Image, vec![], vec![volume]);
+        Image {
+            image_id: "i".into(),
+            session_id: "s".into(),
+            root,
+            mode: ImageMode::Write,
+        }
+    }
+
+    async fn formset_add_status(img: Image) -> Status {
+        let td = TempDir::new().unwrap();
+        let db = crate::storage::open_db(&td.path().join("db.sqlite")).unwrap();
+        let sm = Arc::new(SessionManager::new(
+            db,
+            td.path().to_path_buf(),
+            Duration::from_secs(864000),
+            Duration::from_secs(3600),
+            false,
+        ));
+        let server = EngineServer {
+            sm,
+            images: Arc::new(Mutex::new(HashMap::from([("i".to_string(), img)]))),
+            data_dir: td.path().to_path_buf(),
+        };
+        server
+            .hii_form_set_add(Request::new(HiiFormSetAddRequest {
+                image_id: "i".into(),
+                schema_json: FORMSET_ADD_SCHEMA_JSON.to_string(),
+                target_ffs_guid: String::new(),
+            }))
+            .await
+            .unwrap_err()
+    }
+
+    #[tokio::test]
+    async fn hii_form_set_add_maps_mutation_behind_compression_to_failed_precondition() {
+        let st = formset_add_status(formset_add_image(
+            formset_add_hii_pe(),
+            Some(crate::ffs::tiano_guid()),
+        ))
+        .await;
+        assert_eq!(st.code(), tonic::Code::FailedPrecondition);
+        assert!(st.message().contains("recompressed"));
+    }
+
+    #[tokio::test]
+    async fn hii_form_set_add_maps_pe_growth_unsupported_to_failed_precondition() {
+        let st = formset_add_status(formset_add_image(formset_add_cert_blocked_pe(), None)).await;
+        assert_eq!(st.code(), tonic::Code::FailedPrecondition);
+        assert!(st.message().contains("grow"));
     }
 
     #[tokio::test]
