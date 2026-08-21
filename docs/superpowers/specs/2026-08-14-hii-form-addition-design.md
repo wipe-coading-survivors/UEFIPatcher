@@ -167,14 +167,25 @@
 ### 4.C Фаза C — форма в существующий формсет
 
 1. **IFR-вставка**: `insert_form_into_package(pkg: &mut Vec<u8>,
-   form_ifr: &[u8], varstores: &[u8]) -> bool` — найти закрывающий END
-   целевого формсета (walker как в `find_form_suppress_scope`), splice
-   формы перед ним; varstore-опкоды — сразу после формсет-заголовка.
-   Выбор формсета — по `form_id` (target секции) + порядковый номер
-   формсета в пакете (дискриминатор `#<n>`, симметрично `8160c5e`).
+   formset_idx: usize, form_ifr: &[u8], varstores: &[u8]) -> bool` — найти
+   закрывающий END целевого формсета (walker как в
+   `find_form_suppress_scope`), splice формы перед ним; varstore-опкоды —
+   сразу после формсет-заголовка. Выбор формсета — по `form_id` (target
+   секции) + порядковый номер формсета в пакете (дискриминатор `#<n>`,
+   симметрично `8160c5e`). (Поправка 2026-08-20, префлайт фазы C:
+   селектор добавлен в сигнатуру — исходная сигнатура без него не могла
+   выражать `#n`; pkg включает 4-байтовый package header, u24-размер
+   обновляется на длину вставки.)
 2. **Строки** — та же схема §4.B3 (новые id, map для сборки IFR).
 3. **RPC/CLI**: `HiiFormAdd` (`image_id`, `target`, `schema_json`) →
-   `hii form add --target <form_id> --file <schema.json>`.
+   `hii form add --target <form_id> --file <schema.json>`. (Поправка
+   2026-08-20, префлайт фазы C: target = `<FormInfo.form_id>#<n>` —
+   form_id из `hii form list` выбирает форм-пакет, `n` — 0-based
+   порядковый номер формсета в пакете, default 0; engine-точка —
+   `hii/form_add.rs::add_form`, schema переиспользует `FormSetSchema`
+   (forms+varstores), AMI-патч не выполняется; вместе с Task 9
+   поглощается TODO «дискриминатор отказа роста
+   add_strings_to_resource».)
 4. **Acceptance**: синтетика — форма в формсет ресурса → build →
    re-parse: форма с новыми question-строками; real HNX99TF (Setup).
 

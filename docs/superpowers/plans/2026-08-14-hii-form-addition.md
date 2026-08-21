@@ -150,7 +150,15 @@
    длина выросла ровно на вставку; несуществующий формсет (`#n` за
    пределами) → false.
 2. Реализация по спеке §4.C1 (walker симметричен
-   `find_form_suppress_scope`).
+   `find_form_suppress_scope`). (Поправка 2026-08-20, префлайт фазы C:
+   сигнатура из спеки не содержала селектора формсета, а тест-текст
+   требует `#n`-семантику — пакет может содержать несколько формсетов.
+   Скорректированная сигнатура: `insert_form_into_package(pkg: &mut
+   Vec<u8>, formset_idx: usize, form_ifr: &[u8], varstores: &[u8]) ->
+   bool`, где `formset_idx` — 0-based порядковый номер формсета в пакете;
+   pkg включает 4-байтовый package header, чей u24-размер растёт на
+   длину вставки; varstores — сразу после формсет-заголовка, форма —
+   перед закрывающим END формсета.)
 3. Green; commit `feat(uefi-engine): insert form into existing formset
    package`.
 
@@ -164,6 +172,30 @@
    `e576fd6` добавил ветки `MutationBehindCompression |
    PeGrowthUnsupported` → `failed_precondition`; Task 9 наследует
    паттерн для нового `HiiFormAdd`-обработчика.)
+   (Поправка 2026-08-20, префлайт фазы C: (1) target-синтаксис —
+   `<FormInfo.form_id>#<n>`: form_id (значение из `hii form list`,
+   = target секции) выбирает форм-пакет, `n` — 0-based порядковый
+   номер формсета в пакете (default 0, malformed → NotFound,
+   rsplit_once('#') симметрично 8160c5e); (2) engine-точка — новый
+   модуль `hii/form_add.rs` (`pub fn add_form`), переиспользует
+   pub(crate)-хелперы formset_add (collect_item_strings, выделенная
+   эмиссия форм/вопросов из build_ifr); schema — существующий
+   `FormSetSchema` (используются forms+varstores, formset-поля
+   игнорируются); AMI-патч в form-add v1 не выполняется (patch_ami —
+   формсетный уровень); (3) resource-канал — вставка в FORM-пакет это
+   mid-blob сдвиг хвоста списка: строки ПЕРВЫМИ (id-map нужен для
+   IFR), ре-скан FORM-пакета после мутации, затем вставка с цепочкой
+   u24-заголовок пакета + u32 total списка + data entry size +
+   PE-рост (дисциплина `add_strings_to_resource`: plan_rsrc_blob_
+   growth/copy_within/write_length_chain); (4) поглощение TODO
+   «add_strings_to_resource: дискриминатор отказа роста» — причина
+   отказа из `add_strings_to_resource` (рост → `PeGrowthUnsupported`,
+   не `StringPackageNotFound`), унификация предиката
+   `pe_resource_has_string_package` с internals string_pack, и
+   first-match walker'а (первый DFS-кандидат за non-recompressable
+   обёрткой не должен глушить поздние годные: пропускать заблокиро-
+   ванные и продолжать поиск; если годных нет, а заблокированные есть
+   → `MutationBehindCompression`).)
 2. CLI `hii form add --target <form_id> --file <schema.json>`.
 3. Green; commit `feat(uefi-engine,uefi-cli): form add RPC + subcommand`.
 
