@@ -853,9 +853,10 @@ fn real_image_hii_form_visibility_round_trip() {
 
 #[test]
 #[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
-fn real_image_hii_formset_add_pe_resource_refused_by_geometry() {
+fn real_image_hii_formset_add_pe_resource_grows_reloc_tail() {
     use uefi_engine::builder::build_image;
     use uefi_engine::guid_to_upper_string;
+    use uefi_engine::hii::forms::collect_forms;
     use uefi_engine::hii::formset_add::add_setup_formset;
     use uefi_engine::hii::pe_resource::try_grow_rsrc_tail;
     use uefi_engine::hii::schema;
@@ -863,6 +864,7 @@ fn real_image_hii_formset_add_pe_resource_refused_by_geometry() {
 
     const FORMSET_GUID: &str = "6A7C8B9D-4E5F-4A61-B2C3-9ABCDEF01234";
     const FORM_ID: u16 = 0x7A11;
+    const FORM_TITLE: &str = "PATCHER ACCEPTANCE";
 
     let data = load_fw();
     assert_eq!(data.len(), 0x0100_0000, "16 MiB image expected");
@@ -910,10 +912,13 @@ fn real_image_hii_formset_add_pe_resource_refused_by_geometry() {
     let pe_snapshot = node.body.clone();
     let mut pe_probe = node.body.clone();
     assert!(
-        !try_grow_rsrc_tail(&mut pe_probe, 16),
-        "HNX99TF HII PE images have .reloc after .rsrc; growth is refused by design"
+        try_grow_rsrc_tail(&mut pe_probe, 16),
+        "reloc-aware growth must accept HNX99TF HII PE geometry (.reloc trails .rsrc, raw ends at EOF)"
     );
-    assert_eq!(pe_probe, pe_snapshot);
+    assert!(
+        pe_probe.len() > pe_snapshot.len(),
+        "growth must extend the PE by the file-align-rounded delta"
+    );
 
     let mk_schema = |sd: Guid, am: Guid| schema::FormSetSchema {
         formset_guid: FORMSET_GUID.into(),
@@ -924,7 +929,7 @@ fn real_image_hii_formset_add_pe_resource_refused_by_geometry() {
         default_stores: vec![],
         forms: vec![schema::FormSchema {
             id: FORM_ID,
-            title: "PATCHER ACCEPTANCE".into(),
+            title: FORM_TITLE.into(),
             items: vec![schema::ItemSchema::Text(schema::TextItem {
                 prompt: "PATCHER PROMPT".into(),
                 help: "PATCHER ITEM HELP".into(),
@@ -946,17 +951,6 @@ fn real_image_hii_formset_add_pe_resource_refused_by_geometry() {
         "AMI pre-check must fire before any mutation, got {err:?}"
     );
 
-    let err = add_setup_formset(
-        &mut img,
-        &mk_schema(setupdata_guid, amitse_guid),
-        Some(&target_guid),
-    )
-    .map(|_| ());
-    assert!(
-        matches!(err, Err(uefi_engine::hii::HiiError::StringPackageNotFound)),
-        "add_strings_to_resource refusal (non-growable .rsrc) maps to StringPackageNotFound, got {err:?}"
-    );
-
     let mut node = &img.root;
     for &i in &pe_path {
         node = &node.children[i];
@@ -964,21 +958,52 @@ fn real_image_hii_formset_add_pe_resource_refused_by_geometry() {
     assert_eq!(node.body, pe_snapshot, "PE body must stay byte-identical");
     assert_all_no_action(&img.root);
 
-    let built = build_image(&img).expect("build_image of unmutated image");
+    let res = add_setup_formset(
+        &mut img,
+        &mk_schema(setupdata_guid, amitse_guid),
+        Some(&target_guid),
+    )
+    .expect("add_setup_formset must succeed on the .reloc-trailing HII PE");
+    assert_eq!(res.new_ffs_guid, Guid::try_parse(FORMSET_GUID).unwrap());
+    assert_eq!(res.inserted_form_ids, vec![FORM_ID]);
+
+    let mut node = &img.root;
+    for &i in &pe_path {
+        node = &node.children[i];
+    }
+    assert!(
+        node.body.len() > pe_snapshot.len(),
+        "PE resource body must grow to hold the new strings and formset"
+    );
+
+    let built = build_image(&img).expect("build_image after formset add");
     assert_eq!(
         built.len(),
         data.len(),
         "total flash length must be preserved"
     );
-    assert_eq!(&built[..0x890000], &data[..0x890000]);
-    assert_eq!(&built[0xd60000..], &data[0xd60000..]);
     assert_eq!(
-        built, data,
-        "refused mutation must leave the image untouched"
+        &built[..0x890000],
+        &data[..0x890000],
+        "bytes before FV1 must be untouched"
+    );
+    assert_eq!(
+        &built[0xd60000..],
+        &data[0xd60000..],
+        "bytes after FV1 must be untouched"
     );
 
+    let re = parse_image(&built, ImageMode::Read, "img2", "s2").expect("re-parse");
+    let forms = collect_forms(&re);
+    let added = forms
+        .iter()
+        .find(|f| f.formset_guid == FORMSET_GUID)
+        .expect("added formset must be visible after round-trip");
+    assert_eq!(added.title, FORM_TITLE);
+    assert_eq!(added.form_id_ifr, u32::from(FORM_ID));
+
     eprintln!(
-        "real_image formset-add refusal: target={target_prefix} (ui-backed PE32 'HII' file), setupdata={} (AMITSESetupData), amitse={} (AMITSE), err=StringPackageNotFound via .rsrc-not-last growth guard",
+        "real_image formset-add growth: target={target_prefix} (ui-backed PE32 'HII' file, .reloc after .rsrc), setupdata={} (AMITSESetupData), amitse={} (AMITSE), formset={FORMSET_GUID} title={FORM_TITLE}",
         guid_to_upper_string(&setupdata_guid),
         guid_to_upper_string(&amitse_guid)
     );
