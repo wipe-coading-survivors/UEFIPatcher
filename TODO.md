@@ -423,8 +423,30 @@
   геометрии HII-модулей других вендоров/образов; (4) дешёвый
   DXE-эмулятор как acceptance-стадия; (5) компактфикация STRING-пакетов.
 
-## ImageUpload RPC (docker-развертывание)
+### Фаза C form-add: находки acceptance (2026-08-20)
 
+> Task 10 плана `2026-08-14-hii-form-addition.md` (live-тест
+> `real_image_hii_form_add_into_setup_formset`, HNX99TF, 17/17 ignore-тестов
+> зелёные). Мелкие API-наблюдения, surfaced живым тестом.
+
+* [ ] **FormInfo: несогласованный регистр GUID между полями** — `formset_guid`
+  приходит upper (`guid_to_upper_string`), а GUID-префикс `form_id` — lower
+  (`Guid` Display в `format!("{}:{:#04x}:{}", fg, ...)` формы walk_sections).
+  Клиент, сопоставляющий `form_id` с каноническим GUID-таргетом, обязан
+  сравнивать case-insensitively (тест споткнулся об это на первом запуске).
+  Контекст: `hii/forms.rs` `walk_sections`; унифицировать на upper при
+  следующем касании (миграция клиентов: CLI/TUI уже выводят как есть).
+* [ ] **add_form: существующие varstore/question id недискаверибельны** —
+  `FormSetInfo` (ifr.rs) отдаёт только guid/title/forms; автор схемы не может
+  динамически выбрать незанятый var-store id / question id и вынужден брать
+  высокие «магические» значения (тест: 0x7F00/0x7F01). Контекст: расширить
+  IFR-walker сбором varstore-id (и опционально question-id) при подключении
+  TUI/WebUI редакторов; до тех пор документировать конвенцию high-id.
+* [ ] **TUI/WebUI обёртки над `HiiFormAdd`/`HiiFormsetAdd` RPC** — CLI-обёртки
+  есть (`hii form add`, `hii formset add`), интерактивных/WebUI-путей нет;
+  отложено планом фазы C (§«Отложенное»).
+
+## ImageUpload RPC (docker-развертывание)
 
 `ImageOpen` читает файл с **серверной FS** по пути (`OpenImageRequest.path`).
 В docker-развертывании (где client FS != server FS) это ломается: CLI/TUI

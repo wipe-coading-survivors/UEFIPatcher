@@ -1009,6 +1009,146 @@ fn real_image_hii_formset_add_pe_resource_grows_reloc_tail() {
     );
 }
 
+#[test]
+#[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
+fn real_image_hii_form_add_into_setup_formset() {
+    use std::collections::BTreeSet;
+    use uefi_engine::builder::build_image;
+    use uefi_engine::hii::form_add::add_form;
+    use uefi_engine::hii::forms::collect_forms;
+    use uefi_engine::hii::schema;
+    use uefi_engine::types::ImageMode;
+
+    const SETUP_FILE_GUID: &str = "899407D7-99FE-43D8-9A21-79EC328CAC21";
+    const SETUP_FORMSET_GUID: &str = "7B59104A-C00D-4158-87FF-F04D6396A915";
+    const FORM_TITLE: &str = "PATCHER ADDED FORM";
+    const NUM_PROMPT: &str = "PATCHER ADDED PROMPT";
+    const NUM_HELP: &str = "PATCHER ADDED HELP";
+    const VARSTORE_ID: u16 = 0x7F00;
+    const QUESTION_ID: u16 = 0x7F01;
+
+    let data = load_fw();
+    assert_eq!(data.len(), 0x0100_0000, "16 MiB image expected");
+    let mut img = parse_image(&data, ImageMode::Write, "img1", "s1").expect("parse_image");
+
+    let forms = collect_forms(&img);
+    let setup: Vec<_> = forms
+        .iter()
+        .filter(|f| f.formset_guid == SETUP_FORMSET_GUID)
+        .collect();
+    assert!(!setup.is_empty(), "Setup formset must exist in HNX99TF");
+    let targets: BTreeSet<&str> = setup.iter().map(|f| f.form_id.as_str()).collect();
+    assert_eq!(
+        targets.len(),
+        1,
+        "Setup formset must live in a single section target, got {targets:?}"
+    );
+    let item_id = targets.iter().next().unwrap().to_string();
+    let mut target_parts = item_id.split(':');
+    let target_file_guid = target_parts.next().unwrap_or_default();
+    let target_section_type = target_parts.next().unwrap_or_default();
+    assert_eq!(
+        target_file_guid.to_ascii_uppercase(),
+        SETUP_FILE_GUID,
+        "Setup formset must live in the Setup file, got {item_id}"
+    );
+    assert_eq!(
+        target_section_type, "0x10",
+        "Setup HII channel must be a PE32 section, got {item_id}"
+    );
+
+    let new_form_id =
+        u16::try_from(setup.iter().map(|f| f.form_id_ifr).max().unwrap() + 1).unwrap();
+    assert!(
+        setup
+            .iter()
+            .all(|f| u32::from(new_form_id) != f.form_id_ifr),
+        "new form id must not collide with existing Setup forms"
+    );
+
+    let sc = schema::FormSetSchema {
+        formset_guid: SETUP_FORMSET_GUID.into(),
+        title: FORM_TITLE.into(),
+        help: NUM_HELP.into(),
+        class_guids: vec![],
+        varstores: vec![schema::VarStoreSchema {
+            id: VARSTORE_ID,
+            guid: "89ABCDEF-0123-4DEF-8ABC-0123456789AB".into(),
+            size: 64,
+            name: "PatcherVar".into(),
+            var_type: schema::VarStoreType::Buffer,
+        }],
+        default_stores: vec![],
+        forms: vec![schema::FormSchema {
+            id: new_form_id,
+            title: FORM_TITLE.into(),
+            items: vec![schema::ItemSchema::Numeric(schema::NumericItem {
+                prompt: NUM_PROMPT.into(),
+                help: NUM_HELP.into(),
+                question_id: QUESTION_ID,
+                var_store_id: VARSTORE_ID,
+                var_offset: 0,
+                size: 1,
+                min: 0,
+                max: 255,
+                step: 1,
+                display: schema::DisplayMode::UintDec,
+                defaults: schema::Defaults::default(),
+            })],
+        }],
+        setupdata_guid: None,
+        amitse_guid: None,
+    };
+
+    let res = add_form(&mut img, &item_id, &sc).expect("add_form into live Setup formset");
+    assert_eq!(res.inserted_form_ids, vec![new_form_id]);
+    assert_eq!(
+        res.string_ids.len(),
+        4,
+        "varstore name + form title + prompt + help strings must be appended"
+    );
+    assert!(res.string_ids.contains_key(FORM_TITLE));
+
+    let built = build_image(&img).expect("build_image after form add");
+    assert_eq!(
+        built.len(),
+        data.len(),
+        "total flash length must be preserved"
+    );
+    assert_eq!(
+        &built[..0x890000],
+        &data[..0x890000],
+        "bytes before FV1 must be untouched"
+    );
+    assert_eq!(
+        &built[0xd60000..],
+        &data[0xd60000..],
+        "bytes after FV1 must be untouched"
+    );
+
+    let re = parse_image(&built, ImageMode::Read, "img2", "s2").expect("re-parse");
+    let forms2 = collect_forms(&re);
+    let added: Vec<_> = forms2
+        .iter()
+        .filter(|f| f.formset_guid == SETUP_FORMSET_GUID && f.form_id_ifr == u32::from(new_form_id))
+        .collect();
+    assert_eq!(
+        added.len(),
+        1,
+        "new form must appear exactly once under the Setup formset"
+    );
+    assert_eq!(added[0].form_id, item_id);
+    assert_eq!(
+        added[0].title, FORM_TITLE,
+        "title must resolve from the appended strings"
+    );
+    assert!(added[0].visible, "added form must not be suppressed");
+
+    eprintln!(
+        "real_image form-add: setup target={item_id} formset={SETUP_FORMSET_GUID} new_form_id={new_form_id:#06x} title='{FORM_TITLE}'"
+    );
+}
+
 fn assert_all_no_action(node: &FfsNode) {
     assert_eq!(node.action, Action::NoAction);
     for child in &node.children {
