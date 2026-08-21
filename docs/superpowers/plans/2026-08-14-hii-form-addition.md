@@ -159,7 +159,11 @@
 1. `HiiFormAdd` (proto: image_id, target, schema_json) → handler →
    engine-функция `hii::add_form` (строки Task 6 + вставка Task 8);
    маппинг ошибок через `hii_error_status` + `PeGrowthUnsupported` →
-   `failed_precondition`.
+   `failed_precondition`. (Поправка 2026-08-21, финальное ревью фазы B:
+   маппинг для formset_add-обработчика закрыт досрочно — коммит
+   `e576fd6` добавил ветки `MutationBehindCompression |
+   PeGrowthUnsupported` → `failed_precondition`; Task 9 наследует
+   паттерн для нового `HiiFormAdd`-обработчика.)
 2. CLI `hii form add --target <form_id> --file <schema.json>`.
 3. Green; commit `feat(uefi-engine,uefi-cli): form add RPC + subcommand`.
 
