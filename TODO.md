@@ -101,6 +101,16 @@
 с IFR-байткодом) и string-package'ей, слияние модуля `setup_advanced/` с
 `setup/` в одну согласованную иерархию.
 
+> **Plan B core complete** (актуализация 2026-08-22): реализовано спекой
+> `2026-08-14-hii-forms-strings-extraction-design.md` (фазы 1–6, ветка
+> `fix/cycle6-reimplent`): `setup/`+`setup_advanced/` слиты в единый `hii/`
+> с полным ребрендингом `Setup*`→`Hii*` (модуль, proto, CLI-noun), ридеры
+> форм/строк работают на живом HNX99TF через PE-resource + bare каналы
+> (фаза 6). От исходного scope остались: client-wiring Gateway/WebUI
+> (отложен решением #2 спеки — см. «Gateway + WebUI rework») и TUI HII-view
+> (пункт ниже). Развитие дальше — планы `2026-08-14-lzma-recompression.md`
+> и `2026-08-14-hii-form-addition.md` (фазы A–C завершены).
+
 **Baseline-коммит для onboarding** (где найти актуальный на момент
 написания код `setup_advanced/` и `setup/`):
 `0470553bcc579af0eb72075533bc2c73f77d543f` —
@@ -108,17 +118,31 @@
 и `crates/uefi-engine/src/setup/{mod,ifr}.rs`. Если код переехал/удалён —
 искать через `git log --all -- crates/uefi-engine/src/setup_advanced/`.
 
-* [ ] **Реализовать `SetupListForms`** — обход FFS-секций с IFR-байткодом,
-  извлечение FormSet GUID, FormId, title-string-id, состояния visibility
-  (через `find_suppress_if_scopes`). Возвращает `Vec<FormInfo>`.
-* [ ] **Реализовать `SetupListStrings`** — чтение string-package'ей через
-  `setup_advanced/string_pack.rs`, возврат `Vec<StringInfo>` с language /
-  string_id / text.
-* [ ] **Слить `setup_advanced/` с `setup/`** — общая иерархия
-  `crates/uefi-engine/src/setup/{mod,ifr,forms,strings,schema,
-  ami_patcher,ffs_assembler,ifr_builder,string_pack}.rs`. Решить структуру
-  импортов и更新ть `lib.rs`.
-* [ ] **Подключить CLI/TUI/Gateway/WebUI** на реальные данные вместо stub'ов.
+* [x] **Реализовать `SetupListForms`** — закрыто фазами 4+6 под именем
+  `HiiListForms` (ребрендинг фазы 2): IFR-walker `hii/ifr.rs`
+  (`parse_form_package`, `ff1a5ab`), `collect_forms` + резолюция титулов
+  по string-package в `hii/forms.rs` (`5967e9b`), RPC-handler (`844e77c`);
+  real-image канал — PE-resource extraction фазы 6 (`e74cb32`, `a35c085`).
+  `FormInfo`: form_id (GUID-target), formset_guid, form_id_ifr, title,
+  visible (suppress-скоупы: `find_suppress_if_scopes` + per-form
+  `find_form_suppress_scope`, `8160c5e`).
+* [x] **Реализовать `SetupListStrings`** — закрыто фазой 3 под именем
+  `HiiListStrings`: SIBT-reader `hii/strings.rs` (`parse_string_package`,
+  `cfe64a3`) + `collect_strings` и RPC-handler (`dee2bcb`); edk2-раскладка
+  языка @+46 (`f5198f9`). `StringInfo`: language / string_id / text.
+* [x] **Слить `setup_advanced/` с `setup/`** — закрыто фазой 1 (`b4242b1`,
+  `458beac`), с отличием от исходного замысла: итоговый модуль — `hii/`, не
+  `setup/` (решения #5/#6 спеки: полный ребрендинг `setup`→`hii`). Текущий
+  состав: `hii/{mod,strings,ifr,forms,string_pack,schema,ami_patcher,
+  ffs_assembler,ifr_builder,package_list,pe_resource,formset_add,
+  form_add}.rs`.
+* [x] **Подключить CLI** (исходный пункт — CLI/TUI/Gateway/WebUI) — CLI на
+  реальных RPC: `hii form list`, `hii form set-visibility`, `hii string
+  list` (фаза 2 `afb5156`; stdout-ассерты фазы 5 `ad70b2c`); позже расширено
+  `hii formset add` (`08ff7b0`) и `hii form add` (`ce2e57d`). TUI/Gateway/
+  WebUI отложены решением #2 спеки на отдельные циклы: gateway имеет только
+  `/set-visibility` на реальном RPC (`d4423fc`), forms/strings-листинги не
+  подключены — см. «Gateway + WebUI rework»; TUI — пункт ниже.
 * [ ] **TUI: отдельный HII-view для показа/редактирования форм и строк** — не
   встраивать HII-иерархию (formset'ы/формы/строки/языки) в дерево
   BIOS-регионов: дерево — физическая модель хранения (FV/файлы/секции), HII —
@@ -200,7 +224,7 @@
 > на синтетических фикстурах (bare HII-пакет = тело секции 0x19); в
 > реальном образце HNX99TF (AMI Aptio V) HII-списки лежат иначе.
 
-* [ ] **Реальный образец: HII package lists внутри PE32 `.rsrc`-ресурсов
+* [x] **Реальный образец: HII package lists внутри PE32 `.rsrc`-ресурсов
   (тип `'H'`, EDK2 HiiAddPackages-механизм), а не bare-пакетами в телах
   секций.** Предикаты `is_form_package`/`is_string_package` дают 0 hits
   по всему дереву (включая распакованные LZMA-детей); `collect_forms`/
@@ -237,6 +261,13 @@
     глубокой валидацией `parse_form_package`.
   - EDK2-образы (OVMF 4MB ×2, edk2-rk3588 1.9MB + капсула 6.9MB) —
     лицензионно чистый источник фикстур для тестов фазы 6.
+  *Закрыто фазой 6* (спека `2026-08-14-hii-pe-resource-extraction-design.md`,
+  план `2026-08-14-hii-phase6-pe-resource-extraction.md`): package-list
+  сплиттер `hii/package_list.rs` (`e74cb32`), PE `.rsrc` `L"HII"`-extraction
+  через `object` (`a35c085`), bare-скан PE32-тел для EDK2 FORM-массивов.
+  Оба acceptance-теста зелёные на HNX99TF (перепроверено 2026-08-22 — 4/4
+  HII-тестов, включая formset/form add); `real_image_hii_forms_and_strings`
+  зелёный и на edk2-rk3588 (см. заметку в разделе фазы 6 ниже).
 * [x] **`parse_string_package`: язык по реальному
   `EFI_HII_STRING_PACKAGE_HDR`** — закрыто probe-разведкой 2026-08-14
   (байты HNX99TF и edk2-rk3588 идентичны): `LanguageWindow CHAR16[16]`
@@ -245,7 +276,8 @@
   `HdrSize`); «en-US» → HdrSize=52, длиннее → 57. `strings.rs`
   (`LANGUAGE_OFFSET=46`, граница `info_off`) уже корректен для реальных
   данных. Осталось: синтетические фикстуры фаз 3–4 пишут язык @+12 —
-  выровнять под реальный layout в фазе 6.
+  выровнять под реальный layout в фазе 6. Выполнено: тест-фикстура
+  `make_pkg` (`hii/strings.rs` tests) пишет язык по реальному offset 46.
 * [x] **`real_image.rs`: ignore-строки разъехались** — 10 старых тестов
   используют `"... (gitignored)"`, 4 новых (full-flash + HII) — без
   суффикса. Мелочь; унифицировать при следующем касании файла. Закрыто
@@ -306,7 +338,12 @@
   байт-идентичен). Ограничение: живая валидация на edk2-rk3588 не
   проводилась (образ недоступен в refs/fw после фазы 6) — механизм покрыт
   синтетикой; прогнать `real_image_hii_forms_and_strings` c
-  `UEFIPATCHER_TEST_FW=<rk3588.bin>` при появлении образа.
+  `UEFIPATCHER_TEST_FW=<rk3588.bin>` при появлении образа. Прогнано
+  2026-08-22 (образ вернулся в refs/fw как
+  `orange-pi-5-plus-uefi-edk2-rk3588.img`): тест зелёный. Специфичные
+  для HNX99TF HII-мутационные тесты на rk3588 не применимы — падают на
+  собственных предпосылках (нет Setup-formset / suppressed-форм), не на
+  движке.
 * [x] **clippy: `cargo clippy -p uefi-engine --all-targets -- -D warnings`
   падает (pre-existing)** — закрыто (коммит `2796c8a`: `manual_contains` в
   тесте `bare_scan_drops_candidates_covered_by_resource_ranges`).
@@ -501,10 +538,16 @@
   удалить `/dump`; добавить `/api/v1/images` (ImagesList),
   `/api/v1/image/:id/forms`, `/api/v1/image/:id/strings`,
   `/api/v1/image/:id/status`, `DELETE /api/v1/image/:id` (ImageClose).
-* [ ] **Gateway: `routes/setup.rs`** — добавить `forms`, `strings` handlers.
+* [ ] **Gateway: `routes/hii.rs`** (ex-`setup.rs`, переименован фазой 2
+  Плана B, `d4423fc`) — добавить `forms`, `strings` handlers.
 * [ ] **WebUI: полный fix** — обновить все fetch-вызовы под новые маршруты,
   подключить forms/strings listing, починить существующие баги (dead
   `dumpTree` import, unused `openImage` name field, a11y warnings).
+  Дополнено актуализацией 2026-08-22: `addFormSet()` в `api.ts` зовёт
+  `/api/v1/image/:id/add-formset` — маршрут в gateway никогда не
+  существовал (кнопка Add FormSet на setup-странице даёт 404); gateway
+  `/set-visibility` уже на реальном RPC, `/setup-items` (фильтр
+  `image_nodes_list` по type 67) WebUI не использует.
 
 ## TUI: deferred enhancements (after cycle 3 rework)
 
