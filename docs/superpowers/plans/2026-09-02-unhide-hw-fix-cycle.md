@@ -474,6 +474,10 @@ git commit -m "feat(uefi-engine): compress_lzma_fit sweep with slot budget prior
         let section = include_bytes!("../../../../tests/fixtures/lzma_guided_section.bin");
         let mut node = crate::parser::section::parse_section(section, 0).unwrap();
         assert!(!node.children.is_empty());
+        let child = &mut node.children[0];
+        child.action = Action::Replace;
+        child.children.clear();
+        child.body = vec![0x42; 24];
         node.action = Action::Rebuild;
         let mut out = Vec::new();
         build_section(&node, &mut out).unwrap();
@@ -525,7 +529,7 @@ git commit -m "feat(uefi-engine): compress_lzma_fit sweep with slot budget prior
     }
 ```
 
-(`crate::ffs::lzma_guid()` — публичный хелпер, `crates/uefi-engine/src/ffs.rs:22`; бюджет слота = `body.len() - prefix_len` = 4 байта — несжимаемый payload обязан не влезть и включить раскладку роста.)
+(`crate::ffs::lzma_guid()` — публичный хелпер, `crates/uefi-engine/src/ffs.rs:22`; бюджет слота = `body.len() - prefix_len` = 4 байта — несжимаемый payload обязан не влезть и включить раскладку роста. Payload исходного фикстура (210 байт 16-битного кода) liblzma не помещает обратно в 162-байтный слот — минимум по всей сетке pb0..2 × lc0..4 × lp0..2 × mf{bt2,bt3,bt4,hc4} × nice{64,128,273} = 166/167 байт; исходный поток создан более экономным OEM-энкодером. Поэтому слот-фит закреплён на сжимаемом payload `0x42×24` с `Action::Replace` (Replace также перезаписывает size в заголовке дочерней секции — verbatim NoAction оставил бы устаревший размер 0xD2 и re-parse падал).)
 
 - [ ] **Step 2: Запустить, убедиться в провале**
 
