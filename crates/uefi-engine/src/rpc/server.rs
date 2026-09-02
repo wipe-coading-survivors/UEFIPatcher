@@ -49,7 +49,9 @@ fn hii_error_status(e: crate::hii::HiiError) -> Status {
         }
         crate::hii::HiiError::NotWritable
         | crate::hii::HiiError::MutationBehindCompression
-        | crate::hii::HiiError::PeGrowthUnsupported => Status::failed_precondition(e.to_string()),
+        | crate::hii::HiiError::PeGrowthUnsupported
+        | crate::hii::HiiError::IdOccupied(_)
+        | crate::hii::HiiError::PrcPatchUnsupported => Status::failed_precondition(e.to_string()),
         _ => Status::internal(e.to_string()),
     }
 }
@@ -922,6 +924,14 @@ mod tests {
         let st = hii_error_status(crate::hii::HiiError::PeGrowthUnsupported);
         assert_eq!(st.code(), tonic::Code::FailedPrecondition);
         assert!(st.message().contains("grow"));
+    }
+
+    #[test]
+    fn hii_error_status_maps_id_occupied_and_prc_patch_unsupported() {
+        let st = hii_error_status(crate::hii::HiiError::IdOccupied(7));
+        assert_eq!(st.code(), tonic::Code::FailedPrecondition);
+        let st = hii_error_status(crate::hii::HiiError::PrcPatchUnsupported);
+        assert_eq!(st.code(), tonic::Code::FailedPrecondition);
     }
 
     const FORMSET_ADD_STR_GUID: &str = "5C60F367-A505-419A-859E-2A4FF6CA6FE5";

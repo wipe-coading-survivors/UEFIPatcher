@@ -241,7 +241,6 @@ pub fn add_strings_to_resource(
     Ok(mapping)
 }
 
-#[allow(dead_code)]
 pub(crate) fn insert_strings_at_ids_in_resource(
     pe: &mut Vec<u8>,
     language: &str,
