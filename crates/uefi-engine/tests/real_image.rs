@@ -771,21 +771,30 @@ fn real_image_hii_forms_and_strings() {
 
     let strings = collect_strings(&img);
     assert!(!strings.is_empty(), "expected strings in real image");
+    let languages: HashSet<&str> = strings.iter().map(|s| s.language.as_str()).collect();
+    assert!(
+        languages.iter().any(|l| l.to_lowercase().starts_with("en")),
+        "expected primary language ~English (en/en-US/eng), got {languages:?}"
+    );
+    assert!(
+        languages.len() >= 2,
+        "expected >=2 string-package languages under full traversal, got {languages:?}"
+    );
     assert!(
         strings
             .iter()
-            .any(|s| s.language.to_lowercase().starts_with("en")),
-        "expected primary language ~English (en/en-US/eng), got {:?}",
-        strings.first().map(|s| s.language.as_str())
+            .any(|s| s.language.starts_with("x-UEFI-AMI") && !s.text.is_empty()),
+        "expected non-empty x-UEFI-AMI token package alongside en-US display package, got {languages:?}"
     );
 
     eprintln!(
-        "real_image hii: {} forms across {} formsets {:?}; {} strings (language {:?})",
+        "real_image hii: {} forms across {} formsets {:?}; {} strings across {} languages {:?}",
         forms.len(),
         formsets.len(),
         formsets,
         strings.len(),
-        strings.first().map(|s| &s.language)
+        languages.len(),
+        languages
     );
 }
 
