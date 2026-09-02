@@ -491,8 +491,8 @@ git commit -m "feat(uefi-engine): compress_lzma_fit sweep with slot budget prior
 
     #[test]
     fn guided_lzma_growth_layout_when_payload_exceeds_slot() {
-        let mut body = vec![0u8; 20];
-        body[16..18].copy_from_slice(&20u16.to_le_bytes());
+        let mut body = vec![0u8; 24];
+        body[16..18].copy_from_slice(&24u16.to_le_bytes());
         let mut payload = Vec::new();
         let mut x: u64 = 0x243F_6A88_85A3_08D3;
         for _ in 0..4096 {
