@@ -1384,33 +1384,33 @@ git commit -m "feat(uefi-engine): insert-at-id in PE resource string packages by
 
     fn two_form_package() -> Vec<u8> {
         let mut ifr = Vec::new();
-        ifr.extend(ifr_op(0x0E, true, &[&u16p(0x0100), &u16p(0x0101)].concat()));
+        ifr.extend(ifr_op(0x0E, true, &[u16p(0x0100).as_slice(), u16p(0x0101).as_slice()].concat()));
         ifr.extend(ifr_op(0x0A, true, &[]));
         ifr.extend(ifr_op(0x12, false, &[0x40]));
         ifr.extend(ifr_op(
             IFR_FORM_OP,
             true,
-            &[&u16p(901), &u16p(0x1325)].concat(),
+            &[u16p(901).as_slice(), u16p(0x1325).as_slice()].concat(),
         ));
         ifr.extend(ifr_op(
             IFR_SUBTITLE_OP,
             false,
-            &[&u16p(4894), &u16p(4895)].concat(),
+            &[u16p(4894).as_slice(), u16p(4895).as_slice()].concat(),
         ));
         ifr.extend(ifr_op(
             IFR_ONE_OF_OP,
             true,
-            &[&u16p(4965), &u16p(4966), &u16p(0x0D5F), &u16p(1)].concat(),
+            &[u16p(4965).as_slice(), u16p(4966).as_slice(), u16p(0x0D5F).as_slice(), u16p(1).as_slice()].concat(),
         ));
         ifr.extend(ifr_op(
             IFR_ONE_OF_OPTION_OP,
             false,
-            &[&u16p(4969), &[0x00, 0x05], &u16p(1).as_slice()].concat(),
+            &[u16p(4969).as_slice(), &[0x00, 0x05], u16p(1).as_slice()].concat(),
         ));
         ifr.extend(ifr_op(
             IFR_ONE_OF_OPTION_OP,
             false,
-            &[&u16p(2638), &[0x00, 0x05], &u16p(0).as_slice()].concat(),
+            &[u16p(2638).as_slice(), &[0x00, 0x05], u16p(0).as_slice()].concat(),
         ));
         ifr.extend(ifr_op(IFR_END_OP, false, &[]));
         ifr.extend(ifr_op(IFR_END_OP, false, &[]));
@@ -1419,12 +1419,12 @@ git commit -m "feat(uefi-engine): insert-at-id in PE resource string packages by
         ifr.extend(ifr_op(
             IFR_FORM_OP,
             true,
-            &[&u16p(902), &u16p(0x1400)].concat(),
+            &[u16p(902).as_slice(), u16p(0x1400).as_slice()].concat(),
         ));
         ifr.extend(ifr_op(
             IFR_TEXT_OP,
             false,
-            &[&u16p(0x1401), &u16p(0x1402), &u16p(0x1403)].concat(),
+            &[u16p(0x1401).as_slice(), u16p(0x1402).as_slice(), u16p(0x1403).as_slice()].concat(),
         ));
         ifr.extend(ifr_op(IFR_END_OP, false, &[]));
         ifr.extend(ifr_op(IFR_END_OP, false, &[]));
@@ -1467,12 +1467,12 @@ git commit -m "feat(uefi-engine): insert-at-id in PE resource string packages by
         ifr.extend(ifr_op(
             IFR_FORM_OP,
             true,
-            &[&u16p(7), &u16p(0x22)].concat(),
+            &[u16p(7).as_slice(), u16p(0x22).as_slice()].concat(),
         ));
         ifr.extend(ifr_op(
             IFR_SUBTITLE_OP,
             false,
-            &[&u16p(0), &u16p(0x22)].concat(),
+            &[u16p(0).as_slice(), u16p(0x22).as_slice()].concat(),
         ));
         ifr.extend(ifr_op(IFR_END_OP, false, &[]));
         ifr.extend(ifr_op(IFR_END_OP, false, &[]));
@@ -1506,7 +1506,7 @@ pub fn collect_form_string_ids(body: &[u8], form_id: u16) -> Vec<u16> {
     };
     let mut out: Vec<u16> = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    let mut push = |out: &mut Vec<u16>, seen: &mut std::collections::HashSet<u16>, id: u16| {
+    let push = |out: &mut Vec<u16>, seen: &mut std::collections::HashSet<u16>, id: u16| {
         if id != 0 && seen.insert(id) {
             out.push(id);
         }
@@ -1560,10 +1560,8 @@ pub fn collect_form_string_ids(body: &[u8], form_id: u16) -> Vec<u16> {
                                 push(&mut out, &mut seen, u16::from_le_bytes([body[j + 6], body[j + 7]]));
                             }
                         }
-                        IFR_ONE_OF_OPTION_OP => {
-                            if inner_len >= 4 {
-                                push(&mut out, &mut seen, u16::from_le_bytes([body[j + 2], body[j + 3]]));
-                            }
+                        IFR_ONE_OF_OPTION_OP if inner_len >= 4 => {
+                            push(&mut out, &mut seen, u16::from_le_bytes([body[j + 2], body[j + 3]]));
                         }
                         _ => {}
                     }
