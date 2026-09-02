@@ -42,6 +42,16 @@ pub async fn import(
     Ok(())
 }
 
+fn resolve_output_path(path: &str) -> Result<std::path::PathBuf, AppError> {
+    let p = std::path::PathBuf::from(path);
+    if p.is_absolute() {
+        return Ok(p);
+    }
+    let cwd = std::env::current_dir()
+        .map_err(|e| AppError::new(uefi_common::error::ErrKind::IoError, format!("CWD: {e}")))?;
+    Ok(cwd.join(p))
+}
+
 pub async fn export(
     artifact_id: &str,
     output_path: Option<&str>,
@@ -50,8 +60,29 @@ pub async fn export(
 ) -> Result<(), AppError> {
     let st = state::require_state()?;
     let mut client = Client::connect(cli_sock, st).await?;
-    let out = output_path.unwrap_or(artifact_id);
-    client.artifact_export(artifact_id, out).await?;
+    let out = resolve_output_path(output_path.unwrap_or(artifact_id))?;
+    client
+        .artifact_export(artifact_id, &out.to_string_lossy())
+        .await?;
     crate::output::print_ok(format);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn relative_output_path_is_absolutized_under_cwd() {
+        let p = resolve_output_path("out.bin").unwrap();
+        assert!(p.is_absolute());
+        assert_eq!(p.parent(), std::env::current_dir().ok().as_deref());
+        assert_eq!(p.file_name().map(|f| f.to_str()), Some(Some("out.bin")));
+    }
+
+    #[test]
+    fn absolute_output_path_is_untouched() {
+        let p = resolve_output_path("/tmp/x/out.bin").unwrap();
+        assert_eq!(p, std::path::PathBuf::from("/tmp/x/out.bin"));
+    }
 }

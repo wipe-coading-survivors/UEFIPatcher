@@ -56,6 +56,10 @@ fn hii_error_status(e: crate::hii::HiiError) -> Status {
     }
 }
 
+fn artifact_output_path_is_relative(p: &str) -> bool {
+    std::path::Path::new(p).is_relative()
+}
+
 impl EngineServer {
     async fn flush_image(&self, image_id: &str) -> Result<(), Status> {
         let (bytes, session_id) = {
@@ -559,6 +563,9 @@ impl EngineService for EngineServer {
     #[tracing::instrument(skip(self, req), err)]
     async fn artifact_export(&self, req: Request<ArtifactExportRequest>) -> RpcResult<Empty> {
         let r = req.into_inner();
+        if artifact_output_path_is_relative(&r.output_path) {
+            return Err(Status::invalid_argument("output_path must be absolute"));
+        }
         let art = self
             .sm
             .db
@@ -932,6 +939,13 @@ mod tests {
         assert_eq!(st.code(), tonic::Code::FailedPrecondition);
         let st = hii_error_status(crate::hii::HiiError::PrcPatchUnsupported);
         assert_eq!(st.code(), tonic::Code::FailedPrecondition);
+    }
+
+    #[test]
+    fn artifact_export_rejects_relative_output_path() {
+        assert!(artifact_output_path_is_relative("out.bin"));
+        assert!(artifact_output_path_is_relative("./out.bin"));
+        assert!(!artifact_output_path_is_relative("/tmp/out.bin"));
     }
 
     const FORMSET_ADD_STR_GUID: &str = "5C60F367-A505-419A-859E-2A4FF6CA6FE5";
