@@ -2335,7 +2335,7 @@ git commit -m "fix(uefi-cli,uefi-engine): artifact export resolves client CWD; e
         let data_offset = u16::from_le_bytes([node.body[16], node.body[17]]) as usize;
         let orig_payload =
             crate::decompress::decompress(&node.body[data_offset..], 2).unwrap();
-        assert_eq!(&orig_payload[orig_payload.len() - 2..], &[0x00, 0x00]);
+        assert_eq!(orig_payload.len() % 4, 2);
         node.action = Action::Rebuild;
         let mut out = Vec::new();
         build_section(&node, &mut out).unwrap();
@@ -2343,11 +2343,11 @@ git commit -m "fix(uefi-cli,uefi-engine): artifact export resolves client CWD; e
         let new_data_offset = u16::from_le_bytes([rebuilt.body[16], rebuilt.body[17]]) as usize;
         let new_payload =
             crate::decompress::decompress(&rebuilt.body[new_data_offset..], 2).unwrap();
-        assert_eq!(new_payload.as_slice(), &orig_payload[..orig_payload.len() - 2]);
+        assert_eq!(new_payload.as_slice(), orig_payload.as_slice());
     }
 ```
 
-(Утверждение `assert_eq!(&orig_payload[...-2..], &[0x00, 0x00])` — research-фиксация: оригинальный payload fixture действительно несёт 2 нулевых хвостовых байта; если ассерт падает иначе — остановиться и разобраться (systematic-debugging), это означало бы другую геометрию fixture.)
+(Research-фиксация геометрии fixture: payload = одна RAW-секция размером 210, последняя секция кончается ровно в конце payload (хвостовых нулей в оригинале НЕТ, последние байты `5b c3` — тело RAW; `210 % 4 == 2`). Живой образ это подтверждает: во всех 27 LZMA-payload оригинала HNX `tail_after_last_section == 0`, `len % 4` варьируется 0..3. Значит +2 диффа — билдер-добавленный паддинг, и после фикса перестроенный payload обязан совпадать с оригиналом байт-в-байт.)
 
 - [ ] **Step 3: Запустить, убедиться в провале**
 
