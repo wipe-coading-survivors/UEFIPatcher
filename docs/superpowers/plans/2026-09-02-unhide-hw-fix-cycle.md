@@ -1154,7 +1154,7 @@ pub(crate) fn insert_strings_at_ids(
         }
         push_string(&mut result, text);
         pi += 1;
-        next_id = next_id.wrapping_add(1);
+        next_id = id.wrapping_add(1);
     }
 
     result.extend_from_slice(&body[pos.min(body.len())..]);
