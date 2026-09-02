@@ -123,7 +123,7 @@ Expected: PASS, no warnings.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add Cargo.toml Cargo.lock crates/uefi-engine/Cargo.toml docker/rust-builder.containerfile crates/uefi-engine/src/compress.rs
+git add Cargo.toml crates/uefi-engine/Cargo.toml docker/rust-builder.containerfile crates/uefi-engine/src/compress.rs
 git commit -m "build: liblzma dependency + raw-LZMA1 API probe (xz-devel in rust-builder)"
 ```
 
