@@ -61,7 +61,7 @@ pub fn insert(
 
 #[tracing::instrument(level = "debug", skip(root), fields(target = ?target), err)]
 pub fn remove(root: &mut FfsNode, target: &Target) -> Result<(), OpsError> {
-    let path = target_path(target)?;
+    let path = target_path(root, target)?;
     let node = find_mut(root, &path).ok_or(OpsError::NotFound)?;
     node.action = Action::Remove;
     mark_rebuild_to_root_by_path(root, &path);
@@ -76,7 +76,7 @@ pub fn replace(
     data: &[u8],
     body_only: bool,
 ) -> Result<(), OpsError> {
-    let path = target_path(target)?;
+    let path = target_path(root, target)?;
     let node = find_mut(root, &path).ok_or(OpsError::NotFound)?;
     if body_only {
         node.children.clear();
@@ -100,7 +100,7 @@ pub fn replace(
 
 #[tracing::instrument(level = "debug", skip(root), fields(target = ?target), err)]
 pub fn rebuild(root: &mut FfsNode, target: &Target) -> Result<(), OpsError> {
-    let path = target_path(target)?;
+    let path = target_path(root, target)?;
     let node = find_mut(root, &path).ok_or(OpsError::NotFound)?;
     if node.action == Action::Remove {
         return Ok(());
@@ -127,11 +127,8 @@ pub fn mark_rebuild_to_root_by_path(root: &mut FfsNode, path: &[usize]) {
     }
 }
 
-fn target_path(target: &Target) -> Result<Vec<usize>, OpsError> {
-    match target {
-        Target::Path(p) => Ok(p.clone()),
-        _ => Err(OpsError::NotFound),
-    }
+fn target_path(root: &FfsNode, target: &Target) -> Result<Vec<usize>, OpsError> {
+    crate::parser::target::find_item_path(root, target).ok_or(OpsError::NotFound)
 }
 
 fn find_mut<'a>(node: &'a mut FfsNode, path: &[usize]) -> Option<&'a mut FfsNode> {
@@ -198,6 +195,46 @@ mod tests {
             Action::Remove,
             "rebuild must not resurrect a removed node"
         );
+    }
+
+    #[test]
+    fn rebuild_accepts_guid_section_target() {
+        let buf = make_simple_image();
+        let file_bytes = make_ffs_file();
+        let mut file = parse_ffs_bytes(&file_bytes).unwrap();
+        let guid = file.guid.unwrap();
+        file.children.push(FfsNode {
+            guid: None,
+            node_type: FfsType::Section,
+            subtype: 0x19,
+            offset: 0,
+            header: vec![0u8; 4],
+            body: vec![0xAA; 8],
+            tail: vec![],
+            children: vec![],
+            action: Action::NoAction,
+            parsing_data: ParsingData::None,
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        });
+        let mut img = parse_image(&buf, ImageMode::Read, "i", "s").unwrap();
+        img.root.children[0].children.push(file);
+
+        let t = parse_target(&format!("{guid}:0x19:0")).unwrap();
+        rebuild(&mut img.root, &t).unwrap();
+        assert_eq!(img.root.action, Action::Rebuild);
+        assert_eq!(img.root.children[0].children[0].action, Action::Rebuild);
+        assert_eq!(
+            img.root.children[0].children[0].children[0].action,
+            Action::Rebuild
+        );
+
+        let t_missing = parse_target(&format!("{guid}:0x15:0")).unwrap();
+        assert!(matches!(
+            rebuild(&mut img.root, &t_missing),
+            Err(OpsError::NotFound)
+        ));
     }
 
     #[test]
