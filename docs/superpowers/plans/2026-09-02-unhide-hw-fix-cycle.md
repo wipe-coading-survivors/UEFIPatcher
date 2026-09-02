@@ -2613,22 +2613,23 @@ git commit -m "test(uefi-engine): HNX99TF real-image acceptance for unhide fix c
 
 - [ ] **Step 1: Собрать кандидат движком**
 
-Движок запущен (`UEFIPATCHER_SOCK`/state), CLI из репо:
+Движок запущен (`cargo run -p uefi-engine --bin engine -- --sock <SOCK> --data-dir <DATA>`), CLI из репо. До первого командования — `session init` (CLI требует state-файл `.uefipatcher` в своём CWD: `uefi_common::state::require_state`). Пути open/save — абсолютные: файл читает/пишет движок в своём CWD (server.rs `fs::read(&r.path)` / `fs::write(&r.output_path)`), относительные `../../../` от CWD клиента не сработают. `refs/...` здесь — внешний `<IMPLEMENTATION>/refs/...`, вне корня репо.
 
 ```bash
-cd crates/uefi-cli
-cargo run -- image open --path ../../../refs/fw/HNX99TF_200525_original_E5C88C6F.bin --name hnx-fix --mode write
-cargo run -- hii form set-visibility 'abbce13d-e25a-4d9f-a1f9-2f7710786892:0x10:0#901' --visible
-cargo run -- image save --output ../../../refs/amibcp/e8-unhide-fix-candidate.bin
-cargo run -- image close hnx-fix
+cd <каталог CLI-сессии>                # отдельный CWD для .uefipatcher
+uefi-cli --sock <SOCK> session init --name hnx-fix
+uefi-cli --sock <SOCK> image open <ABS>/refs/fw/HNX99TF_200525_original_E5C88C6F.bin --name hnx-fix --mode write
+uefi-cli --sock <SOCK> hii form set-visibility 'abbce13d-e25a-4d9f-a1f9-2f7710786892:0x10:0#901' --visible
+uefi-cli --sock <SOCK> image save <ABS>/refs/amibcp/e8-unhide-fix-candidate.bin
+uefi-cli --sock <SOCK> image close
 ```
 
-(точные флаги `image open` — `--path/--name/--mode`, `hii form set-visibility <form_id> --visible`, `image save --output`; сверить с `crates/uefi-cli/src/main.rs:96-120,185-200`.)
+(флаги сверены с `crates/uefi-cli/src/main.rs`: `image open <PATH> --name/--mode` — PATH позиционный, не `--path`; `hii form set-visibility <form_id> --visible`; `image save <OUTPUT>` — OUTPUT позиционный, не `--output`; `image close` без аргумента закрывает активный образ из state — image_id это UUID, имя `hnx-fix` сервер не резолвит.)
 
 - [ ] **Step 2: Самопроверка кандидата**
 
 ```bash
-sha256sum refs/amibcp/e8-unhide-fix-candidate.bin
+sha256sum <ABS>/refs/amibcp/e8-unhide-fix-candidate.bin
 ```
 
 Побайтово сверить с ожиданием теста `real_image_unhide_rebuild_keeps_layout`: кандидат должен совпадать с выходом `build_image` из теста (длина 16 МиБ, дифф только внутри файла ABBCE13D). При расхождении — разобрать дифф до прошивки (fvmap-пробник `refs/amibcp/probes/fvmap.py`, если доступен): карта FV, дифф декодированных потоков, FIT не задет.
