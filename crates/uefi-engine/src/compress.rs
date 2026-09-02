@@ -1,4 +1,3 @@
-use std::io::Cursor;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -11,29 +10,112 @@ pub enum CompressError {
     RoundTripFailed,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LzmaMatchFinder {
+    Bt2,
+    Bt3,
+    Bt4,
+    Hc4,
+}
+
+impl LzmaMatchFinder {
+    fn to_liblzma(self) -> liblzma::stream::MatchFinder {
+        match self {
+            LzmaMatchFinder::Bt2 => liblzma::stream::MatchFinder::BinaryTree2,
+            LzmaMatchFinder::Bt3 => liblzma::stream::MatchFinder::BinaryTree3,
+            LzmaMatchFinder::Bt4 => liblzma::stream::MatchFinder::BinaryTree4,
+            LzmaMatchFinder::Hc4 => liblzma::stream::MatchFinder::HashChain4,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LzmaEncodeParams {
+    pub lc: u32,
+    pub lp: u32,
+    pub pb: u32,
+    pub dict_size: u32,
+    pub nice_len: u32,
+    pub mf: LzmaMatchFinder,
+}
+
+impl Default for LzmaEncodeParams {
+    fn default() -> Self {
+        Self {
+            lc: 0,
+            lp: 0,
+            pb: 0,
+            dict_size: 0x0100_0000,
+            nice_len: 273,
+            mf: LzmaMatchFinder::Bt4,
+        }
+    }
+}
+
+pub fn lzma_props_byte(lc: u32, lp: u32, pb: u32) -> u8 {
+    ((pb * 5 + lp) * 9 + lc) as u8
+}
+
+fn encode_raw_lzma1(input: &[u8], p: &LzmaEncodeParams) -> Result<Vec<u8>, CompressError> {
+    use liblzma::stream::{Action, Filters, LzmaOptions, Status, Stream};
+    let mut opts = LzmaOptions::new_preset(6).map_err(|_| CompressError::CompressFailed)?;
+    opts.dict_size(p.dict_size)
+        .literal_context_bits(p.lc)
+        .literal_position_bits(p.lp)
+        .position_bits(p.pb)
+        .nice_len(p.nice_len)
+        .match_finder(p.mf.to_liblzma())
+        .mode(liblzma::stream::Mode::Normal);
+    let mut filters = Filters::new();
+    filters.lzma1(&opts);
+    let mut enc = Stream::new_raw_encoder(&filters).map_err(|_| CompressError::CompressFailed)?;
+    let mut out = Vec::new();
+    loop {
+        out.reserve(64 * 1024);
+        let consumed = (enc.total_in() as usize).min(input.len());
+        let status = enc
+            .process_vec(&input[consumed..], &mut out, Action::Finish)
+            .map_err(|_| CompressError::CompressFailed)?;
+        if matches!(status, Status::StreamEnd) {
+            break;
+        }
+    }
+    Ok(out)
+}
+
+fn alone_stream(input: &[u8], p: &LzmaEncodeParams) -> Result<Vec<u8>, CompressError> {
+    let mut out = Vec::with_capacity(13 + input.len() / 2);
+    out.push(lzma_props_byte(p.lc, p.lp, p.pb));
+    out.extend_from_slice(&p.dict_size.to_le_bytes());
+    out.extend_from_slice(&(input.len() as u64).to_le_bytes());
+    out.extend_from_slice(&encode_raw_lzma1(input, p)?);
+    Ok(out)
+}
+
+fn round_trip_check(input: &[u8], stream: &[u8]) -> Result<(), CompressError> {
+    let decoded =
+        crate::decompress::decompress(stream, 2).map_err(|_| CompressError::RoundTripFailed)?;
+    if decoded.as_slice() != input {
+        tracing::warn!(size = input.len(), "lzma round-trip mismatch");
+        return Err(CompressError::RoundTripFailed);
+    }
+    Ok(())
+}
+
 pub fn compress_lzma(input: &[u8]) -> Result<Vec<u8>, CompressError> {
     if input.is_empty() {
         return Err(CompressError::EmptyInput);
     }
-    let options = lzma_rs::compress::Options {
-        unpacked_size: lzma_rs::compress::UnpackedSize::WriteToHeader(Some(input.len() as u64)),
-    };
-    let mut out = Vec::new();
-    lzma_rs::lzma_compress_with_options(&mut Cursor::new(input), &mut out, &options)
-        .map_err(|_| CompressError::CompressFailed)?;
-    let mut round_trip = Vec::new();
-    lzma_rs::lzma_decompress(&mut Cursor::new(&out), &mut round_trip)
-        .map_err(|_| CompressError::RoundTripFailed)?;
-    if round_trip.as_slice() != input {
-        tracing::warn!(size = input.len(), "lzma round-trip mismatch");
-        return Err(CompressError::RoundTripFailed);
-    }
+    let out = alone_stream(input, &LzmaEncodeParams::default())?;
+    round_trip_check(input, &out)?;
     Ok(out)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use std::io::Cursor;
 
     const DECOMPRESSED: &[u8] =
         include_bytes!("../../../tests/fixtures/lzma_guided_section.decompressed.bin");
@@ -44,12 +126,30 @@ mod tests {
     }
 
     #[test]
-    fn compress_lzma_writes_edk2_alone_header() {
+    fn compress_lzma_writes_alone_header_with_hw_proven_defaults() {
         let out = compress_lzma(&[0x00; 64]).unwrap();
         assert!(out.len() > 13);
-        assert_eq!(out[0], 0x5D);
-        assert_eq!(&out[1..5], &[0x00, 0x00, 0x80, 0x00]);
+        assert_eq!(out[0], 0x00);
+        assert_eq!(&out[1..5], &0x0100_0000u32.to_le_bytes());
         assert_eq!(&out[5..13], &64u64.to_le_bytes());
+    }
+
+    #[test]
+    fn lzma_props_byte_encoding() {
+        assert_eq!(lzma_props_byte(0, 0, 0), 0x00);
+        assert_eq!(lzma_props_byte(3, 0, 2), 0x5D);
+        assert_eq!(lzma_props_byte(0, 0, 1), 0x2D);
+        assert_eq!(lzma_props_byte(2, 0, 0), 0x02);
+    }
+
+    #[test]
+    fn encode_raw_lzma1_respects_pb_param_in_props() {
+        let p = LzmaEncodeParams {
+            pb: 2,
+            ..LzmaEncodeParams::default()
+        };
+        let out = alone_stream(&[0x41; 4096], &p).unwrap();
+        assert_eq!(out[0], 0x5A);
     }
 
     #[test]
