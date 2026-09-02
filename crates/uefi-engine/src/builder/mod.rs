@@ -94,10 +94,12 @@ fn build_file(node: &FfsNode, out: &mut Vec<u8>) -> Result<(), BuilderError> {
     } else {
         Vec::new()
     };
-    for child in &node.children {
+    for (i, child) in node.children.iter().enumerate() {
         build_node(child, &mut body)?;
-        let target = align4(body.len());
-        pad_to(&mut body, target, 0x00);
+        if i + 1 < node.children.len() {
+            let target = align4(body.len());
+            pad_to(&mut body, target, 0x00);
+        }
     }
     let tail = node.tail.clone();
     let total = header.len() + body.len() + tail.len();
@@ -139,10 +141,12 @@ fn build_section(node: &FfsNode, out: &mut Vec<u8>) -> Result<(), BuilderError> 
     } else {
         Vec::new()
     };
-    for child in &node.children {
+    for (i, child) in node.children.iter().enumerate() {
         build_node(child, &mut body)?;
-        let target = align4(body.len());
-        pad_to(&mut body, target, 0x00);
+        if i + 1 < node.children.len() {
+            let target = align4(body.len());
+            pad_to(&mut body, target, 0x00);
+        }
     }
     let mut header = node.header.clone();
     let total = header.len() + body.len();
@@ -169,10 +173,12 @@ fn build_recompressed_guided(node: &FfsNode, out: &mut Vec<u8>) -> Result<(), Bu
         return Err(BuilderError::RecompressionUnsupported);
     }
     let mut children = Vec::new();
-    for child in &node.children {
+    for (i, child) in node.children.iter().enumerate() {
         build_node(child, &mut children)?;
-        let target = align4(children.len());
-        pad_to(&mut children, target, 0x00);
+        if i + 1 < node.children.len() {
+            let target = align4(children.len());
+            pad_to(&mut children, target, 0x00);
+        }
     }
     let budget = node.body.len() - prefix_len;
     let stream = compress_lzma_fit(&children, Some(budget))?;
@@ -597,5 +603,88 @@ mod tests {
         let mut out = Vec::new();
         let err = build_section(&node, &mut out).unwrap_err();
         assert!(matches!(err, BuilderError::RecompressionUnsupported));
+    }
+
+    #[test]
+    fn build_file_does_not_pad_after_last_section() {
+        let mk_raw = |fill: u8| FfsNode {
+            guid: None,
+            node_type: FfsType::Section,
+            subtype: EFI_SECTION_RAW,
+            offset: 0,
+            header: vec![0u8; 4],
+            body: vec![fill; 5],
+            tail: vec![],
+            children: vec![],
+            action: Action::Rebuild,
+            parsing_data: ParsingData::None,
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        };
+        let file = FfsNode {
+            guid: None,
+            node_type: FfsType::File,
+            subtype: 0x07,
+            offset: 0,
+            header: vec![0u8; 24],
+            body: vec![],
+            tail: vec![],
+            children: vec![mk_raw(0xA1), mk_raw(0xB2)],
+            action: Action::Rebuild,
+            parsing_data: ParsingData::None,
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        };
+        let mut out = Vec::new();
+        build_node(&file, &mut out).unwrap();
+        assert_eq!(out.len(), 24 + 9 + 3 + 9);
+        assert_eq!(&out[24 + 9..24 + 12], &[0x00, 0x00, 0x00]);
+        assert_eq!(&out[out.len() - 5..], &[0xB2; 5]);
+    }
+
+    #[test]
+    fn build_section_does_not_pad_after_last_child() {
+        let mk_raw = |fill: u8| FfsNode {
+            guid: None,
+            node_type: FfsType::Section,
+            subtype: EFI_SECTION_RAW,
+            offset: 0,
+            header: vec![0u8; 4],
+            body: vec![fill; 5],
+            tail: vec![],
+            children: vec![],
+            action: Action::Rebuild,
+            parsing_data: ParsingData::None,
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        };
+        let mut section = mk_raw(0xC3);
+        section.node_type = FfsType::Section;
+        section.subtype = 0x03;
+        section.children = vec![mk_raw(0xD4), mk_raw(0xE5)];
+        section.action = Action::Rebuild;
+        let mut out = Vec::new();
+        build_node(&section, &mut out).unwrap();
+        assert_eq!(out.len(), 4 + 9 + 3 + 9);
+    }
+
+    #[test]
+    fn guided_lzma_payload_has_no_padding_after_last_child() {
+        let section = include_bytes!("../../../../tests/fixtures/lzma_guided_section.bin");
+        let mut node = crate::parser::section::parse_section(section, 0).unwrap();
+        let data_offset = u16::from_le_bytes([node.body[16], node.body[17]]) as usize;
+        let orig_payload = crate::decompress::decompress(&node.body[data_offset - 4..], 2).unwrap();
+        assert_eq!(orig_payload.len() % 4, 2);
+        node.action = Action::Rebuild;
+        let mut out = Vec::new();
+        build_section(&node, &mut out).unwrap();
+        let rebuilt = crate::parser::section::parse_section(&out, 0).unwrap();
+        let new_data_offset = u16::from_le_bytes([rebuilt.body[16], rebuilt.body[17]]) as usize;
+        let new_payload =
+            crate::decompress::decompress(&rebuilt.body[new_data_offset - 4..], 2).unwrap();
+        assert_eq!(new_payload.as_slice(), orig_payload.as_slice());
     }
 }
