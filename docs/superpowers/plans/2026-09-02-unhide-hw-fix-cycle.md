@@ -2523,8 +2523,8 @@ fn file_extent(img: &Image, path: &[usize]) -> (usize, usize) {
         }
         node = child;
     }
-    let file_start = vol.children[file_idx].offset;
-    let file_end = vol.children[file_idx + 1].offset;
+    let file_start = vol.children[file_idx].offset as usize;
+    let file_end = vol.children[file_idx + 1].offset as usize;
     (file_start, file_end)
 }
 
