@@ -111,6 +111,47 @@ pub fn compress_lzma(input: &[u8]) -> Result<Vec<u8>, CompressError> {
     Ok(out)
 }
 
+pub fn compress_lzma_fit(input: &[u8], budget: Option<usize>) -> Result<Vec<u8>, CompressError> {
+    if input.is_empty() {
+        return Err(CompressError::EmptyInput);
+    }
+    let mut best: Option<Vec<u8>> = None;
+    for pb in 0..=2u32 {
+        for lc in 0..=4u32 {
+            let params = LzmaEncodeParams {
+                lc,
+                lp: 0,
+                pb,
+                ..LzmaEncodeParams::default()
+            };
+            let stream = alone_stream(input, &params)?;
+            if let Some(b) = budget
+                && stream.len() <= b
+            {
+                let mut padded = stream;
+                padded.resize(b, 0x00);
+                round_trip_check(input, &padded)?;
+                return Ok(padded);
+            }
+            if best.as_ref().is_none_or(|s| stream.len() < s.len()) {
+                best = Some(stream);
+            }
+        }
+    }
+    let stream = best.expect("sweep grid is non-empty");
+    if let Some(b) = budget
+        && stream.len() > b
+    {
+        tracing::debug!(
+            size = stream.len(),
+            budget = b,
+            "lzma sweep: no candidate fits budget, using minimal"
+        );
+    }
+    round_trip_check(input, &stream)?;
+    Ok(stream)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -205,5 +246,63 @@ mod tests {
 
         let decoded = crate::decompress::decompress(&alone, 2).unwrap();
         assert_eq!(decoded.as_slice(), DECOMPRESSED);
+    }
+
+    fn incompressible(len: usize) -> Vec<u8> {
+        let mut x: u64 = 0x243F_6A88_85A3_08D3;
+        (0..len)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                (x >> 32) as u8
+            })
+            .collect()
+    }
+
+    #[test]
+    fn compress_lzma_fit_fits_budget_and_pads_with_zeros() {
+        let first = compress_lzma(DECOMPRESSED).unwrap();
+        let budget = first.len();
+        let out = compress_lzma_fit(DECOMPRESSED, Some(budget)).unwrap();
+        assert_eq!(out.len(), budget);
+        assert_eq!(&out[5..13], &(DECOMPRESSED.len() as u64).to_le_bytes());
+        let decoded = crate::decompress::decompress(&out, 2).unwrap();
+        assert_eq!(decoded.as_slice(), DECOMPRESSED);
+    }
+
+    #[test]
+    fn compress_lzma_fit_padded_tail_decodes() {
+        let first = compress_lzma(DECOMPRESSED).unwrap();
+        let padded = compress_lzma_fit(DECOMPRESSED, Some(first.len() + 64)).unwrap();
+        assert_eq!(padded.len(), first.len() + 64);
+        let decoded = crate::decompress::decompress(&padded, 2).unwrap();
+        assert_eq!(decoded.as_slice(), DECOMPRESSED);
+    }
+
+    #[test]
+    fn compress_lzma_fit_without_budget_returns_minimal_candidate() {
+        let data = incompressible(4096);
+        let first = compress_lzma(&data).unwrap();
+        let out = compress_lzma_fit(&data, None).unwrap();
+        assert!(out.len() <= first.len());
+        let decoded = crate::decompress::decompress(&out, 2).unwrap();
+        assert_eq!(decoded.as_slice(), data);
+    }
+
+    #[test]
+    fn compress_lzma_fit_unreachable_budget_still_returns_stream() {
+        let data = incompressible(512);
+        let out = compress_lzma_fit(&data, Some(13)).unwrap();
+        assert!(out.len() > 13);
+        let decoded = crate::decompress::decompress(&out, 2).unwrap();
+        assert_eq!(decoded.as_slice(), data);
+    }
+
+    #[test]
+    fn compress_lzma_fit_prefers_pb0_for_aligned_payload() {
+        let data: Vec<u8> = (0..2048u32).flat_map(|i| i.to_le_bytes()).collect();
+        let out = compress_lzma_fit(&data, None).unwrap();
+        assert_eq!(out[0], 0x00);
     }
 }
