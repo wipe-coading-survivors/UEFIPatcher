@@ -163,8 +163,8 @@ git commit -m "build: liblzma dependency + raw-LZMA1 API probe (xz-devel in rust
     fn lzma_props_byte_encoding() {
         assert_eq!(lzma_props_byte(0, 0, 0), 0x00);
         assert_eq!(lzma_props_byte(3, 0, 2), 0x5D);
-        assert_eq!(lzma_props_byte(0, 0, 1), 0x05);
-        assert_eq!(lzma_props_byte(2, 0, 0), 0x12);
+        assert_eq!(lzma_props_byte(0, 0, 1), 0x2D);
+        assert_eq!(lzma_props_byte(2, 0, 0), 0x02);
     }
 
     #[test]
@@ -174,7 +174,7 @@ git commit -m "build: liblzma dependency + raw-LZMA1 API probe (xz-devel in rust
             ..LzmaEncodeParams::default()
         };
         let out = alone_stream(&[0x41; 4096], &p).unwrap();
-        assert_eq!(out[0], 0x5D);
+        assert_eq!(out[0], 0x5A);
     }
 ```
 
@@ -201,10 +201,10 @@ pub enum LzmaMatchFinder {
 impl LzmaMatchFinder {
     fn to_liblzma(self) -> liblzma::stream::MatchFinder {
         match self {
-            LzmaMatchFinder::Bt2 => liblzma::stream::MatchFinder::Bt2,
-            LzmaMatchFinder::Bt3 => liblzma::stream::MatchFinder::Bt3,
-            LzmaMatchFinder::Bt4 => liblzma::stream::MatchFinder::Bt4,
-            LzmaMatchFinder::Hc4 => liblzma::stream::MatchFinder::Hc4,
+            LzmaMatchFinder::Bt2 => liblzma::stream::MatchFinder::BinaryTree2,
+            LzmaMatchFinder::Bt3 => liblzma::stream::MatchFinder::BinaryTree3,
+            LzmaMatchFinder::Bt4 => liblzma::stream::MatchFinder::BinaryTree4,
+            LzmaMatchFinder::Hc4 => liblzma::stream::MatchFinder::HashChain4,
         }
     }
 }
@@ -293,7 +293,7 @@ pub fn compress_lzma(input: &[u8]) -> Result<Vec<u8>, CompressError> {
 }
 ```
 
-Если имена вариантов `MatchFinder` (кроме доказанного пробой `Bt4`) отличаются — сверить docs.rs и поправить только `to_liblzma` (продолжение API-пробы Task 1, не дефект плана).
+Варианты `MatchFinder` в liblzma 0.4.8 (проверено по исходникам крейта, `stream.rs`): `BinaryTree2/BinaryTree3/BinaryTree4`, `HashChain3/HashChain4` — коротких имён `Bt2/Bt3/Bt4/Hc4` нет, маппинг выше уже исправлен.
 
 - [ ] **Step 4: Прогон + lint**
 
