@@ -2334,7 +2334,7 @@ git commit -m "fix(uefi-cli,uefi-engine): artifact export resolves client CWD; e
         let mut node = crate::parser::section::parse_section(section, 0).unwrap();
         let data_offset = u16::from_le_bytes([node.body[16], node.body[17]]) as usize;
         let orig_payload =
-            crate::decompress::decompress(&node.body[data_offset..], 2).unwrap();
+            crate::decompress::decompress(&node.body[data_offset - 4..], 2).unwrap();
         assert_eq!(orig_payload.len() % 4, 2);
         node.action = Action::Rebuild;
         let mut out = Vec::new();
@@ -2342,16 +2342,16 @@ git commit -m "fix(uefi-cli,uefi-engine): artifact export resolves client CWD; e
         let rebuilt = crate::parser::section::parse_section(&out, 0).unwrap();
         let new_data_offset = u16::from_le_bytes([rebuilt.body[16], rebuilt.body[17]]) as usize;
         let new_payload =
-            crate::decompress::decompress(&rebuilt.body[new_data_offset..], 2).unwrap();
+            crate::decompress::decompress(&rebuilt.body[new_data_offset - 4..], 2).unwrap();
         assert_eq!(new_payload.as_slice(), orig_payload.as_slice());
     }
 ```
 
-(Research-фиксация геометрии fixture: payload = одна RAW-секция размером 210, последняя секция кончается ровно в конце payload (хвостовых нулей в оригинале НЕТ, последние байты `5b c3` — тело RAW; `210 % 4 == 2`). Живой образ это подтверждает: во всех 27 LZMA-payload оригинала HNX `tail_after_last_section == 0`, `len % 4` варьируется 0..3. Значит +2 диффа — билдер-добавленный паддинг, и после фикса перестроенный payload обязан совпадать с оригиналом байт-в-байт.)
+(Research-фиксация геометрии fixture: payload = одна RAW-секция размером 210, последняя секция кончается ровно в конце payload (хвостовых нулей в оригинале НЕТ, последние байты `5b c3` — тело RAW; `210 % 4 == 2`). Живой образ это подтверждает: во всех 27 LZMA-payload оригинала HNX `tail_after_last_section == 0`, `len % 4` варьируется 0..3. Значит +2 диффа — билдер-добавленный паддинг, и после фикса перестроенный payload обязан совпадать с оригиналом байт-в-байт. Срезы потока — `body[data_offset - 4..]`: `body` не включает 4-байтный заголовок секции, а `data_offset` — офсет от начала секции (зеркально `guided_payload` в parser/section.rs).)
 
 - [ ] **Step 3: Запустить, убедиться в провале**
 
-Run: `cargo test -p uefi-engine build_file_does_not_pad build_section_does_not_pad guided_lzma_payload_has_no`
+Run: `cargo test -p uefi-engine -- build_file_does_not_pad build_section_does_not_pad guided_lzma_payload_has_no`
 Expected: FAIL — текущий код паддит после последнего (размеры больше на 3/3, payload длиннее на 2).
 
 - [ ] **Step 4: Реализовать**
