@@ -1079,3 +1079,30 @@ atomic_write. После первой мутации хранимый файл �
   вопросов; сравнение оригинал/патч через AMIBCP бессмысленно для
   visibility-патчей (обе картинки Show=Yes). Метод верификации —
   побайтовый IFR-анализ (пробник `refs/amibcp/probes/suppress_probe.py`).
+
+### Находки финального ревью fix-цикла unhide (2026-09-02)
+
+> Отложенные minors из whole-branch ревью fix-цикла (ветка
+> `fix/cycle6-reimplent`). Пункт про SIBT_EXT-блоки с pending-вставками
+> закрыт в цикле (коммит `0f6a330`, `HiiError::SibtBlockUnsupported`).
+
+* [ ] **uefi-tui + uefi-gateway/WebUI: absolutизация output_path
+  артефакта** — TUI (`:export`) и gateway/WebUI пробрасывают output_path
+  `artifact export` verbatim; движок с 2026-09-02 отвергает относительные
+  пути (гейт `artifact_export`). Контекст: нужен client-side резолв в
+  абсолютный путь по образцу `resolve_output_path` uefi-cli
+  (`crates/uefi-cli/src/commands/artifact.rs`).
+* [ ] **string_pack: shrink-путь `insert_strings_at_ids_in_resource`** —
+  (1) после усадки string-пакета внутри raw-extent .rsrc остаются
+  stale-байты старого хвоста (длины авторитетны, безвредно; zeroing хвоста
+  дало бы byte-reproducible rebuild); (2) `plan_rsrc_blob_growth`
+  возвращает None, если после HII-blob следует любой leaf ресурса —
+  отвергает представимые усадки (на HNX99TF не наблюдалось).
+* [ ] **string_pack: span-арифметика `insert_strings_at_ids`** —
+  `next_id.wrapping_add(count)` может заворачивать u16 на skip-прогонах
+  через id 65536, молча роняя блок. Контекст: перевести на
+  checked-арифметику с ошибкой (родственный пункт про исчерпание 0xFFFF —
+  выше, «PE-resident IFR-патчинг»).
+* [ ] **compress: `lzma_props_byte` молча усекает out-of-range lc/lp/pb**
+  (`as u8`); `encode_raw_lzma1` без post-loop ассерта
+  `total_in() == input.len()`. Контекст: `crates/uefi-engine/src/compress.rs`.
