@@ -601,21 +601,9 @@ git commit -m "feat(uefi-engine): guided LZMA rebuild fits original section slot
 
 - [ ] **Step 1: Написать проваливающиеся тесты**
 
-В модуль `tests` файла `hii/strings.rs` (хелпер `make_pkg` уже есть, `strings.rs:296`):
+В модуль `tests` файла `hii/strings.rs` (хелпер `make_pkg` уже есть, `strings.rs:296`; в import тестового модуля добавить `Guid`):
 
 ```rust
-    fn pkg_wrap(kind: u8, payload: &[u8]) -> Vec<u8> {
-        let len = 4 + payload.len();
-        let mut b = vec![
-            (len & 0xFF) as u8,
-            ((len >> 8) & 0xFF) as u8,
-            ((len >> 16) & 0xFF) as u8,
-            kind,
-        ];
-        b.extend_from_slice(payload);
-        b
-    }
-
     fn res_list(guid: &crate::types::Guid, pkgs: &[&[u8]]) -> Vec<u8> {
         let mut b = guid.to_bytes().to_vec();
         let total: usize = 20 + pkgs.iter().map(|p| p.len()).sum::<usize>() + 4;
@@ -677,7 +665,7 @@ git commit -m "feat(uefi-engine): guided LZMA rebuild fits original section slot
     }
 ```
 
-Хелперы `mk_section`/`mk_file`/`mk_image` — если их ещё нет в `tests` модулях `strings.rs`, добавить (по образцу `mk_node`/`make_image` из `string_pack.rs:328-349`):
+Хелперы `mk_section`/`mk_file`/`mk_image` — добавить (по образцу `mk_node`/`make_image` из `string_pack.rs:328-349`). Внимание: в `tests` модулях `strings.rs` уже есть свой `mk_image(pkg_body: Vec<u8>)` и `mk_node` — новая `mk_image(children: Vec<FfsNode>)` конфликтует по имени (E0428); старый `mk_image` и `mk_node` удалить, а их call-сайты переписать на `mk_section`/`mk_file`/`mk_image` (subtype bare-секции — `crate::ffs::EFI_SECTION_RAW` = 0x19):
 
 ```rust
     fn mk_section(subtype: u8, body: Vec<u8>) -> FfsNode {
@@ -780,11 +768,13 @@ pub fn collect_strings(image: &Image) -> Vec<StringInfo> {
     out
 }
 
+#[derive(Debug, PartialEq)]
 pub(crate) enum StringPackageChannel {
     Bare,
     Resource,
 }
 
+#[allow(dead_code)]
 pub(crate) struct StringPackageRef {
     pub file_guid: Option<Guid>,
     pub channel: StringPackageChannel,
@@ -860,7 +850,7 @@ pub(crate) fn resource_string_packages(pe: &[u8]) -> Vec<ParsedStringPackage> {
 }
 ```
 
-Удалить `first_resource_string_package` (единственный потребитель — старый walker). Существующие тесты `strings.rs`, использующие первый-пакет-только (если отображают изменение количества строк), правятся по фактическому смыслу полного обхода: тест, где один файл с bare-пакетом + тот же файл содержит PE32 — теперь строки обоих каналов. Прогнать весь крейт и сверить каждый упавший тест с новой семантикой (изменение охвата — цель задачи; если тест утверждал «только первый пакет» — это устаревшее утверждение, переписать под полный обход).
+Удалить `first_resource_string_package` (единственный потребитель — старый walker). Существующие тесты `strings.rs`, использующие первый-пакет-только (если отображают изменение количества строк), правятся по фактическому смыслу полного обхода: тест, где один файл с bare-пакетом + тот же файл содержит PE32 — теперь строки обоих каналов. Прогнать весь крейт и сверить каждый упавший тест с новой семантикой (изменение охвата — цель задачи; если тест утверждал «только первый пакет» — это устаревшее утверждение, переписать под полный обход). Конкретика по этому крейту: `collect_strings_returns_first_package_strings` переименовать в `collect_strings_returns_bare_package_strings` (устаревшее имя «первый пакет», тело не меняется — пакет один); `#[derive(Debug, PartialEq)]` на `StringPackageChannel` обязателен — `assert_eq!` по `.channel` требует `PartialEq` + `Debug` (E0369/E0277); `#[allow(dead_code)]` на `StringPackageRef` обязателен — поля `file_guid`/`channel`/`section_path` в lib-сборке не читаются (PRC-планировщик по §спеки не строится поверх `collect_string_packages`), без allow падает `clippy -D warnings` (прецедент: `uefi-cli/src/output.rs:203`). В `tests/real_image.rs` игнорируемый `real_image_hii_forms_and_strings` утверждал `.all(starts_with("en"))` — на реальном образе после полного обхода собираются и токен-пакеты (x-UEFI-AMI), заменить `.all` на `.any` (первичный язык остаётся en-US).
 
 - [ ] **Step 4: Прогон + lint**
 
@@ -870,7 +860,7 @@ Expected: PASS, no warnings.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/uefi-engine/src/hii/strings.rs
+git add crates/uefi-engine/src/hii/strings.rs crates/uefi-engine/tests/real_image.rs
 git commit -m "fix(uefi-engine): hii string traversal collects all string packages (bare + resource)"
 ```
 
