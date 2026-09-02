@@ -124,7 +124,6 @@ fn block_end(body: &[u8], pos: usize) -> Option<usize> {
     Some(end)
 }
 
-#[allow(dead_code)]
 pub(crate) fn insert_strings_at_ids(
     body: &mut Vec<u8>,
     entries: &[(u16, &str)],
@@ -240,6 +239,65 @@ pub fn add_strings_to_resource(
         new_total as u32,
     );
     Ok(mapping)
+}
+
+#[allow(dead_code)]
+pub(crate) fn insert_strings_at_ids_in_resource(
+    pe: &mut Vec<u8>,
+    language: &str,
+    entries: &[(u16, &str)],
+) -> Result<(), crate::hii::HiiError> {
+    use crate::hii::HiiError;
+    let (_, blob_off, blob_len) = hii_entry_locations(pe)
+        .first()
+        .copied()
+        .ok_or(HiiError::StringPackageNotFound)?;
+    let blob_end = blob_off
+        .checked_add(blob_len)
+        .ok_or(HiiError::StringPackageNotFound)?;
+    let blob = pe
+        .get(blob_off..blob_end)
+        .ok_or(HiiError::StringPackageNotFound)?;
+    let parsed = parse_package_list(blob).ok_or(HiiError::StringPackageNotFound)?;
+    let idx = parsed
+        .packages
+        .iter()
+        .position(|p| {
+            p.kind == PACKAGE_STRINGS
+                && is_string_package(p.bytes)
+                && crate::hii::strings::parse_string_package(p.bytes)
+                    .is_some_and(|sp| sp.language == language)
+        })
+        .ok_or(HiiError::StringPackageNotFound)?;
+    let prefix: usize = parsed.packages[..idx].iter().map(|p| p.bytes.len()).sum();
+    let old_len = parsed.packages[idx].bytes.len();
+    let mut grown = blob[20 + prefix..20 + prefix + old_len].to_vec();
+    insert_strings_at_ids(&mut grown, entries)?;
+    let delta = grown.len() - old_len;
+    let sum: usize = parsed.packages.iter().map(|p| p.bytes.len()).sum();
+    let new_blob_len = blob_len
+        .checked_add(delta)
+        .ok_or(HiiError::PeGrowthUnsupported)?;
+    let new_total = 20u64 + sum as u64 + delta as u64 + 4;
+    if new_total > u32::MAX as u64 || new_blob_len > u32::MAX as usize {
+        tracing::debug!("string package growth overflows list lengths");
+        return Err(HiiError::PeGrowthUnsupported);
+    }
+    let pkg_off = blob_off + 20 + prefix;
+    let plan = plan_rsrc_blob_growth(pe, delta).ok_or(HiiError::PeGrowthUnsupported)?;
+    if plan.grow > 0 && !try_grow_rsrc_tail(pe, plan.grow) {
+        return Err(HiiError::PeGrowthUnsupported);
+    }
+    pe.copy_within(pkg_off + old_len..blob_end, pkg_off + grown.len());
+    pe[pkg_off..pkg_off + grown.len()].copy_from_slice(&grown);
+    write_length_chain(
+        pe,
+        plan.entry_off,
+        plan.blob_off,
+        new_blob_len as u32,
+        new_total as u32,
+    );
+    Ok(())
 }
 
 pub fn string_package_section_path(root: &FfsNode, ffs_guid: Option<&Guid>) -> Option<Vec<usize>> {
@@ -987,6 +1045,64 @@ mod tests {
             add_strings_to_resource(&mut pe, &["x".to_string()]),
             Err(AddStringsToResourceError::GrowthUnsupported)
         ));
+        assert_eq!(pe, snapshot);
+    }
+
+    fn two_language_blob() -> (Vec<u8>, Guid) {
+        let g = Guid::try_parse("899407D7-99FE-43D8-9A21-79EC328CAC21").unwrap();
+        let form = pkg(r_efi::hii::PACKAGE_FORMS, &[0x0Eu8, 0x17, 0xAA]);
+        let display_sibt = [SIBT_STRING_SCSU, b'H', b'i', 0, SIBT_END];
+        let token_sibt = [SIBT_STRING_SCSU, b'P', b'R', b'C', 0, SIBT_END];
+        let display = make_sppkg("en-US", &display_sibt);
+        let token = make_sppkg("x-UEFI-AMI", &token_sibt);
+        (res_list(&g, &[&form, &display, &token]), g)
+    }
+
+    fn resource_pkgs(pe: &[u8]) -> Vec<crate::hii::strings::ParsedStringPackage> {
+        let (_, blob_off, blob_len) = crate::hii::pe_resource::hii_entry_locations(pe)[0];
+        let list = crate::hii::package_list::parse_package_list(&pe[blob_off..blob_off + blob_len])
+            .unwrap();
+        list.packages
+            .iter()
+            .filter(|p| p.kind == PACKAGE_STRINGS)
+            .filter_map(|p| crate::hii::strings::parse_string_package(p.bytes))
+            .collect()
+    }
+
+    #[test]
+    fn insert_in_resource_targets_language_package_only() {
+        let (blob, _) = two_language_blob();
+        let mut pe = crate::hii::pe_resource::synth_hii_pe("HII", &blob);
+        insert_strings_at_ids_in_resource(&mut pe, "x-UEFI-AMI", &[(3, "UPG0001")]).unwrap();
+        let pkgs = resource_pkgs(&pe);
+        assert_eq!(pkgs.len(), 2);
+        assert_eq!(pkgs[0].language, "en-US");
+        assert_eq!(pkgs[0].strings, vec![(1, "Hi".to_string())]);
+        assert_eq!(pkgs[1].language, "x-UEFI-AMI");
+        assert_eq!(
+            pkgs[1].strings,
+            vec![(1, "PRC".to_string()), (3, "UPG0001".to_string())]
+        );
+    }
+
+    #[test]
+    fn insert_in_resource_missing_language_errors() {
+        let (blob, _) = two_language_blob();
+        let mut pe = crate::hii::pe_resource::synth_hii_pe("HII", &blob);
+        let err = insert_strings_at_ids_in_resource(&mut pe, "x-UEFI-AMI-2", &[(3, "UPG0001")])
+            .unwrap_err();
+        assert!(matches!(err, crate::hii::HiiError::StringPackageNotFound));
+    }
+
+    #[test]
+    fn insert_in_resource_refuses_cert_blocked_growth() {
+        let (blob, _) = two_language_blob();
+        let mut pe = crate::hii::pe_resource::synth_hii_pe("HII", &blob);
+        pe[0xe8..0xec].copy_from_slice(&0x5000u32.to_le_bytes());
+        let snapshot = pe.clone();
+        let err = insert_strings_at_ids_in_resource(&mut pe, "x-UEFI-AMI", &[(3, "UPG0001")])
+            .unwrap_err();
+        assert!(matches!(err, crate::hii::HiiError::PeGrowthUnsupported));
         assert_eq!(pe, snapshot);
     }
 
