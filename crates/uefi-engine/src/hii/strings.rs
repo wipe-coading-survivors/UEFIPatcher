@@ -7,7 +7,7 @@ use crate::ffs::EFI_SECTION_PE32;
 use crate::hii::package_list::parse_package_list;
 use crate::hii::pe_resource::hii_resource_blobs;
 use crate::hii::string_pack::is_string_package;
-use crate::types::{FfsNode, FfsType, Image};
+use crate::types::{FfsNode, FfsType, Guid, Image};
 
 const SIBT_END: u8 = 0x00;
 const SIBT_STRING_SCSU: u8 = 0x10;
@@ -228,46 +228,85 @@ fn read_ucs2(body: &[u8], start: usize) -> (String, usize) {
 }
 
 pub fn collect_strings(image: &Image) -> Vec<StringInfo> {
-    let mut out: Vec<StringInfo> = Vec::new();
-    walk_for_string_package(&image.root, &mut out);
+    let mut out = Vec::new();
+    for pkg in collect_string_packages(image) {
+        for (sid, text) in pkg.strings {
+            out.push(StringInfo {
+                language: pkg.language.clone(),
+                string_id: sid as u32,
+                text,
+            });
+        }
+    }
     out
 }
 
-fn walk_for_string_package(node: &FfsNode, out: &mut Vec<StringInfo>) {
+#[derive(Debug, PartialEq)]
+pub(crate) enum StringPackageChannel {
+    Bare,
+    Resource,
+}
+
+#[allow(dead_code)]
+pub(crate) struct StringPackageRef {
+    pub file_guid: Option<Guid>,
+    pub channel: StringPackageChannel,
+    pub section_path: Vec<usize>,
+    pub language: String,
+    pub strings: Vec<(u16, String)>,
+}
+
+pub(crate) fn collect_string_packages(image: &Image) -> Vec<StringPackageRef> {
+    let mut out = Vec::new();
+    walk_string_packages(&image.root, None, &mut Vec::new(), &mut out);
+    out
+}
+
+fn walk_string_packages(
+    node: &FfsNode,
+    owner: Option<&Guid>,
+    path: &mut Vec<usize>,
+    out: &mut Vec<StringPackageRef>,
+) {
     if node.node_type == FfsType::Section {
         if declared_len_sane(&node.body)
             && is_string_package(&node.body)
             && let Some(pkg) = parse_string_package(&node.body)
         {
-            push_strings(pkg, out);
-            return;
+            out.push(StringPackageRef {
+                file_guid: owner.cloned(),
+                channel: StringPackageChannel::Bare,
+                section_path: path.clone(),
+                language: pkg.language,
+                strings: pkg.strings,
+            });
         }
-        if node.subtype == EFI_SECTION_PE32
-            && let Some(pkg) = first_resource_string_package(&node.body)
-        {
-            push_strings(pkg, out);
-            return;
+        if node.subtype == EFI_SECTION_PE32 {
+            for pkg in resource_string_packages(&node.body) {
+                out.push(StringPackageRef {
+                    file_guid: owner.cloned(),
+                    channel: StringPackageChannel::Resource,
+                    section_path: path.clone(),
+                    language: pkg.language,
+                    strings: pkg.strings,
+                });
+            }
         }
     }
-    for child in &node.children {
-        walk_for_string_package(child, out);
-        if !out.is_empty() {
-            return;
-        }
+    for (i, child) in node.children.iter().enumerate() {
+        let child_owner = if child.node_type == FfsType::File {
+            child.guid.as_ref()
+        } else {
+            owner
+        };
+        path.push(i);
+        walk_string_packages(child, child_owner, path, out);
+        path.pop();
     }
 }
 
-fn push_strings(pkg: ParsedStringPackage, out: &mut Vec<StringInfo>) {
-    for (sid, text) in pkg.strings {
-        out.push(StringInfo {
-            language: pkg.language.clone(),
-            string_id: sid as u32,
-            text,
-        });
-    }
-}
-
-fn first_resource_string_package(pe: &[u8]) -> Option<ParsedStringPackage> {
+pub(crate) fn resource_string_packages(pe: &[u8]) -> Vec<ParsedStringPackage> {
+    let mut out = Vec::new();
     for blob in hii_resource_blobs(pe) {
         let Some(list) = parse_package_list(blob) else {
             continue;
@@ -276,11 +315,11 @@ fn first_resource_string_package(pe: &[u8]) -> Option<ParsedStringPackage> {
             if pkg.kind == PACKAGE_STRINGS
                 && let Some(sp) = parse_string_package(pkg.bytes)
             {
-                return Some(sp);
+                out.push(sp);
             }
         }
     }
-    None
+    out
 }
 
 pub(crate) fn declared_len_sane(body: &[u8]) -> bool {
@@ -291,7 +330,7 @@ pub(crate) fn declared_len_sane(body: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{Action, FfsNode, FfsType, Image, ImageMode, ParsingData};
+    use crate::types::{Action, FfsNode, FfsType, Guid, Image, ImageMode, ParsingData};
 
     fn make_pkg(language: &str, sibt_bytes: &[u8]) -> Vec<u8> {
         let hdr_size: u32 = (46 + language.len() + 1) as u32;
@@ -316,6 +355,92 @@ mod tests {
         buf[1] = ((len >> 8) & 0xFF) as u8;
         buf[2] = ((len >> 16) & 0xFF) as u8;
         buf
+    }
+
+    fn res_list(guid: &crate::types::Guid, pkgs: &[&[u8]]) -> Vec<u8> {
+        let mut b = guid.to_bytes().to_vec();
+        let total: usize = 20 + pkgs.iter().map(|p| p.len()).sum::<usize>() + 4;
+        b.extend_from_slice(&(total as u32).to_le_bytes());
+        for p in pkgs {
+            b.extend_from_slice(p);
+        }
+        b.extend_from_slice(&[0x04, 0x00, 0x00, r_efi::hii::PACKAGE_END]);
+        b
+    }
+
+    fn mk_section(subtype: u8, body: Vec<u8>) -> FfsNode {
+        FfsNode {
+            guid: None,
+            node_type: FfsType::Section,
+            subtype,
+            offset: 0,
+            header: vec![],
+            body,
+            tail: vec![],
+            children: vec![],
+            action: Action::NoAction,
+            parsing_data: ParsingData::None,
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        }
+    }
+
+    fn mk_file(guid: Option<Guid>, children: Vec<FfsNode>) -> FfsNode {
+        FfsNode {
+            guid,
+            node_type: FfsType::File,
+            subtype: 0x07,
+            offset: 0,
+            header: vec![],
+            body: vec![],
+            tail: vec![],
+            children,
+            action: Action::NoAction,
+            parsing_data: ParsingData::None,
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        }
+    }
+
+    fn mk_image(children: Vec<FfsNode>) -> Image {
+        let volume = FfsNode {
+            guid: None,
+            node_type: FfsType::Volume,
+            subtype: 0,
+            offset: 0,
+            header: vec![],
+            body: vec![],
+            tail: vec![],
+            children,
+            action: Action::NoAction,
+            parsing_data: ParsingData::None,
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        };
+        let root = FfsNode {
+            guid: None,
+            node_type: FfsType::Image,
+            subtype: 0,
+            offset: 0,
+            header: vec![],
+            body: vec![],
+            tail: vec![],
+            children: vec![volume],
+            action: Action::NoAction,
+            parsing_data: ParsingData::None,
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        };
+        Image {
+            image_id: "img".into(),
+            session_id: "s".into(),
+            root,
+            mode: ImageMode::Read,
+        }
     }
 
     #[test]
@@ -440,42 +565,14 @@ mod tests {
         }
     }
 
-    fn mk_node(node_type: FfsType, body: Vec<u8>, children: Vec<FfsNode>) -> FfsNode {
-        FfsNode {
-            guid: None,
-            node_type,
-            subtype: 0,
-            offset: 0,
-            header: vec![],
-            body,
-            tail: vec![],
-            children,
-            action: Action::NoAction,
-            parsing_data: ParsingData::None,
-            fixed: false,
-            compressed: false,
-            alignment_bytes: vec![],
-        }
-    }
-
-    fn mk_image(pkg_body: Vec<u8>) -> Image {
-        let section = mk_node(FfsType::Section, pkg_body, vec![]);
-        let file = mk_node(FfsType::File, vec![], vec![section]);
-        let volume = mk_node(FfsType::Volume, vec![], vec![file]);
-        let root = mk_node(FfsType::Image, vec![], vec![volume]);
-        Image {
-            image_id: "img".into(),
-            session_id: "s".into(),
-            root,
-            mode: ImageMode::Read,
-        }
-    }
-
     #[test]
-    fn collect_strings_returns_first_package_strings() {
+    fn collect_strings_returns_bare_package_strings() {
         let sibt = [SIBT_STRING_SCSU, b'X', 0, SIBT_END];
         let pkg = make_pkg("eng", &sibt);
-        let image = mk_image(pkg);
+        let image = mk_image(vec![mk_file(
+            None,
+            vec![mk_section(crate::ffs::EFI_SECTION_RAW, pkg)],
+        )]);
         let out = collect_strings(&image);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].language, "eng");
@@ -485,7 +582,13 @@ mod tests {
 
     #[test]
     fn collect_strings_empty_when_no_package() {
-        let image = mk_image(vec![0x00, 0x00, 0x00, 0x02]);
+        let image = mk_image(vec![mk_file(
+            None,
+            vec![mk_section(
+                crate::ffs::EFI_SECTION_RAW,
+                vec![0x00, 0x00, 0x00, 0x02],
+            )],
+        )]);
         assert!(collect_strings(&image).is_empty());
     }
 
@@ -493,17 +596,10 @@ mod tests {
     fn collect_strings_from_pe_resources() {
         let blob = include_bytes!("../../tests/fixtures/hii_rk3588_string_res.bin");
         let pe = crate::hii::pe_resource::synth_hii_pe("HII", blob);
-        let mut section = mk_node(FfsType::Section, pe, vec![]);
-        section.subtype = crate::ffs::EFI_SECTION_PE32;
-        let file = mk_node(FfsType::File, vec![], vec![section]);
-        let volume = mk_node(FfsType::Volume, vec![], vec![file]);
-        let root = mk_node(FfsType::Image, vec![], vec![volume]);
-        let image = Image {
-            image_id: "img".into(),
-            session_id: "s".into(),
-            root,
-            mode: ImageMode::Read,
-        };
+        let image = mk_image(vec![mk_file(
+            None,
+            vec![mk_section(crate::ffs::EFI_SECTION_PE32, pe)],
+        )]);
         let out = collect_strings(&image);
         assert!(!out.is_empty());
         assert_eq!(out[0].language, "en-US");
@@ -511,8 +607,59 @@ mod tests {
 
     #[test]
     fn collect_strings_ignores_bare_body_with_bogus_declared_length() {
-        let mut image = mk_image(vec![0x09, 0x00, 0x00, 0x04]);
-        image.root.children[0].children[0].children[0].subtype = crate::ffs::EFI_SECTION_RAW;
+        let image = mk_image(vec![mk_file(
+            None,
+            vec![mk_section(
+                crate::ffs::EFI_SECTION_RAW,
+                vec![0x09, 0x00, 0x00, 0x04],
+            )],
+        )]);
         assert!(collect_strings(&image).is_empty());
+    }
+
+    #[test]
+    fn collect_strings_traverses_all_packages_and_files() {
+        let sibt_a = [SIBT_STRING_SCSU, b'A', 0, SIBT_END];
+        let pkg_a = make_pkg("en", &sibt_a);
+        let sibt_en = [SIBT_STRING_SCSU, b'H', b'i', 0, SIBT_END];
+        let pkg_en = make_pkg("en-US", &sibt_en);
+        let sibt_tok = [SIBT_STRING_SCSU, b'P', b'R', b'C', 0, SIBT_END];
+        let pkg_tok = make_pkg("x-UEFI-AMI", &sibt_tok);
+        let g = Guid::try_parse("899407D7-99FE-43D8-9A21-79EC328CAC21").unwrap();
+        let blob = res_list(&g, &[&pkg_en, &pkg_tok]);
+        let pe = crate::hii::pe_resource::synth_hii_pe("HII", &blob);
+
+        let ga = Guid::try_parse("5C60F367-A505-419A-859E-2A4FF6CA6FE5").unwrap();
+        let bare = mk_section(0x19, pkg_a.clone());
+        let mut file_a = mk_file(Some(ga), vec![bare]);
+        let gb = Guid::try_parse("ABBCE13D-E25A-4D9F-A1F9-2F7710786892").unwrap();
+        let pe_section = mk_section(EFI_SECTION_PE32, pe);
+        let file_b = mk_file(Some(gb), vec![pe_section]);
+        file_a.children.push(mk_section(0x19, pkg_a.clone()));
+        let image = mk_image(vec![file_a, file_b]);
+
+        let strings = collect_strings(&image);
+        assert_eq!(strings.len(), 4);
+        assert!(strings.iter().any(|s| s.language == "en" && s.text == "A"));
+        assert!(
+            strings
+                .iter()
+                .any(|s| s.language == "en-US" && s.text == "Hi")
+        );
+        assert!(
+            strings
+                .iter()
+                .any(|s| s.language == "x-UEFI-AMI" && s.text == "PRC")
+        );
+
+        let pkgs = collect_string_packages(&image);
+        assert_eq!(pkgs.len(), 4);
+        assert_eq!(pkgs[0].channel, StringPackageChannel::Bare);
+        assert_eq!(pkgs[0].file_guid, Some(ga));
+        assert_eq!(pkgs[1].channel, StringPackageChannel::Bare);
+        assert_eq!(pkgs[2].channel, StringPackageChannel::Resource);
+        assert_eq!(pkgs[2].file_guid, Some(gb));
+        assert_eq!(pkgs[2].language, "en-US");
+        assert_eq!(pkgs[3].language, "x-UEFI-AMI");
     }
 }

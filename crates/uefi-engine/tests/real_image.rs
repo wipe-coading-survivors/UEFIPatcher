@@ -774,7 +774,7 @@ fn real_image_hii_forms_and_strings() {
     assert!(
         strings
             .iter()
-            .all(|s| s.language.to_lowercase().starts_with("en")),
+            .any(|s| s.language.to_lowercase().starts_with("en")),
         "expected primary language ~English (en/en-US/eng), got {:?}",
         strings.first().map(|s| s.language.as_str())
     );
