@@ -183,7 +183,7 @@ pub(crate) fn insert_strings_at_ids(
         }
         push_string(&mut result, text);
         pi += 1;
-        next_id = next_id.wrapping_add(1);
+        next_id = id.wrapping_add(1);
     }
 
     result.extend_from_slice(&body[pos.min(body.len())..]);
@@ -612,6 +612,21 @@ mod tests {
         assert_eq!(
             parsed.strings,
             vec![(1, "A".to_string()), (4, "Z".to_string())]
+        );
+    }
+
+    #[test]
+    fn insert_at_id_multiple_trailing_entries_after_gap_keep_exact_ids() {
+        let mut pkg = make_string_package(&["A"]);
+        insert_strings_at_ids(&mut pkg, &[(4, "X"), (7, "Y")]).unwrap();
+        let parsed = crate::hii::strings::parse_string_package(&pkg).unwrap();
+        assert_eq!(
+            parsed.strings,
+            vec![
+                (1, "A".to_string()),
+                (4, "X".to_string()),
+                (7, "Y".to_string()),
+            ]
         );
     }
 
