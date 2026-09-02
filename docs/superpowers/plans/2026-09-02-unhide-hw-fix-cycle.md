@@ -1640,25 +1640,37 @@ git commit -m "feat(uefi-engine): collect_form_string_ids IFR walker"
 
     fn suppressed_form_901_pkg() -> Vec<u8> {
         let mut ifr = Vec::new();
-        ifr.extend(ifr_op(0x0E, true, &[&u16p(1), &u16p(2)].concat()));
+        ifr.extend(
+            ifr_op(0x0E, true, &[u16p(1).as_slice(), u16p(2).as_slice()].concat()),
+        );
         ifr.extend(ifr_op(0x0A, true, &[]));
         ifr.extend(ifr_op(0x12, false, &[0x40]));
-        ifr.extend(ifr_op(0x01, true, &[&u16p(901), &u16p(0x1325)].concat()));
-        ifr.extend(ifr_op(0x02, false, &[&u16p(4894), &u16p(4895)].concat()));
+        ifr.extend(
+            ifr_op(0x01, true, &[u16p(901).as_slice(), u16p(0x1325).as_slice()].concat()),
+        );
+        ifr.extend(
+            ifr_op(0x02, false, &[u16p(4894).as_slice(), u16p(4895).as_slice()].concat()),
+        );
         ifr.extend(ifr_op(
             0x05,
             true,
-            &[&u16p(4965), &u16p(4966), &u16p(0x0D5F), &u16p(1)].concat(),
+            &[
+                u16p(4965).as_slice(),
+                u16p(4966).as_slice(),
+                u16p(0x0D5F).as_slice(),
+                u16p(1).as_slice(),
+            ]
+            .concat(),
         ));
         ifr.extend(ifr_op(
             0x09,
             false,
-            &[&u16p(4969), &[0x00, 0x05], &u16p(1).as_slice()].concat(),
+            &[u16p(4969).as_slice(), &[0x00, 0x05], u16p(1).as_slice()].concat(),
         ));
         ifr.extend(ifr_op(
             0x09,
             false,
-            &[&u16p(2638), &[0x00, 0x05], &u16p(0).as_slice()].concat(),
+            &[u16p(2638).as_slice(), &[0x00, 0x05], u16p(0).as_slice()].concat(),
         ));
         ifr.extend(ifr_op(0x29, false, &[]));
         ifr.extend(ifr_op(0x29, false, &[]));
@@ -1819,7 +1831,7 @@ git commit -m "feat(uefi-engine): collect_form_string_ids IFR walker"
         let pkgs = resource_string_pkgs(&image);
         assert_eq!(pkgs.len(), 1);
         assert_eq!(pkgs[0].language, "en-US");
-        assert_eq!(pkgs[0].strings.len(), 7);
+        assert_eq!(pkgs[0].strings.len(), 6);
     }
 
     #[test]
@@ -1846,7 +1858,7 @@ git commit -m "feat(uefi-engine): collect_form_string_ids IFR walker"
     }
 ```
 
-(`display_sibt`: id1 «boot»; SKIP2 2636 (0x0A4C) → «Auto»=2638; SKIP2 2255 (0x08CF) → «HWPM»=4894; SKIP2 70 → «WSup»=4965; SKIP2 3 → «Ena»=4969; SKIP2 101 (0x65) → пустая =5071; END — 7 записей. `token_sibt`: «PRC01»=1; SKIP2 2636 → «PRC0AE»=2638; END. Проверка PRC: 4894/4965/4969 получают `UPG0001/2/3`, пустой 5071 пропущен, вендорский 2638 нетронут. Блокировка роста — сертификатная запись по смещению 0xe8, паттерн `string_pack.rs:660`.)
+(`display_sibt`: id1 «boot»; SKIP2 2636 (0x0A4C) → «Auto»=2638; SKIP2 2255 (0x08CF) → «HWPM»=4894; SKIP2 70 → «WSup»=4965; SKIP2 3 → «Ena»=4969; SKIP2 101 (0x65) → пустая =5071; END — 6 строковых записей (блоков 7 с учётом END). `token_sibt`: «PRC01»=1; SKIP2 2636 → «PRC0AE»=2638; END. Проверка PRC: 4894/4965/4969 получают `UPG0001/2/3`, пустой 5071 пропущен, вендорский 2638 нетронут. Блокировка роста — сертификатная запись по смещению 0xe8, паттерн `string_pack.rs:660`.)
 
 - [ ] **Step 3: Запустить, убедиться в провале**
 
@@ -2021,7 +2033,7 @@ Expected: PASS, no warnings.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add crates/uefi-engine/src/hii/mod.rs crates/uefi-engine/src/hii/strings.rs crates/uefi-engine/src/rpc/server.rs
+git add crates/uefi-engine/src/hii/mod.rs crates/uefi-engine/src/hii/string_pack.rs crates/uefi-engine/src/rpc/server.rs
 git commit -m "feat(uefi-engine): PRC token patch in set_item_visibility (x-UEFI-AMI, UPG names)"
 ```
 
