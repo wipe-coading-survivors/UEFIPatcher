@@ -272,18 +272,18 @@ pub(crate) fn insert_strings_at_ids_in_resource(
     let old_len = parsed.packages[idx].bytes.len();
     let mut grown = blob[20 + prefix..20 + prefix + old_len].to_vec();
     insert_strings_at_ids(&mut grown, entries)?;
-    let delta = grown.len() - old_len;
+    let delta = grown.len() as i64 - old_len as i64;
     let sum: usize = parsed.packages.iter().map(|p| p.bytes.len()).sum();
-    let new_blob_len = blob_len
-        .checked_add(delta)
-        .ok_or(HiiError::PeGrowthUnsupported)?;
-    let new_total = 20u64 + sum as u64 + delta as u64 + 4;
-    if new_total > u32::MAX as u64 || new_blob_len > u32::MAX as usize {
-        tracing::debug!("string package growth overflows list lengths");
+    let new_blob_len = blob_len as i64 + delta;
+    let new_total = 20i64 + sum as i64 + delta + 4;
+    if !(0..=u32::MAX as i64).contains(&new_blob_len) || !(0..=u32::MAX as i64).contains(&new_total)
+    {
+        tracing::debug!("string package resize overflows list lengths");
         return Err(HiiError::PeGrowthUnsupported);
     }
     let pkg_off = blob_off + 20 + prefix;
-    let plan = plan_rsrc_blob_growth(pe, delta).ok_or(HiiError::PeGrowthUnsupported)?;
+    let plan =
+        plan_rsrc_blob_growth(pe, delta.max(0) as usize).ok_or(HiiError::PeGrowthUnsupported)?;
     if plan.grow > 0 && !try_grow_rsrc_tail(pe, plan.grow) {
         return Err(HiiError::PeGrowthUnsupported);
     }
@@ -1158,5 +1158,52 @@ mod tests {
             add_strings(&mut image, None, &["x".to_string()]),
             Err(HiiError::StringPackageNotFound)
         ));
+    }
+
+    #[test]
+    fn insert_strings_at_ids_in_resource_survives_shrinking_reencode() {
+        let g = Guid::try_parse("899407D7-99FE-43D8-9A21-79EC328CAC21").unwrap();
+        let mut sibt = vec![SIBT_STRING_SCSU, b'A', 0x00];
+        for _ in 0..20 {
+            sibt.extend_from_slice(&[SIBT_SKIP2, 0x01, 0x00]);
+        }
+        sibt.extend_from_slice(&[SIBT_STRING_SCSU, b'B', 0x00, SIBT_END]);
+        let token = make_sppkg("x-UEFI-AMI", &sibt);
+        let form = pkg(r_efi::hii::PACKAGE_FORMS, &[0x0Eu8, 0x17, 0xAA]);
+        let blob = res_list(&g, &[&form, &token]);
+        let mut pe = crate::hii::pe_resource::synth_hii_pe("HII", &blob);
+        let pe_len = pe.len();
+        let (entry_off, blob_off, blob_len) = crate::hii::pe_resource::hii_entry_locations(&pe)[0];
+
+        insert_strings_at_ids_in_resource(&mut pe, "x-UEFI-AMI", &[(10, "X")]).unwrap();
+
+        assert_eq!(pe.len(), pe_len, "shrink must keep PE file length");
+        let new_blob_len = blob_len - 19;
+        assert_eq!(
+            crate::hii::pe_resource::hii_resource_ranges(&pe),
+            [(blob_off, new_blob_len)]
+        );
+        assert_eq!(le_u32(&pe, entry_off + 4), new_blob_len as u32);
+        let new_blob = &pe[blob_off..blob_off + new_blob_len];
+        let parsed = crate::hii::package_list::parse_package_list(new_blob).unwrap();
+        assert_eq!(parsed.packages.len(), 2);
+        assert_eq!(parsed.packages[0].bytes, &form[..]);
+        let sp = crate::hii::strings::parse_string_package(parsed.packages[1].bytes).unwrap();
+        assert_eq!(
+            sp.strings,
+            vec![
+                (1, "A".to_string()),
+                (10, "X".to_string()),
+                (22, "B".to_string())
+            ]
+        );
+        assert_eq!(
+            le_u32(new_blob, 16),
+            (20 + form.len() + parsed.packages[1].bytes.len() + 4) as u32
+        );
+        assert_eq!(
+            &new_blob[new_blob.len() - 4..],
+            &[0x04, 0x00, 0x00, r_efi::hii::PACKAGE_END]
+        );
     }
 }
