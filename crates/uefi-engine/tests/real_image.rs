@@ -6,7 +6,7 @@ use uefi_engine::parser::image::{list_items, parse_image, search};
 use uefi_engine::parser::section::parse_sections;
 use uefi_engine::parser::target::{find_item, parse_target};
 use uefi_engine::parser::volume::parse_volume;
-use uefi_engine::types::{Action, FfsNode, FfsType, Guid, ParsingData};
+use uefi_engine::types::{Action, FfsNode, FfsType, Guid, Image, ImageMode, ParsingData};
 
 fn fw_path() -> PathBuf {
     if let Ok(p) = std::env::var("UEFIPATCHER_TEST_FW") {
@@ -1214,5 +1214,188 @@ fn real_image_recompress_remove_ui_inside_lzma() {
         occurrences_after,
         occurrences_before - 1,
         "removed UI section '{ui_name}' must be materialized as absent"
+    );
+}
+
+const SETUP_MODULE_GUID: &str = "abbce13d-e25a-4d9f-a1f9-2f7710786892";
+const HIDDEN_FORM_ID: u16 = 901;
+
+#[ignore]
+#[test]
+fn real_image_string_list_full_traversal() {
+    let data = load_fw();
+    let img = parse_image(&data, ImageMode::Read, "img1", "s1").expect("parse_image");
+    let strings = uefi_engine::hii::strings::collect_strings(&img);
+    assert!(
+        strings.len() > 5000,
+        "expected ~5.7k strings, got {}",
+        strings.len()
+    );
+    assert!(strings.iter().any(|s| s.language == "en-US"));
+    assert!(strings.iter().any(|s| s.language == "x-UEFI-AMI"));
+    let prc = strings
+        .iter()
+        .filter(|s| s.language == "x-UEFI-AMI")
+        .count();
+    assert!(prc > 100);
+}
+
+fn setup_pe32_node_path(img: &Image) -> Vec<usize> {
+    let target =
+        uefi_engine::parser::target::parse_target(&format!("{SETUP_MODULE_GUID}:0x10:0")).unwrap();
+    uefi_engine::parser::target::find_item_path(&img.root, &target).expect("setup PE32 node")
+}
+
+fn node_at_path<'a>(img: &'a Image, path: &[usize]) -> &'a FfsNode {
+    let mut node = &img.root;
+    for &i in path {
+        node = &node.children[i];
+    }
+    node
+}
+
+fn resource_string_ids(img: &Image, path: &[usize], language: &str) -> Vec<(u16, String)> {
+    let pe = &node_at_path(img, path).body;
+    for (off, len) in uefi_engine::hii::pe_resource::hii_resource_ranges(pe) {
+        let Some(blob) = pe.get(off..off + len) else {
+            continue;
+        };
+        let Some(list) = uefi_engine::hii::package_list::parse_package_list(blob) else {
+            continue;
+        };
+        for pkg in &list.packages {
+            if pkg.kind == r_efi::hii::PACKAGE_STRINGS
+                && let Some(sp) = uefi_engine::hii::strings::parse_string_package(pkg.bytes)
+                && sp.language == language
+            {
+                return sp.strings;
+            }
+        }
+    }
+    Vec::new()
+}
+
+fn form_901_suppressed(img: &Image, path: &[usize]) -> bool {
+    let pe = &node_at_path(img, path).body;
+    for (off, len) in uefi_engine::hii::pe_resource::hii_resource_ranges(pe) {
+        let Some(blob) = pe.get(off..off + len) else {
+            continue;
+        };
+        let Some(list) = uefi_engine::hii::package_list::parse_package_list(blob) else {
+            continue;
+        };
+        for pkg in &list.packages {
+            if pkg.kind == r_efi::hii::PACKAGE_FORMS
+                && uefi_engine::hii::ifr::find_form_suppress_scope(pkg.bytes, HIDDEN_FORM_ID)
+                    .is_some()
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+#[ignore]
+#[test]
+fn real_image_unhide_patches_prc_tokens() {
+    let data = load_fw();
+    let mut img = parse_image(&data, ImageMode::Write, "img1", "s1").expect("parse_image");
+    let path = setup_pe32_node_path(&img);
+    let display_before = resource_string_ids(&img, &path, "en-US");
+    let token_before = resource_string_ids(&img, &path, "x-UEFI-AMI");
+    assert!(!token_before.iter().any(|(i, _)| *i == 4894));
+    assert!(form_901_suppressed(&img, &path));
+
+    uefi_engine::hii::set_item_visibility(
+        &mut img,
+        &format!("{SETUP_MODULE_GUID}:0x10:0#{HIDDEN_FORM_ID}"),
+        true,
+    )
+    .expect("unhide with PRC patch");
+
+    assert!(!form_901_suppressed(&img, &path));
+    let display_after = resource_string_ids(&img, &path, "en-US");
+    let token_after = resource_string_ids(&img, &path, "x-UEFI-AMI");
+    assert_eq!(display_after, display_before);
+    for id in [4894u16, 4965, 4969] {
+        assert!(
+            token_after
+                .iter()
+                .any(|(i, t)| *i == id && t.starts_with("UPG")),
+            "missing PRC token for id {id}"
+        );
+    }
+    assert!(!token_after.iter().any(|(i, _)| *i == 5071));
+    for (id, text) in &token_before {
+        assert!(token_after.contains(&(*id, text.clone())));
+    }
+}
+
+fn file_extent(img: &Image, path: &[usize]) -> (usize, usize) {
+    let mut node = &img.root;
+    let mut vol = &img.root;
+    let mut file_idx = 0usize;
+    for &i in path {
+        let child = &node.children[i];
+        if child.node_type == FfsType::File {
+            vol = node;
+            file_idx = i;
+        }
+        node = child;
+    }
+    let file_start = vol.children[file_idx].offset as usize;
+    let file_end = vol.children[file_idx + 1].offset as usize;
+    (file_start, file_end)
+}
+
+fn guided_body_len(img: &Image, path: &[usize]) -> usize {
+    let mut node = &img.root;
+    let mut guided: Option<&FfsNode> = None;
+    for &i in path {
+        node = &node.children[i];
+        if node.node_type == FfsType::Section
+            && node.subtype == uefi_engine::ffs::EFI_SECTION_GUID_DEFINED
+        {
+            guided = Some(node);
+        }
+    }
+    guided
+        .expect("guided LZMA ancestor of the PE32 section")
+        .body
+        .len()
+}
+
+#[ignore]
+#[test]
+fn real_image_unhide_rebuild_keeps_layout() {
+    let data = load_fw();
+    let mut img = parse_image(&data, ImageMode::Write, "img1", "s1").expect("parse_image");
+    let pe_path = setup_pe32_node_path(&img);
+    let (file_start, file_end) = file_extent(&img, &pe_path);
+    let guided_before = guided_body_len(&img, &pe_path);
+
+    uefi_engine::hii::set_item_visibility(
+        &mut img,
+        &format!("{SETUP_MODULE_GUID}:0x10:0#{HIDDEN_FORM_ID}"),
+        true,
+    )
+    .expect("unhide");
+    let built = uefi_engine::builder::build_image(&img).expect("build_image");
+
+    assert_eq!(built.len(), data.len());
+    assert_eq!(&built[..file_start], &data[..file_start]);
+    assert_eq!(&built[file_end..], &data[file_end..]);
+
+    let rebuilt = parse_image(&built, ImageMode::Read, "img1", "s1").expect("re-parse");
+    let new_path = setup_pe32_node_path(&rebuilt);
+    let (_, new_file_end) = file_extent(&rebuilt, &new_path);
+    assert_eq!(new_file_end, file_end);
+    assert_eq!(guided_body_len(&rebuilt, &new_path), guided_before);
+    let token = resource_string_ids(&rebuilt, &new_path, "x-UEFI-AMI");
+    assert!(
+        token
+            .iter()
+            .any(|(i, t)| *i == 4894 && t.starts_with("UPG"))
     );
 }
