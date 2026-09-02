@@ -961,7 +961,7 @@ git commit -m "fix(uefi-engine): hii string traversal collects all string packag
         assert_eq!(pkg[after], SIBT_SKIP2);
         assert_eq!(
             u16::from_le_bytes([pkg[after + 1], pkg[after + 2]]),
-            0x150 - 3
+            0x150 - 2
         );
         let parsed = crate::hii::strings::parse_string_package(&pkg).unwrap();
         assert_eq!(parsed.strings[0], (1, "A".to_string()));
@@ -1094,6 +1094,7 @@ fn block_end(body: &[u8], pos: usize) -> Option<usize> {
     Some(end)
 }
 
+#[allow(dead_code)]
 pub(crate) fn insert_strings_at_ids(
     body: &mut Vec<u8>,
     entries: &[(u16, &str)],
@@ -1163,7 +1164,7 @@ pub(crate) fn insert_strings_at_ids(
 }
 ```
 
-Семантика прохода: каждый блок задаёт непрерывный диапазон id `[next_id, next_id+count)`; SKIP-блок разрезается вставками (`[skip(before)][записи][skip(after)]`, класс опкода по размеру), любой другой блок с попаданием целевого id в его диапазон — `IdOccupied` (ошибки возвращаются до `*body = result`, тело не мутируется); после `SIBT_END` (или неизвестного опкода) оставшиеся записи добираются skip-прогалом и вставляются перед скопированным хвостом. Хелперы `skip_scsu`/`skip_ucs2`/`read_u16_count`/`update_package_length`/`string_info_offset` уже есть в `string_pack.rs:253-302`.
+Семантика прохода: каждый блок задаёт непрерывный диапазон id `[next_id, next_id+count)`; SKIP-блок разрезается вставками (`[skip(before)][записи][skip(after)]`, класс опкода по размеру), любой другой блок с попаданием целевого id в его диапазон — `IdOccupied` (ошибки возвращаются до `*body = result`, тело не мутируется); после `SIBT_END` (или неизвестного опкода) оставшиеся записи добираются skip-прогалом и вставляются перед скопированным хвостом. Хелперы `skip_scsu`/`skip_ucs2`/`read_u16_count`/`update_package_length`/`string_info_offset` уже есть в `string_pack.rs:253-302`. Конкретика: `#[allow(dead_code)]` на `insert_strings_at_ids` обязателен — функция `pub(crate)` и до Task 7 (первый потребитель `insert_strings_at_ids_in_resource`) читается только из `#[cfg(test)]`-тестов, без allow падает `clippy -D warnings` (прецедент: `uefi-cli/src/output.rs:203`, `hii/strings.rs` `StringPackageRef`). Хвостовой SKIP2-счёт в `insert_at_id_splits_skip_into_size_classes` — `0x150 - 2` (не `- 3`): SKIP2(0x150) покрывает id [2,338), вставка на id 3 оставляет 1 id до (SKIP1) и 338-4=334 id после.
 
 - [ ] **Step 5: Прогон + lint**
 
