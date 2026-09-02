@@ -1278,6 +1278,7 @@ Expected: FAIL — функция не определена.
 В `hii/string_pack.rs` после `add_strings_to_resource` (`string_pack.rs:107`):
 
 ```rust
+#[allow(dead_code)]
 pub(crate) fn insert_strings_at_ids_in_resource(
     pe: &mut Vec<u8>,
     language: &str,
@@ -1337,7 +1338,7 @@ pub(crate) fn insert_strings_at_ids_in_resource(
 }
 ```
 
-(хелпер `make_sppkg` добавлен в Task 6; `hii_entry_locations`/`plan_rsrc_blob_growth`/`write_length_chain` — существующие `pub(crate)` из `pe_resource.rs`.)
+(хелпер `make_sppkg` добавлен в Task 6; `hii_entry_locations`/`plan_rsrc_blob_growth`/`write_length_chain` — существующие `pub(crate)` из `pe_resource.rs`. Конкретика: `#[allow(dead_code)]` обязателен на `insert_strings_at_ids_in_resource` и снимается с `insert_strings_at_ids` (allow добавлен правкой Task 6) — обе функции `pub(crate)`, до Task 9 (первый потребитель `insert_strings_at_ids_in_resource`, см. Interfaces Task 9) `insert_strings_at_ids_in_resource` читается только из `#[cfg(test)]`-тестов, без allow падает `clippy -D warnings`.)
 
 - [ ] **Step 4: Прогон + lint**
 
