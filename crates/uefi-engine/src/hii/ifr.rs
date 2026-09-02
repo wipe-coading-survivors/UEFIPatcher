@@ -112,6 +112,107 @@ pub fn find_form_suppress_scope(body: &[u8], form_id: u16) -> Option<SuppressSco
     None
 }
 
+pub fn collect_form_string_ids(body: &[u8], form_id: u16) -> Vec<u16> {
+    use r_efi::hii::{
+        IFR_ACTION_OP, IFR_CHECKBOX_OP, IFR_DATE_OP, IFR_NUMERIC_OP, IFR_ONE_OF_OP,
+        IFR_ONE_OF_OPTION_OP, IFR_ORDERED_LIST_OP, IFR_PASSWORD_OP, IFR_REF_OP, IFR_STRING_OP,
+        IFR_SUBTITLE_OP, IFR_TEXT_OP, IFR_TIME_OP,
+    };
+    let (start, end) = if is_form_package(body) {
+        let plen = body[0] as usize | (body[1] as usize) << 8 | (body[2] as usize) << 16;
+        (4, plen.min(body.len()))
+    } else {
+        (0, body.len())
+    };
+    let mut out: Vec<u16> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let push = |out: &mut Vec<u16>, seen: &mut std::collections::HashSet<u16>, id: u16| {
+        if id != 0 && seen.insert(id) {
+            out.push(id);
+        }
+    };
+    let mut i = start;
+    while i + 2 <= end {
+        let op_code = body[i];
+        let length_and_scope = body[i + 1];
+        let length = (length_and_scope & 0x7F) as usize;
+        if length < 2 || i + length > end {
+            return out;
+        }
+        if op_code == IFR_FORM_OP
+            && length >= 6
+            && u16::from_le_bytes([body[i + 2], body[i + 3]]) == form_id
+        {
+            let read_id =
+                |off: usize| -> u16 { u16::from_le_bytes([body[i + off], body[i + 1 + off]]) };
+            push(&mut out, &mut seen, read_id(4));
+            let mut depth = 0usize;
+            let mut j = i + length;
+            while j + 2 <= end {
+                let inner_op = body[j];
+                let inner_ls = body[j + 1];
+                let inner_len = (inner_ls & 0x7F) as usize;
+                if inner_len < 2 || j + inner_len > end {
+                    return out;
+                }
+                if inner_op == IFR_END_OP {
+                    if depth == 0 {
+                        return out;
+                    }
+                    depth -= 1;
+                } else {
+                    match inner_op {
+                        IFR_SUBTITLE_OP | IFR_ONE_OF_OP | IFR_CHECKBOX_OP | IFR_NUMERIC_OP
+                        | IFR_PASSWORD_OP | IFR_ACTION_OP | IFR_REF_OP | IFR_DATE_OP
+                        | IFR_TIME_OP | IFR_STRING_OP | IFR_ORDERED_LIST_OP => {
+                            if inner_len >= 6 {
+                                let p = u16::from_le_bytes([body[j + 2], body[j + 3]]);
+                                let h = u16::from_le_bytes([body[j + 4], body[j + 5]]);
+                                push(&mut out, &mut seen, p);
+                                push(&mut out, &mut seen, h);
+                            }
+                        }
+                        IFR_TEXT_OP => {
+                            if inner_len >= 8 {
+                                push(
+                                    &mut out,
+                                    &mut seen,
+                                    u16::from_le_bytes([body[j + 2], body[j + 3]]),
+                                );
+                                push(
+                                    &mut out,
+                                    &mut seen,
+                                    u16::from_le_bytes([body[j + 4], body[j + 5]]),
+                                );
+                                push(
+                                    &mut out,
+                                    &mut seen,
+                                    u16::from_le_bytes([body[j + 6], body[j + 7]]),
+                                );
+                            }
+                        }
+                        IFR_ONE_OF_OPTION_OP if inner_len >= 4 => {
+                            push(
+                                &mut out,
+                                &mut seen,
+                                u16::from_le_bytes([body[j + 2], body[j + 3]]),
+                            );
+                        }
+                        _ => {}
+                    }
+                    if inner_ls & 0x80 != 0 {
+                        depth += 1;
+                    }
+                }
+                j += inner_len;
+            }
+            return out;
+        }
+        i += length;
+    }
+    out
+}
+
 pub fn insert_form_into_package(
     pkg: &mut Vec<u8>,
     formset_idx: usize,
@@ -258,7 +359,10 @@ pub fn parse_form_package(body: &[u8]) -> Option<FormSetInfo> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use r_efi::hii::{IFR_VARSTORE_EFI_OP, PACKAGE_STRINGS};
+    use r_efi::hii::{
+        IFR_ONE_OF_OP, IFR_ONE_OF_OPTION_OP, IFR_SUBTITLE_OP, IFR_TEXT_OP, IFR_VARSTORE_EFI_OP,
+        PACKAGE_STRINGS,
+    };
     use std::str::FromStr;
 
     const FORMSET_GUID: &str = "5C60F367-A505-419A-859E-2A4FF6CA6FE5";
@@ -624,5 +728,129 @@ mod tests {
             fs.forms.iter().map(|f| f.form_id).collect::<Vec<_>>(),
             vec![1, 99]
         );
+    }
+
+    fn ifr_op(opc: u8, scope: bool, payload: &[u8]) -> Vec<u8> {
+        let mut v = Vec::with_capacity(2 + payload.len());
+        v.push(opc);
+        v.push((2 + payload.len()) as u8 | if scope { 0x80 } else { 0 });
+        v.extend_from_slice(payload);
+        v
+    }
+
+    fn u16p(x: u16) -> Vec<u8> {
+        x.to_le_bytes().to_vec()
+    }
+
+    fn two_form_package() -> Vec<u8> {
+        let mut ifr = Vec::new();
+        ifr.extend(ifr_op(
+            0x0E,
+            true,
+            &[u16p(0x0100).as_slice(), u16p(0x0101).as_slice()].concat(),
+        ));
+        ifr.extend(ifr_op(0x0A, true, &[]));
+        ifr.extend(ifr_op(0x12, false, &[0x40]));
+        ifr.extend(ifr_op(
+            IFR_FORM_OP,
+            true,
+            &[u16p(901).as_slice(), u16p(0x1325).as_slice()].concat(),
+        ));
+        ifr.extend(ifr_op(
+            IFR_SUBTITLE_OP,
+            false,
+            &[u16p(4894).as_slice(), u16p(4895).as_slice()].concat(),
+        ));
+        ifr.extend(ifr_op(
+            IFR_ONE_OF_OP,
+            true,
+            &[
+                u16p(4965).as_slice(),
+                u16p(4966).as_slice(),
+                u16p(0x0D5F).as_slice(),
+                u16p(1).as_slice(),
+            ]
+            .concat(),
+        ));
+        ifr.extend(ifr_op(
+            IFR_ONE_OF_OPTION_OP,
+            false,
+            &[u16p(4969).as_slice(), &[0x00, 0x05], u16p(1).as_slice()].concat(),
+        ));
+        ifr.extend(ifr_op(
+            IFR_ONE_OF_OPTION_OP,
+            false,
+            &[u16p(2638).as_slice(), &[0x00, 0x05], u16p(0).as_slice()].concat(),
+        ));
+        ifr.extend(ifr_op(IFR_END_OP, false, &[]));
+        ifr.extend(ifr_op(IFR_END_OP, false, &[]));
+        ifr.extend(ifr_op(IFR_END_OP, false, &[]));
+        ifr.extend(ifr_op(IFR_END_OP, false, &[]));
+        ifr.extend(ifr_op(
+            IFR_FORM_OP,
+            true,
+            &[u16p(902).as_slice(), u16p(0x1400).as_slice()].concat(),
+        ));
+        ifr.extend(ifr_op(
+            IFR_TEXT_OP,
+            false,
+            &[
+                u16p(0x1401).as_slice(),
+                u16p(0x1402).as_slice(),
+                u16p(0x1403).as_slice(),
+            ]
+            .concat(),
+        ));
+        ifr.extend(ifr_op(IFR_END_OP, false, &[]));
+        ifr.extend(ifr_op(IFR_END_OP, false, &[]));
+        let mut pkg = vec![
+            (4 + ifr.len()) as u8 & 0xFF,
+            0,
+            0,
+            r_efi::hii::PACKAGE_FORMS,
+        ];
+        let len = 4 + ifr.len();
+        pkg[0] = (len & 0xFF) as u8;
+        pkg[1] = ((len >> 8) & 0xFF) as u8;
+        pkg[2] = ((len >> 16) & 0xFF) as u8;
+        pkg.extend(ifr);
+        pkg
+    }
+
+    #[test]
+    fn collect_form_string_ids_walks_target_form_only() {
+        let pkg = two_form_package();
+        assert_eq!(
+            collect_form_string_ids(&pkg, 901),
+            vec![0x1325, 4894, 4895, 4965, 4966, 4969, 2638]
+        );
+        assert_eq!(
+            collect_form_string_ids(&pkg, 902),
+            vec![0x1400, 0x1401, 0x1402, 0x1403]
+        );
+    }
+
+    #[test]
+    fn collect_form_string_ids_unknown_form_is_empty() {
+        let pkg = two_form_package();
+        assert!(collect_form_string_ids(&pkg, 9999).is_empty());
+    }
+
+    #[test]
+    fn collect_form_string_ids_filters_zero_and_dedups() {
+        let mut ifr = Vec::new();
+        ifr.extend(ifr_op(
+            IFR_FORM_OP,
+            true,
+            &[u16p(7).as_slice(), u16p(0x22).as_slice()].concat(),
+        ));
+        ifr.extend(ifr_op(
+            IFR_SUBTITLE_OP,
+            false,
+            &[u16p(0).as_slice(), u16p(0x22).as_slice()].concat(),
+        ));
+        ifr.extend(ifr_op(IFR_END_OP, false, &[]));
+        ifr.extend(ifr_op(IFR_END_OP, false, &[]));
+        assert_eq!(collect_form_string_ids(&ifr, 7), vec![0x22]);
     }
 }
