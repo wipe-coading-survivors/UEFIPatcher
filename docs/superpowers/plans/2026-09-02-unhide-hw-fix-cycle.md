@@ -2157,7 +2157,7 @@ mod tests {
         let p = resolve_output_path("out.bin").unwrap();
         assert!(p.is_absolute());
         assert_eq!(p.parent(), std::env::current_dir().ok().as_deref());
-        assert_eq!(p.file_name().map(|f| f.to_str()), Some("out.bin"));
+        assert_eq!(p.file_name().map(|f| f.to_str()), Some(Some("out.bin")));
     }
 
     #[test]
