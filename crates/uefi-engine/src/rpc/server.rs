@@ -51,7 +51,10 @@ fn hii_error_status(e: crate::hii::HiiError) -> Status {
         | crate::hii::HiiError::MutationBehindCompression
         | crate::hii::HiiError::PeGrowthUnsupported
         | crate::hii::HiiError::IdOccupied(_)
-        | crate::hii::HiiError::PrcPatchUnsupported => Status::failed_precondition(e.to_string()),
+        | crate::hii::HiiError::PrcPatchUnsupported
+        | crate::hii::HiiError::SibtBlockUnsupported(_) => {
+            Status::failed_precondition(e.to_string())
+        }
         _ => Status::internal(e.to_string()),
     }
 }
@@ -939,6 +942,9 @@ mod tests {
         assert_eq!(st.code(), tonic::Code::FailedPrecondition);
         let st = hii_error_status(crate::hii::HiiError::PrcPatchUnsupported);
         assert_eq!(st.code(), tonic::Code::FailedPrecondition);
+        let st = hii_error_status(crate::hii::HiiError::SibtBlockUnsupported(0x31));
+        assert_eq!(st.code(), tonic::Code::FailedPrecondition);
+        assert!(st.message().contains("0x31"));
     }
 
     #[test]

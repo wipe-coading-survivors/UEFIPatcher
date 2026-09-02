@@ -139,6 +139,9 @@ pub(crate) fn insert_strings_at_ids(
 
     while pos < body.len() && body[pos] != SIBT_END {
         let Some(end) = block_end(body, pos) else {
+            if pending.get(pi).is_some() {
+                return Err(crate::hii::HiiError::SibtBlockUnsupported(body[pos]));
+            }
             break;
         };
         let count = block_id_count(body, pos) as u16;
@@ -654,6 +657,75 @@ mod tests {
                 (5, "Y".to_string()),
                 (6, "B".to_string()),
             ]
+        );
+    }
+
+    #[test]
+    fn insert_at_id_errors_on_unknown_sibt_block_with_pending() {
+        let sibt = [
+            SIBT_STRING_SCSU,
+            b'A',
+            0,
+            0x31,
+            0xAA,
+            0xBB,
+            SIBT_STRING_SCSU,
+            b'B',
+            0,
+            SIBT_END,
+        ];
+        let mut pkg = make_sppkg("en", &sibt);
+        let snapshot = pkg.clone();
+        let err = insert_strings_at_ids(&mut pkg, &[(3, "X")]).unwrap_err();
+        assert!(matches!(
+            err,
+            crate::hii::HiiError::SibtBlockUnsupported(0x31)
+        ));
+        assert_eq!(pkg, snapshot);
+    }
+
+    #[test]
+    fn insert_at_id_unknown_block_without_pending_is_output_neutral() {
+        let verbatim_sibt = [
+            SIBT_STRING_SCSU,
+            b'A',
+            0,
+            0x31,
+            0xAA,
+            0xBB,
+            SIBT_STRING_SCSU,
+            b'B',
+            0,
+            SIBT_END,
+        ];
+        let mut pkg = make_sppkg("en", &verbatim_sibt);
+        let snapshot = pkg.clone();
+        insert_strings_at_ids(&mut pkg, &[]).unwrap();
+        assert_eq!(pkg, snapshot);
+
+        let skip_sibt = [
+            SIBT_STRING_SCSU,
+            b'A',
+            0,
+            SIBT_SKIP2,
+            0x02,
+            0x00,
+            0x31,
+            0xAA,
+            0xBB,
+            SIBT_STRING_SCSU,
+            b'B',
+            0,
+            SIBT_END,
+        ];
+        let mut pkg = make_sppkg("en", &skip_sibt);
+        let tail = pkg[pkg.len() - 7..].to_vec();
+        insert_strings_at_ids(&mut pkg, &[(2, "X")]).unwrap();
+        assert!(pkg.ends_with(&tail));
+        let parsed = crate::hii::strings::parse_string_package(&pkg).unwrap();
+        assert_eq!(
+            parsed.strings,
+            vec![(1, "A".to_string()), (2, "X".to_string())]
         );
     }
 
