@@ -2582,6 +2582,8 @@ Expected: PASS — новые три + все существующие живы�
 
 Если PRC-записи не появились (id не входят в `collect_form_string_ids` формы 901 — например, IFR формы использует другие поля) — остановиться и диагностировать парсингом реального формсета (пробники `refs/amibcp/probes/`), при расхождении плана с фактикой — правило plan-defect (коммит `docs: fix Task 13 ...`).
 
+Дефект, обнаруженный на живом прогоне (унаследованный от Task 9, регрессия `ef3fcb9`): `insert_strings_at_ids_in_resource` (string_pack.rs) считает `delta = grown.len() - old_len` беззнаковым и рассчитан только на рост пакета. На реальном x-UEFI-AMI пакете HNX99TF вставка токенов формы 901 режет существующие skip-цепочки, и компактная пере-кодировка (`push_skip` сливает SKIP1/SKIP2 серии) УМЕНЬШАЕТ пакет: 53212 → 52532 (delta = -680; кодировка корректна — все 3395 старых пар сохранены, 9 UPG-токенов легли на точные иды). Под Debug — паника `attempt to subtract with overflow` (string_pack.rs:275), под release — delta wrap → `checked_add` None → `Err(PeGrowthUnsupported)`. Ломает новые `real_image_unhide_patches_prc_tokens`/`real_image_unhide_rebuild_keeps_layout` и существующий `real_image_hii_form_visibility_round_trip`; синтетика Task 9 не покрывала случай, т.к. вставляла иды только ЗА последним токеном (чистый append → рост). Исправление отдельным fix-коммитом ДО коммита Task 13: delta как `isize`; `new_blob_len`/`new_total` по знаковой арифметике; `plan_rsrc_blob_growth` вызывать только для положительной части (`delta.max(0)`); `copy_within`/`write_length_chain` уже корректны для уменьшения (PE не меняет длину, хвост blob сдвигается влево).
+
 - [ ] **Step 3: Прогон синтетики + lint**
 
 Run: `cargo test -p uefi-engine && cargo clippy -p uefi-engine -- -D warnings`
