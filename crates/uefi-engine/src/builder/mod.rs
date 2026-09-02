@@ -1,5 +1,5 @@
 use self::align::{align4, align8, pad_to};
-use crate::compress::compress_lzma;
+use crate::compress::compress_lzma_fit;
 use crate::ffs::*;
 use crate::types::*;
 use thiserror::Error;
@@ -160,13 +160,6 @@ fn recompressable_guid(node: &FfsNode) -> bool {
 }
 
 fn build_recompressed_guided(node: &FfsNode, out: &mut Vec<u8>) -> Result<(), BuilderError> {
-    let mut children = Vec::new();
-    for child in &node.children {
-        build_node(child, &mut children)?;
-        let target = align4(children.len());
-        pad_to(&mut children, target, 0x00);
-    }
-    let stream = compress_lzma(&children)?;
     if node.body.len() < 18 {
         return Err(BuilderError::RecompressionUnsupported);
     }
@@ -175,6 +168,14 @@ fn build_recompressed_guided(node: &FfsNode, out: &mut Vec<u8>) -> Result<(), Bu
     if !(20..=node.body.len()).contains(&prefix_len) {
         return Err(BuilderError::RecompressionUnsupported);
     }
+    let mut children = Vec::new();
+    for child in &node.children {
+        build_node(child, &mut children)?;
+        let target = align4(children.len());
+        pad_to(&mut children, target, 0x00);
+    }
+    let budget = node.body.len() - prefix_len;
+    let stream = compress_lzma_fit(&children, Some(budget))?;
     let mut header = node.header.clone();
     let total = header.len() + prefix_len + stream.len();
     set_section_size(&mut header, total);
@@ -483,6 +484,65 @@ mod tests {
         let rebuilt = crate::parser::section::parse_section(&out, 0).unwrap();
         assert_eq!(&rebuilt.body[..20], &prefix_before[..]);
         assert_eq!(rebuilt.children[0].body, vec![0x42; 24]);
+    }
+
+    #[test]
+    fn guided_lzma_rebuild_fits_original_slot() {
+        let section = include_bytes!("../../../../tests/fixtures/lzma_guided_section.bin");
+        let mut node = crate::parser::section::parse_section(section, 0).unwrap();
+        assert!(!node.children.is_empty());
+        let child = &mut node.children[0];
+        child.action = Action::Replace;
+        child.children.clear();
+        child.body = vec![0x42; 24];
+        node.action = Action::Rebuild;
+        let mut out = Vec::new();
+        build_section(&node, &mut out).unwrap();
+        assert_eq!(
+            out.len(),
+            section.len(),
+            "recompressed section must occupy the original slot"
+        );
+        let rebuilt = crate::parser::section::parse_section(&out, 0).unwrap();
+        assert_eq!(rebuilt.body.len(), node.body.len());
+        assert_eq!(rebuilt.children.len(), node.children.len());
+        assert_eq!(rebuilt.children[0].body, node.children[0].body);
+        assert_eq!(rebuilt.children[0].subtype, node.children[0].subtype);
+    }
+
+    #[test]
+    fn guided_lzma_growth_layout_when_payload_exceeds_slot() {
+        let mut body = vec![0u8; 24];
+        body[16..18].copy_from_slice(&24u16.to_le_bytes());
+        let mut payload = Vec::new();
+        let mut x: u64 = 0x243F_6A88_85A3_08D3;
+        for _ in 0..4096 {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            payload.push((x >> 32) as u8);
+        }
+        let mut node = guided_node(crate::ffs::lzma_guid(), Action::Rebuild);
+        node.body = body;
+        node.children = vec![FfsNode {
+            guid: None,
+            node_type: FfsType::Section,
+            subtype: EFI_SECTION_RAW,
+            offset: 0,
+            header: vec![0u8; 4],
+            body: payload,
+            tail: vec![],
+            children: vec![],
+            action: Action::Replace,
+            parsing_data: ParsingData::None,
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        }];
+        let mut out = Vec::new();
+        build_section(&node, &mut out).unwrap();
+        assert!(out.len() > node.header.len() + 20);
+        assert!(crate::parser::section::parse_section(&out, 0).is_ok());
     }
 
     #[test]
