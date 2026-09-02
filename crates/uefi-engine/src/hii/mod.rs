@@ -30,6 +30,8 @@ pub enum HiiError {
     InvalidSchema(String),
     #[error("string package not found")]
     StringPackageNotFound,
+    #[error("string id {0} is already occupied")]
+    IdOccupied(u16),
     #[error("AMI files not found (setupdataBin/amitseSct)")]
     AmiFilesNotFound,
     #[error("IFR build error: {0}")]

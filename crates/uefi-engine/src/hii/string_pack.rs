@@ -57,6 +57,142 @@ fn add_strings_to_body(body: &mut Vec<u8>, strings: &[String]) -> HashMap<String
     mapping
 }
 
+fn push_skip(out: &mut Vec<u8>, count: u16) {
+    if count <= 0xFF {
+        out.push(SIBT_SKIP1);
+        out.push(count as u8);
+    } else {
+        out.push(SIBT_SKIP2);
+        out.extend_from_slice(&count.to_le_bytes());
+    }
+}
+
+fn push_string(out: &mut Vec<u8>, text: &str) {
+    out.push(SIBT_STRING_SCSU);
+    out.extend_from_slice(text.as_bytes());
+    out.push(0x00);
+}
+
+fn block_id_count(body: &[u8], pos: usize) -> usize {
+    match body[pos] {
+        SIBT_STRING_SCSU
+        | SIBT_STRING_SCSU_FONT
+        | SIBT_STRING_UCS2
+        | SIBT_STRING_UCS2_FONT
+        | SIBT_DUPLICATE => 1,
+        SIBT_STRINGS_SCSU | SIBT_STRINGS_UCS2 => usize::from(read_u16_count(body, pos + 1).0),
+        SIBT_STRINGS_SCSU_FONT | SIBT_STRINGS_UCS2_FONT => {
+            usize::from(read_u16_count(body, pos + 2).0)
+        }
+        SIBT_SKIP2 => usize::from(read_u16_count(body, pos + 1).0),
+        SIBT_SKIP1 => body.get(pos + 1).copied().unwrap_or(0) as usize,
+        _ => 0,
+    }
+}
+
+fn strings_block_extent(body: &[u8], pos: usize, count_off: usize, ucs2: bool) -> usize {
+    if pos + count_off + 2 > body.len() {
+        return body.len();
+    }
+    let count = u16::from_le_bytes([body[pos + count_off], body[pos + count_off + 1]]);
+    let mut p = pos + count_off + 2;
+    for _ in 0..count {
+        p = if ucs2 {
+            skip_ucs2(body, p)
+        } else {
+            skip_scsu(body, p)
+        };
+    }
+    p
+}
+
+fn block_end(body: &[u8], pos: usize) -> Option<usize> {
+    let end = match body[pos] {
+        SIBT_STRING_SCSU => skip_scsu(body, pos + 1),
+        SIBT_STRING_SCSU_FONT => skip_scsu(body, pos + 2),
+        SIBT_STRING_UCS2 => skip_ucs2(body, pos + 1),
+        SIBT_STRING_UCS2_FONT => skip_ucs2(body, pos + 2),
+        SIBT_DUPLICATE | SIBT_SKIP2 => (pos + 3).min(body.len()),
+        SIBT_SKIP1 => (pos + 2).min(body.len()),
+        SIBT_STRINGS_SCSU => strings_block_extent(body, pos, 1, false),
+        SIBT_STRINGS_SCSU_FONT => strings_block_extent(body, pos, 2, false),
+        SIBT_STRINGS_UCS2 => strings_block_extent(body, pos, 1, true),
+        SIBT_STRINGS_UCS2_FONT => strings_block_extent(body, pos, 2, true),
+        SIBT_END => pos,
+        _ => return None,
+    };
+    Some(end)
+}
+
+#[allow(dead_code)]
+pub(crate) fn insert_strings_at_ids(
+    body: &mut Vec<u8>,
+    entries: &[(u16, &str)],
+) -> Result<(), crate::hii::HiiError> {
+    let mut pending: Vec<(u16, &str)> = entries.iter().map(|(i, t)| (*i, *t)).collect();
+    pending.sort_by_key(|(id, _)| *id);
+    let mut pi = 0usize;
+    let info_off = string_info_offset(body);
+    let mut result: Vec<u8> = Vec::with_capacity(body.len() + 16);
+    result.extend_from_slice(&body[..info_off]);
+    let mut next_id: u16 = 1;
+    let mut pos = info_off;
+
+    while pos < body.len() && body[pos] != SIBT_END {
+        let Some(end) = block_end(body, pos) else {
+            break;
+        };
+        let count = block_id_count(body, pos) as u16;
+        let span_end = next_id.wrapping_add(count);
+        if body[pos] == SIBT_SKIP1 || body[pos] == SIBT_SKIP2 {
+            let mut cursor = next_id;
+            while pending
+                .get(pi)
+                .is_some_and(|(id, _)| *id >= cursor && *id < span_end)
+            {
+                let (id, text) = pending[pi];
+                if id > cursor {
+                    push_skip(&mut result, id - cursor);
+                }
+                push_string(&mut result, text);
+                pi += 1;
+                cursor = id.wrapping_add(1);
+            }
+            if span_end > cursor {
+                push_skip(&mut result, span_end - cursor);
+            }
+        } else {
+            if pending
+                .get(pi)
+                .is_some_and(|(id, _)| *id >= next_id && *id < span_end)
+            {
+                let (id, _) = pending[pi];
+                return Err(crate::hii::HiiError::IdOccupied(id));
+            }
+            result.extend_from_slice(&body[pos..end]);
+        }
+        next_id = span_end;
+        pos = end;
+    }
+
+    while let Some(&(id, text)) = pending.get(pi) {
+        if id < next_id {
+            return Err(crate::hii::HiiError::IdOccupied(id));
+        }
+        if id > next_id {
+            push_skip(&mut result, id - next_id);
+        }
+        push_string(&mut result, text);
+        pi += 1;
+        next_id = next_id.wrapping_add(1);
+    }
+
+    result.extend_from_slice(&body[pos.min(body.len())..]);
+    *body = result;
+    update_package_length(body);
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AddStringsToResourceError {
     NotFound,
@@ -323,6 +459,137 @@ mod tests {
         buf[1] = ((len >> 8) & 0xFF) as u8;
         buf[2] = ((len >> 16) & 0xFF) as u8;
         buf
+    }
+
+    fn make_sppkg(language: &str, sibt: &[u8]) -> Vec<u8> {
+        let hdr_size: u32 = (46 + language.len() + 1) as u32;
+        let info_off = hdr_size;
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&[0u8; 3]);
+        buf.push(PACKAGE_STRINGS);
+        buf.extend_from_slice(&hdr_size.to_le_bytes());
+        buf.extend_from_slice(&info_off.to_le_bytes());
+        while buf.len() < 44 {
+            buf.push(0);
+        }
+        buf.extend_from_slice(&0u16.to_le_bytes());
+        buf.extend_from_slice(language.as_bytes());
+        buf.push(0);
+        while buf.len() < info_off as usize {
+            buf.push(0);
+        }
+        buf.extend_from_slice(sibt);
+        let len = buf.len() as u32;
+        buf[0] = (len & 0xFF) as u8;
+        buf[1] = ((len >> 8) & 0xFF) as u8;
+        buf[2] = ((len >> 16) & 0xFF) as u8;
+        buf
+    }
+
+    fn pkg_len(body: &[u8]) -> usize {
+        body[0] as usize | (body[1] as usize) << 8 | (body[2] as usize) << 16
+    }
+
+    #[test]
+    fn insert_at_id_cuts_skip2_block() {
+        let sibt = [
+            SIBT_STRING_SCSU,
+            b'A',
+            0,
+            SIBT_SKIP2,
+            0x03,
+            0x00,
+            SIBT_STRING_SCSU,
+            b'B',
+            0,
+            SIBT_END,
+        ];
+        let mut pkg = make_sppkg("en", &sibt);
+        insert_strings_at_ids(&mut pkg, &[(3, "X")]).unwrap();
+        let parsed = crate::hii::strings::parse_string_package(&pkg).unwrap();
+        assert_eq!(
+            parsed.strings,
+            vec![
+                (1, "A".to_string()),
+                (3, "X".to_string()),
+                (5, "B".to_string()),
+            ]
+        );
+        assert_eq!(pkg_len(&pkg), pkg.len());
+    }
+
+    #[test]
+    fn insert_at_id_splits_skip_into_size_classes() {
+        let sibt = [SIBT_STRING_SCSU, b'A', 0, SIBT_SKIP2, 0x50, 0x01, SIBT_END];
+        let mut pkg = make_sppkg("en", &sibt);
+        insert_strings_at_ids(&mut pkg, &[(3, "X")]).unwrap();
+        let info = string_info_offset(&pkg);
+        assert_eq!(&pkg[info + 3..info + 5], &[SIBT_SKIP1, 0x01]);
+        assert_eq!(&pkg[info + 5..info + 8], &[SIBT_STRING_SCSU, b'X', 0]);
+        let after = info + 8;
+        assert_eq!(pkg[after], SIBT_SKIP2);
+        assert_eq!(
+            u16::from_le_bytes([pkg[after + 1], pkg[after + 2]]),
+            0x150 - 2
+        );
+        let parsed = crate::hii::strings::parse_string_package(&pkg).unwrap();
+        assert_eq!(parsed.strings[0], (1, "A".to_string()));
+        assert_eq!(parsed.strings[1], (3, "X".to_string()));
+    }
+
+    #[test]
+    fn insert_at_id_rejects_occupied_id_without_mutation() {
+        let mut pkg = make_string_package(&["A", "B"]);
+        let snapshot = pkg.clone();
+        let err = insert_strings_at_ids(&mut pkg, &[(2, "X")]).unwrap_err();
+        assert!(matches!(err, crate::hii::HiiError::IdOccupied(2)));
+        assert_eq!(pkg, snapshot);
+    }
+
+    #[test]
+    fn insert_at_id_appends_with_gap_before_end() {
+        let mut pkg = make_string_package(&["A"]);
+        insert_strings_at_ids(&mut pkg, &[(4, "Z")]).unwrap();
+        let parsed = crate::hii::strings::parse_string_package(&pkg).unwrap();
+        assert_eq!(
+            parsed.strings,
+            vec![(1, "A".to_string()), (4, "Z".to_string())]
+        );
+    }
+
+    #[test]
+    fn insert_at_id_multiple_entries_in_one_walk() {
+        let sibt = [
+            SIBT_STRING_SCSU,
+            b'A',
+            0,
+            SIBT_SKIP2,
+            0x04,
+            0x00,
+            SIBT_STRING_SCSU,
+            b'B',
+            0,
+            SIBT_END,
+        ];
+        let mut pkg = make_sppkg("en", &sibt);
+        insert_strings_at_ids(&mut pkg, &[(3, "X"), (5, "Y")]).unwrap();
+        let parsed = crate::hii::strings::parse_string_package(&pkg).unwrap();
+        assert_eq!(
+            parsed.strings,
+            vec![
+                (1, "A".to_string()),
+                (3, "X".to_string()),
+                (5, "Y".to_string()),
+                (6, "B".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn insert_at_id_rejects_duplicate_request_ids() {
+        let mut pkg = make_string_package(&["A"]);
+        let err = insert_strings_at_ids(&mut pkg, &[(2, "X"), (2, "Y")]).unwrap_err();
+        assert!(matches!(err, crate::hii::HiiError::IdOccupied(2)));
     }
 
     fn mk_node(node_type: FfsType, body: Vec<u8>, children: Vec<FfsNode>) -> FfsNode {
