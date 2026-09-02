@@ -66,4 +66,44 @@ mod tests {
         let decoded = crate::decompress::decompress(&out, 2).unwrap();
         assert_eq!(decoded.as_slice(), DECOMPRESSED);
     }
+
+    #[test]
+    fn liblzma_raw_lzma1_custom_props_decode_with_known_size_header() {
+        use liblzma::stream::{Action, Filters, LzmaOptions, MatchFinder, Mode, Status, Stream};
+
+        let input: Vec<u8> = DECOMPRESSED.to_vec();
+        let mut opts = LzmaOptions::new_preset(6).unwrap();
+        opts.dict_size(0x0100_0000)
+            .literal_context_bits(0)
+            .literal_position_bits(0)
+            .position_bits(0)
+            .nice_len(273)
+            .match_finder(MatchFinder::BinaryTree4)
+            .mode(Mode::Normal);
+        let mut filters = Filters::new();
+        filters.lzma1(&opts);
+        let mut enc = Stream::new_raw_encoder(&filters).unwrap();
+
+        let mut raw = Vec::new();
+        loop {
+            raw.reserve(64 * 1024);
+            let consumed = enc.total_in() as usize;
+            let status = enc
+                .process_vec(&input[consumed..], &mut raw, Action::Finish)
+                .unwrap();
+            if matches!(status, Status::StreamEnd) {
+                break;
+            }
+        }
+        assert!(!raw.is_empty());
+
+        let mut alone = vec![0x00u8];
+        alone.extend_from_slice(&0x0100_0000u32.to_le_bytes());
+        alone.extend_from_slice(&(input.len() as u64).to_le_bytes());
+        alone.extend_from_slice(&raw);
+        alone.extend_from_slice(&[0u8; 16]);
+
+        let decoded = crate::decompress::decompress(&alone, 2).unwrap();
+        assert_eq!(decoded.as_slice(), DECOMPRESSED);
+    }
 }

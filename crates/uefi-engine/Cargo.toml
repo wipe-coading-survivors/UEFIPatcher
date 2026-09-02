@@ -12,6 +12,7 @@ r-efi.workspace = true
 binrw.workspace = true
 object.workspace = true
 lzma-rs = "0.3"
+liblzma.workspace = true
 uuid.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true

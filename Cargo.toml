@@ -21,6 +21,7 @@ r-efi = "7.0"
 binrw = "0.15"
 object = { version = "0.39", default-features = false, features = ["read_core", "pe"] }
 lzma-rs = "0.3"
+liblzma = "0.4"
 # gRPC / async
 tonic = "0.12"
 prost = "0.13"
