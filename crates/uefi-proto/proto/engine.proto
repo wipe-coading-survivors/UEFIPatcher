@@ -29,6 +29,7 @@ service EngineService {
   rpc HiiListStrings(HiiListStringsRequest)             returns (HiiListStringsResponse);
   rpc HiiFormSetAdd(HiiFormSetAddRequest)               returns (HiiFormSetAddResponse);
   rpc HiiFormAdd(HiiFormAddRequest)                     returns (HiiFormAddResponse);
+  rpc HiiFormHijack(HiiFormHijackRequest)               returns (HiiFormHijackResponse);
   rpc HiiGatesList(HiiGatesListRequest)                 returns (HiiGatesListResponse);
   rpc HiiUnlock(HiiUnlockRequest)                       returns (HiiUnlockResponse);
   rpc HiiQuestionInfo(HiiQuestionInfoRequest)           returns (HiiQuestionInfoResponse);
@@ -189,6 +190,27 @@ message HiiFormAddRequest {
 message HiiFormAddResponse {
   repeated uint32 inserted_form_ids = 1;
   map<string, uint32> string_ids = 2;
+}
+
+message HiiFormHijackRecord {
+  uint32 question_id = 1;
+  uint32 record_offset = 2;
+  uint32 old_failsafe = 3;
+  uint32 old_optimal = 4;
+  uint32 new_failsafe = 5;
+  uint32 new_optimal = 6;
+}
+message HiiFormHijackRequest {
+  string image_id = 1;
+  string target = 2;
+  string schema_json = 3;
+  string setupdata_guid = 4;
+}
+message HiiFormHijackResponse {
+  map<string, uint32> string_ids = 1;
+  repeated HiiFormHijackRecord records = 2;
+  uint32 form_ifr_start = 3;
+  uint32 form_ifr_end = 4;
 }
 
 message GateInfo {

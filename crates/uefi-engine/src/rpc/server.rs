@@ -801,6 +801,65 @@ impl EngineService for EngineServer {
     }
 
     #[tracing::instrument(skip(self, req), err)]
+    async fn hii_form_hijack(
+        &self,
+        req: Request<HiiFormHijackRequest>,
+    ) -> RpcResult<HiiFormHijackResponse> {
+        let r = req.into_inner();
+        let schema = crate::hii::schema::parse_hijack_schema(&r.schema_json)
+            .map_err(|e| Status::invalid_argument(e.to_string()))?;
+        let setupdata_guid: Option<Guid> = if r.setupdata_guid.is_empty() {
+            None
+        } else {
+            Some(
+                Guid::try_parse(&r.setupdata_guid)
+                    .map_err(|e| Status::invalid_argument(e.to_string()))?,
+            )
+        };
+        let img = self.get_or_load_image(&r.image_id).await?;
+        let result = {
+            let mut images = self.images.lock().await;
+            let img_slot = images
+                .get_mut(&r.image_id)
+                .ok_or_else(|| Status::not_found("image not found"))?;
+            crate::hii::form_hijack::hijack_form(
+                img_slot,
+                &r.target,
+                &schema,
+                setupdata_guid.as_ref(),
+            )
+            .map_err(|e| match e {
+                crate::hii::HiiError::AmiFilesNotFound => Status::not_found(e.to_string()),
+                _ => hii_error_status(e),
+            })?
+        };
+        self.flush_image(&r.image_id).await?;
+        let _ = self.sm.touch(&img.session_id);
+        tracing::info!(image_id = %r.image_id, target = %r.target, "form hijacked");
+        Ok(Response::new(HiiFormHijackResponse {
+            string_ids: result
+                .string_ids
+                .iter()
+                .map(|(k, v)| (k.clone(), u32::from(*v)))
+                .collect(),
+            records: result
+                .records
+                .iter()
+                .map(|e| HiiFormHijackRecord {
+                    question_id: u32::from(e.question_id),
+                    record_offset: e.record_offset as u32,
+                    old_failsafe: u32::from(e.old_failsafe),
+                    old_optimal: u32::from(e.old_optimal),
+                    new_failsafe: u32::from(e.new_failsafe),
+                    new_optimal: u32::from(e.new_optimal),
+                })
+                .collect(),
+            form_ifr_start: result.form_ifr_start,
+            form_ifr_end: result.form_ifr_end,
+        }))
+    }
+
+    #[tracing::instrument(skip(self, req), err)]
     async fn hii_gates_list(
         &self,
         req: Request<HiiGatesListRequest>,
@@ -1419,6 +1478,105 @@ mod tests {
         let img = crate::parser::image::parse_image(&data, ImageMode::Write, "i", "s").unwrap();
         let st = form_add_status(img, "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:1", "{bad").await;
         assert_eq!(st.code(), tonic::Code::InvalidArgument);
+    }
+
+    async fn form_hijack_status(
+        img: Image,
+        target: &str,
+        schema_json: &str,
+        setupdata_guid: &str,
+    ) -> Status {
+        let td = TempDir::new().unwrap();
+        let db = crate::storage::open_db(&td.path().join("db.sqlite")).unwrap();
+        let sm = Arc::new(SessionManager::new(
+            db,
+            td.path().to_path_buf(),
+            Duration::from_secs(864000),
+            Duration::from_secs(3600),
+            false,
+        ));
+        let server = EngineServer {
+            sm,
+            images: Arc::new(Mutex::new(HashMap::from([("i".to_string(), img)]))),
+            data_dir: td.path().to_path_buf(),
+        };
+        server
+            .hii_form_hijack(Request::new(HiiFormHijackRequest {
+                image_id: "i".into(),
+                target: target.into(),
+                schema_json: schema_json.into(),
+                setupdata_guid: setupdata_guid.into(),
+            }))
+            .await
+            .unwrap_err()
+    }
+
+    const FORM_HIJACK_SCHEMA_JSON: &str = r#"{"title": "UEFIPATCHER", "questions": [
+        {"question_id": 17, "prompt": "PQ", "help": "PH", "failsafe": 1, "optimal": 1}]}"#;
+
+    #[tokio::test]
+    async fn hii_form_hijack_maps_bad_schema_to_invalid_argument() {
+        let img = parse_image(
+            &crate::hii::form_hijack::test_fixtures::hijack_test_flash(),
+            ImageMode::Write,
+            "i",
+            "s",
+        )
+        .unwrap();
+        let st = form_hijack_status(
+            img,
+            "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:0#7",
+            "{",
+            "",
+        )
+        .await;
+        assert_eq!(st.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[tokio::test]
+    async fn hii_form_hijack_maps_unknown_form_to_not_found() {
+        let img = parse_image(
+            &crate::hii::form_hijack::test_fixtures::hijack_test_flash(),
+            ImageMode::Write,
+            "i",
+            "s",
+        )
+        .unwrap();
+        let st = form_hijack_status(
+            img,
+            "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:0#99",
+            FORM_HIJACK_SCHEMA_JSON,
+            "",
+        )
+        .await;
+        assert_eq!(st.code(), tonic::Code::NotFound);
+    }
+
+    #[tokio::test]
+    async fn hii_form_hijack_maps_missing_spf_to_not_found() {
+        let mut img = parse_image(
+            &crate::hii::form_hijack::test_fixtures::hijack_test_flash(),
+            ImageMode::Write,
+            "i",
+            "s",
+        )
+        .unwrap();
+        let sd_guid = Guid::try_parse("12345678-90AB-CDEF-1234-567890ABCDEF").unwrap();
+        let vol = img
+            .root
+            .children
+            .iter_mut()
+            .find(|v| v.children.iter().any(|f| f.guid == Some(sd_guid)))
+            .unwrap();
+        vol.children.retain(|f| f.guid != Some(sd_guid));
+        let st = form_hijack_status(
+            img,
+            "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:0#7",
+            FORM_HIJACK_SCHEMA_JSON,
+            "00000000-0000-0000-0000-00000000DEAD",
+        )
+        .await;
+        assert_eq!(st.code(), tonic::Code::NotFound);
     }
 
     #[tokio::test]

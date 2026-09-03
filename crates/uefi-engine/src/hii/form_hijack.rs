@@ -280,16 +280,22 @@ fn node_at_mut<'a>(root: &'a mut FfsNode, path: &[usize]) -> &'a mut FfsNode {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
+pub(crate) mod test_fixtures {
+    use super::locate_questions;
+    use crate::ffs::{
+        EFI_FVB2_ERASE_POLARITY, EFI_FVH_SIGNATURE, EFI_SECTION_FREEFORM_SUBTYPE_GUID,
+        EFI_SECTION_RAW, EFI_SECTION_UI, size_to_uint24,
+    };
     use crate::hii::ifr_builder::IfrBuilder;
+    use crate::hii::spf;
     use crate::types::Guid;
-    use r_efi::hii::IFR_ONE_OF_OP;
     use std::str::FromStr;
 
     const FORMSET_GUID: &str = "A1B2C3D4-E5F6-7890-ABCD-EF1234567890";
+    pub(crate) const FILE_GUID: &str = "5C60F367-A505-419A-859E-2A4FF6CA6FE5";
+    pub(crate) const SETUPDATA_GUID_STR: &str = "12345678-90AB-CDEF-1234-567890ABCDEF";
 
-    fn package_with_form() -> Vec<u8> {
+    pub(crate) fn package_with_form() -> Vec<u8> {
         let mut b = IfrBuilder::new();
         b.emit_form_set(&Guid::from_str(FORMSET_GUID).unwrap(), 1, 1, &[]);
         b.emit_form(7, 1);
@@ -306,6 +312,146 @@ mod tests {
         pkg.extend_from_slice(&ifr);
         pkg
     }
+
+    pub(crate) fn section_bytes(stype: u8, body: &[u8]) -> Vec<u8> {
+        let mut v = Vec::with_capacity(4 + body.len());
+        v.extend_from_slice(&size_to_uint24((4 + body.len()) as u32));
+        v.push(stype);
+        v.extend_from_slice(body);
+        v
+    }
+
+    pub(crate) fn ffs_file_bytes(guid: &Guid, content: &[u8]) -> Vec<u8> {
+        let mut buf = vec![0u8; 24];
+        buf[0..16].copy_from_slice(&guid.to_bytes());
+        buf[18] = crate::ffs::EFI_FV_FILETYPE_RAW;
+        buf[20..23].copy_from_slice(&size_to_uint24((24 + content.len()) as u32));
+        buf.extend_from_slice(content);
+        buf
+    }
+
+    pub(crate) fn flash_with_files(files: Vec<Vec<u8>>) -> Vec<u8> {
+        let mut body = Vec::new();
+        for f in files {
+            let aligned = (body.len() + 7) & !7;
+            body.resize(aligned, 0xFF);
+            body.extend_from_slice(&f);
+        }
+        body.extend_from_slice(&[0xFF; 2048]);
+        let total = 56 + body.len();
+        let mut buf = vec![0xFFu8; 32 + total];
+        let fv = &mut buf[32..];
+        fv[32..40].copy_from_slice(&(total as u64).to_le_bytes());
+        fv[40..44].copy_from_slice(&EFI_FVH_SIGNATURE.to_le_bytes());
+        fv[44..48].copy_from_slice(&EFI_FVB2_ERASE_POLARITY.to_le_bytes());
+        fv[48..50].copy_from_slice(&56u16.to_le_bytes());
+        fv[55] = 2;
+        fv[56..].copy_from_slice(&body);
+        buf
+    }
+
+    pub(crate) fn string_package_bytes() -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&[0x00, 0x00, 0x00, r_efi::hii::PACKAGE_STRINGS]);
+        buf.extend_from_slice(&12u32.to_le_bytes());
+        buf.extend_from_slice(&12u32.to_le_bytes());
+        buf.push(0x10);
+        buf.extend_from_slice(b"first");
+        buf.push(0x00);
+        buf.push(0x00);
+        let len = buf.len() as u32;
+        buf[0] = (len & 0xFF) as u8;
+        buf[1] = ((len >> 8) & 0xFF) as u8;
+        buf[2] = ((len >> 16) & 0xFF) as u8;
+        buf
+    }
+
+    pub(crate) fn spf_container(records: &[spf::SpfQuestionRecord], body_len: usize) -> Vec<u8> {
+        let mut body = vec![0u8; body_len];
+        body[16..20].copy_from_slice(b"$SPF");
+        for r in records {
+            let mut rec = vec![0u8; spf::SPF_RECORD_SIZE];
+            rec[0..4].copy_from_slice(&(r.question_id as u32).to_le_bytes());
+            rec[8..10].copy_from_slice(&6u16.to_le_bytes());
+            rec[12..14].copy_from_slice(&0xFFFFu16.to_le_bytes());
+            rec[16] = 0x09;
+            rec[28..32].copy_from_slice(&r.ifr_offset.to_le_bytes());
+            rec[36..44].copy_from_slice(&[0xF8, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
+            rec[44..48].copy_from_slice(&[0x01, 0x00, 0x01, 0x00]);
+            rec[52] = r.failsafe;
+            rec[53] = r.optimal;
+            body[r.offset..r.offset + spf::SPF_RECORD_SIZE].copy_from_slice(&rec);
+        }
+        body
+    }
+
+    pub(crate) fn hijack_flash_image() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        let pkg = package_with_form();
+        let qs = locate_questions(&pkg, 7);
+        let records: Vec<spf::SpfQuestionRecord> = qs
+            .iter()
+            .enumerate()
+            .map(|(i, &(off, qid))| spf::SpfQuestionRecord {
+                offset: 0x100 + i * spf::SPF_RECORD_SIZE,
+                question_id: qid,
+                ifr_offset: off as u32,
+                failsafe: 0,
+                optimal: 0,
+            })
+            .collect();
+        let spf_body = spf_container(&records, 0x400);
+        let setup = ffs_file_bytes(
+            &Guid::from_str(FILE_GUID).unwrap(),
+            &file_sections(&[
+                section_bytes(EFI_SECTION_RAW, &pkg),
+                section_bytes(EFI_SECTION_RAW, &string_package_bytes()),
+            ]),
+        );
+        let sd = ffs_file_bytes(
+            &Guid::from_str(SETUPDATA_GUID_STR).unwrap(),
+            &file_sections(&[
+                section_bytes(EFI_SECTION_UI, &ui_name("AMITSESetupData")),
+                section_bytes(EFI_SECTION_FREEFORM_SUBTYPE_GUID, &spf_body),
+            ]),
+        );
+        let flash = flash_with_files(vec![setup, sd]);
+        (flash, pkg, spf_body)
+    }
+
+    pub(crate) fn file_sections(sections: &[Vec<u8>]) -> Vec<u8> {
+        let mut out = Vec::new();
+        for s in sections {
+            out.extend_from_slice(s);
+            while out.len() % 4 != 0 {
+                out.push(0);
+            }
+        }
+        out
+    }
+
+    pub(crate) fn ui_name(name: &str) -> Vec<u8> {
+        name.encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .chain(0u16.to_le_bytes())
+            .collect()
+    }
+
+    pub(crate) fn hijack_test_flash() -> Vec<u8> {
+        hijack_flash_image().0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_fixtures::*;
+    use super::*;
+    use crate::builder::build_image;
+    use crate::ffs::{EFI_SECTION_FREEFORM_SUBTYPE_GUID, EFI_SECTION_RAW};
+    use crate::hii::spf;
+    use crate::parser::image::parse_image;
+    use crate::types::Guid;
+    use r_efi::hii::IFR_ONE_OF_OP;
+    use std::str::FromStr;
 
     #[test]
     fn locate_form_span_and_questions() {
@@ -341,140 +487,6 @@ mod tests {
                 assert_eq!(pkg[i], before[i]);
             }
         }
-    }
-
-    use crate::builder::build_image;
-    use crate::ffs::{
-        EFI_FVB2_ERASE_POLARITY, EFI_FVH_SIGNATURE, EFI_SECTION_FREEFORM_SUBTYPE_GUID,
-        EFI_SECTION_RAW, EFI_SECTION_UI, size_to_uint24,
-    };
-    use crate::hii::spf;
-    use crate::parser::image::parse_image;
-
-    const FILE_GUID: &str = "5C60F367-A505-419A-859E-2A4FF6CA6FE5";
-    const SETUPDATA_GUID_STR: &str = "12345678-90AB-CDEF-1234-567890ABCDEF";
-
-    fn section_bytes(stype: u8, body: &[u8]) -> Vec<u8> {
-        let mut v = Vec::with_capacity(4 + body.len());
-        v.extend_from_slice(&size_to_uint24((4 + body.len()) as u32));
-        v.push(stype);
-        v.extend_from_slice(body);
-        v
-    }
-
-    fn ffs_file_bytes(guid: &Guid, content: &[u8]) -> Vec<u8> {
-        let mut buf = vec![0u8; 24];
-        buf[0..16].copy_from_slice(&guid.to_bytes());
-        buf[18] = crate::ffs::EFI_FV_FILETYPE_RAW;
-        buf[20..23].copy_from_slice(&size_to_uint24((24 + content.len()) as u32));
-        buf.extend_from_slice(content);
-        buf
-    }
-
-    fn flash_with_files(files: Vec<Vec<u8>>) -> Vec<u8> {
-        let mut body = Vec::new();
-        for f in files {
-            let aligned = (body.len() + 7) & !7;
-            body.resize(aligned, 0xFF);
-            body.extend_from_slice(&f);
-        }
-        body.extend_from_slice(&[0xFF; 2048]);
-        let total = 56 + body.len();
-        let mut buf = vec![0xFFu8; 32 + total];
-        let fv = &mut buf[32..];
-        fv[32..40].copy_from_slice(&(total as u64).to_le_bytes());
-        fv[40..44].copy_from_slice(&EFI_FVH_SIGNATURE.to_le_bytes());
-        fv[44..48].copy_from_slice(&EFI_FVB2_ERASE_POLARITY.to_le_bytes());
-        fv[48..50].copy_from_slice(&56u16.to_le_bytes());
-        fv[55] = 2;
-        fv[56..].copy_from_slice(&body);
-        buf
-    }
-
-    fn string_package_bytes() -> Vec<u8> {
-        let mut buf = Vec::new();
-        buf.extend_from_slice(&[0x00, 0x00, 0x00, r_efi::hii::PACKAGE_STRINGS]);
-        buf.extend_from_slice(&12u32.to_le_bytes());
-        buf.extend_from_slice(&12u32.to_le_bytes());
-        buf.push(0x10);
-        buf.extend_from_slice(b"first");
-        buf.push(0x00);
-        buf.push(0x00);
-        let len = buf.len() as u32;
-        buf[0] = (len & 0xFF) as u8;
-        buf[1] = ((len >> 8) & 0xFF) as u8;
-        buf[2] = ((len >> 16) & 0xFF) as u8;
-        buf
-    }
-
-    fn spf_container(records: &[spf::SpfQuestionRecord], body_len: usize) -> Vec<u8> {
-        let mut body = vec![0u8; body_len];
-        body[16..20].copy_from_slice(b"$SPF");
-        for r in records {
-            let mut rec = vec![0u8; spf::SPF_RECORD_SIZE];
-            rec[0..4].copy_from_slice(&(r.question_id as u32).to_le_bytes());
-            rec[8..10].copy_from_slice(&6u16.to_le_bytes());
-            rec[12..14].copy_from_slice(&0xFFFFu16.to_le_bytes());
-            rec[16] = 0x09;
-            rec[28..32].copy_from_slice(&r.ifr_offset.to_le_bytes());
-            rec[36..44].copy_from_slice(&[0xF8, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
-            rec[44..48].copy_from_slice(&[0x01, 0x00, 0x01, 0x00]);
-            rec[52] = r.failsafe;
-            rec[53] = r.optimal;
-            body[r.offset..r.offset + spf::SPF_RECORD_SIZE].copy_from_slice(&rec);
-        }
-        body
-    }
-
-    fn hijack_flash_image() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
-        let pkg = package_with_form();
-        let qs = locate_questions(&pkg, 7);
-        let records: Vec<spf::SpfQuestionRecord> = qs
-            .iter()
-            .enumerate()
-            .map(|(i, &(off, qid))| spf::SpfQuestionRecord {
-                offset: 0x100 + i * spf::SPF_RECORD_SIZE,
-                question_id: qid,
-                ifr_offset: off as u32,
-                failsafe: 0,
-                optimal: 0,
-            })
-            .collect();
-        let spf_body = spf_container(&records, 0x400);
-        let setup = ffs_file_bytes(
-            &Guid::from_str(FILE_GUID).unwrap(),
-            &file_sections(&[
-                section_bytes(EFI_SECTION_RAW, &pkg),
-                section_bytes(EFI_SECTION_RAW, &string_package_bytes()),
-            ]),
-        );
-        let sd = ffs_file_bytes(
-            &Guid::from_str(SETUPDATA_GUID_STR).unwrap(),
-            &file_sections(&[
-                section_bytes(EFI_SECTION_UI, &ui_name("AMITSESetupData")),
-                section_bytes(EFI_SECTION_FREEFORM_SUBTYPE_GUID, &spf_body),
-            ]),
-        );
-        let flash = flash_with_files(vec![setup, sd]);
-        (flash, pkg, spf_body)
-    }
-
-    fn file_sections(sections: &[Vec<u8>]) -> Vec<u8> {
-        let mut out = Vec::new();
-        for s in sections {
-            out.extend_from_slice(s);
-            while out.len() % 4 != 0 {
-                out.push(0);
-            }
-        }
-        out
-    }
-
-    fn ui_name(name: &str) -> Vec<u8> {
-        name.encode_utf16()
-            .flat_map(u16::to_le_bytes)
-            .chain(0u16.to_le_bytes())
-            .collect()
     }
 
     fn hijack_schema() -> crate::hii::schema::HijackSchema {
