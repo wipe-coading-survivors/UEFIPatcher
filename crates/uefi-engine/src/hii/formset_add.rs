@@ -845,6 +845,87 @@ mod tests {
         assert_eq!(img.root.action, Action::NoAction);
     }
 
+    fn assert_all_no_action(node: &FfsNode) {
+        assert_eq!(node.action, Action::NoAction);
+        for child in &node.children {
+            assert_all_no_action(child);
+        }
+    }
+
+    #[test]
+    fn add_setup_formset_ami_precheck_blocks_on_missing_pfs_payload() {
+        let mut files = vec![ffs_file_bytes(
+            &Guid::try_parse(STR_GUID).unwrap(),
+            &section_bytes(EFI_SECTION_RAW, &string_package_bytes()),
+        )];
+        files.push(ffs_file_bytes(
+            &Guid::try_parse(SETUPDATA_GUID).unwrap(),
+            &[0u8; 108],
+        ));
+        files.push(ffs_file_bytes(
+            &Guid::try_parse(AMITSE_GUID).unwrap(),
+            &section_bytes(EFI_SECTION_PE32, &[0x4Du8, 0x5A, 0x00, 0x00]),
+        ));
+        let data = flash_with_files(files);
+        let mut img = parse_image(&data, ImageMode::Write, "i", "s").unwrap();
+        let sp_snapshot = img.root.children[1].children[0].children[0].body.clone();
+
+        assert!(matches!(
+            add_setup_formset(&mut img, &test_schema(), None),
+            Err(HiiError::AmiFilesNotFound)
+        ));
+        assert_eq!(
+            img.root.children[1].children[0].children[0].body, sp_snapshot,
+            "string package must stay untouched when the setupdata file has no $SPF payload"
+        );
+        assert_all_no_action(&img.root);
+    }
+
+    #[test]
+    fn add_setup_formset_ami_precheck_blocks_on_tiano_wrapped_payload() {
+        let mut pe = mk_node(FfsType::Section, resource_hii_pe(), vec![]);
+        pe.subtype = EFI_SECTION_PE32;
+        let mut file = mk_node(FfsType::File, vec![], vec![pe]);
+        file.guid = Some(Guid::try_parse(STR_GUID).unwrap());
+        let mut pfs_body = vec![0u8; 16];
+        pfs_body.extend_from_slice(b"$SPF");
+        pfs_body.extend_from_slice(&[0u8; 512]);
+        let mut pfs = mk_node(FfsType::Section, pfs_body, vec![]);
+        pfs.subtype = EFI_SECTION_FREEFORM_SUBTYPE_GUID;
+        let mut tiano = mk_node(FfsType::Section, vec![], vec![pfs]);
+        tiano.subtype = EFI_SECTION_GUID_DEFINED;
+        tiano.parsing_data = ParsingData::GuidedSection(GuidedSectionParsingData {
+            guid: crate::ffs::tiano_guid(),
+            dictionary_size: 0x0080_0000,
+        });
+        let mut setupdata = mk_node(FfsType::File, vec![], vec![tiano]);
+        setupdata.guid = Some(Guid::try_parse(SETUPDATA_GUID).unwrap());
+        let mut amitse = mk_node(FfsType::File, vec![], vec![]);
+        amitse.guid = Some(Guid::try_parse(AMITSE_GUID).unwrap());
+        let mut am_pe = mk_node(FfsType::Section, vec![0x4Du8, 0x5A, 0x00, 0x00], vec![]);
+        am_pe.subtype = EFI_SECTION_PE32;
+        amitse.children = vec![am_pe];
+        let volume = mk_node(FfsType::Volume, vec![], vec![file, setupdata, amitse]);
+        let root = mk_node(FfsType::Image, vec![], vec![volume]);
+        let mut img = Image {
+            image_id: "i".into(),
+            session_id: "s".into(),
+            root,
+            mode: ImageMode::Write,
+        };
+        let sp_snapshot = img.root.children[0].children[0].children[0].body.clone();
+
+        assert!(matches!(
+            add_setup_formset(&mut img, &test_schema(), None),
+            Err(HiiError::MutationBehindCompression)
+        ));
+        assert_eq!(
+            img.root.children[0].children[0].children[0].body, sp_snapshot,
+            "string package must stay untouched when the $SPF payload is behind a non-recompressable wrapper"
+        );
+        assert_all_no_action(&img.root);
+    }
+
     fn wrapped_resource_node_image(wrapper_guid: Guid) -> Image {
         let mut inner = mk_node(FfsType::Section, resource_hii_pe(), vec![]);
         inner.subtype = EFI_SECTION_PE32;
