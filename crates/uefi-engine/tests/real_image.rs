@@ -1479,6 +1479,11 @@ fn decompressed_diff(orig: &[u8], built: &[u8], sec_off: usize) -> Vec<(usize, u
     let new =
         uefi_engine::decompress::decompress(&built[sec_off + data_offset..sec_off + size], lzma)
             .expect("decompress built stream");
+    assert_eq!(
+        old.len(),
+        new.len(),
+        "decompressed stream length must be preserved"
+    );
     old.iter()
         .zip(new.iter())
         .enumerate()
@@ -1491,6 +1496,7 @@ fn decompressed_diff(orig: &[u8], built: &[u8], sec_off: usize) -> Vec<(usize, u
 #[test]
 fn real_image_hii_set_value_matches_e14() {
     let data = load_fw();
+    assert_eq!(data[0x8000C2], 0, "fixture must be the E14-original image");
     let mut img = parse_image(&data, ImageMode::Write, "img1", "s1").expect("parse_image");
     let item = format!("{PCI_SETUP_MODULE_GUID}:0x10:0#10029:0x3B");
     let outcome = uefi_engine::hii::set_value(&mut img, &item, 1).expect("set_value");
