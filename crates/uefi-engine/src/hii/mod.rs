@@ -6,6 +6,7 @@ pub mod formset_add;
 pub mod gates;
 pub mod ifr;
 pub mod ifr_builder;
+pub mod nvar;
 pub mod package_list;
 pub mod pe_resource;
 pub mod schema;
