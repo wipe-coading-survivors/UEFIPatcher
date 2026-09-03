@@ -1214,12 +1214,13 @@ atomic_write. После первой мутации хранимый файл �
   валидного префикса операндов** — exact-consumption check снят ради
   END-quirk (scoped expression operands). Контекст: захватить
   ограничение тестом; ужесточить, если появятся новые quirk'и.
-* [ ] **hii/gates: EqIdVal re-unlock — user-visible дефект отчётности** —
+* [x] **hii/gates: EqIdVal re-unlock — user-visible дефект отчётности** —
   повторный unlock уже-0xFFFF гейта планирует no-op флип (from==to==`ff ff`),
   который попадает в applied (CLI печатает «applied … ff ff -> ff ff»), а
   gates_list продолжает отдавать flippable=true; байты не трогаются.
-  Контекст: фикс — один guard в `plan_flip` (value==0xFFFF → не flippable);
-  кандидат в первый post-merge коммит.
+  Исправлено в `1711de9` (guard `value != 0xFFFF` в `plan_flip`, симметрично
+  отказу EqConst при `a != b`; спека §4.2 и план Task 3/8 актуализированы в
+  `01360e3`; реальный образ подтверждает: после unlock `flippable=false`).
 * [ ] **hii/gates: plan_flip/plan_gates/apply_flips без bounds-guard'ов на
   hand-constructed Gate** — безопасность держится на инвариантах
   decode_expr (expr_offset/expr_end из живого обхода). Контекст: ввод
