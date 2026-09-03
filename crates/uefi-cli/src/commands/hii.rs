@@ -72,6 +72,25 @@ pub async fn form_add(
     Ok(())
 }
 
+pub async fn form_hijack(
+    target: &str,
+    file: &str,
+    setupdata_guid: Option<&str>,
+    cli_sock: Option<&str>,
+    format: OutputFormat,
+) -> Result<(), AppError> {
+    let schema_json = std::fs::read_to_string(file)
+        .map_err(|e| AppError::new(ErrKind::IoError, format!("{file}: {e}")))?;
+    let st = state::require_state()?;
+    let mut client = Client::connect(cli_sock, st).await?;
+    let image_id = client.active_image()?;
+    let resp = client
+        .hii_form_hijack(&image_id, target, &schema_json, setupdata_guid)
+        .await?;
+    crate::output::print_form_hijack(&resp, format);
+    Ok(())
+}
+
 async fn gates(
     item_id: &str,
     cli_sock: Option<&str>,

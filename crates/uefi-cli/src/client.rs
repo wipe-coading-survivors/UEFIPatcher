@@ -428,6 +428,27 @@ impl Client {
         Ok((resp.inserted_form_ids, resp.string_ids))
     }
 
+    pub async fn hii_form_hijack(
+        &mut self,
+        image_id: &str,
+        target: &str,
+        schema_json: &str,
+        setupdata_guid: Option<&str>,
+    ) -> Result<HiiFormHijackResponse, AppError> {
+        let req = HiiFormHijackRequest {
+            image_id: image_id.into(),
+            target: target.into(),
+            schema_json: schema_json.into(),
+            setupdata_guid: setupdata_guid.unwrap_or("").into(),
+        };
+        let resp = self
+            .inner
+            .hii_form_hijack(auth_req(&self.state, req))
+            .await?
+            .into_inner();
+        Ok(resp)
+    }
+
     pub async fn image_save(&mut self, image_id: &str, output_path: &str) -> Result<(), AppError> {
         let req = ImageSaveRequest {
             image_id: image_id.into(),

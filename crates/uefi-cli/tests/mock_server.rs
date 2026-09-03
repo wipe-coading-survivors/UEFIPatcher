@@ -220,6 +220,24 @@ impl EngineService for MockEngine {
             string_ids: std::collections::HashMap::from([("mock".into(), 2u32)]),
         }))
     }
+    async fn hii_form_hijack(
+        &self,
+        _req: Request<HiiFormHijackRequest>,
+    ) -> Result<Response<HiiFormHijackResponse>, Status> {
+        Ok(Response::new(HiiFormHijackResponse {
+            string_ids: std::collections::HashMap::from([("mock".into(), 3u32)]),
+            records: vec![HiiFormHijackRecord {
+                question_id: 0x3B,
+                record_offset: 0x40,
+                old_failsafe: 0,
+                old_optimal: 1,
+                new_failsafe: 1,
+                new_optimal: 1,
+            }],
+            form_ifr_start: 0x5A,
+            form_ifr_end: 0x8C,
+        }))
+    }
     async fn hii_gates_list(
         &self,
         req: Request<HiiGatesListRequest>,

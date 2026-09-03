@@ -215,6 +215,14 @@ enum HiiFormCmd {
         #[arg(long)]
         file: String,
     },
+    Hijack {
+        #[arg(long)]
+        target: String,
+        #[arg(long)]
+        file: String,
+        #[arg(long)]
+        setupdata_guid: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -390,6 +398,20 @@ async fn dispatch(cli: &Cli, format: output::OutputFormat) -> Result<(), error::
                 HiiFormCmd::Add { target, file } => {
                     commands::hii::form_add(target, file, sock, format).await
                 }
+                HiiFormCmd::Hijack {
+                    target,
+                    file,
+                    setupdata_guid,
+                } => {
+                    commands::hii::form_hijack(
+                        target,
+                        file,
+                        setupdata_guid.as_deref(),
+                        sock,
+                        format,
+                    )
+                    .await
+                }
             },
             HiiCmd::FormSet { sub } => match sub {
                 HiiFormSetCmd::Add { file, ffs } => {
@@ -561,6 +583,44 @@ mod tests {
                 assert_eq!(file, "schema.json");
             }
             _ => panic!("expected hii form add"),
+        }
+    }
+
+    #[test]
+    fn parse_hii_form_hijack() {
+        let cli = Cli::try_parse_from([
+            "uefi-cli",
+            "hii",
+            "form",
+            "hijack",
+            "--target",
+            "899407D7-99FE-43D8-9A21-79EC328CAC21:0x10:0#10029",
+            "--file",
+            "schema.json",
+            "--setupdata-guid",
+            "FE612B72-203C-47B1-856D946EB371",
+        ])
+        .unwrap();
+        match cli.cmd {
+            Cmd::Hii {
+                sub:
+                    HiiCmd::Form {
+                        sub:
+                            HiiFormCmd::Hijack {
+                                target,
+                                file,
+                                setupdata_guid,
+                            },
+                    },
+            } => {
+                assert_eq!(target, "899407D7-99FE-43D8-9A21-79EC328CAC21:0x10:0#10029");
+                assert_eq!(file, "schema.json");
+                assert_eq!(
+                    setupdata_guid.as_deref(),
+                    Some("FE612B72-203C-47B1-856D946EB371")
+                );
+            }
+            _ => panic!("expected hii form hijack"),
         }
     }
 }

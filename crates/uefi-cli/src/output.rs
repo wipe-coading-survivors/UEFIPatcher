@@ -1,4 +1,7 @@
-use uefi_proto::{FormInfo, GateInfo, ImageInfo, Node, QuestionInfo, SessionInfo, StringInfo};
+use uefi_proto::{
+    FormInfo, GateInfo, HiiFormHijackResponse, ImageInfo, Node, QuestionInfo, SessionInfo,
+    StringInfo,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum OutputFormat {
@@ -353,6 +356,59 @@ pub fn print_form_add(
     }
 }
 
+pub fn print_form_hijack(resp: &HiiFormHijackResponse, format: OutputFormat) {
+    match format {
+        OutputFormat::Json => {
+            let sids = serde_json::to_string(&resp.string_ids).unwrap_or_else(|_| "{}".into());
+            let recs = resp
+                .records
+                .iter()
+                .map(|r| {
+                    format!(
+                        "{{\"question_id\":{},\"record_offset\":{},\"old_failsafe\":{},\"old_optimal\":{},\"new_failsafe\":{},\"new_optimal\":{}}}",
+                        r.question_id,
+                        r.record_offset,
+                        r.old_failsafe,
+                        r.old_optimal,
+                        r.new_failsafe,
+                        r.new_optimal
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            println!(
+                "{{\"string_ids\":{sids},\"records\":[{recs}],\"form_ifr_start\":{},\"form_ifr_end\":{}}}",
+                resp.form_ifr_start, resp.form_ifr_end
+            );
+        }
+        _ => {
+            println!(
+                "hijack\tstring_ids\t{}\trecords\t{}",
+                resp.string_ids.len(),
+                resp.records.len()
+            );
+            for (name, sid) in &resp.string_ids {
+                println!("string_id\t{name}\t{sid}");
+            }
+            for r in &resp.records {
+                println!(
+                    "qid=0x{:X} rec@0x{:X} fs {}→{} opt {}→{}",
+                    r.question_id,
+                    r.record_offset,
+                    r.old_failsafe,
+                    r.new_failsafe,
+                    r.old_optimal,
+                    r.new_optimal
+                );
+            }
+            println!(
+                "ifr [0x{:X}..0x{:X})",
+                resp.form_ifr_start, resp.form_ifr_end
+            );
+        }
+    }
+}
+
 #[allow(dead_code)]
 pub fn print_text(text: &str) {
     print!("{text}");
@@ -368,6 +424,7 @@ pub fn print_ok(format: OutputFormat) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use uefi_proto::HiiFormHijackRecord;
 
     #[test]
     fn session_created_json() {
@@ -390,6 +447,27 @@ mod tests {
         string_ids.insert("NewForm".to_string(), 3u32);
         print_form_add(&[42], &string_ids, OutputFormat::Json);
         print_form_add(&[], &string_ids, OutputFormat::Text);
+    }
+
+    #[test]
+    fn form_hijack_print_smoke() {
+        let mut string_ids = std::collections::HashMap::new();
+        string_ids.insert("HijackTitle".to_string(), 7u32);
+        let resp = HiiFormHijackResponse {
+            string_ids,
+            records: vec![HiiFormHijackRecord {
+                question_id: 0x3B,
+                record_offset: 0x40,
+                old_failsafe: 0,
+                old_optimal: 1,
+                new_failsafe: 1,
+                new_optimal: 1,
+            }],
+            form_ifr_start: 0x5A,
+            form_ifr_end: 0x8C,
+        };
+        print_form_hijack(&resp, OutputFormat::Json);
+        print_form_hijack(&resp, OutputFormat::Text);
     }
 
     fn mock_question() -> QuestionInfo {
