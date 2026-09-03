@@ -1372,20 +1372,21 @@ git commit -m "feat(uefi-engine): page-hijack-op Task 7 — HiiFormHijack RPC (p
             "--setupdata-guid", "FE612B72-203C-47B1-8560-A66D946EB371",
         ])
         .unwrap();
-        let Cmd::Hii {
-            sub: HiiCmd::Form {
-                sub: HiiFormCmd::Hijack { target, file, setupdata_guid },
-            },
-        } = cli.command
-        else {
-            panic!("expected hii form hijack")
-        };
-        assert_eq!(target, "899407D7-99FE-43D8-9A21-79EC328CAC21:0x10:0#10029");
-        assert_eq!(file, "schema.json");
-        assert_eq!(
-            setupdata_guid.as_deref(),
-            Some("FE612B72-203C-47B1-8560-A66D946EB371")
-        );
+        match cli.cmd {
+            Cmd::Hii {
+                sub: HiiCmd::Form {
+                    sub: HiiFormCmd::Hijack { target, file, setupdata_guid },
+                },
+            } => {
+                assert_eq!(target, "899407D7-99FE-43D8-9A21-79EC328CAC21:0x10:0#10029");
+                assert_eq!(file, "schema.json");
+                assert_eq!(
+                    setupdata_guid.as_deref(),
+                    Some("FE612B72-203C-47B1-856D946EB371")
+                );
+            }
+            _ => panic!("expected hii form hijack"),
+        }
     }
 ```
 
@@ -1476,7 +1477,7 @@ pub async fn form_hijack(
 }
 ```
 
-`output.rs` (по образцу `print_form_add`): в text-режиме печатать заголовок, string_ids, по каждой записи `qid=… rec@0x{offset:X} fs {old}→{new} opt {old}→{new}`, диапазон `ifr [start..end)`; в json — сериализация resp.
+`output.rs` (по образцу `print_form_add`): в text-режиме печатать заголовок, string_ids, по каждой записи `qid=… rec@0x{offset:X} fs {old}→{new} opt {old}→{new}`, диапазон `ifr [start..end)`; в json — собрать объект вручную, как `print_form_add` (serde_json только для string_ids): `HiiFormHijackResponse`/`HiiFormHijackRecord` не имеют derive `serde::Serialize` в `build.rs` uefi-proto, буквальная сериализация resp не компилируется.
 
 - [ ] **Step 4: Прогон + clippy + commit**
 
