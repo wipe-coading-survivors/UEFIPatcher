@@ -988,7 +988,7 @@ git commit -m "feat(uefi-proto,uefi-engine): HiiQuestionInfo/HiiSetValue RPC"
 
 ```rust
 pub async fn hii_question_info(
-    &self,
+    &mut self,
     image_id: &str,
     item_id: &str,
 ) -> Result<QuestionInfo, AppError> {
@@ -997,15 +997,15 @@ pub async fn hii_question_info(
         item_id: item_id.into(),
     };
     let resp = self
-        .rpc
+        .inner
         .hii_question_info(auth_req(&self.state, req))
         .await?
         .into_inner();
-    resp.question.ok_or_else(|| AppError::new(ErrKind::NotFound, "empty question info"))
+    resp.question.ok_or_else(|| AppError::new(ErrKind::RpcNotFound, "empty question info"))
 }
 
 pub async fn hii_set_value(
-    &self,
+    &mut self,
     image_id: &str,
     item_id: &str,
     value: u64,
@@ -1015,8 +1015,8 @@ pub async fn hii_set_value(
         item_id: item_id.into(),
         value,
     };
-    let resp = self.rpc.hii_set_value(auth_req(&self.state, req)).await?.into_inner();
-    let q = resp.question.ok_or_else(|| AppError::new(ErrKind::NotFound, "empty question info"))?;
+    let resp = self.inner.hii_set_value(auth_req(&self.state, req)).await?.into_inner();
+    let q = resp.question.ok_or_else(|| AppError::new(ErrKind::RpcNotFound, "empty question info"))?;
     Ok((q, resp.applied_flips, resp.stores))
 }
 ```
