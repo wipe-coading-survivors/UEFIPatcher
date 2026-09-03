@@ -1725,3 +1725,128 @@ fn real_image_hii_set_value_matches_e14() {
     let built2 = uefi_engine::builder::build_image(&rebuilt).expect("build2");
     assert_eq!(built2.len(), built.len());
 }
+
+fn find_file_bytes(img: &Image, guid: &str) -> Vec<u8> {
+    let g = Guid::try_parse(guid).unwrap();
+    let node = find_file_node(&img.root, g).unwrap_or_else(|| panic!("file {guid} in tree"));
+    let mut out = node.header.clone();
+    out.extend_from_slice(&node.body);
+    out.extend_from_slice(&node.tail);
+    out
+}
+
+fn find_spf_leaf_body(img: &Image, guid: &str) -> Vec<u8> {
+    let g = Guid::try_parse(guid).unwrap();
+    find_first_leaf(find_file_node(&img.root, g).unwrap(), |n| {
+        n.body.windows(4).any(|w| w == b"$SPF")
+    })
+    .unwrap_or_else(|| panic!("$SPF leaf under {guid}"))
+    .body
+    .clone()
+}
+
+fn find_file_range(data: &[u8], guid: &str) -> std::ops::Range<usize> {
+    let needle = Guid::try_parse(guid).unwrap().to_bytes();
+    let mut from = 0usize;
+    while let Some(rel) = data[from..].windows(16).position(|w| w == needle) {
+        let start = from + rel;
+        let size = (data[start + 20] as usize)
+            | ((data[start + 21] as usize) << 8)
+            | ((data[start + 22] as usize) << 16);
+        if size >= 24 && start + size <= data.len() {
+            return start..start + size;
+        }
+        from = start + 1;
+    }
+    panic!("no FFS occurrence of {guid} with a consistent header size");
+}
+
+#[test]
+#[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
+fn real_image_hii_form_hijack_built_bytes() {
+    use uefi_engine::builder::build_image;
+    use uefi_engine::hii::form_hijack;
+    use uefi_engine::hii::forms::collect_forms;
+    use uefi_engine::hii::schema;
+    use uefi_engine::hii::spf;
+
+    const ITEM: &str = "899407D7-99FE-43D8-9A21-79EC328CAC21:0x10:0#10029";
+    const AMITSE_GUID: &str = "B1DA0ADF-4F77-4070-A88E-BFFE1C60529A";
+    const SETUPDATA_GUID: &str = "FE612B72-203C-47B1-8560-A66D946EB371";
+
+    let data = load_fw();
+    assert_eq!(data.len(), 0x0100_0000, "16 MiB image expected");
+    let mut img = parse_image(&data, ImageMode::Write, "hijack", "s").unwrap();
+
+    let sc = schema::parse_hijack_schema(
+        r#"{"title": "UEFIPATCHER E18 REALIMAGE", "questions": [
+            {"question_id": 59, "prompt": "PATCHER 4G QUESTION", "help": "PATCHER 4G HELP",
+             "failsafe": 1, "optimal": 1}]}"#,
+    )
+    .unwrap();
+
+    let amitse_before = find_file_bytes(&img, AMITSE_GUID);
+    let sd_before = find_file_bytes(&img, SETUPDATA_GUID);
+    let sd_guid = Guid::try_parse(SETUPDATA_GUID).unwrap();
+
+    let res = form_hijack::hijack_form(&mut img, ITEM, &sc, Some(&sd_guid)).unwrap();
+    assert_eq!(res.records.len(), 1);
+    assert_eq!(res.records[0].question_id, 59);
+    assert_eq!(res.records[0].new_failsafe, 1);
+    assert!(res.form_ifr_end > res.form_ifr_start);
+
+    let built = build_image(&img).unwrap();
+    assert_eq!(built.len(), data.len(), "total flash length preserved");
+
+    let re = parse_image(&built, ImageMode::Read, "re", "s").unwrap();
+    assert_eq!(
+        find_file_bytes(&re, AMITSE_GUID),
+        amitse_before,
+        "AMITSE file must stay byte-identical"
+    );
+    let sd_after = find_file_bytes(&re, SETUPDATA_GUID);
+    assert_eq!(
+        sd_after.len(),
+        sd_before.len(),
+        "$SPF file length invariant"
+    );
+    assert_ne!(sd_after, sd_before, "$SPF content must change (fs/opt)");
+
+    let pfs_body = find_spf_leaf_body(&re, SETUPDATA_GUID);
+    let recs = spf::scan_question_records(&pfs_body);
+    let q4g = recs
+        .iter()
+        .find(|r| r.question_id == 59)
+        .expect("4G record in built $SPF");
+    assert_eq!(q4g.failsafe, 1);
+    assert_eq!(q4g.optimal, 1);
+    assert!(recs.len() >= 380, "record array must stay intact");
+
+    let forms = collect_forms(&re);
+    let f = forms
+        .iter()
+        .find(|f| f.form_id_ifr == 10029)
+        .expect("hijacked form");
+    assert_eq!(f.title, "UEFIPATCHER E18 REALIMAGE");
+
+    let (setup_slot, sd_slot) = (
+        find_file_range(&data, "899407D7-99FE-43D8-9A21-79EC328CAC21"),
+        find_file_range(&data, SETUPDATA_GUID),
+    );
+    for (i, (a, b)) in data.iter().zip(built.iter()).enumerate() {
+        if a != b {
+            assert!(
+                setup_slot.contains(&i) || sd_slot.contains(&i),
+                "byte {i:#x} changed outside the two AMI-adjacent slots"
+            );
+        }
+    }
+
+    eprintln!(
+        "real_image hijack: form=10029 q=0x3B rec@{:#x} ifr[{:#x}..{:#x}) strings={} setup_slot={setup_slot:?} sd_slot={sd_slot:?}",
+        res.records[0].record_offset,
+        res.form_ifr_start,
+        res.form_ifr_end,
+        res.string_ids.len()
+    );
+}
