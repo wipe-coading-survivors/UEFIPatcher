@@ -39,7 +39,7 @@
   - `pub enum GateExpr { EqConst { a: u64, b: u64 }, EqIdVal { question_id: u16, value: u16 }, True, Other }`
   - `pub struct Gate { pub kind: GateKind, pub wraps: Wraps, pub scope_offset: usize, pub expr_offset: usize, pub expr_end: usize, pub expr: GateExpr }`
   - `pub struct GateTarget { pub form_id: u16, pub question_id: Option<u16> }`
-  - `pub(crate) fn decode_expr(region: &[u8]) -> GateExpr`
+  - `pub fn decode_expr(region: &[u8]) -> GateExpr`
 
 - [ ] **Step 1: Создать модуль с тестами и типами (module-first)**
 
@@ -216,7 +216,7 @@ Expected: FAIL (compile error: `decode_expr` не найдена).
 В `gates.rs` (prod-часть):
 
 ```rust
-pub(crate) fn decode_expr(region: &[u8]) -> GateExpr {
+pub fn decode_expr(region: &[u8]) -> GateExpr {
     let mut ops: Vec<(u8, &[u8])> = Vec::new();
     let mut i = 0usize;
     while i + 2 <= region.len() {
@@ -236,8 +236,8 @@ pub(crate) fn decode_expr(region: &[u8]) -> GateExpr {
             if a.len() == 8 && b.len() == 8 =>
         {
             GateExpr::EqConst {
-                a: u64::from_le_bytes(a.try_into().unwrap()),
-                b: u64::from_le_bytes(b.try_into().unwrap()),
+                a: u64::from_le_bytes((*a).try_into().unwrap()),
+                b: u64::from_le_bytes((*b).try_into().unwrap()),
             }
         }
         [(IFR_EQ_ID_VAL_OP, p)] if p.len() == 4 => GateExpr::EqIdVal {
@@ -667,7 +667,7 @@ git commit -m "feat(uefi-engine): hii gates walker (grammar-aware, vendor scope-
   - `pub struct PlannedFlip { pub offset: usize, pub from: Vec<u8>, pub to: Vec<u8> }`
   - `pub(crate) fn plan_flip(body: &[u8], gate: &Gate) -> Option<PlannedFlip>`
   - `pub fn plan_gates(body: &[u8], gates: &[Gate]) -> Result<Vec<PlannedFlip>, String>`
-  - `pub(crate) fn apply_flips(body: &mut [u8], flips: &[PlannedFlip]) -> Result<(), String>`
+  - `pub fn apply_flips(body: &mut [u8], flips: &[PlannedFlip]) -> Result<(), String>`
   - `pub(crate) fn question_storage_width(body: &[u8], question_id: u16) -> Option<u8>`
 
 - [ ] **Step 1: Написать падающие тесты**
@@ -904,7 +904,7 @@ pub fn plan_gates(body: &[u8], gates: &[Gate]) -> Result<Vec<PlannedFlip>, Strin
     Ok(flips)
 }
 
-pub(crate) fn apply_flips(body: &mut [u8], flips: &[PlannedFlip]) -> Result<(), String> {
+pub fn apply_flips(body: &mut [u8], flips: &[PlannedFlip]) -> Result<(), String> {
     for flip in flips {
         if flip.offset + flip.from.len() > body.len()
             || flip.offset + flip.to.len() > body.len()
