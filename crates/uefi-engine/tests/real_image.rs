@@ -1307,3 +1307,132 @@ fn real_image_unhide_rebuild_keeps_layout() {
     assert_eq!(new_file_end, file_end);
     assert_eq!(guided_body_len(&rebuilt, &new_path), guided_before);
 }
+
+const PCI_SETUP_MODULE_GUID: &str = "899407D7-99FE-43D8-9A21-79EC328CAC21";
+const E12_FLIP_BYTES: [(usize, u8, u8); 3] = [(0x67A, 1, 2), (0xDD1, 1, 0xFF), (0xDD2, 0, 0xFF)];
+
+fn node_at_path<'a>(img: &'a Image, path: &[usize]) -> &'a FfsNode {
+    let mut node = &img.root;
+    for &i in path {
+        node = &node.children[i];
+    }
+    node
+}
+
+fn module_pe32_node_path(img: &Image, guid: &str) -> Vec<usize> {
+    let target = uefi_engine::parser::target::parse_target(&format!("{guid}:0x10:0")).unwrap();
+    uefi_engine::parser::target::find_item_path(&img.root, &target).expect("module PE32 node")
+}
+
+fn module_form_package(img: &Image, path: &[usize]) -> Vec<u8> {
+    let pe = &node_at_path(img, path).body;
+    for (off, len) in uefi_engine::hii::pe_resource::hii_resource_ranges(pe) {
+        let Some(blob) = pe.get(off..off + len) else {
+            continue;
+        };
+        let Some(list) = uefi_engine::hii::package_list::parse_package_list(blob) else {
+            continue;
+        };
+        for pkg in &list.packages {
+            if pkg.kind == r_efi::hii::PACKAGE_FORMS {
+                return pkg.bytes.to_vec();
+            }
+        }
+    }
+    panic!("FORM package not found in module .rsrc HII blob");
+}
+
+#[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
+#[test]
+fn real_image_hii_unlock_matches_e12() {
+    let data = load_fw();
+    let mut img = parse_image(&data, ImageMode::Write, "img1", "s1").expect("parse_image");
+    let pe_path = module_pe32_node_path(&img, PCI_SETUP_MODULE_GUID);
+    let (file_start, file_end) = file_extent(&img, &pe_path);
+    let pkg_before = module_form_package(&img, &pe_path);
+
+    let form_item = format!("{PCI_SETUP_MODULE_GUID}:0x10:0#10029");
+    let question_item = format!("{form_item}:0x3B");
+
+    let form_gates = uefi_engine::hii::gates_list(&img, &form_item).expect("gates_list form");
+    assert_eq!(
+        form_gates.len(),
+        1,
+        "form 10029 is gated only by the REF suppress in form 10002"
+    );
+    assert_eq!(form_gates[0].gate_kind, "suppress");
+    assert_eq!(form_gates[0].wraps, "ref");
+    assert_eq!(form_gates[0].host_form_id, 10002);
+    assert_eq!(form_gates[0].expression, "1 == 1");
+    assert!(form_gates[0].flippable, "flip plan: {}", form_gates[0].flip);
+
+    let question_gates =
+        uefi_engine::hii::gates_list(&img, &question_item).expect("gates_list question");
+    assert_eq!(
+        question_gates.len(),
+        1,
+        "Above 4G Decoding is gated only by its personal grayout"
+    );
+    assert_eq!(question_gates[0].gate_kind, "grayout");
+    assert_eq!(question_gates[0].wraps, "question");
+    assert_eq!(question_gates[0].expression, "0x009A == 0x0001");
+    assert!(question_gates[0].flippable);
+
+    uefi_engine::hii::unlock(&mut img, &form_item).expect("unlock page");
+    uefi_engine::hii::unlock(&mut img, &question_item).expect("unlock question");
+    let built = uefi_engine::builder::build_image(&img).expect("build_image");
+
+    assert_eq!(built.len(), data.len(), "total flash length preserved");
+    assert_eq!(
+        &built[..file_start],
+        &data[..file_start],
+        "bytes before the Setup file untouched"
+    );
+    assert_eq!(
+        &built[file_end..],
+        &data[file_end..],
+        "bytes after the Setup file untouched (slot-fit)"
+    );
+
+    let rebuilt = parse_image(&built, ImageMode::Read, "img2", "s2").expect("re-parse");
+    let new_path = module_pe32_node_path(&rebuilt, PCI_SETUP_MODULE_GUID);
+    let pkg_after = module_form_package(&rebuilt, &new_path);
+    assert_eq!(
+        pkg_after.len(),
+        pkg_before.len(),
+        "unlock is length-preserving"
+    );
+    let diff: Vec<(usize, u8, u8)> = pkg_before
+        .iter()
+        .zip(pkg_after.iter())
+        .enumerate()
+        .filter(|(_, (a, b))| a != b)
+        .map(|(i, (a, b))| (i, *a, *b))
+        .collect();
+    assert_eq!(
+        diff,
+        E12_FLIP_BYTES.to_vec(),
+        "engine unlock must reproduce the hardware-validated E12 dataflip byte-for-byte"
+    );
+
+    let (_, new_file_end) = file_extent(&rebuilt, &new_path);
+    assert_eq!(
+        new_file_end, file_end,
+        "slot-fit keeps the Setup file extent"
+    );
+
+    let gates_after = uefi_engine::hii::gates_list(&rebuilt, &form_item).unwrap();
+    assert_eq!(gates_after[0].expression, "1 == 2");
+    assert!(
+        !gates_after[0].flippable,
+        "already-false gate offers no flip"
+    );
+    let qgates_after = uefi_engine::hii::gates_list(&rebuilt, &question_item).unwrap();
+    assert_eq!(qgates_after[0].expression, "0x009A == 0xFFFF");
+
+    let forms = uefi_engine::hii::forms::collect_forms(&rebuilt);
+    assert!(
+        forms.iter().any(|f| f.form_id_ifr == 10029),
+        "form 10029 stays discoverable after unlock"
+    );
+}
