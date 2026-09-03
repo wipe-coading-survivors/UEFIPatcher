@@ -1519,8 +1519,9 @@ fn real_image_hii_form_hijack_built_bytes() {
 
     let amitse_before = find_file_bytes(&img, "B1DA0ADF-4F77-4070-A88E-BFFE1C60529A");
     let sd_before = find_file_bytes(&img, "FE612B72-203C-47B1-8560-A66D946EB371");
+    let sd_guid = Guid::try_parse("FE612B72-203C-47B1-8560-A66D946EB371").unwrap();
 
-    let res = form_hijack::hijack_form(&mut img, item, &schema, None).unwrap();
+    let res = form_hijack::hijack_form(&mut img, item, &schema, Some(&sd_guid)).unwrap();
     assert_eq!(res.records.len(), 1);
     assert_eq!(res.records[0].question_id, 59);
     assert_eq!(res.records[0].new_failsafe, 1);
@@ -1582,6 +1583,8 @@ fn real_image_hii_form_hijack_built_bytes() {
 Хелперы (локальные для файла, если отсутствуют): `find_file_bytes(&Image, guid) -> Vec<u8>` — тело файла (header+content) из дерева; `find_spf_leaf_body(&Image, guid) -> Vec<u8>` — DFS за leaf-секцией с `$SPF` в теле (образец — `find_leaf` из formset_add-тестов); `find_file_range(&[u8], guid) -> Range<usize>` — поиск первых 16 байт GUID файла в образе (FFS-хедеры уникальны) и диапазон `start..start + размер_файла` (размер из хедера `[20..23]` uint24 + 24 хедера; файл с выравниванием — расширить диапазон до следующего `0xFF`-паддинга не нужно: дифф confined к самому файлу, слот LZMA внутри него).
 
 **Подводный камень:** `find_file_range` по GUID может найти GUID и в других местах образа (таблицы FV map); искать вхождение, за которым валидный FFS-хедер (filetype в `[18]`, checksum-байты ненулевые), либо — проще — искать все вхождения и брать то, что даёт консистентный размер ≤ длины образа. Если файл один — сработает первое.
+
+**Дефект (план-фикс):** `setupdata_guid=None` не работает на HNX99TF — файл FE612B72 целиком обёрнут одной GUIDed-LZMA секцией (единственный прямой child — type 0x02 на всё тело 0xc2c4), UI-секция лежит внутри распакованного потока, а тело 0xc2c4 не кратно AMI_RECORD_SIZE (72), поэтому `find_ami_module(image, None, "setupdata")` возвращает `AmiFilesNotFound` (тот же класс дефекта, что у Task 6 на синтетике). Передавать `Some(&Guid FE612B72-...)`, как ami-patch real-image тест.
 
 - [ ] **Step 2: Прогон (explicit ignore)**
 
