@@ -550,6 +550,98 @@ mod tests {
         node.body.len()
     }
 
+    fn lzma_guided_file_bytes(guid: &Guid, children: &[u8]) -> (Vec<u8>, usize) {
+        let mut stream = crate::compress::compress_lzma(children).unwrap();
+        stream.resize(stream.len().max(64), 0x00);
+        let mut body = crate::ffs::lzma_guid().to_bytes().to_vec();
+        body.extend_from_slice(&0x18u16.to_le_bytes());
+        body.extend_from_slice(&1u16.to_le_bytes());
+        body.extend_from_slice(&stream);
+        let sec = section_bytes(crate::ffs::EFI_SECTION_GUID_DEFINED, &body);
+        let slot_len = stream.len();
+        (ffs_file_bytes(guid, &sec), slot_len)
+    }
+
+    #[test]
+    fn hijack_form_survives_lzma_slot_fit() {
+        let (_, pkg, spf_body) = hijack_flash_image();
+        let setup = ffs_file_bytes(
+            &Guid::from_str(FILE_GUID).unwrap(),
+            &file_sections(&[
+                section_bytes(EFI_SECTION_RAW, &pkg),
+                section_bytes(EFI_SECTION_RAW, &string_package_bytes()),
+            ]),
+        );
+        let sd = lzma_guided_file_bytes(
+            &Guid::from_str(SETUPDATA_GUID_STR).unwrap(),
+            &section_bytes(EFI_SECTION_FREEFORM_SUBTYPE_GUID, &spf_body),
+        );
+        let data = flash_with_files(vec![sd.0.clone(), setup]);
+        let sd_start = data
+            .windows(16)
+            .position(|w| w == sd_guid_bytes())
+            .expect("sd file header at slot start");
+        let sd_slot = (sd_start, sd_start + sd.0.len());
+        let setup_start = (sd_slot.1 + 7) & !7;
+
+        let mut img = parse_image(&data, ImageMode::Write, "i", "s").unwrap();
+        let res = hijack_form(
+            &mut img,
+            ITEM,
+            &hijack_schema(),
+            Some(&Guid::from_str(SETUPDATA_GUID_STR).unwrap()),
+        )
+        .unwrap();
+        assert_eq!(res.records.len(), 1);
+        let built = build_image(&img).unwrap();
+        assert_eq!(
+            built.len(),
+            data.len(),
+            "slot-fit must preserve total length"
+        );
+        assert_eq!(
+            &built[..sd_start],
+            &data[..sd_start],
+            "bytes before the $SPF LZMA slot must not change"
+        );
+
+        for (i, (a, b)) in data.iter().zip(built.iter()).enumerate() {
+            if a != b {
+                assert!(
+                    (i >= sd_slot.0 && i < sd_slot.1) || i >= setup_start,
+                    "byte {i:#x} changed outside the $SPF LZMA slot and the setup module slot"
+                );
+            }
+        }
+
+        let reparsed = parse_image(&built, ImageMode::Read, "i2", "s2").unwrap();
+        let sd_file = reparsed
+            .root
+            .children
+            .iter()
+            .find_map(|v| {
+                v.children
+                    .iter()
+                    .find(|f| f.guid == Some(Guid::from_str(SETUPDATA_GUID_STR).unwrap()))
+            })
+            .unwrap();
+        let pfs_leaf = find_spf_leaf(sd_file).unwrap();
+        let recs = spf::scan_question_records(&pfs_leaf.body);
+        assert_eq!(recs[0].failsafe, 1, "fs edit must survive rebuild");
+        assert_eq!(recs[0].optimal, 1);
+    }
+
+    fn sd_guid_bytes() -> [u8; 16] {
+        Guid::from_str(SETUPDATA_GUID_STR).unwrap().to_bytes()
+    }
+
+    fn find_spf_leaf<'a>(node: &'a FfsNode) -> Option<&'a FfsNode> {
+        if node.children.is_empty() && node.body.windows(4).any(|w| w == b"$SPF") {
+            return Some(node);
+        }
+        node.children.iter().find_map(find_spf_leaf)
+    }
+
     #[test]
     fn hijack_form_atomic_precheck_failures() {
         for (item, qid) in [
