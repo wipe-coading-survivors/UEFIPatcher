@@ -111,6 +111,15 @@ fn resolve_ami_payloads(
     Ok((sd_path, am_path))
 }
 
+pub fn pfs_payload_path(
+    image: &Image,
+    setupdata_guid: Option<&Guid>,
+) -> Result<Vec<usize>, HiiError> {
+    let (vi, fi) = find_ami_module(image, setupdata_guid, "setupdata")?;
+    let rel = find_payload_path(&image.root.children[vi].children[fi], is_pfs_payload)?;
+    Ok([vec![vi, fi], rel].concat())
+}
+
 fn find_payload_path(file: &FfsNode, pred: PayloadPred) -> Result<Vec<usize>, HiiError> {
     let mut path = Vec::new();
     let mut blocked = false;
@@ -715,6 +724,38 @@ mod tests {
         let sd = Guid::try_parse(SETUPDATA_GUID_STR).unwrap();
         let am = Guid::try_parse(AMITSE_GUID_STR).unwrap();
         assert!(precheck_ami_modules(&img, Some(&sd), Some(&am)).is_ok());
+    }
+
+    #[test]
+    fn pfs_payload_path_resolves_and_rejects() {
+        let img = ami_image(
+            vec![pfs_section(), ui_section("AMITSESetupData")],
+            vec![pe32_section(), ui_section("AMITSE")],
+        );
+        let path = pfs_payload_path(&img, None).unwrap();
+        assert_eq!(path, vec![0, 0, 0]);
+
+        let no_pfs = ami_image(
+            vec![ui_section("AMITSESetupData")],
+            vec![pe32_section(), ui_section("AMITSE")],
+        );
+        assert!(matches!(
+            pfs_payload_path(&no_pfs, None),
+            Err(HiiError::AmiFilesNotFound)
+        ));
+
+        let sd = Guid::try_parse(SETUPDATA_GUID_STR).unwrap();
+        assert_eq!(pfs_payload_path(&img, Some(&sd)).unwrap(), vec![0, 0, 0]);
+
+        let bogus = Guid::try_parse("00000000-0000-0000-0000-00000000DEAD").unwrap();
+        let unmatched = ami_image(
+            vec![pfs_section(), ui_section("OtherModule")],
+            vec![pe32_section(), ui_section("AMITSE")],
+        );
+        assert!(matches!(
+            pfs_payload_path(&unmatched, Some(&bogus)),
+            Err(HiiError::AmiFilesNotFound)
+        ));
     }
 
     #[test]
