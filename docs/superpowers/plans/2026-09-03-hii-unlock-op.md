@@ -487,7 +487,7 @@ Expected: FAIL (compile error: `find_gates` не найдена).
 
 - [ ] **Step 3: Реализовать walker**
 
-В prod-часть `gates.rs` (восстановить полный импорт: добавить `IFR_ACTION_OP, IFR_CHECKBOX_OP, IFR_DATE_OP, IFR_DEFAULT_OP, IFR_FORM_OP, IFR_GRAY_OUT_IF_OP, IFR_NUMERIC_OP, IFR_ONE_OF_OP, IFR_ONE_OF_OPTION_OP, IFR_ORDERED_LIST_OP, IFR_PASSWORD_OP, IFR_REF_OP, IFR_STRING_OP, IFR_SUBTITLE_OP, IFR_SUPPRESS_IF_OP, IFR_TEXT_OP, IFR_TIME_OP`):
+В prod-часть `gates.rs` (восстановить полный импорт: добавить `IFR_ACTION_OP, IFR_CHECKBOX_OP, IFR_DATE_OP, IFR_DEFAULT_OP, IFR_END_OP, IFR_FORM_OP, IFR_GRAY_OUT_IF_OP, IFR_NUMERIC_OP, IFR_ONE_OF_OP, IFR_ONE_OF_OPTION_OP, IFR_ORDERED_LIST_OP, IFR_PASSWORD_OP, IFR_REF_OP, IFR_STRING_OP, IFR_SUBTITLE_OP, IFR_SUPPRESS_IF_OP, IFR_TEXT_OP, IFR_TIME_OP` и `use super::ifr::is_form_package;`):
 
 ```rust
 fn package_bounds(body: &[u8]) -> (usize, usize) {
@@ -779,8 +779,8 @@ git commit -m "feat(uefi-engine): hii gates walker (grammar-aware, vendor scope-
             .map(|(i, (a, b))| (i, *a, *b))
             .collect();
         assert_eq!(diff.len(), 3);
-        assert!(diff.iter().any(|(i, a, b)| *a == 1 && *b == 2));
-        assert!(diff.iter().filter(|(i, _, b)| *b == 0xFF).count() == 2);
+        assert!(diff.iter().any(|(_, a, b)| *a == 1 && *b == 2));
+        assert!(diff.iter().filter(|(_, _, b)| *b == 0xFF).count() == 2);
     }
 
     #[test]
@@ -908,7 +908,7 @@ pub fn apply_flips(body: &mut [u8], flips: &[PlannedFlip]) -> Result<(), String>
     for flip in flips {
         if flip.offset + flip.from.len() > body.len()
             || flip.offset + flip.to.len() > body.len()
-            || body[flip.offset..flip.offset + flip.from.len()] != flip.from.as_slice()
+            || body[flip.offset..flip.offset + flip.from.len()] != flip.from[..]
         {
             return Err(format!("flip at pkg+{:#x} precondition failed", flip.offset));
         }
