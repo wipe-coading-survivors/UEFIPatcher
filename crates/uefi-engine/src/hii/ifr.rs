@@ -803,12 +803,7 @@ mod tests {
         ));
         ifr.extend(ifr_op(IFR_END_OP, false, &[]));
         ifr.extend(ifr_op(IFR_END_OP, false, &[]));
-        let mut pkg = vec![
-            (4 + ifr.len()) as u8 & 0xFF,
-            0,
-            0,
-            r_efi::hii::PACKAGE_FORMS,
-        ];
+        let mut pkg = vec![(4 + ifr.len()) as u8, 0, 0, r_efi::hii::PACKAGE_FORMS];
         let len = 4 + ifr.len();
         pkg[0] = (len & 0xFF) as u8;
         pkg[1] = ((len >> 8) & 0xFF) as u8;
