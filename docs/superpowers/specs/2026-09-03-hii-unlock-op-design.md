@@ -100,7 +100,8 @@ NVRAM. Единственный HW-валидированный класс пр�
 - **Layout выражений** (r-efi 7.0): `IFR_UINT64_OP=0x45` (len 10,
   payload u64), `IFR_EQUAL_OP=0x2F`, `IFR_EQ_ID_VAL_OP=0x12` (len 6:
   qid@+2, val@+4), `IFR_TRUE_OP=0x46`; question-header: prompt@+2/
-  help@+4/qid@+6/flags@+12; `IFR_REF_OP=0x0F` len 17, form_id@+14;
+  help@+4/qid@+6/flags@+12; `IFR_REF_OP=0x0F` len 15, form_id@+13
+  (IfrOpHeader 2 + IfrQuestionHeader 11 + FormId 2 — IfrRef, не IfrRef2);
   NUMERIC width = `1 << (flags@+12 & IFR_NUMERIC_SIZE)`, CHECKBOX = 1.
 - **Vendor quirk**: первый операнд выражения может нести scope-бит
   (`[45 8a …][45 0a …][2f 02]`) — выражение нельзя обходить стеком
@@ -153,7 +154,7 @@ pub struct GateTarget { form_id: u16, question_id: Option<u16> }
   FORM/SUBTITLE/TEXT/REF/вопросы (ONE_OF, CHECKBOX, NUMERIC, PASSWORD,
   ORDERED_LIST, STRING, DATE, TIME, ACTION)/ONE_OF_OPTION/DEFAULT;
 - матчинг цели: FORM с `form_id == target` (режим формы); REF с
-  `form_id@+14 == target` (режим формы, host = текущая форма из стека);
+  `form_id@+13 == target` (режим формы, host = текущая форма из стека);
   вопрос с `qid@+6 == target.question_id` внутри формы
   `target.form_id` (режим вопроса). Каждому матчу — по гейту на
   **каждый** объемлющий 0x0A/0x19-фрейм (внутренний первым);

@@ -1214,10 +1214,12 @@ atomic_write. После первой мутации хранимый файл �
   валидного префикса операндов** — exact-consumption check снят ради
   END-quirk (scoped expression operands). Контекст: захватить
   ограничение тестом; ужесточить, если появятся новые quirk'и.
-* [ ] **hii/gates: EqIdVal с value==0xFFFF ре-планится как Ok no-op** —
-  повторный unlock уже-unlock'нутого вопроса неотличим от первого
-  (from==to==`ff ff`, applied пуст в обоих случаях). Контекст: отличать
-  «уже unlock» от «unlock сейчас» в ответе RPC/CLI.
+* [ ] **hii/gates: EqIdVal re-unlock — user-visible дефект отчётности** —
+  повторный unlock уже-0xFFFF гейта планирует no-op флип (from==to==`ff ff`),
+  который попадает в applied (CLI печатает «applied … ff ff -> ff ff»), а
+  gates_list продолжает отдавать flippable=true; байты не трогаются.
+  Контекст: фикс — один guard в `plan_flip` (value==0xFFFF → не flippable);
+  кандидат в первый post-merge коммит.
 * [ ] **hii/gates: plan_flip/plan_gates/apply_flips без bounds-guard'ов на
   hand-constructed Gate** — безопасность держится на инвариантах
   decode_expr (expr_offset/expr_end из живого обхода). Контекст: ввод
@@ -1228,6 +1230,21 @@ atomic_write. После первой мутации хранимый файл �
   (`sm.touch`), мутация идёт через повторный lock `images.get_mut`.
   Контекст: наследованный стиль хендлеров (как `hii_form_add`);
   упростить при следующем касании (доставать session_id без клона).
+* [ ] **hii/gates: тест обрезанного пакета ассертит `gates.len() <= 1`** —
+  слабый предикат: silent under-walk (0 гейтов) тоже пройдёт. Контекст:
+  закрипить точное ожидаемое количество/содержимое.
+* [ ] **uefi-cli e2e: TSV-инвокация `hii form gates` ассертит только exit
+  success** — содержимое колонок TSV не проверяется. Контекст: добавить
+  content-ассерты stdout.
+* [ ] **hii: тест `gates_list_bare_channel…` выводит ожидаемый офсет флипа
+  из тестируемого `scope_offset`** — точные офсеты закриплены только в
+  unit-тестах gates.rs. Контекст: захардкодить ожидание в интеграционном
+  тесте.
+* [ ] **hii unlock/gates_list: non-HII канал — Ok с пустым списком вместо
+  NotASetupItem** — расхождение с таблицей ошибок §5 спеки
+  (plan-sanctioned `unwrap_or_default` PE-resource-канала); безвредный
+  no-op success. Контекст: задокументировать расхождение либо вернуть
+  NotASetupItem.
 
 ### R2-обновление (риск «новые формы не рендерятся»)
 
