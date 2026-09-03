@@ -1217,7 +1217,7 @@ Run: `cargo build -p uefi-proto 2>&1 | tail -3` — Expected: OK (build-script �
     #[tokio::test]
     async fn hii_form_hijack_maps_bad_schema_to_invalid_argument() {
         let img = parse_image(
-            &crate::hii::form_hijack::hijack_test_flash(),
+            &crate::hii::form_hijack::test_fixtures::hijack_test_flash(),
             ImageMode::Write,
             "i",
             "s",
@@ -1230,7 +1230,7 @@ Run: `cargo build -p uefi-proto 2>&1 | tail -3` — Expected: OK (build-script �
     #[tokio::test]
     async fn hii_form_hijack_maps_unknown_form_to_not_found() {
         let img = parse_image(
-            &crate::hii::form_hijack::hijack_test_flash(),
+            &crate::hii::form_hijack::test_fixtures::hijack_test_flash(),
             ImageMode::Write,
             "i",
             "s",
@@ -1248,13 +1248,21 @@ Run: `cargo build -p uefi-proto 2>&1 | tail -3` — Expected: OK (build-script �
 
     #[tokio::test]
     async fn hii_form_hijack_maps_missing_spf_to_not_found() {
-        let img = parse_image(
-            &crate::hii::form_hijack::hijack_test_flash(),
+        let mut img = parse_image(
+            &crate::hii::form_hijack::test_fixtures::hijack_test_flash(),
             ImageMode::Write,
             "i",
             "s",
         )
         .unwrap();
+        let sd_guid = Guid::try_parse("12345678-90AB-CDEF-1234-567890ABCDEF").unwrap();
+        let vol = img
+            .root
+            .children
+            .iter_mut()
+            .find(|v| v.children.iter().any(|f| f.guid == Some(sd_guid)))
+            .unwrap();
+        vol.children.retain(|f| f.guid != Some(sd_guid));
         let st = form_hijack_status(
             img,
             "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:0#7",
@@ -1329,7 +1337,7 @@ Expected: FAIL — метод `hii_form_hijack` не найден.
     }
 ```
 
-Добавить импорт `HiiFormHijackRecord, HiiFormHijackRequest, HiiFormHijackResponse` в существующий `use uefi_proto::...` (как соседние HiiFormAdd*).
+Отдельные импорты не нужны: server.rs уже использует `use uefi_proto::*;` (glob покрывает HiiFormHijack*, как и соседние HiiFormAdd*).
 
 - [ ] **Step 5: Прогон + clippy + commit**
 
