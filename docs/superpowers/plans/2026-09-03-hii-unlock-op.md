@@ -1010,7 +1010,7 @@ git commit -m "refactor(uefi-engine): drop falsified UPG/PRC patch path (E8)"
   - `pub struct UnlockOutcome { pub gates: Vec<uefi_proto::GateInfo>, pub applied: Vec<String> }`
   - `pub fn gates_list(image: &Image, item_id: &str) -> Result<Vec<uefi_proto::GateInfo>, HiiError>`
   - `pub fn unlock(image: &mut Image, item_id: &str) -> Result<UnlockOutcome, HiiError>`
-  - `pub enum HiiError::GateExpressionUnsupported(String)` — новый вариант (после `SibtBlockUnsupported`)
+  - `pub enum HiiError::GateExpressionUnsupported(String)` — новый вариант (последним в enum; `SibtBlockUnsupported` удалён вместе с PRC-механикой в Task 4)
 
 - [ ] **Step 1: Написать падающие тесты**
 
