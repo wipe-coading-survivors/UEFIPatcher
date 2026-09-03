@@ -109,8 +109,10 @@ pub fn hijack_form(
         }
         if node.subtype == crate::ffs::EFI_SECTION_RAW && ifr::is_form_package(&node.body) {
             true
-        } else if node.subtype == crate::ffs::EFI_SECTION_PE32 {
-            form_add::resource_forms_package(&node.body).is_some()
+        } else if node.subtype == crate::ffs::EFI_SECTION_PE32
+            && form_add::resource_forms_package(&node.body).is_some()
+        {
+            false
         } else {
             return Err(HiiError::NotASetupItem);
         }
@@ -560,6 +562,101 @@ mod tests {
         )
         .unwrap();
         node.body.len()
+    }
+
+    fn hii_list_blob(guid: &Guid, pkgs: &[&[u8]]) -> Vec<u8> {
+        let total = 20 + 4 + pkgs.iter().map(|p| p.len()).sum::<usize>();
+        let mut b = guid.to_bytes().to_vec();
+        b.extend_from_slice(&(total as u32).to_le_bytes());
+        for p in pkgs {
+            b.extend_from_slice(p);
+        }
+        b.extend_from_slice(&[0x04, 0x00, 0x00, r_efi::hii::PACKAGE_END]);
+        b
+    }
+
+    #[test]
+    fn hijack_form_pe32_resource_channel_appends_strings_to_resource() {
+        let pkg = package_with_form();
+        let qs = locate_questions(&pkg, 7);
+        let records: Vec<spf::SpfQuestionRecord> = qs
+            .iter()
+            .enumerate()
+            .map(|(i, &(off, qid))| spf::SpfQuestionRecord {
+                offset: 0x100 + i * spf::SPF_RECORD_SIZE,
+                question_id: qid,
+                ifr_offset: off as u32,
+                failsafe: 0,
+                optimal: 0,
+            })
+            .collect();
+        let spf_body = spf_container(&records, 0x400);
+        let blob = hii_list_blob(
+            &Guid::from_str(FILE_GUID).unwrap(),
+            &[&pkg, &string_package_bytes()],
+        );
+        let pe = crate::hii::pe_resource::synth_hii_pe("HII", &blob);
+        let setup = ffs_file_bytes(
+            &Guid::from_str(FILE_GUID).unwrap(),
+            &section_bytes(crate::ffs::EFI_SECTION_PE32, &pe),
+        );
+        let sd = ffs_file_bytes(
+            &Guid::from_str(SETUPDATA_GUID_STR).unwrap(),
+            &file_sections(&[
+                section_bytes(crate::ffs::EFI_SECTION_UI, &ui_name("AMITSESetupData")),
+                section_bytes(crate::ffs::EFI_SECTION_FREEFORM_SUBTYPE_GUID, &spf_body),
+            ]),
+        );
+        let data = flash_with_files(vec![setup, sd]);
+
+        let mut img = parse_image(&data, ImageMode::Write, "i", "s").unwrap();
+        let item = format!("{FILE_GUID}:0x10:0#7");
+        let res =
+            hijack_form(&mut img, &item, &hijack_schema(), None).expect("PE32 resource hijack");
+        assert_eq!(res.records.len(), 1);
+        assert_eq!(res.string_ids.len(), 3);
+        assert!(res.string_ids.contains_key("UEFIPATCHER"));
+
+        let built = build_image(&img).unwrap();
+        assert_eq!(built.len(), data.len());
+
+        let re = parse_image(&built, ImageMode::Read, "i2", "s2").unwrap();
+        let pe_node = crate::parser::target::find_item(
+            &re.root,
+            &crate::parser::target::parse_target(&format!("{FILE_GUID}:0x10:0")).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            pe_node
+                .body
+                .windows("UEFIPATCHER".len())
+                .any(|w| w == b"UEFIPATCHER"),
+            "appended strings must land inside the PE resource"
+        );
+
+        let sd_file = re
+            .root
+            .children
+            .iter()
+            .find_map(|v| {
+                v.children
+                    .iter()
+                    .find(|f| f.guid == Some(Guid::from_str(SETUPDATA_GUID_STR).unwrap()))
+            })
+            .unwrap();
+        let pfs_leaf = find_spf_leaf(sd_file).unwrap();
+        let recs = spf::scan_question_records(&pfs_leaf.body);
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0].question_id, 17);
+        assert_eq!(recs[0].failsafe, 1);
+        assert_eq!(recs[0].optimal, 1);
+
+        let forms = crate::hii::forms::collect_forms(&re);
+        let form = forms
+            .iter()
+            .find(|f| f.form_id_ifr == 7)
+            .expect("hijacked form");
+        assert_eq!(form.title, "UEFIPATCHER");
     }
 
     fn lzma_guided_file_bytes(guid: &Guid, children: &[u8]) -> (Vec<u8>, usize) {
