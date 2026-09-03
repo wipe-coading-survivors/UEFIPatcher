@@ -220,6 +220,45 @@ impl EngineService for MockEngine {
             string_ids: std::collections::HashMap::from([("mock".into(), 2u32)]),
         }))
     }
+    async fn hii_gates_list(
+        &self,
+        req: Request<HiiGatesListRequest>,
+    ) -> Result<Response<HiiGatesListResponse>, Status> {
+        let _ = req;
+        Ok(Response::new(HiiGatesListResponse {
+            gates: vec![GateInfo {
+                gate_kind: "suppress".into(),
+                wraps: "ref".into(),
+                form_id: 10029,
+                host_form_id: 10002,
+                question_id: 0,
+                expression: "1 == 1".into(),
+                flippable: true,
+                flip: "pkg+0x67a: 01 -> 02".into(),
+                scope_offset: 0x66C,
+            }],
+        }))
+    }
+    async fn hii_unlock(
+        &self,
+        req: Request<HiiUnlockRequest>,
+    ) -> Result<Response<HiiUnlockResponse>, Status> {
+        let _ = req;
+        Ok(Response::new(HiiUnlockResponse {
+            gates: vec![GateInfo {
+                gate_kind: "grayout".into(),
+                wraps: "question".into(),
+                form_id: 10029,
+                host_form_id: 10029,
+                question_id: 0x3B,
+                expression: "0x009A == 0x0001".into(),
+                flippable: true,
+                flip: "pkg+0xdd1: 01 00 -> ff ff".into(),
+                scope_offset: 0xDCB,
+            }],
+            applied_flips: vec!["pkg+0xdd1: 01 00 -> ff ff".into()],
+        }))
+    }
 }
 
 pub async fn start_mock(sock: &Path) -> JoinHandle<()> {

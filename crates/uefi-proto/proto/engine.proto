@@ -29,6 +29,8 @@ service EngineService {
   rpc HiiListStrings(HiiListStringsRequest)             returns (HiiListStringsResponse);
   rpc HiiFormSetAdd(HiiFormSetAddRequest)               returns (HiiFormSetAddResponse);
   rpc HiiFormAdd(HiiFormAddRequest)                     returns (HiiFormAddResponse);
+  rpc HiiGatesList(HiiGatesListRequest)                 returns (HiiGatesListResponse);
+  rpc HiiUnlock(HiiUnlockRequest)                       returns (HiiUnlockResponse);
 }
 
 enum ImageMode { READ = 0; WRITE = 1; }
@@ -198,5 +200,11 @@ message GateInfo {
   string flip = 8;
   uint32 scope_offset = 9;
 }
+
+message HiiGatesListRequest  { string image_id = 1; string item_id = 2; }
+message HiiGatesListResponse { repeated GateInfo gates = 1; }
+
+message HiiUnlockRequest     { string image_id = 1; string item_id = 2; }
+message HiiUnlockResponse    { repeated GateInfo gates = 1; repeated string applied_flips = 2; }
 
 message Empty {}

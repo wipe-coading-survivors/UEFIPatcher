@@ -48,6 +48,7 @@ fn hii_error_status(e: crate::hii::HiiError) -> Status {
             Status::invalid_argument(e.to_string())
         }
         crate::hii::HiiError::NotWritable
+        | crate::hii::HiiError::GateExpressionUnsupported(_)
         | crate::hii::HiiError::MutationBehindCompression
         | crate::hii::HiiError::PeGrowthUnsupported
         | crate::hii::HiiError::IdOccupied(_) => Status::failed_precondition(e.to_string()),
@@ -797,6 +798,39 @@ impl EngineService for EngineServer {
                 .collect(),
         }))
     }
+
+    #[tracing::instrument(skip(self, req), err)]
+    async fn hii_gates_list(
+        &self,
+        req: Request<HiiGatesListRequest>,
+    ) -> RpcResult<HiiGatesListResponse> {
+        let r = req.into_inner();
+        let img = self.get_or_load_image(&r.image_id).await?;
+        let gates = crate::hii::gates_list(&img, &r.item_id).map_err(hii_error_status)?;
+        let _ = self.sm.touch(&img.session_id);
+        tracing::info!(image_id = %r.image_id, item_id = %r.item_id, count = gates.len(), "hii gates listed");
+        Ok(Response::new(HiiGatesListResponse { gates }))
+    }
+
+    #[tracing::instrument(skip(self, req), err)]
+    async fn hii_unlock(&self, req: Request<HiiUnlockRequest>) -> RpcResult<HiiUnlockResponse> {
+        let r = req.into_inner();
+        let img = self.get_or_load_image(&r.image_id).await?;
+        let outcome = {
+            let mut images = self.images.lock().await;
+            let img_slot = images
+                .get_mut(&r.image_id)
+                .ok_or_else(|| Status::not_found("image not found"))?;
+            crate::hii::unlock(img_slot, &r.item_id).map_err(hii_error_status)?
+        };
+        self.flush_image(&r.image_id).await?;
+        let _ = self.sm.touch(&img.session_id);
+        tracing::info!(image_id = %r.image_id, item_id = %r.item_id, flips = outcome.applied.len(), "hii unlock");
+        Ok(Response::new(HiiUnlockResponse {
+            gates: outcome.gates,
+            applied_flips: outcome.applied,
+        }))
+    }
 }
 
 #[cfg(unix)]
@@ -935,6 +969,14 @@ mod tests {
     #[test]
     fn hii_error_status_maps_id_occupied() {
         let st = hii_error_status(crate::hii::HiiError::IdOccupied(7));
+        assert_eq!(st.code(), tonic::Code::FailedPrecondition);
+    }
+
+    #[test]
+    fn hii_error_status_maps_gate_expression_unsupported() {
+        let st = hii_error_status(crate::hii::HiiError::GateExpressionUnsupported(
+            "suppress gate at pkg+0x674".into(),
+        ));
         assert_eq!(st.code(), tonic::Code::FailedPrecondition);
     }
 
