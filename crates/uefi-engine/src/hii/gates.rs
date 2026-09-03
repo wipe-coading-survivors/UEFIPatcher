@@ -1,7 +1,7 @@
 use super::ifr::is_form_package;
 use r_efi::hii::{
     IFR_ACTION_OP, IFR_CHECKBOX_OP, IFR_DATE_OP, IFR_DEFAULT_OP, IFR_END_OP, IFR_EQ_ID_VAL_OP,
-    IFR_EQUAL_OP, IFR_FORM_OP, IFR_GRAY_OUT_IF_OP, IFR_NUMERIC_OP, IFR_ONE_OF_OP,
+    IFR_EQUAL_OP, IFR_FORM_OP, IFR_GRAY_OUT_IF_OP, IFR_NUMERIC_OP, IFR_NUMERIC_SIZE, IFR_ONE_OF_OP,
     IFR_ONE_OF_OPTION_OP, IFR_ORDERED_LIST_OP, IFR_PASSWORD_OP, IFR_REF_OP, IFR_STRING_OP,
     IFR_SUBTITLE_OP, IFR_SUPPRESS_IF_OP, IFR_TEXT_OP, IFR_TIME_OP, IFR_TRUE_OP, IFR_UINT64_OP,
 };
@@ -250,6 +250,105 @@ fn emit_gates(
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlannedFlip {
+    pub offset: usize,
+    pub from: Vec<u8>,
+    pub to: Vec<u8>,
+}
+
+pub(crate) fn question_storage_width(body: &[u8], question_id: u16) -> Option<u8> {
+    let (start, end) = package_bounds(body);
+    let mut i = start;
+    while i + 2 <= end {
+        let op = body[i];
+        let length = (body[i + 1] & 0x7F) as usize;
+        if length < 2 || i + length > end {
+            return None;
+        }
+        if is_question_op(op)
+            && length >= 8
+            && u16::from_le_bytes([body[i + 6], body[i + 7]]) == question_id
+        {
+            return match op {
+                IFR_CHECKBOX_OP => Some(1),
+                IFR_NUMERIC_OP if length >= 13 => Some(1u8 << (body[i + 12] & IFR_NUMERIC_SIZE)),
+                _ => None,
+            };
+        }
+        i += length;
+    }
+    None
+}
+
+pub(crate) fn plan_flip(body: &[u8], gate: &Gate) -> Option<PlannedFlip> {
+    match gate.expr {
+        GateExpr::EqConst { a, b } if a == b => {
+            let first_len = (body[gate.expr_offset + 1] & 0x7F) as usize;
+            let offset = gate.expr_offset + first_len + 2;
+            let from = body[offset];
+            Some(PlannedFlip {
+                offset,
+                from: vec![from],
+                to: vec![from.wrapping_add(1)],
+            })
+        }
+        GateExpr::EqIdVal { question_id, value } => {
+            if question_storage_width(body, question_id).is_some_and(|w| w > 1) {
+                return None;
+            }
+            Some(PlannedFlip {
+                offset: gate.expr_offset + 4,
+                from: value.to_le_bytes().to_vec(),
+                to: 0xFFFFu16.to_le_bytes().to_vec(),
+            })
+        }
+        _ => None,
+    }
+}
+
+pub fn plan_gates(body: &[u8], gates: &[Gate]) -> Result<Vec<PlannedFlip>, String> {
+    let mut flips = Vec::new();
+    for gate in gates {
+        match plan_flip(body, gate) {
+            Some(flip) => flips.push(flip),
+            None => {
+                let region = &body[gate.expr_offset..gate.expr_end.min(body.len())];
+                return Err(format!(
+                    "{} gate at pkg+{:#x} wrapping {:?}: expression [{}] is not a hardware-validated flip class",
+                    gate.kind.as_str(),
+                    gate.scope_offset,
+                    gate.wraps,
+                    region
+                        .iter()
+                        .map(|b| format!("{b:02x}"))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                ));
+            }
+        }
+    }
+    Ok(flips)
+}
+
+pub fn apply_flips(body: &mut [u8], flips: &[PlannedFlip]) -> Result<(), String> {
+    for flip in flips {
+        if flip.offset + flip.from.len() > body.len()
+            || flip.offset + flip.to.len() > body.len()
+            || body[flip.offset..flip.offset + flip.from.len()] != flip.from[..]
+        {
+            return Err(format!(
+                "flip at pkg+{:#x} precondition failed",
+                flip.offset
+            ));
+        }
+    }
+    for flip in flips {
+        body[flip.offset..flip.offset + flip.to.len()].copy_from_slice(&flip.to);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -330,6 +429,28 @@ mod tests {
         ifr.extend(end());
         ifr.extend(end());
         ifr.extend(form(10029, 21));
+        ifr.extend(opcode(IFR_GRAY_OUT_IF_OP, true, &[]));
+        ifr.extend(eq_id_val(0x009A, 1));
+        ifr.extend(one_of_op(0x003B));
+        ifr.extend(end());
+        ifr.extend(end());
+        ifr.extend(end());
+        ifr.extend(end());
+        ifr
+    }
+
+    fn numeric_op(question_id: u16, flags: u8) -> Vec<u8> {
+        let mut p = vec![0u8; 11];
+        p[4..6].copy_from_slice(&question_id.to_le_bytes());
+        p[10] = flags;
+        opcode(IFR_NUMERIC_OP, true, &p)
+    }
+
+    fn master_switch_ifr(width_flags: u8) -> Vec<u8> {
+        let mut ifr = form_set(7);
+        ifr.extend(form(10029, 21));
+        ifr.extend(numeric_op(0x009A, width_flags));
+        ifr.extend(end());
         ifr.extend(opcode(IFR_GRAY_OUT_IF_OP, true, &[]));
         ifr.extend(eq_id_val(0x009A, 1));
         ifr.extend(one_of_op(0x003B));
@@ -517,6 +638,131 @@ mod tests {
         pkg.truncate(pkg.len() - 3);
         let gates = find_gates(&pkg, &FORM_GATE_TARGET);
         assert!(gates.len() <= 1);
+    }
+
+    #[test]
+    fn plan_eq_const_flip_targets_second_operand_lsb() {
+        let pkg = package(&vendor_ifr());
+        let gates = find_gates(&pkg, &FORM_GATE_TARGET);
+        let flips = plan_gates(&pkg, &gates).unwrap();
+        assert_eq!(flips.len(), 1);
+        assert_eq!(flips[0].offset, gates[0].expr_offset + 12);
+        assert_eq!(flips[0].from, vec![1]);
+        assert_eq!(flips[0].to, vec![2]);
+    }
+
+    #[test]
+    fn plan_eq_id_val_flip_rewrites_value_to_unreachable() {
+        let pkg = package(&vendor_ifr());
+        let gates = find_gates(&pkg, &QUESTION_GATE_TARGET);
+        let flips = plan_gates(&pkg, &gates).unwrap();
+        assert_eq!(flips.len(), 1);
+        assert_eq!(flips[0].offset, gates[0].expr_offset + 4);
+        assert_eq!(flips[0].from, vec![1, 0]);
+        assert_eq!(flips[0].to, vec![0xFF, 0xFF]);
+    }
+
+    #[test]
+    fn plan_eq_const_distinct_operands_have_no_flip() {
+        let mut ifr = form_set(7);
+        ifr.extend(opcode(IFR_SUPPRESS_IF_OP, true, &[]));
+        ifr.extend(uint64(1));
+        ifr.extend(uint64(2));
+        ifr.extend(equal());
+        ifr.extend(form(901, 30));
+        ifr.extend(end());
+        ifr.extend(end());
+        ifr.extend(end());
+        ifr.extend(end());
+        let pkg = package(&ifr);
+        let gates = find_gates(
+            &pkg,
+            &GateTarget {
+                form_id: 901,
+                question_id: None,
+            },
+        );
+        assert!(plan_gates(&pkg, &gates).is_err());
+    }
+
+    #[test]
+    fn plan_refuses_eq_id_val_when_master_storage_is_two_bytes() {
+        let pkg = package(&master_switch_ifr(r_efi::hii::IFR_NUMERIC_SIZE_2));
+        let gates = find_gates(&pkg, &QUESTION_GATE_TARGET);
+        let err = plan_gates(&pkg, &gates).unwrap_err();
+        assert!(
+            err.contains("pkg+"),
+            "diagnostics must carry the gate offset: {err}"
+        );
+    }
+
+    #[test]
+    fn plan_allows_eq_id_val_when_master_is_one_byte_numeric() {
+        let pkg = package(&master_switch_ifr(r_efi::hii::IFR_NUMERIC_SIZE_1));
+        let gates = find_gates(&pkg, &QUESTION_GATE_TARGET);
+        assert!(plan_gates(&pkg, &gates).is_ok());
+    }
+
+    #[test]
+    fn plan_allows_eq_id_val_when_master_absent_from_package() {
+        let pkg = package(&vendor_ifr());
+        let gates = find_gates(&pkg, &QUESTION_GATE_TARGET);
+        assert!(
+            plan_gates(&pkg, &gates).is_ok(),
+            "vendor fixture has no 0x009A statement at all — width unknown, flip allowed"
+        );
+    }
+
+    #[test]
+    fn apply_flips_write_in_place_preserving_length() {
+        let pkg = package(&vendor_ifr());
+        let before = pkg.clone();
+        let mut body = pkg.clone();
+        for target in [FORM_GATE_TARGET, QUESTION_GATE_TARGET] {
+            let flips = plan_gates(&body, &find_gates(&body, &target)).unwrap();
+            apply_flips(&mut body, &flips).unwrap();
+        }
+        assert_eq!(body.len(), before.len());
+        let diff: Vec<(usize, u8, u8)> = before
+            .iter()
+            .zip(body.iter())
+            .enumerate()
+            .filter(|(_, (a, b))| a != b)
+            .map(|(i, (a, b))| (i, *a, *b))
+            .collect();
+        assert_eq!(diff.len(), 3);
+        assert!(diff.iter().any(|(_, a, b)| *a == 1 && *b == 2));
+        assert!(diff.iter().filter(|(_, _, b)| *b == 0xFF).count() == 2);
+    }
+
+    #[test]
+    fn apply_flips_rejects_stale_from_bytes() {
+        let pkg = package(&vendor_ifr());
+        let gates = find_gates(&pkg, &FORM_GATE_TARGET);
+        let mut flips = plan_gates(&pkg, &gates).unwrap();
+        let mut body = pkg.clone();
+        let stale = flips[0].offset;
+        body[stale] = 0x77;
+        assert!(apply_flips(&mut body, &flips).is_err());
+        assert_eq!(body[stale], 0x77);
+        flips[0].from = vec![0x77];
+        flips[0].to = vec![0x78];
+        apply_flips(&mut body, &flips).unwrap();
+        assert_eq!(body[stale], 0x78);
+    }
+
+    #[test]
+    fn plan_after_flip_refuses_second_unlock() {
+        let pkg = package(&vendor_ifr());
+        let mut body = pkg.clone();
+        let flips = plan_gates(&body, &find_gates(&body, &FORM_GATE_TARGET)).unwrap();
+        apply_flips(&mut body, &flips).unwrap();
+        let gates = find_gates(&body, &FORM_GATE_TARGET);
+        assert_eq!(gates[0].expr, GateExpr::EqConst { a: 1, b: 2 });
+        assert!(
+            plan_gates(&body, &gates).is_err(),
+            "already-false expression must not flip again"
+        );
     }
 
     fn uint64(v: u64) -> Vec<u8> {
