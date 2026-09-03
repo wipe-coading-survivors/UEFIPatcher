@@ -137,7 +137,7 @@ pub fn add_form(
     })
 }
 
-fn owner_guid_by_path(root: &FfsNode, path: &[usize]) -> Option<Guid> {
+pub(crate) fn owner_guid_by_path(root: &FfsNode, path: &[usize]) -> Option<Guid> {
     let mut node = root;
     let mut guid = None;
     for &i in path {
@@ -159,7 +159,7 @@ fn build_varstores(schema: &schema::FormSetSchema) -> Result<Vec<u8>, HiiError> 
     Ok(b.build())
 }
 
-fn resource_forms_package(pe: &[u8]) -> Option<(usize, usize)> {
+pub(crate) fn resource_forms_package(pe: &[u8]) -> Option<(usize, usize)> {
     let (_, blob_off, blob_len) = hii_entry_locations(pe).first().copied()?;
     let end = blob_off.checked_add(blob_len)?;
     let blob = pe.get(blob_off..end)?;

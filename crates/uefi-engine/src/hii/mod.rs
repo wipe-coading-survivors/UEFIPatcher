@@ -153,7 +153,9 @@ fn parse_u16_loose(s: &str) -> Option<u16> {
     }
 }
 
-fn parse_item_id(item_id: &str) -> Result<(crate::types::Target, u16, Option<u16>), HiiError> {
+pub(crate) fn parse_item_id(
+    item_id: &str,
+) -> Result<(crate::types::Target, u16, Option<u16>), HiiError> {
     let (target_str, disc) = item_id.rsplit_once('#').ok_or(HiiError::NotFound)?;
     let (form_str, qid_str) = match disc.split_once(':') {
         Some((f, q)) => (f, Some(q)),
