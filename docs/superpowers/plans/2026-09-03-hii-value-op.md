@@ -88,9 +88,13 @@ fn one_of_4g() -> Vec<u8> {
     opcode(IFR_ONE_OF_OP, true, &p)
 }
 
-fn option(string_id: u16, flags: u8, value: u8) -> Vec<u8> {
-    opcode(IFR_ONE_OF_OPTION_OP, false,
-        &[string_id.to_le_bytes(), [flags, 0x00, value]].concat())
+fn option(string_id: u16, flags: u8, value_bytes: &[u8]) -> Vec<u8> {
+    let mut p = Vec::new();
+    p.extend_from_slice(&string_id.to_le_bytes());
+    p.push(flags);
+    p.push(0x00);
+    p.extend_from_slice(value_bytes);
+    opcode(IFR_ONE_OF_OPTION_OP, false, &p)
 }
 ```
 
