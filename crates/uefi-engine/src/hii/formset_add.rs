@@ -192,7 +192,7 @@ fn walk_for_pe_resource_channel(
     None
 }
 
-fn is_non_recompressable_wrapper(node: &FfsNode) -> bool {
+pub(crate) fn is_non_recompressable_wrapper(node: &FfsNode) -> bool {
     node.node_type == FfsType::Section
         && (node.subtype == EFI_SECTION_COMPRESSION || node.subtype == EFI_SECTION_GUID_DEFINED)
         && !matches!(

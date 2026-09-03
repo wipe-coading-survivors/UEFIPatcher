@@ -70,9 +70,81 @@ pub(crate) fn precheck_ami_modules(
     setupdata_guid: Option<&Guid>,
     amitse_guid: Option<&Guid>,
 ) -> Result<(), HiiError> {
-    find_ami_module(image, setupdata_guid, "setupdata")?;
-    find_ami_module(image, amitse_guid, "AMITSE")?;
+    resolve_ami_payloads(image, setupdata_guid, amitse_guid)?;
     Ok(())
+}
+
+type PayloadPred = fn(&FfsNode) -> bool;
+
+fn is_pfs_payload(node: &FfsNode) -> bool {
+    node.node_type == FfsType::Section
+        && node.children.is_empty()
+        && node.body.len() >= 20
+        && node.body[..node.body.len().min(0x40)]
+            .windows(4)
+            .any(|w| w == b"$SPF")
+}
+
+fn is_pe32_payload(node: &FfsNode) -> bool {
+    node.node_type == FfsType::Section
+        && node.children.is_empty()
+        && node.subtype == crate::ffs::EFI_SECTION_PE32
+}
+
+fn resolve_ami_payloads(
+    image: &Image,
+    setupdata_guid: Option<&Guid>,
+    amitse_guid: Option<&Guid>,
+) -> Result<(Vec<usize>, Vec<usize>), HiiError> {
+    let (sd_vi, sd_fi) = find_ami_module(image, setupdata_guid, "setupdata")?;
+    let (am_vi, am_fi) = find_ami_module(image, amitse_guid, "AMITSE")?;
+    let sd_rel = find_payload_path(&image.root.children[sd_vi].children[sd_fi], is_pfs_payload)?;
+    let am_rel = find_payload_path(&image.root.children[am_vi].children[am_fi], is_pe32_payload)?;
+    let sd_path = [vec![sd_vi, sd_fi], sd_rel].concat();
+    let am_path = [vec![am_vi, am_fi], am_rel].concat();
+    Ok((sd_path, am_path))
+}
+
+fn find_payload_path(file: &FfsNode, pred: PayloadPred) -> Result<Vec<usize>, HiiError> {
+    let mut path = Vec::new();
+    let mut blocked = false;
+    let found = walk_for_payload(file, pred, false, &mut path, &mut blocked);
+    match found {
+        Some(p) => Ok(p),
+        None if blocked => Err(HiiError::MutationBehindCompression),
+        None => Err(HiiError::AmiFilesNotFound),
+    }
+}
+
+fn walk_for_payload(
+    node: &FfsNode,
+    pred: PayloadPred,
+    behind_bad_wrapper: bool,
+    path: &mut Vec<usize>,
+    skipped_behind_bad_wrapper: &mut bool,
+) -> Option<Vec<usize>> {
+    for (i, child) in node.children.iter().enumerate() {
+        if pred(child) {
+            if behind_bad_wrapper {
+                *skipped_behind_bad_wrapper = true;
+                continue;
+            }
+            path.push(i);
+            return Some(path.clone());
+        }
+        path.push(i);
+        if let Some(found) = walk_for_payload(
+            child,
+            pred,
+            behind_bad_wrapper || super::formset_add::is_non_recompressable_wrapper(child),
+            path,
+            skipped_behind_bad_wrapper,
+        ) {
+            return Some(found);
+        }
+        path.pop();
+    }
+    None
 }
 
 fn find_ami_module(
@@ -107,9 +179,13 @@ fn find_ami_module(
 }
 
 fn has_name_section(children: &[FfsNode], name: &str) -> bool {
+    let matches = |n: &str| {
+        n.eq_ignore_ascii_case(name)
+            || (name == "setupdata" && n.eq_ignore_ascii_case("AMITSESetupData"))
+    };
     children
         .iter()
-        .any(|c| c.subtype == crate::ffs::EFI_SECTION_UI && ucs2_body_to_string(&c.body) == name)
+        .any(|c| c.subtype == crate::ffs::EFI_SECTION_UI && matches(&ucs2_body_to_string(&c.body)))
 }
 
 fn ucs2_body_to_string(body: &[u8]) -> String {
@@ -274,6 +350,137 @@ mod tests {
         let amitse = &image.root.children[0].children[1];
         assert_eq!(u16::from_le_bytes([amitse.body[4], amitse.body[5]]), 0x0001);
         assert_eq!(u16::from_le_bytes([amitse.body[6], amitse.body[7]]), 0x0002);
+    }
+
+    const SETUPDATA_GUID_STR: &str = "12345678-90AB-CDEF-1234-567890ABCDEF";
+    const AMITSE_GUID_STR: &str = "87654321-FEDC-BA09-8765-432109FEDCBA";
+
+    fn pfs_section() -> FfsNode {
+        let mut body = vec![0u8; 16];
+        body.extend_from_slice(b"$SPF");
+        body.extend_from_slice(&[0u8; 8]);
+        let mut n = mk_node(FfsType::Section, body, vec![]);
+        n.subtype = crate::ffs::EFI_SECTION_FREEFORM_SUBTYPE_GUID;
+        n
+    }
+
+    fn pe32_section() -> FfsNode {
+        let mut n = mk_node(FfsType::Section, vec![0x4Du8, 0x5A, 0, 0], vec![]);
+        n.subtype = crate::ffs::EFI_SECTION_PE32;
+        n
+    }
+
+    fn guided_wrapper(guid: Guid, children: Vec<FfsNode>) -> FfsNode {
+        let mut n = mk_node(FfsType::Section, vec![], children);
+        n.subtype = crate::ffs::EFI_SECTION_GUID_DEFINED;
+        n.parsing_data = ParsingData::GuidedSection(GuidedSectionParsingData {
+            guid,
+            dictionary_size: 0x0080_0000,
+        });
+        n
+    }
+
+    fn ami_image(setupdata_children: Vec<FfsNode>, amitse_children: Vec<FfsNode>) -> Image {
+        let mut setupdata = mk_node(FfsType::File, vec![], setupdata_children);
+        setupdata.guid = Some(Guid::try_parse(SETUPDATA_GUID_STR).unwrap());
+        let mut amitse = mk_node(FfsType::File, vec![], amitse_children);
+        amitse.guid = Some(Guid::try_parse(AMITSE_GUID_STR).unwrap());
+        let volume = mk_node(FfsType::Volume, vec![], vec![setupdata, amitse]);
+        let root = mk_node(FfsType::Image, vec![], vec![volume]);
+        Image {
+            image_id: "img".into(),
+            session_id: "s".into(),
+            root,
+            mode: ImageMode::Write,
+        }
+    }
+
+    #[test]
+    fn precheck_rejects_setupdata_without_pfs_payload() {
+        let img = ami_image(vec![ui_section("AMITSESetupData")], vec![pe32_section()]);
+        let sd = Guid::try_parse(SETUPDATA_GUID_STR).unwrap();
+        let am = Guid::try_parse(AMITSE_GUID_STR).unwrap();
+        assert!(matches!(
+            precheck_ami_modules(&img, Some(&sd), Some(&am)),
+            Err(HiiError::AmiFilesNotFound)
+        ));
+    }
+
+    #[test]
+    fn precheck_rejects_amitse_without_pe32_payload() {
+        let img = ami_image(vec![pfs_section()], vec![ui_section("AMITSE")]);
+        let sd = Guid::try_parse(SETUPDATA_GUID_STR).unwrap();
+        let am = Guid::try_parse(AMITSE_GUID_STR).unwrap();
+        assert!(matches!(
+            precheck_ami_modules(&img, Some(&sd), Some(&am)),
+            Err(HiiError::AmiFilesNotFound)
+        ));
+    }
+
+    #[test]
+    fn precheck_rejects_pfs_behind_tiano_wrapper() {
+        let img = ami_image(
+            vec![guided_wrapper(
+                crate::ffs::tiano_guid(),
+                vec![pfs_section()],
+            )],
+            vec![pe32_section()],
+        );
+        let sd = Guid::try_parse(SETUPDATA_GUID_STR).unwrap();
+        let am = Guid::try_parse(AMITSE_GUID_STR).unwrap();
+        assert!(matches!(
+            precheck_ami_modules(&img, Some(&sd), Some(&am)),
+            Err(HiiError::MutationBehindCompression)
+        ));
+    }
+
+    #[test]
+    fn precheck_rejects_pe32_behind_tiano_wrapper() {
+        let img = ami_image(
+            vec![pfs_section()],
+            vec![guided_wrapper(
+                crate::ffs::tiano_guid(),
+                vec![pe32_section()],
+            )],
+        );
+        let sd = Guid::try_parse(SETUPDATA_GUID_STR).unwrap();
+        let am = Guid::try_parse(AMITSE_GUID_STR).unwrap();
+        assert!(matches!(
+            precheck_ami_modules(&img, Some(&sd), Some(&am)),
+            Err(HiiError::MutationBehindCompression)
+        ));
+    }
+
+    #[test]
+    fn precheck_accepts_payloads_behind_lzma_wrapper() {
+        let img = ami_image(
+            vec![guided_wrapper(crate::ffs::lzma_guid(), vec![pfs_section()])],
+            vec![guided_wrapper(
+                crate::ffs::lzma_guid(),
+                vec![pe32_section()],
+            )],
+        );
+        let sd = Guid::try_parse(SETUPDATA_GUID_STR).unwrap();
+        let am = Guid::try_parse(AMITSE_GUID_STR).unwrap();
+        assert!(precheck_ami_modules(&img, Some(&sd), Some(&am)).is_ok());
+    }
+
+    #[test]
+    fn find_ami_module_matches_hnx_ui_names() {
+        let setupdata = mk_node(FfsType::File, vec![], vec![ui_section("AMITSESetupData")]);
+        let amitse = mk_node(FfsType::File, vec![], vec![ui_section("AMITSE")]);
+        let volume = mk_node(FfsType::Volume, vec![], vec![setupdata, amitse]);
+        let root = mk_node(FfsType::Image, vec![], vec![volume]);
+        let img = Image {
+            image_id: "img".into(),
+            session_id: "s".into(),
+            root,
+            mode: ImageMode::Write,
+        };
+        let (vi, fi) = find_ami_module(&img, None, "setupdata").unwrap();
+        assert_eq!((vi, fi), (0, 0));
+        let (vi, fi) = find_ami_module(&img, None, "AMITSE").unwrap();
+        assert_eq!((vi, fi), (0, 1));
     }
 
     #[test]
