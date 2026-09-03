@@ -156,6 +156,9 @@ fn walk_statements(body: &[u8], mut visit: impl FnMut(u8, usize, usize, Option<u
 }
 
 fn read_le_u64(pkg: &[u8], off: usize, count: usize) -> u64 {
+    if off >= pkg.len() {
+        return 0;
+    }
     let mut buf = [0u8; 8];
     let n = count.min(8).min(pkg.len().saturating_sub(off));
     buf[..n].copy_from_slice(&pkg[off..off + n]);
@@ -307,7 +310,11 @@ pub fn find_question(pkg: &[u8], form_id: u16, question_id: u16) -> Option<Quest
         QuestionKind::Numeric if q_len >= 14 => {
             width = 1u8 << (pkg[q_off + 13] & IFR_NUMERIC_SIZE);
             let w = width as usize;
-            let read = |pos: usize| read_le_u64(pkg, q_off + 14 + pos * w, w);
+            let read = |pos: usize| {
+                let start = q_off + 14 + pos * w;
+                let avail = (q_off + q_len).saturating_sub(start);
+                read_le_u64(pkg, start, w.min(avail))
+            };
             min = read(0);
             max = read(1);
             step = read(2);
@@ -550,6 +557,43 @@ mod tests {
         assert_eq!(q.min, 5);
         assert_eq!(q.max, 9);
         assert_eq!(q.step, 2);
+    }
+
+    #[test]
+    fn find_question_numeric_truncated_tail_returns_zeros() {
+        let mut p = question_header(0x55, 1, 0x0010, 0x00);
+        p.push(r_efi::hii::IFR_NUMERIC_SIZE_1);
+        let numeric = opcode(IFR_NUMERIC_OP, true, &p);
+        let ifr = [form_set(7), form(10029, 21), numeric].concat();
+        let pkg = package(&ifr);
+        let q = find_question(&pkg, 10029, 0x55).expect("numeric found");
+        assert_eq!(q.kind, QuestionKind::Numeric);
+        assert_eq!(q.width, 1);
+        assert_eq!(q.min, 0);
+        assert_eq!(q.max, 0);
+        assert_eq!(q.step, 0);
+    }
+
+    #[test]
+    fn find_question_numeric_short_declared_clamps_to_opcode_len() {
+        let mut p = question_header(0x55, 1, 0x0010, 0x00);
+        p.push(r_efi::hii::IFR_NUMERIC_SIZE_1);
+        let numeric = opcode(IFR_NUMERIC_OP, true, &p);
+        let ifr = [
+            form_set(7),
+            form(10029, 21),
+            numeric,
+            vec![0xEE, 0xDD, 0xCC],
+            end(),
+            end(),
+            end(),
+        ]
+        .concat();
+        let pkg = package(&ifr);
+        let q = find_question(&pkg, 10029, 0x55).expect("numeric found");
+        assert_eq!(q.min, 0);
+        assert_eq!(q.max, 0);
+        assert_eq!(q.step, 0);
     }
 
     #[test]
