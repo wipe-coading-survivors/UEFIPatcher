@@ -266,6 +266,21 @@ impl EngineService for MockEngine {
             string_ids: std::collections::HashMap::new(),
         }))
     }
+    async fn hii_gates_list(
+        &self,
+        _req: Request<HiiGatesListRequest>,
+    ) -> Result<Response<HiiGatesListResponse>, Status> {
+        Ok(Response::new(HiiGatesListResponse { gates: vec![] }))
+    }
+    async fn hii_unlock(
+        &self,
+        _req: Request<HiiUnlockRequest>,
+    ) -> Result<Response<HiiUnlockResponse>, Status> {
+        Ok(Response::new(HiiUnlockResponse {
+            gates: vec![],
+            applied_flips: vec![],
+        }))
+    }
 }
 
 pub async fn start_mock(sock: &Path) -> JoinHandle<()> {
