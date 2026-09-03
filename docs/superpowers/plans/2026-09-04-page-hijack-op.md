@@ -1138,6 +1138,8 @@ git commit -m "test(uefi-engine): page-hijack-op Task 6 — LZMA slot-fit gate f
 **Files:**
 - Modify: `crates/uefi-proto/proto/engine.proto`
 - Modify: `crates/uefi-engine/src/rpc/server.rs`
+- Modify: `crates/uefi-tui/tests/mock_server.rs` (Task 7 RPC сломал компиляцию трейт-импла MockEngine в tui_integration-тестах: E0046 missing `hii_form_hijack`; добавить стаб рядом с `hii_form_add` — тот же класс дефекта, что uefi-cli-мок в Task 8; выявлен полной верификацией Task 10 `cargo test --all`)
+- Modify: `crates/uefi-gateway/tests/mock_server.rs` (то же — E0046 в integration-тестах шлюза)
 
 **Interfaces:**
 - Produces: RPC `HiiFormHijack(HiiFormHijackRequest) returns (HiiFormHijackResponse)`; сообщения `HiiFormHijackRecord { question_id, record_offset, old_failsafe, old_optimal, new_failsafe, new_optimal }`, `HiiFormHijackRequest { image_id, target, schema_json, setupdata_guid }`, `HiiFormHijackResponse { string_ids: map<string,uint32>, records: repeated HiiFormHijackRecord, form_ifr_start, form_ifr_end }`.
