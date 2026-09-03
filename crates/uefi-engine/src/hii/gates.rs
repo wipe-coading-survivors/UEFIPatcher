@@ -61,11 +61,12 @@ pub fn decode_expr(region: &[u8]) -> GateExpr {
         if len < 2 || i + len > region.len() {
             return GateExpr::Other;
         }
+        if op == IFR_END_OP {
+            i += len;
+            continue;
+        }
         ops.push((op, &region[i + 2..i + len]));
         i += len;
-    }
-    if i != region.len() {
-        return GateExpr::Other;
     }
     match ops.as_slice() {
         [(IFR_UINT64_OP, a), (IFR_UINT64_OP, b), (IFR_EQUAL_OP, _)]
@@ -160,7 +161,7 @@ pub fn find_gates(body: &[u8], target: &GateTarget) -> Vec<Gate> {
         }
         let in_gate_expr =
             matches!(stack.last(), Some(f) if is_gate_op(f.op) && f.expr_end.is_none());
-        if in_gate_expr && !is_statement_op(op) && !is_gate_op(op) {
+        if in_gate_expr && !is_statement_op(op) && !is_gate_op(op) && length_and_scope & 0x80 == 0 {
             i += length;
             continue;
         }
@@ -536,6 +537,63 @@ mod tests {
         assert_eq!(gates[0].expr, GateExpr::EqConst { a: 1, b: 1 });
     }
 
+    fn real_quirk_ifr() -> Vec<u8> {
+        let mut ifr = form_set(7);
+        ifr.extend(form(10002, 20));
+        ifr.extend(opcode(IFR_SUPPRESS_IF_OP, true, &[]));
+        ifr.extend(uint64_quirk(1));
+        ifr.extend(uint64(1));
+        ifr.extend(equal());
+        ifr.extend(end());
+        ifr.extend(ref_op(10029, 0x003A));
+        ifr.extend(end());
+        ifr.extend(form(10029, 21));
+        ifr.extend(opcode(IFR_GRAY_OUT_IF_OP, true, &[]));
+        ifr.extend(eq_id_val(0x009A, 1));
+        ifr.extend(one_of_op(0x003B));
+        ifr.extend(end());
+        ifr.extend(end());
+        ifr.extend(end());
+        ifr.extend(end());
+        ifr
+    }
+
+    #[test]
+    fn find_gates_scoped_expr_operands_with_end_terminators_keep_gate_frames() {
+        let pkg = package(&real_quirk_ifr());
+        let gates = find_gates(&pkg, &FORM_GATE_TARGET);
+        assert_eq!(
+            gates.len(),
+            1,
+            "END terminator of a scoped operand must pop the operand frame, not the gate frame"
+        );
+        assert_eq!(gates[0].kind, GateKind::Suppress);
+        assert_eq!(
+            gates[0].wraps,
+            Wraps::Ref {
+                form_id: 10029,
+                host_form_id: 10002
+            }
+        );
+        assert_eq!(gates[0].expr, GateExpr::EqConst { a: 1, b: 1 });
+        assert!(gates[0].expr_offset < gates[0].expr_end);
+
+        let qgates = find_gates(&pkg, &QUESTION_GATE_TARGET);
+        assert_eq!(
+            qgates.len(),
+            1,
+            "stack must stay balanced past the quirk for later forms"
+        );
+        assert_eq!(qgates[0].kind, GateKind::Grayout);
+        assert_eq!(
+            qgates[0].expr,
+            GateExpr::EqIdVal {
+                question_id: 0x009A,
+                value: 1
+            }
+        );
+    }
+
     #[test]
     fn find_gates_reports_direct_form_suppress() {
         let mut ifr = form_set(7);
@@ -809,6 +867,16 @@ mod tests {
             decode_expr(&region),
             GateExpr::EqConst { a: 1, b: 1 },
             "vendor firmware sets the scope bit on expression operands ([45 8a])"
+        );
+    }
+
+    #[test]
+    fn decode_stops_at_end_terminators_of_scoped_operands() {
+        let region = concat(&[uint64_quirk(1), end(), uint64_quirk(1), end(), equal()]);
+        assert_eq!(
+            decode_expr(&region),
+            GateExpr::EqConst { a: 1, b: 1 },
+            "scoped operands ([45 8a]) carry their END terminators inside the expression region"
         );
     }
 
