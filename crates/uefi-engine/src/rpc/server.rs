@@ -1124,6 +1124,13 @@ mod tests {
         pe
     }
 
+    fn formset_add_pfs_body() -> Vec<u8> {
+        let mut body = vec![0u8; 16];
+        body.extend_from_slice(b"$SPF");
+        body.extend_from_slice(&[0u8; 8]);
+        body
+    }
+
     fn formset_add_image(pe: Vec<u8>, wrapper_guid: Option<Guid>) -> Image {
         let mut pe_section = formset_add_node(FfsType::Section, pe, vec![]);
         pe_section.subtype = crate::ffs::EFI_SECTION_PE32;
@@ -1140,9 +1147,13 @@ mod tests {
         };
         let mut file = formset_add_node(FfsType::File, vec![], vec![section]);
         file.guid = Some(Guid::try_parse(FORMSET_ADD_STR_GUID).unwrap());
-        let mut setupdata = formset_add_node(FfsType::File, vec![0u8; 108], vec![]);
+        let mut pfs = formset_add_node(FfsType::Section, formset_add_pfs_body(), vec![]);
+        pfs.subtype = crate::ffs::EFI_SECTION_FREEFORM_SUBTYPE_GUID;
+        let mut pe32 = formset_add_node(FfsType::Section, vec![0x4Du8, 0x5A, 0x00, 0x00], vec![]);
+        pe32.subtype = crate::ffs::EFI_SECTION_PE32;
+        let mut setupdata = formset_add_node(FfsType::File, vec![], vec![pfs]);
         setupdata.guid = Some(Guid::try_parse(FORMSET_ADD_SETUPDATA_GUID).unwrap());
-        let mut amitse = formset_add_node(FfsType::File, vec![0u8; 108], vec![]);
+        let mut amitse = formset_add_node(FfsType::File, vec![], vec![pe32]);
         amitse.guid = Some(Guid::try_parse(FORMSET_ADD_AMITSE_GUID).unwrap());
         let volume = formset_add_node(FfsType::Volume, vec![], vec![file, setupdata, amitse]);
         let root = formset_add_node(FfsType::Image, vec![], vec![volume]);

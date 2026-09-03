@@ -38,31 +38,37 @@ pub fn patch_ami(
     setupdata_guid: Option<&Guid>,
     amitse_guid: Option<&Guid>,
 ) -> Result<(), HiiError> {
-    let (sd_vi, sd_fi) = find_ami_module(image, setupdata_guid, "setupdata")?;
-    let (am_vi, am_fi) = find_ami_module(image, amitse_guid, "AMITSE")?;
+    let (sd_path, am_path) = resolve_ami_payloads(image, setupdata_guid, amitse_guid)?;
     {
-        let setupdata = &mut image.root.children[sd_vi].children[sd_fi];
+        let node = node_at_mut(&mut image.root, &sd_path);
         for q in questions {
             let record = make_ami_record(q);
-            setupdata.body.extend_from_slice(&record);
+            node.body.extend_from_slice(&record);
         }
     }
-    ops::mark_rebuild_to_root_by_path(&mut image.root, &[sd_vi, sd_fi]);
+    ops::mark_rebuild_to_root_by_path(&mut image.root, &sd_path);
     {
-        let amitse = &mut image.root.children[am_vi].children[am_fi];
+        let node = node_at_mut(&mut image.root, &am_path);
         let formset_marker = &formset_guid.to_bytes()[12..14];
         let insert_pos =
-            find_formset_marker_position(&amitse.body, formset_marker).unwrap_or(amitse.body.len());
+            find_formset_marker_position(&node.body, formset_marker).unwrap_or(node.body.len());
         let mut entries = Vec::with_capacity(form_ids.len() * 2);
         for &fid in form_ids {
             entries.extend_from_slice(&fid.to_le_bytes());
         }
-        amitse
-            .body
+        node.body
             .splice(insert_pos..insert_pos, entries.iter().copied());
     }
-    ops::mark_rebuild_to_root_by_path(&mut image.root, &[am_vi, am_fi]);
+    ops::mark_rebuild_to_root_by_path(&mut image.root, &am_path);
     Ok(())
+}
+
+fn node_at_mut<'a>(root: &'a mut FfsNode, path: &[usize]) -> &'a mut FfsNode {
+    let mut node = root;
+    for &i in path {
+        node = &mut node.children[i];
+    }
+    node
 }
 
 pub(crate) fn precheck_ami_modules(
@@ -296,22 +302,143 @@ mod tests {
         }
     }
 
-    fn make_image_named(setupdata_body: Vec<u8>, amitse_body: Vec<u8>) -> Image {
-        let setupdata = mk_node(FfsType::File, setupdata_body, vec![ui_section("setupdata")]);
-        let amitse = mk_node(FfsType::File, amitse_body, vec![ui_section("AMITSE")]);
-        let volume = mk_node(FfsType::Volume, vec![], vec![setupdata, amitse]);
-        let root = mk_node(FfsType::Image, vec![], vec![volume]);
-        Image {
-            image_id: "img".into(),
-            session_id: "s".into(),
-            root,
-            mode: ImageMode::Write,
+    fn section_bytes(stype: u8, body: &[u8]) -> Vec<u8> {
+        let mut v = Vec::with_capacity(4 + body.len());
+        v.extend_from_slice(&crate::ffs::size_to_uint24((4 + body.len()) as u32));
+        v.push(stype);
+        v.extend_from_slice(body);
+        v
+    }
+
+    fn ffs_file_bytes(guid: &Guid, content: &[u8]) -> Vec<u8> {
+        let mut buf = vec![0u8; 24];
+        buf[0..16].copy_from_slice(&guid.to_bytes());
+        buf[18] = crate::ffs::EFI_FV_FILETYPE_RAW;
+        buf[20..23].copy_from_slice(&crate::ffs::size_to_uint24((24 + content.len()) as u32));
+        buf.extend_from_slice(content);
+        buf
+    }
+
+    fn flash_with_files(files: Vec<Vec<u8>>) -> Vec<u8> {
+        let mut body = Vec::new();
+        for f in files {
+            let aligned = (body.len() + 7) & !7;
+            body.resize(aligned, 0xFF);
+            body.extend_from_slice(&f);
         }
+        body.extend_from_slice(&[0xFF; 1024]);
+        let total = 56 + body.len();
+        let mut buf = vec![0xFFu8; 32 + total];
+        let fv = &mut buf[32..];
+        fv[32..40].copy_from_slice(&(total as u64).to_le_bytes());
+        fv[40..44].copy_from_slice(&crate::ffs::EFI_FVH_SIGNATURE.to_le_bytes());
+        fv[44..48].copy_from_slice(&crate::ffs::EFI_FVB2_ERASE_POLARITY.to_le_bytes());
+        fv[48..50].copy_from_slice(&56u16.to_le_bytes());
+        fv[55] = 2;
+        fv[56..].copy_from_slice(&body);
+        buf
+    }
+
+    fn ami_flash_image() -> Vec<u8> {
+        let mut pfs = vec![0u8; 16];
+        pfs.extend_from_slice(b"$SPF");
+        pfs.extend_from_slice(&[0u8; 8]);
+        let sd = ffs_file_bytes(
+            &Guid::try_parse(SETUPDATA_GUID_STR).unwrap(),
+            &section_bytes(crate::ffs::EFI_SECTION_FREEFORM_SUBTYPE_GUID, &pfs),
+        );
+        let am = ffs_file_bytes(
+            &Guid::try_parse(AMITSE_GUID_STR).unwrap(),
+            &section_bytes(crate::ffs::EFI_SECTION_PE32, &[0x4Du8, 0x5A, 0x00, 0x00]),
+        );
+        flash_with_files(vec![sd, am])
+    }
+
+    fn find_leaf(node: &FfsNode, pred: impl Fn(&FfsNode) -> bool + Copy) -> Option<&FfsNode> {
+        for c in &node.children {
+            if pred(c) {
+                return Some(c);
+            }
+            if let Some(found) = find_leaf(c, pred) {
+                return Some(found);
+            }
+        }
+        None
     }
 
     #[test]
-    fn patch_ami_appends_records_and_marks_rebuild() {
-        let mut image = make_image_named(vec![0u8; AMI_RECORD_SIZE], vec![]);
+    fn patch_ami_records_survive_build_image() {
+        let data = ami_flash_image();
+        let mut img = crate::parser::image::parse_image(&data, ImageMode::Write, "i", "s").unwrap();
+        let sd = Guid::try_parse(SETUPDATA_GUID_STR).unwrap();
+        let am = Guid::try_parse(AMITSE_GUID_STR).unwrap();
+        let formset_guid: Guid = "A1B2C3D4-E5F6-7890-ABCD-EF1234567890".parse().unwrap();
+        let q = QuestionAmiRecord {
+            question_id: 0x123,
+            page_id: Some(5),
+            access_level: 0x05,
+            failsafe: 1,
+            optimal: 0,
+        };
+        let record = make_ami_record(&q);
+        patch_ami(
+            &mut img,
+            &formset_guid,
+            &[0x0001, 0x0002],
+            &[q],
+            Some(&sd),
+            Some(&am),
+        )
+        .unwrap();
+        let built = crate::builder::build_image(&img).unwrap();
+
+        assert!(
+            built.windows(record.len()).any(|w| w == record),
+            "SDP record must be present in assembled bytes"
+        );
+        assert!(
+            built.windows(4).any(|w| w == [0x01, 0x00, 0x02, 0x00]),
+            "AMITSE form-id entries must be present in assembled bytes"
+        );
+
+        let re = crate::parser::image::parse_image(&built, ImageMode::Read, "i2", "s2").unwrap();
+        let sd_file = re
+            .root
+            .children
+            .iter()
+            .find_map(|vol| vol.children.iter().find(|f| f.guid == Some(sd)))
+            .unwrap();
+        let pfs = find_leaf(sd_file, |n| {
+            n.children.is_empty() && n.body.windows(4).any(|w| w == b"$SPF")
+        })
+        .unwrap();
+        assert_eq!(pfs.body.len(), 28 + AMI_RECORD_SIZE);
+        assert_eq!(
+            &pfs.body[pfs.body.len() - AMI_RECORD_SIZE..],
+            record.as_slice()
+        );
+        let am_file = re
+            .root
+            .children
+            .iter()
+            .find_map(|vol| vol.children.iter().find(|f| f.guid == Some(am)))
+            .unwrap();
+        let pe32 = find_leaf(am_file, |n| {
+            n.children.is_empty() && n.subtype == crate::ffs::EFI_SECTION_PE32
+        })
+        .unwrap();
+        assert_eq!(
+            pe32.body,
+            vec![0x4Du8, 0x5A, 0x00, 0x00, 0x01, 0x00, 0x02, 0x00]
+        );
+    }
+
+    #[test]
+    fn patch_ami_appends_records_into_pfs_section_and_marks_rebuild() {
+        let mut image = ami_image(
+            vec![pfs_section(), ui_section("AMITSESetupData")],
+            vec![pe32_section(), ui_section("AMITSE")],
+        );
         let formset_guid: Guid = "A1B2C3D4-E5F6-7890-ABCD-EF1234567890".parse().unwrap();
         let q = QuestionAmiRecord {
             question_id: 0x10,
@@ -320,23 +447,27 @@ mod tests {
             failsafe: 1,
             optimal: 0,
         };
+        let record = make_ami_record(&q);
+        let pfs_before = image.root.children[0].children[0].children[0].body.clone();
+        let file_body_before = image.root.children[0].children[0].body.clone();
         patch_ami(&mut image, &formset_guid, &[], &[q], None, None).unwrap();
-        let setupdata = &image.root.children[0].children[0];
-        assert_eq!(setupdata.body.len(), 2 * AMI_RECORD_SIZE);
-        assert_eq!(
-            u16::from_le_bytes([
-                setupdata.body[AMI_RECORD_SIZE],
-                setupdata.body[AMI_RECORD_SIZE + 1]
-            ]),
-            0x10
-        );
-        assert_eq!(setupdata.action, Action::Rebuild);
+        let pfs = &image.root.children[0].children[0].children[0];
+        assert_eq!(pfs.body.len(), pfs_before.len() + AMI_RECORD_SIZE);
+        let tail = &pfs.body[pfs.body.len() - AMI_RECORD_SIZE..];
+        assert_eq!(u16::from_le_bytes([tail[0], tail[1]]), 0x10);
+        assert_eq!(tail, record.as_slice());
+        assert_eq!(pfs.action, Action::Rebuild);
+        assert_eq!(image.root.children[0].children[0].action, Action::Rebuild);
         assert_eq!(image.root.children[0].action, Action::Rebuild);
+        assert_eq!(image.root.children[0].children[0].body, file_body_before);
     }
 
     #[test]
-    fn patch_ami_inserts_form_ids_in_order() {
-        let mut image = make_image_named(vec![0u8; AMI_RECORD_SIZE], vec![0xA1, 0xB2, 0xC3, 0xD4]);
+    fn patch_ami_appends_form_ids_into_pe32_section() {
+        let mut image = ami_image(
+            vec![pfs_section(), ui_section("AMITSESetupData")],
+            vec![pe32_section(), ui_section("AMITSE")],
+        );
         let formset_guid: Guid = "A1B2C3D4-E5F6-7890-ABCD-EF1234567890".parse().unwrap();
         patch_ami(
             &mut image,
@@ -347,9 +478,25 @@ mod tests {
             None,
         )
         .unwrap();
-        let amitse = &image.root.children[0].children[1];
-        assert_eq!(u16::from_le_bytes([amitse.body[4], amitse.body[5]]), 0x0001);
-        assert_eq!(u16::from_le_bytes([amitse.body[6], amitse.body[7]]), 0x0002);
+        let pe32 = &image.root.children[0].children[1].children[0];
+        assert_eq!(
+            pe32.body,
+            vec![0x4Du8, 0x5A, 0x00, 0x00, 0x01, 0x00, 0x02, 0x00]
+        );
+        assert_eq!(pe32.action, Action::Rebuild);
+    }
+
+    #[test]
+    fn patch_ami_splices_form_ids_at_formset_marker() {
+        let mut image = ami_image(
+            vec![pfs_section(), ui_section("AMITSESetupData")],
+            vec![pe32_section(), ui_section("AMITSE")],
+        );
+        image.root.children[0].children[1].children[0].body = vec![0x4Du8, 0x5A, 0x34, 0x56, 0x00];
+        let formset_guid: Guid = "A1B2C3D4-E5F6-7890-ABCD-EF1234567890".parse().unwrap();
+        patch_ami(&mut image, &formset_guid, &[0x0003], &[], None, None).unwrap();
+        let pe32 = &image.root.children[0].children[1].children[0];
+        assert_eq!(pe32.body, vec![0x4Du8, 0x5A, 0x03, 0x00, 0x34, 0x56, 0x00]);
     }
 
     const SETUPDATA_GUID_STR: &str = "12345678-90AB-CDEF-1234-567890ABCDEF";

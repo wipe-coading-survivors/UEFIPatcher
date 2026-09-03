@@ -439,8 +439,8 @@ mod tests {
     use super::*;
     use crate::builder::build_image;
     use crate::ffs::{
-        EFI_FVB2_ERASE_POLARITY, EFI_FVH_SIGNATURE, EFI_SECTION_PE32, EFI_SECTION_RAW,
-        size_to_uint24,
+        EFI_FVB2_ERASE_POLARITY, EFI_FVH_SIGNATURE, EFI_SECTION_FREEFORM_SUBTYPE_GUID,
+        EFI_SECTION_PE32, EFI_SECTION_RAW, size_to_uint24,
     };
     use crate::hii::forms::collect_forms;
     use crate::hii::package_list::parse_package_list;
@@ -527,6 +527,25 @@ mod tests {
         buf
     }
 
+    fn ami_pfs_body() -> Vec<u8> {
+        let mut body = vec![0u8; 16];
+        body.extend_from_slice(b"$SPF");
+        body.extend_from_slice(&[0u8; 8]);
+        body
+    }
+
+    fn ami_pfs_section() -> FfsNode {
+        let mut n = mk_node(FfsType::Section, ami_pfs_body(), vec![]);
+        n.subtype = EFI_SECTION_FREEFORM_SUBTYPE_GUID;
+        n
+    }
+
+    fn ami_pe32_section() -> FfsNode {
+        let mut n = mk_node(FfsType::Section, vec![0x4Du8, 0x5A, 0x00, 0x00], vec![]);
+        n.subtype = EFI_SECTION_PE32;
+        n
+    }
+
     fn gap_aware_image(with_ami: bool) -> Vec<u8> {
         let string_file = ffs_file_bytes(
             &Guid::try_parse(STR_GUID).unwrap(),
@@ -536,11 +555,11 @@ mod tests {
         if with_ami {
             files.push(ffs_file_bytes(
                 &Guid::try_parse(SETUPDATA_GUID).unwrap(),
-                &[0u8; 108],
+                &section_bytes(EFI_SECTION_FREEFORM_SUBTYPE_GUID, &ami_pfs_body()),
             ));
             files.push(ffs_file_bytes(
                 &Guid::try_parse(AMITSE_GUID).unwrap(),
-                &[0u8; 108],
+                &section_bytes(EFI_SECTION_PE32, &[0x4Du8, 0x5A, 0x00, 0x00]),
             ));
         }
         flash_with_files(files)
@@ -672,11 +691,11 @@ mod tests {
         if with_ami {
             files.push(ffs_file_bytes(
                 &Guid::try_parse(SETUPDATA_GUID).unwrap(),
-                &[0u8; 108],
+                &section_bytes(EFI_SECTION_FREEFORM_SUBTYPE_GUID, &ami_pfs_body()),
             ));
             files.push(ffs_file_bytes(
                 &Guid::try_parse(AMITSE_GUID).unwrap(),
-                &[0u8; 108],
+                &section_bytes(EFI_SECTION_PE32, &[0x4Du8, 0x5A, 0x00, 0x00]),
             ));
         }
         flash_with_files(files)
@@ -758,11 +777,11 @@ mod tests {
         )];
         files.push(ffs_file_bytes(
             &Guid::try_parse(SETUPDATA_GUID).unwrap(),
-            &[0u8; 108],
+            &section_bytes(EFI_SECTION_FREEFORM_SUBTYPE_GUID, &ami_pfs_body()),
         ));
         files.push(ffs_file_bytes(
             &Guid::try_parse(AMITSE_GUID).unwrap(),
-            &[0u8; 108],
+            &section_bytes(EFI_SECTION_PE32, &[0x4Du8, 0x5A, 0x00, 0x00]),
         ));
         let data = flash_with_files(files);
         let mut img = parse_image(&data, ImageMode::Write, "i", "s").unwrap();
@@ -837,9 +856,9 @@ mod tests {
         });
         let mut file = mk_node(FfsType::File, vec![], vec![wrapper]);
         file.guid = Some(Guid::try_parse(STR_GUID).unwrap());
-        let mut setupdata = mk_node(FfsType::File, vec![0u8; 108], vec![]);
+        let mut setupdata = mk_node(FfsType::File, vec![], vec![ami_pfs_section()]);
         setupdata.guid = Some(Guid::try_parse(SETUPDATA_GUID).unwrap());
-        let mut amitse = mk_node(FfsType::File, vec![0u8; 108], vec![]);
+        let mut amitse = mk_node(FfsType::File, vec![], vec![ami_pe32_section()]);
         amitse.guid = Some(Guid::try_parse(AMITSE_GUID).unwrap());
         let volume = mk_node(FfsType::Volume, vec![], vec![file, setupdata, amitse]);
         let root = mk_node(FfsType::Image, vec![], vec![volume]);
@@ -892,9 +911,9 @@ mod tests {
         pe_sec.subtype = EFI_SECTION_PE32;
         let mut file = mk_node(FfsType::File, vec![], vec![pe_sec]);
         file.guid = Some(Guid::try_parse(STR_GUID).unwrap());
-        let mut setupdata = mk_node(FfsType::File, vec![0u8; 108], vec![]);
+        let mut setupdata = mk_node(FfsType::File, vec![], vec![ami_pfs_section()]);
         setupdata.guid = Some(Guid::try_parse(SETUPDATA_GUID).unwrap());
-        let mut amitse = mk_node(FfsType::File, vec![0u8; 108], vec![]);
+        let mut amitse = mk_node(FfsType::File, vec![], vec![ami_pe32_section()]);
         amitse.guid = Some(Guid::try_parse(AMITSE_GUID).unwrap());
         let volume = mk_node(FfsType::Volume, vec![], vec![file, setupdata, amitse]);
         let root = mk_node(FfsType::Image, vec![], vec![volume]);
@@ -933,9 +952,9 @@ mod tests {
         good_pe.subtype = EFI_SECTION_PE32;
         let mut good_file = mk_node(FfsType::File, vec![], vec![good_pe]);
         good_file.guid = Some(Guid::try_parse("22222222-2222-2222-2222-222222222222").unwrap());
-        let mut setupdata = mk_node(FfsType::File, vec![0u8; 108], vec![]);
+        let mut setupdata = mk_node(FfsType::File, vec![], vec![ami_pfs_section()]);
         setupdata.guid = Some(Guid::try_parse(SETUPDATA_GUID).unwrap());
-        let mut amitse = mk_node(FfsType::File, vec![0u8; 108], vec![]);
+        let mut amitse = mk_node(FfsType::File, vec![], vec![ami_pe32_section()]);
         amitse.guid = Some(Guid::try_parse(AMITSE_GUID).unwrap());
         let volume = mk_node(
             FfsType::Volume,
