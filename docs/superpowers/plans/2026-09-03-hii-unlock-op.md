@@ -938,10 +938,11 @@ git commit -m "feat(uefi-engine): hii gates literal-flip planner (E12 classes, w
 - Modify: `crates/uefi-engine/src/hii/mod.rs` (строки 49–52, 108–165; `plan_prc_entries` 193–256; тесты)
 - Modify: `crates/uefi-engine/src/rpc/server.rs` (`hii_error_status` + тест)
 - Modify: `crates/uefi-engine/tests/real_image.rs` (тест `real_image_unhide_patches_prc_tokens`, UPG-ассерт)
+- Modify: `crates/uefi-engine/src/hii/string_pack.rs` (удалить `insert_strings_at_ids*`-семейство, его приватные хелперы и их тесты — мертвы после u3: `form_add`/`formset_add` используют только `add_strings*`)
 
 **Interfaces:**
 - Consumes: ничего нового.
-- Produces: `set_item_visibility` без UPG/PRC-ветки (сигнатура прежняя); `HiiError` без варианта `PrcPatchUnsupported`; `string_pack::insert_strings_at_ids_in_resource` остаётся (используется `form_add`/`formset_add`).
+- Produces: `set_item_visibility` без UPG/PRC-ветки (сигнатура прежняя); `HiiError` без варианта `PrcPatchUnsupported`; `string_pack::insert_strings_at_ids*` удаляется (дочернее PRC-механике; `form_add`/`formset_add` используют `add_strings*`).
 
 - [ ] **Step 1: Удалить prod-код PRC в hii/mod.rs**
 
@@ -975,7 +976,7 @@ git commit -m "feat(uefi-engine): hii gates literal-flip planner (E12 classes, w
 
 - [ ] **Step 2: Удалить тесты PRC и почистить хелперы**
 
-`hii/mod.rs` tests: удалить `set_item_visibility_patches_prc_tokens_for_unhidden_form`, `set_item_visibility_prc_growth_failure_leaves_image_untouched`; удалить хелперы `token_sibt`, `prc_blob` (стали unused); `sppkg`, `display_sibt`, `pe32_image_with`, `suppressed_form_901_pkg`, `resource_string_pkgs`, `image_snapshot` оставить только те, что остались нужны (`set_item_visibility_no_token_package_is_noop_unhide` использует `sppkg`, `display_sibt`, `pe32_image_with`, `suppressed_form_901_pkg`) — `resource_string_pkgs` и `image_snapshot` удалить. Тест `set_item_visibility_no_token_package_is_noop_unhide` остаётся без изменений.
+`hii/mod.rs` tests: удалить `set_item_visibility_patches_prc_tokens_for_unhidden_form`, `set_item_visibility_prc_growth_failure_leaves_image_untouched`; удалить хелперы `token_sibt`, `prc_blob` (стали unused); из `sppkg`, `display_sibt`, `pe32_image_with`, `suppressed_form_901_pkg`, `resource_string_pkgs`, `image_snapshot` оставить используемые выжившими тестами (включая `resource_string_pkgs`) — `image_snapshot` удалить. Тест `set_item_visibility_no_token_package_is_noop_unhide` остаётся без изменений.
 
 `rpc/server.rs`: в `hii_error_status` удалить arm `PrcPatchUnsupported`; в тесте `hii_error_status_maps_id_occupied_and_prc_patch_unsupported` удалить ассерт про PrcPatchUnsupported и переименовать тест в `hii_error_status_maps_id_occupied`.
 
@@ -2053,7 +2054,7 @@ git commit -m "feat(uefi-cli): hii form/question gates/unlock commands"
 - Test: `real_image_hii_unlock_matches_e12` (`#[ignore]`)
 
 **Interfaces:**
-- Consumes: Task 5 (`uefi_engine::hii::{gates_list, unlock}`), существующие хелперы `load_fw`, `parse_image`, `setup_pe32_node_path`-паттерн, `node_at_path`, `file_extent`.
+- Consumes: Task 5 (`uefi_engine::hii::{gates_list, unlock}`), существующие хелперы `load_fw`, `parse_image`, `setup_pe32_node_path`-паттерн, `file_extent` (хелпер `node_at_path` удалён в Task 4 как dead — восстановить, см. Step 1).
 - Produces: константа `PCI_SETUP_MODULE_GUID: &str = "899407D7-99FE-43D8-9A21-79EC328CAC21"`; хелперы `module_pe32_node_path(img, guid)`, `module_form_package(img, path)`.
 
 **Ground truth (спека §3):** диф FORM-пакета = ровно `[(0x67A, 1, 2), (0xDD1, 1, 0xFF), (0xDD2, 1, 0xFF)]`; форма 10029 гейтнута одним REF-suppress в форме 10002; вопрос 0x003B — одним grayout `EQ_ID_VAL(0x009A, 1)`.
@@ -2065,6 +2066,14 @@ git commit -m "feat(uefi-cli): hii form/question gates/unlock commands"
 ```rust
 const PCI_SETUP_MODULE_GUID: &str = "899407D7-99FE-43D8-9A21-79EC328CAC21";
 const E12_FLIP_BYTES: [(usize, u8, u8); 3] = [(0x67A, 1, 2), (0xDD1, 1, 0xFF), (0xDD2, 1, 0xFF)];
+
+fn node_at_path<'a>(img: &'a Image, path: &[usize]) -> &'a FfsNode {
+    let mut node = &img.root;
+    for &i in path {
+        node = &node.children[i];
+    }
+    node
+}
 
 fn module_pe32_node_path(img: &Image, guid: &str) -> Vec<usize> {
     let target =
