@@ -187,4 +187,16 @@ message HiiFormAddResponse {
   map<string, uint32> string_ids = 2;
 }
 
+message GateInfo {
+  string gate_kind = 1;
+  string wraps = 2;
+  uint32 form_id = 3;
+  uint32 host_form_id = 4;
+  uint32 question_id = 5;
+  string expression = 6;
+  bool   flippable = 7;
+  string flip = 8;
+  uint32 scope_offset = 9;
+}
+
 message Empty {}
