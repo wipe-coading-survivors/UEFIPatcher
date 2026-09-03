@@ -47,8 +47,6 @@ pub enum HiiError {
     MutationBehindCompression,
     #[error("cannot grow PE resource section")]
     PeGrowthUnsupported,
-    #[error("unsupported SIBT block 0x{0:02x} with pending inserts")]
-    SibtBlockUnsupported(u8),
 }
 
 #[tracing::instrument(level = "debug", skip(image), fields(item_id = %item_id, visible), err)]
