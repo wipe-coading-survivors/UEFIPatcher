@@ -321,6 +321,15 @@ fn store_fixture() -> Vec<u8> {
    данные с data_offset == 10 (+ guid_index отсутствует).
 10. `parse_entry_local_guid_skips_16_bytes` — attr LOCAL_GUID|ASCII:
     guid_index None, имя читается после 16 байт GUID.
+11. `parse_entry_malformed_geometries_return_none` (паник-регрессии
+    fix-раунда): (а) VALID, size=10, буфер кончается ровно на записи —
+    чтение guid_index за границей; (б) LOCAL_GUID (attr 0x86) с
+    size < 26; (в) UCS2-имя (VALID без ASCII-бита) без двойного-NUL
+    терминатора — все → None, без паники.
+12. `parse_entry_ucs2_name_reads_name` — happy-path UCS2-имя: attr
+    VALID (без 0x02), имя читается корректно, data_offset после него.
+13. `walk_stops_at_ff_tail` — walk(&store) даёт ровно 1 запись
+    (StdDefaults), хвост 0xFF останавливает обход.
 
 - [ ] **Step 2: тесты падают**
 
@@ -356,26 +365,33 @@ pub fn parse_entry(buf: &[u8], off: usize) -> Option<NvarRecord> {
         return None;
     }
     let attributes = buf[off + 9];
+    let entry_end = off + size;
     let mut p = off + 10;
     let mut guid_index = None;
     if attributes & ATTR_VALID != 0 && attributes & ATTR_DATA_ONLY == 0 {
         if attributes & ATTR_LOCAL_GUID != 0 {
             p += 16;
         } else {
-            guid_index = Some(buf[p]);
+            guid_index = Some(*buf.get(p)?);
             p += 1;
+        }
+        if p > entry_end {
+            return None;
         }
     }
     let mut name = None;
     if attributes & ATTR_VALID != 0 && attributes & ATTR_DATA_ONLY == 0 {
         if attributes & ATTR_ASCII_NAME != 0 {
-            let end = buf[p..off + size].iter().position(|&b| b == 0)? + p;
+            let end = buf[p..entry_end].iter().position(|&b| b == 0)? + p;
             name = Some(String::from_utf8_lossy(&buf[p..end]).into_owned());
             p = end + 1;
         } else {
             let mut end = p;
-            while end + 1 < off + size && !(buf[end] == 0 && buf[end + 1] == 0) {
+            while end + 1 < entry_end && !(buf[end] == 0 && buf[end + 1] == 0) {
                 end += 2;
+            }
+            if end + 1 >= entry_end {
+                return None;
             }
             let units: Vec<u16> = buf[p..end]
                 .chunks_exact(2)
@@ -383,6 +399,9 @@ pub fn parse_entry(buf: &[u8], off: usize) -> Option<NvarRecord> {
                 .collect();
             name = Some(String::from_utf16_lossy(&units));
             p = end + 2;
+        }
+        if p > entry_end {
+            return None;
         }
     }
     Some(NvarRecord {
@@ -392,7 +411,7 @@ pub fn parse_entry(buf: &[u8], off: usize) -> Option<NvarRecord> {
         guid_index,
         name,
         data_offset: p,
-        data_len: off + size - p,
+        data_len: entry_end - p,
     })
 }
 
