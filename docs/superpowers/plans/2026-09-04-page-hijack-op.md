@@ -1586,6 +1586,8 @@ fn real_image_hii_form_hijack_built_bytes() {
 
 **Дефект (план-фикс):** `setupdata_guid=None` не работает на HNX99TF — файл FE612B72 целиком обёрнут одной GUIDed-LZMA секцией (единственный прямой child — type 0x02 на всё тело 0xc2c4), UI-секция лежит внутри распакованного потока, а тело 0xc2c4 не кратно AMI_RECORD_SIZE (72), поэтому `find_ami_module(image, None, "setupdata")` возвращает `AmiFilesNotFound` (тот же класс дефекта, что у Task 6 на синтетике). Передавать `Some(&Guid FE612B72-...)`, как ami-patch real-image тест.
 
+**Дефект (план-фикс, engine — унаследован из Task 5):** `form_hijack::hijack_form` инвертирует канал для PE32: `bare_channel = resource_forms_package(...).is_some()` = `true`, хотя `form_add::add_form` для PE32 возвращает `false` (строки растят string-пакет внутри PE .rsrc через `add_strings_to_resource`). В bare-ветке `string_pack::add_strings` ищет RAW-секцию строкового пакета того же файла — на HNX99TF строки Setup живут в PE-ресурсе, RAW-секции нет → `StringPackageNotFound`, real-image гейт непроходим. Фикс: PE32 → `bare_channel=false` (зеркально form_add) + синтетический регрессионный тест PE32-канала в form_hijack.rs.
+
 - [ ] **Step 2: Прогон (explicit ignore)**
 
 Run: `cargo test -p uefi-engine --test real_image real_image_hii_form_hijack -- --ignored 2>&1 | tail -5`
