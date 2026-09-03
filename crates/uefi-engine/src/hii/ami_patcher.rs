@@ -434,6 +434,111 @@ mod tests {
     }
 
     #[test]
+    fn patch_ami_records_survive_build_image_behind_lzma_wrapper() {
+        let mut pfs = vec![0u8; 16];
+        pfs.extend_from_slice(b"$SPF");
+        pfs.extend_from_slice(&[0u8; 512]);
+        let pfs_sec = section_bytes(crate::ffs::EFI_SECTION_FREEFORM_SUBTYPE_GUID, &pfs);
+        let mut pe32 = vec![0x4Du8, 0x5A, 0x00, 0x00];
+        pe32.extend_from_slice(&[0u8; 512]);
+        let pe32_sec = section_bytes(crate::ffs::EFI_SECTION_PE32, &pe32);
+        let sd_guid = Guid::try_parse(SETUPDATA_GUID_STR).unwrap();
+        let am_guid = Guid::try_parse(AMITSE_GUID_STR).unwrap();
+        let sd_wrapped = lzma_guided_file_bytes(&sd_guid, &pfs_sec);
+        let am_wrapped = lzma_guided_file_bytes(&am_guid, &pe32_sec);
+        let sd_file_len = sd_wrapped.0.len();
+        let am_file_len = am_wrapped.0.len();
+        let sd_start = 88;
+        let am_start = (sd_start + sd_file_len + 7) & !7;
+        let sd_slot = (sd_start, sd_start + sd_file_len);
+        let am_slot = (am_start, am_start + am_file_len);
+        let data = flash_with_files(vec![sd_wrapped.0, am_wrapped.0]);
+
+        let mut img = crate::parser::image::parse_image(&data, ImageMode::Write, "i", "s").unwrap();
+        let formset_guid: Guid = "A1B2C3D4-E5F6-7890-ABCD-EF1234567890".parse().unwrap();
+        let q = QuestionAmiRecord {
+            question_id: 0x123,
+            page_id: Some(5),
+            access_level: 0x05,
+            failsafe: 1,
+            optimal: 0,
+        };
+        let record = make_ami_record(&q);
+        patch_ami(
+            &mut img,
+            &formset_guid,
+            &[0x0001, 0x0002],
+            &[q],
+            Some(&sd_guid),
+            Some(&am_guid),
+        )
+        .unwrap();
+        let built = crate::builder::build_image(&img).unwrap();
+
+        assert_eq!(
+            built.len(),
+            data.len(),
+            "slot-fit must preserve total length"
+        );
+        assert_ne!(built, data, "recompressed slots must differ from original");
+        let in_slot = |i: usize, slot: (usize, usize)| i >= slot.0 && i < slot.1;
+
+        for (i, (a, b)) in data.iter().zip(built.iter()).enumerate() {
+            if a != b {
+                assert!(
+                    in_slot(i, sd_slot) || in_slot(i, am_slot),
+                    "byte {i:#x} changed outside the two AMI file regions"
+                );
+            }
+        }
+
+        let re = crate::parser::image::parse_image(&built, ImageMode::Read, "i2", "s2").unwrap();
+        let sd_file = re
+            .root
+            .children
+            .iter()
+            .find_map(|vol| vol.children.iter().find(|f| f.guid == Some(sd_guid)))
+            .unwrap();
+        let pfs_leaf = find_leaf(sd_file, |n| {
+            n.children.is_empty() && n.body.windows(4).any(|w| w == b"$SPF")
+        })
+        .unwrap();
+        assert_eq!(pfs_leaf.body.len(), 532 + AMI_RECORD_SIZE);
+        assert_eq!(
+            &pfs_leaf.body[pfs_leaf.body.len() - AMI_RECORD_SIZE..],
+            record.as_slice()
+        );
+        let am_file = re
+            .root
+            .children
+            .iter()
+            .find_map(|vol| vol.children.iter().find(|f| f.guid == Some(am_guid)))
+            .unwrap();
+        let pe32_leaf = find_leaf(am_file, |n| {
+            n.children.is_empty() && n.subtype == crate::ffs::EFI_SECTION_PE32
+        })
+        .unwrap();
+        assert_eq!(&pe32_leaf.body[..4], &[0x4Du8, 0x5A, 0x00, 0x00]);
+        assert_eq!(pe32_leaf.body.len(), 516 + 4);
+        assert_eq!(
+            &pe32_leaf.body[pe32_leaf.body.len() - 4..],
+            &[0x01, 0x00, 0x02, 0x00]
+        );
+    }
+
+    fn lzma_guided_file_bytes(guid: &Guid, children: &[u8]) -> (Vec<u8>, usize) {
+        let mut stream = crate::compress::compress_lzma(children).unwrap();
+        stream.resize(stream.len().max(64), 0x00);
+        let mut body = crate::ffs::lzma_guid().to_bytes().to_vec();
+        body.extend_from_slice(&0x18u16.to_le_bytes());
+        body.extend_from_slice(&1u16.to_le_bytes());
+        body.extend_from_slice(&stream);
+        let sec = section_bytes(crate::ffs::EFI_SECTION_GUID_DEFINED, &body);
+        let slot_len = stream.len();
+        (ffs_file_bytes(guid, &sec), slot_len)
+    }
+
+    #[test]
     fn patch_ami_appends_records_into_pfs_section_and_marks_rebuild() {
         let mut image = ami_image(
             vec![pfs_section(), ui_section("AMITSESetupData")],
