@@ -1251,6 +1251,13 @@ atomic_write. После первой мутации хранимый файл �
   «цель не найдена» маппится в код `RPC_NOT_FOUND`, который читается
   как «метод RPC не поддерживается». Контекст: hii_error_status /
   отдельный код NotFound для HII-таргетов.
+* [ ] **engine: дефолт сокета `/run/uefipatcher.sock` недоступен без
+  root** — `bin/engine.rs:38` дефолтит на `/run` (требует прав даже на
+  bind; без systemd-юнита, создающего сокет/каталог, демон не
+  стартует), при этом AGENTS.md документирует дефолт
+  `~/.local/state/uefipatcher/uefipatcher.sock`. Найдено при сборке E15
+  (§14.1). Контекст: выровнять дефолт на AGENTS.md или
+  `$XDG_RUNTIME_DIR/uefipatcher/uefipatcher.sock` с фолбэком.
 
 ### Мини-цикл «value-op» (engine): задать значение настройки — завершён (v1+v5, 2026-09-03)
 
@@ -1391,6 +1398,15 @@ atomic_write. После первой мутации хранимый файл �
 * [ ] **option-тексты в question info** — отдаются string_id без
   резолюции по string-package. Контекст: спека value-op «Отложенное»;
   при подключении TUI/WebUI.
+* [ ] **hii unlock/gates: напечатанные смещения флипов нестабильны ±4
+  относительно фактических байт** — живой прогон E15: grayout-флип
+  напечатан `pkg+0x9705`, байт реально изменён @dec+0x9709;
+  suppress-scope напечатан `@pkg+0x8fa0`, реально @dec+0x8FA4, при этом
+  suppress-флип `pkg+0x8fae` — точный. Применённые байты верны
+  (dec-дифф == E12 побайтово), дефект только в выводе: базы
+  scope_offset/flip-строк смешаны (package start vs opcodes start).
+  Контекст: `hii/gates.rs` plan_flip/GateInfo, `hii/mod.rs` flip_text;
+  найти при следующем касании gates-вывода.
 * [ ] **nvar: find_varstore_record матчит первую запись по (имя +
   data_len)** — две записи с одинаковым именем И длиной в одном
   сторе молча флипнут только первую. Контекст: спека §3.1/§7
