@@ -1182,7 +1182,7 @@ git commit -m "refactor(uefi-engine): drop falsified UPG/PRC patch path (E8)"
         assert_eq!(qgates.len(), 1);
         assert_eq!(qgates[0].gate_kind, "grayout");
         assert_eq!(qgates[0].expression, "0x009A == 0x0001");
-        assert_eq!(qgates[0].flip, format!("pkg+{:#x}: 01 00 -> ff ff", qgates[0].scope_offset + 4));
+        assert_eq!(qgates[0].flip, format!("pkg+{:#x}: 01 00 -> ff ff", qgates[0].scope_offset + 6));
     }
 
     #[test]
@@ -1681,7 +1681,7 @@ message HiiUnlockResponse    { repeated GateInfo gates = 1; repeated string appl
                 expression: "1 == 1".into(),
                 flippable: true,
                 flip: "pkg+0x67a: 01 -> 02".into(),
-                scope_offset: 0x674,
+                scope_offset: 0x66C,
             }],
         }))
     }
@@ -1701,7 +1701,7 @@ message HiiUnlockResponse    { repeated GateInfo gates = 1; repeated string appl
                 expression: "0x009A == 0x0001".into(),
                 flippable: true,
                 flip: "pkg+0xdd1: 01 00 -> ff ff".into(),
-                scope_offset: 0xDC8,
+                scope_offset: 0xDCB,
             }],
             applied_flips: vec!["pkg+0xdd1: 01 00 -> ff ff".into()],
         }))
@@ -2023,7 +2023,7 @@ async fn hii_gates_and_unlock_output_content() {
         .stdout(predicates::str::contains("applied pkg+0xdd1"));
 
     cli(&sock, cwd)
-        .args(["hii", "form", "gates", "0#42", "--format", "tsv"])
+        .args(["--format", "tsv", "hii", "form", "gates", "0#42"])
         .assert()
         .success();
 
