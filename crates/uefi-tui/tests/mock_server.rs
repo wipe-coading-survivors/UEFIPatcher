@@ -266,6 +266,12 @@ impl EngineService for MockEngine {
             string_ids: std::collections::HashMap::new(),
         }))
     }
+    async fn hii_form_hijack(
+        &self,
+        _req: Request<HiiFormHijackRequest>,
+    ) -> Result<Response<HiiFormHijackResponse>, Status> {
+        Ok(Response::new(HiiFormHijackResponse::default()))
+    }
     async fn hii_gates_list(
         &self,
         _req: Request<HiiGatesListRequest>,
