@@ -507,13 +507,13 @@ git commit -m "feat(uefi-engine): page-hijack-op Task 4 — pub \$SPF payload re
 
 - [ ] **Step 1: Тесты ядра на синтетическом bare-канале (в `mod tests` form_hijack.rs)**
 
-Тестовым образом: флешка с двумя файлами — Setup (RAW-секции: form-пакет + строковый пакет) и AMITSESetupData (RAW-секция 0x18 с $SPF-телом). $SPF-записи строятся по ifr-offsets реального form-пакета фикстуры.
+Тестовым образом: флешка с двумя файлами — Setup (RAW-секции: form-пакет + строковый пакет) и AMITSESetupData (UI-секция с именем "AMITSESetupData" + RAW-секция 0x18 с $SPF-телом; имя нужно find_ami_module при setupdata_guid=None). $SPF-записи строятся по ifr-offsets реального form-пакета фикстуры.
 
 ```rust
     use crate::builder::build_image;
     use crate::ffs::{
         EFI_FVH_SIGNATURE, EFI_FVB2_ERASE_POLARITY, EFI_SECTION_FREEFORM_SUBTYPE_GUID,
-        EFI_SECTION_RAW, size_to_uint24,
+        EFI_SECTION_RAW, EFI_SECTION_UI, size_to_uint24,
     };
     use crate::hii::spf;
     use crate::parser::image::parse_image;
@@ -618,10 +618,21 @@ git commit -m "feat(uefi-engine): page-hijack-op Task 4 — pub \$SPF payload re
         );
         let sd = ffs_file_bytes(
             &Guid::from_str(SETUPDATA_GUID_STR).unwrap(),
-            &section_bytes(EFI_SECTION_FREEFORM_SUBTYPE_GUID, &spf_body),
+            &[
+                section_bytes(EFI_SECTION_UI, &ui_name("AMITSESetupData")),
+                section_bytes(EFI_SECTION_FREEFORM_SUBTYPE_GUID, &spf_body),
+            ]
+            .concat(),
         );
         let flash = flash_with_files(vec![setup, sd]);
         (flash, pkg, spf_body)
+    }
+
+    fn ui_name(name: &str) -> Vec<u8> {
+        name.encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .chain(0u16.to_le_bytes())
+            .collect()
     }
 
     fn hijack_schema() -> crate::hii::schema::HijackSchema {
@@ -686,7 +697,7 @@ git commit -m "feat(uefi-engine): page-hijack-op Task 4 — pub \$SPF payload re
 
     fn form_pkg_len(img: &Image) -> usize {
         let node = crate::parser::target::find_item(
-            img,
+            &img.root,
             &crate::parser::target::parse_target(&format!("{FILE_GUID}:0x19:0")).unwrap(),
         )
         .unwrap();
@@ -715,7 +726,7 @@ git commit -m "feat(uefi-engine): page-hijack-op Task 4 — pub \$SPF payload re
         let mut img2 = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
         assert!(
             hijack_form(&mut img2, ITEM, &hijack_schema(), Some(&Guid::from_str("00000000-0000-0000-0000-00000000DEAD").unwrap())).is_err(),
-            "missing \$SPF file"
+            "missing $SPF file"
         );
     }
 ```
@@ -740,6 +751,7 @@ use super::schema;
 use super::string_pack;
 use super::spf;
 
+#[derive(Debug)]
 pub struct HijackRecordEdit {
     pub question_id: u16,
     pub record_offset: usize,
