@@ -31,6 +31,8 @@ service EngineService {
   rpc HiiFormAdd(HiiFormAddRequest)                     returns (HiiFormAddResponse);
   rpc HiiGatesList(HiiGatesListRequest)                 returns (HiiGatesListResponse);
   rpc HiiUnlock(HiiUnlockRequest)                       returns (HiiUnlockResponse);
+  rpc HiiQuestionInfo(HiiQuestionInfoRequest)           returns (HiiQuestionInfoResponse);
+  rpc HiiSetValue(HiiSetValueRequest)                   returns (HiiSetValueResponse);
 }
 
 enum ImageMode { READ = 0; WRITE = 1; }

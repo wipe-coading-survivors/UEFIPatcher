@@ -51,6 +51,7 @@ fn hii_error_status(e: crate::hii::HiiError) -> Status {
         | crate::hii::HiiError::GateExpressionUnsupported(_)
         | crate::hii::HiiError::MutationBehindCompression
         | crate::hii::HiiError::PeGrowthUnsupported
+        | crate::hii::HiiError::ValueOpUnsupported(_)
         | crate::hii::HiiError::IdOccupied(_) => Status::failed_precondition(e.to_string()),
         _ => Status::internal(e.to_string()),
     }
@@ -829,6 +830,45 @@ impl EngineService for EngineServer {
         Ok(Response::new(HiiUnlockResponse {
             gates: outcome.gates,
             applied_flips: outcome.applied,
+        }))
+    }
+
+    #[tracing::instrument(skip(self, req), err)]
+    async fn hii_question_info(
+        &self,
+        req: Request<HiiQuestionInfoRequest>,
+    ) -> RpcResult<HiiQuestionInfoResponse> {
+        let r = req.into_inner();
+        let img = self.get_or_load_image(&r.image_id).await?;
+        let question = crate::hii::question_info(&img, &r.item_id).map_err(hii_error_status)?;
+        let _ = self.sm.touch(&img.session_id);
+        tracing::info!(image_id = %r.image_id, item_id = %r.item_id, "hii question info");
+        Ok(Response::new(HiiQuestionInfoResponse {
+            question: Some(question),
+        }))
+    }
+
+    #[tracing::instrument(skip(self, req), err)]
+    async fn hii_set_value(
+        &self,
+        req: Request<HiiSetValueRequest>,
+    ) -> RpcResult<HiiSetValueResponse> {
+        let r = req.into_inner();
+        let img = self.get_or_load_image(&r.image_id).await?;
+        let outcome = {
+            let mut images = self.images.lock().await;
+            let img_slot = images
+                .get_mut(&r.image_id)
+                .ok_or_else(|| Status::not_found("image not found"))?;
+            crate::hii::set_value(img_slot, &r.item_id, r.value).map_err(hii_error_status)?
+        };
+        self.flush_image(&r.image_id).await?;
+        let _ = self.sm.touch(&img.session_id);
+        tracing::info!(image_id = %r.image_id, item_id = %r.item_id, value = r.value, flips = outcome.applied.len(), "hii set value");
+        Ok(Response::new(HiiSetValueResponse {
+            question: Some(outcome.question),
+            applied_flips: outcome.applied,
+            stores: outcome.stores,
         }))
     }
 }

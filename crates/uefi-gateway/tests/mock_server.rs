@@ -221,6 +221,18 @@ impl EngineService for MockEngine {
             applied_flips: vec![],
         }))
     }
+    async fn hii_question_info(
+        &self,
+        _req: Request<HiiQuestionInfoRequest>,
+    ) -> Result<Response<HiiQuestionInfoResponse>, Status> {
+        Ok(Response::new(HiiQuestionInfoResponse::default()))
+    }
+    async fn hii_set_value(
+        &self,
+        _req: Request<HiiSetValueRequest>,
+    ) -> Result<Response<HiiSetValueResponse>, Status> {
+        Ok(Response::new(HiiSetValueResponse::default()))
+    }
 }
 
 pub async fn start_mock(sock: &Path) -> JoinHandle<()> {
