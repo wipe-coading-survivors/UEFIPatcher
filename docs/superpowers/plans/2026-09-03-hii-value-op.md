@@ -597,8 +597,10 @@ fn image_with_nvar_stores() -> Image {
 8. `set_value_refuses_store_behind_non_recompressable` — RAW-секция
    стора внутри GUIDED c чужим GUID → MutationBehindCompression.
 9. `set_value_repeated_is_noop_report` — повторный set_value(1):
-   applied пуст (from==to — байты уже 1; проверка как отчётная
-   семантика, байты не меняются).
+   applied пуст (from==to — байты уже 1); байты не меняются; узлы не
+   помечаются Rebuild (no-op, симметрично отказу повторного unlock в
+   1711de9 — фантомные флипы не репортятся). Частичный случай: часть
+   копий уже с значением — применяются только реальные изменения.
 10. `set_value_idempotent_bytes` — set_value(1); build_image не
     требуется (unit-уровень) — только инвариант длины тел.
 
@@ -812,9 +814,11 @@ pub fn set_value(image: &mut Image, item_id: &str, value: u64) -> Result<ValueOu
 отказ. `node_at`/`node_at_mut` — приватные хелперы по path;
 `hex(&[u8])` — как `flip_text` в mod.rs (переиспользовать замыкание).
 
-Семантика повторного set_value тем же значением: from==to — flip
-выполняется без изменений байтов, applied описывает «xx -> xx» —
-симметрично отчёту unlock; реального диффа нет (тест 9).
+Семантика повторного set_value тем же значением: from==to у копии —
+флип копии пропускается (не мутация, не Rebuild, не строка в
+applied); если все копии no-op — applied пуст, образ не трогается.
+Симметрично отказу повторного unlock (1711de9) — фантомные флипы не
+репортятся (тест 9).
 
 - [ ] **Step 4: тесты зелёные**
 
