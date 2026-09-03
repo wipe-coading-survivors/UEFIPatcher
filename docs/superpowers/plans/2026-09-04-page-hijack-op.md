@@ -609,12 +609,9 @@ git commit -m "feat(uefi-engine): page-hijack-op Task 4 — pub(crate) \$SPF pay
             ]
             .concat(),
         );
-        let mut pfs = vec![0u8; 16];
-        pfs.extend_from_slice(b"$SPF");
-        pfs.extend_from_slice(&[0u8; 8]);
         let sd = ffs_file_bytes(
             &Guid::from_str(SETUPDATA_GUID_STR).unwrap(),
-            &section_bytes(EFI_SECTION_FREEFORM_SUBTYPE_GUID, &pfs),
+            &section_bytes(EFI_SECTION_FREEFORM_SUBTYPE_GUID, &spf_body),
         );
         let flash = flash_with_files(vec![setup, sd]);
         (flash, pkg, spf_body)
@@ -692,17 +689,14 @@ git commit -m "feat(uefi-engine): page-hijack-op Task 4 — pub(crate) \$SPF pay
     #[test]
     fn hijack_form_atomic_precheck_failures() {
         for (item, qid) in [
-            (ITEM, 17u16),
-            ("5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:0#99", 17),
+            ("5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:0#99", 17u16),
+            (ITEM, 99),
         ] {
             let (flash, _, _) = hijack_flash_image();
             let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
             let before = build_image(&img).unwrap();
             let mut sc = hijack_schema();
-            if qid != 17 {
-                sc.questions[0].question_id = 99;
-            }
-            let _ = item;
+            sc.questions[0].question_id = qid;
             assert!(
                 hijack_form(&mut img, item, &sc, None).is_err(),
                 "must reject {item}"
@@ -710,11 +704,6 @@ git commit -m "feat(uefi-engine): page-hijack-op Task 4 — pub(crate) \$SPF pay
             assert_eq!(build_image(&img).unwrap(), before, "no mutation on precheck failure");
         }
 
-        let (flash, _, _) = hijack_flash_image();
-        let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
-        let mut sc = hijack_schema();
-        sc.questions[0].question_id = 18;
-        assert!(hijack_form(&mut img, ITEM, &sc, None).is_err(), "qid without IFR question");
         let (flash, _, _) = hijack_flash_image();
         let mut img2 = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
         assert!(
