@@ -316,6 +316,40 @@ impl Client {
         Ok(())
     }
 
+    pub async fn hii_gates_list(
+        &mut self,
+        image_id: &str,
+        item_id: &str,
+    ) -> Result<Vec<GateInfo>, AppError> {
+        let req = HiiGatesListRequest {
+            image_id: image_id.into(),
+            item_id: item_id.into(),
+        };
+        Ok(self
+            .inner
+            .hii_gates_list(auth_req(&self.state, req))
+            .await?
+            .into_inner()
+            .gates)
+    }
+
+    pub async fn hii_unlock(
+        &mut self,
+        image_id: &str,
+        item_id: &str,
+    ) -> Result<(Vec<GateInfo>, Vec<String>), AppError> {
+        let req = HiiUnlockRequest {
+            image_id: image_id.into(),
+            item_id: item_id.into(),
+        };
+        let resp = self
+            .inner
+            .hii_unlock(auth_req(&self.state, req))
+            .await?
+            .into_inner();
+        Ok((resp.gates, resp.applied_flips))
+    }
+
     pub async fn hii_form_set_add(
         &mut self,
         image_id: &str,

@@ -1,4 +1,4 @@
-use uefi_proto::{FormInfo, ImageInfo, Node, SessionInfo, StringInfo};
+use uefi_proto::{FormInfo, GateInfo, ImageInfo, Node, SessionInfo, StringInfo};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum OutputFormat {
@@ -150,6 +150,73 @@ pub fn print_strings(strings: &[StringInfo], format: OutputFormat) {
         OutputFormat::Text => {
             for s in strings {
                 println!("[{}] {}: {}", s.language, s.string_id, s.text);
+            }
+        }
+    }
+}
+
+pub fn print_gates(item_id: &str, gates: &[GateInfo], format: OutputFormat) {
+    match format {
+        OutputFormat::Json => {
+            let v = serde_json::to_string_pretty(gates).unwrap_or_else(|_| "[]".into());
+            println!("{v}");
+        }
+        OutputFormat::Tsv => {
+            println!(
+                "gate_kind\twraps\tform_id\thost_form_id\tquestion_id\texpression\tflippable\tflip\tscope_offset"
+            );
+            for g in gates {
+                println!(
+                    "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                    g.gate_kind,
+                    g.wraps,
+                    g.form_id,
+                    g.host_form_id,
+                    g.question_id,
+                    g.expression,
+                    g.flippable,
+                    g.flip,
+                    g.scope_offset
+                );
+            }
+        }
+        OutputFormat::Text => {
+            if gates.is_empty() {
+                println!("no gates for {item_id}");
+            }
+            for g in gates {
+                println!(
+                    "{:<8} {:<8} form {} host {} qid {} expr '{}' flip '{}' @pkg+{:#x}",
+                    g.gate_kind,
+                    g.wraps,
+                    g.form_id,
+                    g.host_form_id,
+                    g.question_id,
+                    g.expression,
+                    if g.flippable { g.flip.as_str() } else { "-" },
+                    g.scope_offset
+                );
+            }
+        }
+    }
+}
+
+pub fn print_unlock(item_id: &str, gates: &[GateInfo], applied: &[String], format: OutputFormat) {
+    match format {
+        OutputFormat::Json => {
+            let gates_json = serde_json::to_string(gates).unwrap_or_else(|_| "[]".into());
+            let applied_json = serde_json::to_string(applied).unwrap_or_else(|_| "[]".into());
+            println!(
+                "{{\"item_id\":\"{item_id}\",\"gates\":{gates_json},\"applied\":{applied_json}}}"
+            );
+        }
+        _ => {
+            print_gates(item_id, gates, format);
+            if applied.is_empty() {
+                println!("nothing to unlock for {item_id}");
+            }
+            for f in applied {
+                println!("applied {f}");
             }
         }
     }

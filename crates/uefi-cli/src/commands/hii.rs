@@ -71,3 +71,61 @@ pub async fn form_add(
     crate::output::print_form_add(&form_ids, &string_ids, format);
     Ok(())
 }
+
+async fn gates(
+    item_id: &str,
+    cli_sock: Option<&str>,
+    format: OutputFormat,
+) -> Result<(), AppError> {
+    let st = state::require_state()?;
+    let mut client = Client::connect(cli_sock, st).await?;
+    let image_id = client.active_image()?;
+    let gates = client.hii_gates_list(&image_id, item_id).await?;
+    crate::output::print_gates(item_id, &gates, format);
+    Ok(())
+}
+
+async fn unlock(
+    item_id: &str,
+    cli_sock: Option<&str>,
+    format: OutputFormat,
+) -> Result<(), AppError> {
+    let st = state::require_state()?;
+    let mut client = Client::connect(cli_sock, st).await?;
+    let image_id = client.active_image()?;
+    let (gs, applied) = client.hii_unlock(&image_id, item_id).await?;
+    crate::output::print_unlock(item_id, &gs, &applied, format);
+    Ok(())
+}
+
+pub async fn form_gates(
+    item_id: &str,
+    cli_sock: Option<&str>,
+    format: OutputFormat,
+) -> Result<(), AppError> {
+    gates(item_id, cli_sock, format).await
+}
+
+pub async fn form_unlock(
+    item_id: &str,
+    cli_sock: Option<&str>,
+    format: OutputFormat,
+) -> Result<(), AppError> {
+    unlock(item_id, cli_sock, format).await
+}
+
+pub async fn question_gates(
+    item_id: &str,
+    cli_sock: Option<&str>,
+    format: OutputFormat,
+) -> Result<(), AppError> {
+    gates(item_id, cli_sock, format).await
+}
+
+pub async fn question_unlock(
+    item_id: &str,
+    cli_sock: Option<&str>,
+    format: OutputFormat,
+) -> Result<(), AppError> {
+    unlock(item_id, cli_sock, format).await
+}

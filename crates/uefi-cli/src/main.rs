@@ -183,6 +183,10 @@ enum HiiCmd {
         #[command(subcommand)]
         sub: HiiFormSetCmd,
     },
+    Question {
+        #[command(subcommand)]
+        sub: HiiQuestionCmd,
+    },
     String {
         #[command(subcommand)]
         sub: HiiStringCmd,
@@ -198,6 +202,12 @@ enum HiiFormCmd {
         visible: bool,
         #[arg(long)]
         hidden: bool,
+    },
+    Gates {
+        item_id: String,
+    },
+    Unlock {
+        item_id: String,
     },
     Add {
         #[arg(long)]
@@ -215,6 +225,12 @@ enum HiiFormSetCmd {
         #[arg(long)]
         ffs: Option<String>,
     },
+}
+
+#[derive(Subcommand)]
+enum HiiQuestionCmd {
+    Gates { item_id: String },
+    Unlock { item_id: String },
 }
 
 #[derive(Subcommand)]
@@ -352,6 +368,12 @@ async fn dispatch(cli: &Cli, format: output::OutputFormat) -> Result<(), error::
                     };
                     commands::hii::form_set_visibility(form_id, vis, sock, format).await
                 }
+                HiiFormCmd::Gates { item_id } => {
+                    commands::hii::form_gates(item_id, sock, format).await
+                }
+                HiiFormCmd::Unlock { item_id } => {
+                    commands::hii::form_unlock(item_id, sock, format).await
+                }
                 HiiFormCmd::Add { target, file } => {
                     commands::hii::form_add(target, file, sock, format).await
                 }
@@ -359,6 +381,14 @@ async fn dispatch(cli: &Cli, format: output::OutputFormat) -> Result<(), error::
             HiiCmd::FormSet { sub } => match sub {
                 HiiFormSetCmd::Add { file, ffs } => {
                     commands::hii::formset_add(file, ffs.as_deref(), sock, format).await
+                }
+            },
+            HiiCmd::Question { sub } => match sub {
+                HiiQuestionCmd::Gates { item_id } => {
+                    commands::hii::question_gates(item_id, sock, format).await
+                }
+                HiiQuestionCmd::Unlock { item_id } => {
+                    commands::hii::question_unlock(item_id, sock, format).await
                 }
             },
             HiiCmd::String { sub } => match sub {
@@ -415,6 +445,38 @@ mod tests {
                 assert_eq!(ffs.as_deref(), Some("5C60F367-A505-419A-859E-2A4FF6CA6FE5"));
             }
             _ => panic!("expected hii formset add"),
+        }
+    }
+
+    #[test]
+    fn parse_hii_form_gates_and_unlock() {
+        let cli =
+            Cli::try_parse_from(["uefi-cli", "hii", "form", "gates", "g:0x10:0#10029"]).unwrap();
+        match cli.cmd {
+            Cmd::Hii {
+                sub:
+                    HiiCmd::Form {
+                        sub: HiiFormCmd::Gates { item_id },
+                    },
+            } => assert_eq!(item_id, "g:0x10:0#10029"),
+            _ => panic!("expected hii form gates"),
+        }
+        let cli = Cli::try_parse_from([
+            "uefi-cli",
+            "hii",
+            "question",
+            "unlock",
+            "g:0x10:0#10029:0x3B",
+        ])
+        .unwrap();
+        match cli.cmd {
+            Cmd::Hii {
+                sub:
+                    HiiCmd::Question {
+                        sub: HiiQuestionCmd::Unlock { item_id },
+                    },
+            } => assert_eq!(item_id, "g:0x10:0#10029:0x3B"),
+            _ => panic!("expected hii question unlock"),
         }
     }
 
