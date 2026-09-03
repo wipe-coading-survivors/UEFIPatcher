@@ -324,9 +324,9 @@ git commit -m "feat(uefi-engine): hii gates expression decoder (E12 classes)"
     }
 
     fn ref_op(form_id: u16, question_id: u16) -> Vec<u8> {
-        let mut p = vec![0u8; 12];
+        let mut p = vec![0u8; 11];
         p[4..6].copy_from_slice(&question_id.to_le_bytes());
-        let mut v = vec![r_efi::hii::IFR_REF_OP, 0x11];
+        let mut v = vec![r_efi::hii::IFR_REF_OP, 0x0F];
         v.extend_from_slice(&p);
         v.extend_from_slice(&form_id.to_le_bytes());
         v
@@ -455,7 +455,7 @@ git commit -m "feat(uefi-engine): hii gates expression decoder (E12 classes)"
 
     #[test]
     fn find_gates_ignores_question_in_other_form() {
-        let mut ifr = vendor_ifr();
+        let ifr = vendor_ifr();
         let pkg = package(&ifr);
         let wrong_form = find_gates(
             &pkg,
@@ -606,8 +606,8 @@ fn emit_gates(
         } else {
             None
         }
-    } else if op == IFR_REF_OP && length >= 16 && target.question_id.is_none() {
-        let fid = u16::from_le_bytes([body[stmt_offset + 14], body[stmt_offset + 15]]);
+    } else if op == IFR_REF_OP && length >= 15 && target.question_id.is_none() {
+        let fid = u16::from_le_bytes([body[stmt_offset + 13], body[stmt_offset + 14]]);
         if fid == target.form_id {
             Some(Wraps::Ref { form_id: fid, host_form_id: current_form.unwrap_or(0) })
         } else {
@@ -1050,8 +1050,8 @@ git commit -m "refactor(uefi-engine): drop falsified UPG/PRC patch path (E8)"
     }
 
     fn g_ref(form_id: u16) -> Vec<u8> {
-        let mut p = vec![0u8; 12];
-        let mut v = vec![r_efi::hii::IFR_REF_OP, 0x11];
+        let mut p = vec![0u8; 11];
+        let mut v = vec![r_efi::hii::IFR_REF_OP, 0x0F];
         v.extend_from_slice(&p);
         v.extend_from_slice(&form_id.to_le_bytes());
         v
