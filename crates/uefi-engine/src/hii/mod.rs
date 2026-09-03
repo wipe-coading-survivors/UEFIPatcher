@@ -51,6 +51,8 @@ pub enum HiiError {
     PeGrowthUnsupported,
     #[error("gating expression not reducible to a hardware-validated flip: {0}")]
     GateExpressionUnsupported(String),
+    #[error("value operation not supported: {0}")]
+    ValueOpUnsupported(String),
 }
 
 #[tracing::instrument(level = "debug", skip(image), fields(item_id = %item_id, visible), err)]
@@ -223,13 +225,15 @@ fn expr_text(expr: &gates::GateExpr, region: &[u8]) -> String {
     }
 }
 
+fn hex(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn flip_text(base: usize, flip: &gates::PlannedFlip) -> String {
-    let hex = |bs: &[u8]| {
-        bs.iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<Vec<_>>()
-            .join(" ")
-    };
     format!(
         "pkg+{:#x}: {} -> {}",
         base + flip.offset,
@@ -371,6 +375,310 @@ pub fn unlock(image: &mut Image, item_id: &str) -> Result<UnlockOutcome, HiiErro
     Ok(UnlockOutcome {
         gates: infos,
         applied,
+    })
+}
+
+fn question_kind_str(kind: values::QuestionKind) -> &'static str {
+    match kind {
+        values::QuestionKind::OneOf => "one_of",
+        values::QuestionKind::CheckBox => "checkbox",
+        values::QuestionKind::Numeric => "numeric",
+        values::QuestionKind::Other => "other",
+    }
+}
+
+fn question_info_proto(form_id: u16, map: &values::QuestionMap) -> uefi_proto::QuestionInfo {
+    uefi_proto::QuestionInfo {
+        form_id: form_id as u32,
+        question_id: map.question_id as u32,
+        kind: question_kind_str(map.kind).to_string(),
+        var_store_id: map.var_store_id as u32,
+        varstore: map.varstore.as_ref().map(|v| uefi_proto::VarStoreInfo {
+            id: v.id as u32,
+            guid: v
+                .guid
+                .as_ref()
+                .map(crate::guid_to_upper_string)
+                .unwrap_or_default(),
+            size: v.size as u32,
+            name: v.name.clone(),
+        }),
+        var_offset: map.var_offset as u32,
+        width: map.width as u32,
+        min: map.min,
+        max: map.max,
+        step: map.step,
+        options: map
+            .options
+            .iter()
+            .map(|o| uefi_proto::OptionEntry {
+                string_id: o.string_id as u32,
+                value: o.value,
+                flags: o.flags as u32,
+            })
+            .collect(),
+        defaults: map
+            .defaults
+            .iter()
+            .map(|d| uefi_proto::DefaultEntry {
+                default_id: d.default_id as u32,
+                r#type: d.type_ as u32,
+                value: d.value,
+            })
+            .collect(),
+    }
+}
+
+fn find_question_map(
+    image: &Image,
+    target: &crate::types::Target,
+    form_id: u16,
+    question_id: u16,
+) -> Result<values::QuestionMap, HiiError> {
+    let node =
+        crate::parser::target::find_item(&image.root, target).map_err(|_| HiiError::NotFound)?;
+    if node.node_type != FfsType::Section {
+        return Err(HiiError::NotASetupItem);
+    }
+    for (start, len) in form_package_ranges(node) {
+        if let Some(map) =
+            values::find_question(&node.body[start..start + len], form_id, question_id)
+        {
+            return Ok(map);
+        }
+    }
+    Err(HiiError::NotFound)
+}
+
+pub fn question_info(image: &Image, item_id: &str) -> Result<uefi_proto::QuestionInfo, HiiError> {
+    let (target, form_id, question_id) = parse_item_id(item_id)?;
+    let Some(question_id) = question_id else {
+        return Err(HiiError::NotFound);
+    };
+    let map = find_question_map(image, &target, form_id, question_id)?;
+    Ok(question_info_proto(form_id, &map))
+}
+
+fn validate_set_value(map: &values::QuestionMap, value: u64) -> Result<u8, HiiError> {
+    if matches!(map.kind, values::QuestionKind::Other) {
+        return Err(HiiError::ValueOpUnsupported(
+            "question kind is not value-settable".into(),
+        ));
+    }
+    if map.width == 0 || map.width > 8 {
+        return Err(HiiError::ValueOpUnsupported(format!(
+            "question width {} is not settable",
+            map.width
+        )));
+    }
+    let bits = 8 * map.width as u32;
+    if bits < 64 && value >= 1u64 << bits {
+        return Err(HiiError::ValueOpUnsupported(format!(
+            "value {value} does not fit in {bits} bits"
+        )));
+    }
+    match map.kind {
+        values::QuestionKind::CheckBox if value > 1 => Err(HiiError::ValueOpUnsupported(
+            "checkbox accepts only 0 or 1".into(),
+        )),
+        values::QuestionKind::OneOf if !map.options.iter().any(|o| o.value == value) => {
+            let allowed = map
+                .options
+                .iter()
+                .map(|o| o.value.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            Err(HiiError::ValueOpUnsupported(format!(
+                "value {value} is not among one_of options [{allowed}]"
+            )))
+        }
+        values::QuestionKind::Numeric if !(map.min..=map.max).contains(&value) => {
+            Err(HiiError::ValueOpUnsupported(format!(
+                "value {value} is outside numeric range {}..={}",
+                map.min, map.max
+            )))
+        }
+        _ => Ok(map.width),
+    }
+}
+
+#[derive(Debug)]
+pub struct ValueOutcome {
+    pub question: uefi_proto::QuestionInfo,
+    pub applied: Vec<String>,
+    pub stores: Vec<String>,
+}
+
+struct StoreHit {
+    path: Vec<usize>,
+    desc: String,
+    body_offset: usize,
+}
+
+fn store_desc(node: &FfsNode) -> String {
+    match node.node_type {
+        FfsType::File => format!(
+            "file {} (raw body)",
+            node.guid
+                .as_ref()
+                .map(crate::guid_to_upper_string)
+                .unwrap_or_else(|| "unknown".into())
+        ),
+        _ => format!("section {:#04x} raw body", node.subtype),
+    }
+}
+
+fn collect_std_defaults_hits(
+    node: &FfsNode,
+    path: &mut Vec<usize>,
+    barrier: bool,
+    name: &str,
+    data_len: usize,
+    out: &mut Vec<StoreHit>,
+) -> Result<(), HiiError> {
+    let is_store_body = |n: &FfsNode| {
+        matches!(n.node_type, FfsType::File | FfsType::Section)
+            && (n.node_type != FfsType::File || n.children.is_empty())
+            && nvar::is_std_defaults(&n.body)
+    };
+    if is_store_body(node) {
+        if barrier {
+            return Err(HiiError::MutationBehindCompression);
+        }
+        if let Some((off, _)) = nvar::find_varstore_record(&node.body, name, data_len) {
+            out.push(StoreHit {
+                path: path.clone(),
+                desc: store_desc(node),
+                body_offset: off,
+            });
+        } else {
+            return Err(HiiError::ValueOpUnsupported(format!(
+                "StdDefaults store {} has no record {:?} of {} bytes",
+                store_desc(node),
+                name,
+                data_len
+            )));
+        }
+        return Ok(());
+    }
+    let child_barrier = barrier
+        || (node.node_type == FfsType::Section
+            && (node.subtype == EFI_SECTION_COMPRESSION
+                || node.subtype == EFI_SECTION_GUID_DEFINED)
+            && !matches!(
+                &node.parsing_data,
+                crate::types::ParsingData::GuidedSection(d)
+                    if crate::ffs::is_recompressable_lzma_guid(&d.guid)
+            ));
+    for (i, child) in node.children.iter().enumerate() {
+        path.push(i);
+        collect_std_defaults_hits(child, path, child_barrier, name, data_len, out)?;
+        path.pop();
+    }
+    Ok(())
+}
+
+fn node_at<'a>(root: &'a FfsNode, path: &[usize]) -> &'a FfsNode {
+    let mut node = root;
+    for &i in path {
+        node = &node.children[i];
+    }
+    node
+}
+
+fn node_at_mut<'a>(root: &'a mut FfsNode, path: &[usize]) -> &'a mut FfsNode {
+    let mut node = root;
+    for &i in path {
+        node = &mut node.children[i];
+    }
+    node
+}
+
+#[tracing::instrument(level = "debug", skip(image), fields(item_id = %item_id, value), err)]
+pub fn set_value(image: &mut Image, item_id: &str, value: u64) -> Result<ValueOutcome, HiiError> {
+    if image.mode != ImageMode::Write {
+        return Err(HiiError::NotWritable);
+    }
+    let (target, form_id, question_id) = parse_item_id(item_id)?;
+    let Some(question_id) = question_id else {
+        return Err(HiiError::NotFound);
+    };
+    let map = find_question_map(image, &target, form_id, question_id)?;
+    let info = question_info_proto(form_id, &map);
+    let width = validate_set_value(&map, value)?;
+    let varstore = map.varstore.as_ref().ok_or_else(|| {
+        HiiError::ValueOpUnsupported("question varstore is not declared in the form package".into())
+    })?;
+    if varstore.name.is_empty() {
+        return Err(HiiError::ValueOpUnsupported(
+            "varstore has no name; cannot match a StdDefaults record".into(),
+        ));
+    }
+    if map.var_offset as usize + width as usize > varstore.size as usize {
+        return Err(HiiError::ValueOpUnsupported(format!(
+            "var_offset {:#x} + width {} exceeds varstore size {:#x}",
+            map.var_offset, width, varstore.size
+        )));
+    }
+    let mut hits = Vec::new();
+    let mut path = Vec::new();
+    collect_std_defaults_hits(
+        &image.root,
+        &mut path,
+        false,
+        &varstore.name,
+        varstore.size as usize,
+        &mut hits,
+    )?;
+    if hits.is_empty() {
+        return Err(HiiError::ValueOpUnsupported(
+            "no NVAR StdDefaults stores found in the image".into(),
+        ));
+    }
+    struct Plan {
+        hit_index: usize,
+        from: Vec<u8>,
+        to: Vec<u8>,
+    }
+    let mut plans = Vec::new();
+    for (i, hit) in hits.iter().enumerate() {
+        let node = node_at(&image.root, &hit.path);
+        let off = hit.body_offset + map.var_offset as usize;
+        let from = node
+            .body
+            .get(off..off + width as usize)
+            .ok_or_else(|| HiiError::ValueOpUnsupported("record data out of bounds".into()))?
+            .to_vec();
+        let mut to = value.to_le_bytes().to_vec();
+        to.truncate(width as usize);
+        plans.push(Plan {
+            hit_index: i,
+            from,
+            to,
+        });
+    }
+    let mut applied = Vec::new();
+    for plan in &plans {
+        let hit = &hits[plan.hit_index];
+        let off = hit.body_offset + map.var_offset as usize;
+        {
+            let node = node_at_mut(&mut image.root, &hit.path);
+            node.body[off..off + width as usize].copy_from_slice(&plan.to);
+        }
+        ops::mark_rebuild_to_root_by_path(&mut image.root, &hit.path);
+        applied.push(format!(
+            "{} store+{:#x}: {} -> {}",
+            hit.desc,
+            off,
+            hex(&plan.from),
+            hex(&plan.to)
+        ));
+    }
+    tracing::debug!(stores = hits.len(), "set_value done");
+    Ok(ValueOutcome {
+        question: info,
+        applied,
+        stores: hits.iter().map(|h| h.desc.clone()).collect(),
     })
 }
 
@@ -1229,5 +1537,329 @@ mod tests {
         let err = unlock(&mut image, VENDOR_FORM_ITEM).unwrap_err();
         assert!(matches!(err, HiiError::GateExpressionUnsupported(_)));
         assert_eq!(image.root.children[0].children[0].children[0].body, pkg);
+    }
+
+    const NVAR_FV0_GUID_STR: &str = "10000000-0000-4000-8000-000000000001";
+    const NVAR_FV2_GUID_STR: &str = "20000000-0000-4000-8000-000000000002";
+
+    fn g_varstore(id: u16, size: u16, name: &str) -> Vec<u8> {
+        let g = Guid::from_str(VENDOR_FORMSET_GUID_STR).unwrap();
+        let mut p = Vec::new();
+        p.extend_from_slice(&g.to_bytes());
+        p.extend_from_slice(&id.to_le_bytes());
+        p.extend_from_slice(&size.to_le_bytes());
+        p.extend_from_slice(name.as_bytes());
+        p.push(0);
+        g_opcode(r_efi::hii::IFR_VARSTORE_OP, false, &p)
+    }
+
+    fn g_one_of_varstore(question_id: u16, var_store_id: u16, var_offset: u16) -> Vec<u8> {
+        let mut p = Vec::new();
+        p.extend_from_slice(&0x01A3u16.to_le_bytes());
+        p.extend_from_slice(&0x01A4u16.to_le_bytes());
+        p.extend_from_slice(&question_id.to_le_bytes());
+        p.extend_from_slice(&var_store_id.to_le_bytes());
+        p.extend_from_slice(&var_offset.to_le_bytes());
+        p.push(0x10);
+        p.push(0x10);
+        p.extend_from_slice(&[0x00, 0x01, 0x00]);
+        g_opcode(r_efi::hii::IFR_ONE_OF_OP, true, &p)
+    }
+
+    fn g_option(string_id: u16, flags: u8, value: u8) -> Vec<u8> {
+        let mut p = Vec::new();
+        p.extend_from_slice(&string_id.to_le_bytes());
+        p.push(flags);
+        p.push(0x00);
+        p.push(value);
+        g_opcode(r_efi::hii::IFR_ONE_OF_OPTION_OP, false, &p)
+    }
+
+    fn value_forms_pkg() -> Vec<u8> {
+        forms_pkg(
+            [
+                g_varstore(1, 0x72, "Setup"),
+                g_form(10029),
+                g_one_of_varstore(0x3B, 1, 0x3A),
+                g_option(4, 0x30, 0),
+                g_option(3, 0x00, 1),
+                g_end(),
+                g_end(),
+                g_end(),
+            ]
+            .concat(),
+        )
+    }
+
+    fn nvar_entry(
+        name: Option<&str>,
+        data: &[u8],
+        attributes: u8,
+        guid_index: Option<u8>,
+    ) -> Vec<u8> {
+        let mut e = Vec::new();
+        e.extend_from_slice(b"NVAR");
+        let mut body = Vec::new();
+        if let Some(gi) = guid_index {
+            body.push(gi);
+        }
+        if let Some(n) = name {
+            body.extend_from_slice(n.as_bytes());
+            body.push(0);
+        }
+        body.extend_from_slice(data);
+        let size = 10 + body.len();
+        e.extend_from_slice(&(size as u16).to_le_bytes());
+        e.extend_from_slice(&[0xFF, 0xFF, 0xFF]);
+        e.push(attributes);
+        e.extend_from_slice(&body);
+        e
+    }
+
+    fn nvar_store_body() -> Vec<u8> {
+        let inner = nvar_entry(Some("Setup"), &[0u8; 114], 0x82, Some(0));
+        nvar_entry(Some("StdDefaults"), &inner, 0x82, Some(0))
+    }
+
+    fn image_with_nvar_stores() -> Image {
+        let mut nvar_file = mk_node(FfsType::File, nvar_store_body(), vec![]);
+        nvar_file.guid = Some(Guid::from_str(NVAR_FV0_GUID_STR).unwrap());
+        let mut forms_section = mk_node(FfsType::Section, value_forms_pkg(), vec![]);
+        forms_section.subtype = 0x19;
+        let mut forms_file = mk_node(FfsType::File, vec![], vec![forms_section]);
+        forms_file.guid = Some(Guid::from_str(VENDOR_FORMSET_GUID_STR).unwrap());
+        let fv0 = mk_node(FfsType::Volume, vec![], vec![nvar_file, forms_file]);
+
+        let mut raw_store = mk_node(FfsType::Section, nvar_store_body(), vec![]);
+        raw_store.subtype = 0x19;
+        let mut guided = mk_node(FfsType::Section, vec![], vec![raw_store]);
+        guided.subtype = EFI_SECTION_GUID_DEFINED;
+        guided.parsing_data = ParsingData::GuidedSection(crate::types::GuidedSectionParsingData {
+            guid: crate::ffs::lzma_guid(),
+            dictionary_size: 0x0080_0000,
+        });
+        let mut guided_file = mk_node(FfsType::File, vec![], vec![guided]);
+        guided_file.guid = Some(Guid::from_str(NVAR_FV2_GUID_STR).unwrap());
+        let fv2 = mk_node(FfsType::Volume, vec![], vec![guided_file]);
+
+        let root = mk_node(FfsType::Image, vec![], vec![fv0, fv2]);
+        Image {
+            image_id: "img".into(),
+            session_id: "s".into(),
+            root,
+            mode: ImageMode::Write,
+        }
+    }
+
+    fn fv0_store_body(image: &Image) -> &[u8] {
+        &image.root.children[0].children[0].body
+    }
+
+    fn fv2_store_body(image: &Image) -> &[u8] {
+        &image.root.children[1].children[0].children[0].children[0].body
+    }
+
+    #[test]
+    fn question_info_reports_4g_like_question() {
+        let mut image = image_with_nvar_stores();
+        image.mode = ImageMode::Read;
+        let q = question_info(&image, VENDOR_QUESTION_ITEM).unwrap();
+        assert_eq!(q.form_id, 10029);
+        assert_eq!(q.question_id, 0x3B);
+        assert_eq!(q.kind, "one_of");
+        assert_eq!(q.var_store_id, 1);
+        assert_eq!(q.var_offset, 0x3A);
+        assert_eq!(q.width, 1);
+        let vs = q.varstore.expect("varstore resolved");
+        assert_eq!(vs.id, 1);
+        assert_eq!(vs.name, "Setup");
+        assert_eq!(vs.size, 0x72);
+        assert_eq!(vs.guid, VENDOR_FORMSET_GUID_STR);
+        assert_eq!(
+            q.options.iter().map(|o| o.value).collect::<Vec<_>>(),
+            vec![0, 1]
+        );
+        assert_eq!(
+            q.options.iter().map(|o| o.flags).collect::<Vec<_>>(),
+            vec![0x30, 0x00]
+        );
+        assert!(q.defaults.is_empty());
+    }
+
+    #[test]
+    fn question_info_requires_question_discriminator() {
+        let mut image = image_with_nvar_stores();
+        image.mode = ImageMode::Read;
+        assert!(matches!(
+            question_info(&image, VENDOR_FORM_ITEM),
+            Err(HiiError::NotFound)
+        ));
+        assert!(matches!(
+            question_info(
+                &image,
+                "5c60f367-a505-419a-859e-2a4ff6ca6fe5:0x19:0#10029:0x77"
+            ),
+            Err(HiiError::NotFound)
+        ));
+        assert!(matches!(
+            question_info(&image, "10000000-0000-4000-8000-000000000001#10029:0x3B"),
+            Err(HiiError::NotASetupItem)
+        ));
+    }
+
+    #[test]
+    fn set_value_flips_both_stores_atomically() {
+        let mut image = image_with_nvar_stores();
+        let fv0_len = fv0_store_body(&image).len();
+        let fv2_len = fv2_store_body(&image).len();
+        let outcome = set_value(&mut image, VENDOR_QUESTION_ITEM, 1).unwrap();
+        assert_eq!(outcome.applied.len(), 2);
+        assert_eq!(outcome.stores.len(), 2);
+        assert_eq!(outcome.question.question_id, 0x3B);
+        assert!(outcome.stores[0].starts_with("file "));
+        assert!(outcome.stores[1].starts_with("section "));
+        assert_eq!(image.root.children[0].children[0].body[0x28 + 0x3A], 1);
+        assert_eq!(fv2_store_body(&image)[0x28 + 0x3A], 1);
+        assert_eq!(image.root.children[0].children[0].body.len(), fv0_len);
+        assert_eq!(fv2_store_body(&image).len(), fv2_len);
+        assert_eq!(image.root.children[0].children[0].action, Action::Rebuild);
+        assert_eq!(image.root.children[0].action, Action::Rebuild);
+        assert_eq!(
+            image.root.children[1].children[0].children[0].children[0].action,
+            Action::Rebuild
+        );
+        assert_eq!(
+            image.root.children[1].children[0].children[0].action,
+            Action::Rebuild
+        );
+        assert_eq!(image.root.children[1].children[0].action, Action::Rebuild);
+        assert_eq!(image.root.children[1].action, Action::Rebuild);
+        assert_eq!(image.root.action, Action::Rebuild);
+        assert_eq!(image.root.children[0].children[1].action, Action::NoAction);
+    }
+
+    #[test]
+    fn set_value_refuses_read_only() {
+        let mut image = image_with_nvar_stores();
+        image.mode = ImageMode::Read;
+        assert!(matches!(
+            set_value(&mut image, VENDOR_QUESTION_ITEM, 1),
+            Err(HiiError::NotWritable)
+        ));
+        assert_eq!(fv0_store_body(&image)[0x28 + 0x3A], 0);
+    }
+
+    #[test]
+    fn set_value_refuses_value_not_in_options() {
+        let mut image = image_with_nvar_stores();
+        let err = set_value(&mut image, VENDOR_QUESTION_ITEM, 7).unwrap_err();
+        assert!(matches!(err, HiiError::ValueOpUnsupported(ref m) if m.contains("7")));
+        assert_eq!(fv0_store_body(&image), nvar_store_body());
+        assert_eq!(fv2_store_body(&image), nvar_store_body());
+        assert_eq!(image.root.children[0].children[0].action, Action::NoAction);
+    }
+
+    #[test]
+    fn set_value_refuses_unknown_varstore() {
+        let pkg = forms_pkg(
+            [
+                g_form(10029),
+                g_one_of_varstore(0x3B, 1, 0x3A),
+                g_option(4, 0x30, 0),
+                g_option(3, 0x00, 1),
+                g_end(),
+                g_end(),
+                g_end(),
+            ]
+            .concat(),
+        );
+        let mut image = vendor_image_with(0x19, pkg);
+        let err = set_value(&mut image, VENDOR_QUESTION_ITEM, 1).unwrap_err();
+        assert!(
+            matches!(err, HiiError::ValueOpUnsupported(ref m) if m.contains("varstore is not declared"))
+        );
+    }
+
+    #[test]
+    fn set_value_refuses_when_no_stores() {
+        let mut image = vendor_image_with(0x19, value_forms_pkg());
+        let err = set_value(&mut image, VENDOR_QUESTION_ITEM, 1).unwrap_err();
+        assert!(
+            matches!(err, HiiError::ValueOpUnsupported(ref m) if m.contains("no NVAR StdDefaults stores"))
+        );
+        assert_eq!(
+            image.root.children[0].children[0].children[0].action,
+            Action::NoAction
+        );
+    }
+
+    #[test]
+    fn set_value_refuses_store_behind_non_recompressable() {
+        let mut raw_store = mk_node(FfsType::Section, nvar_store_body(), vec![]);
+        raw_store.subtype = 0x19;
+        let mut guided = mk_node(FfsType::Section, vec![], vec![raw_store]);
+        guided.subtype = EFI_SECTION_GUID_DEFINED;
+        guided.parsing_data = ParsingData::GuidedSection(crate::types::GuidedSectionParsingData {
+            guid: crate::ffs::crc32_guid(),
+            dictionary_size: 0,
+        });
+        let mut nvar_file = mk_node(FfsType::File, vec![], vec![guided]);
+        nvar_file.guid = Some(Guid::from_str(NVAR_FV0_GUID_STR).unwrap());
+
+        let mut forms_section = mk_node(FfsType::Section, value_forms_pkg(), vec![]);
+        forms_section.subtype = 0x19;
+        let mut forms_file = mk_node(FfsType::File, vec![], vec![forms_section]);
+        forms_file.guid = Some(Guid::from_str(VENDOR_FORMSET_GUID_STR).unwrap());
+
+        let volume = mk_node(FfsType::Volume, vec![], vec![nvar_file, forms_file]);
+        let root = mk_node(FfsType::Image, vec![], vec![volume]);
+        let mut image = Image {
+            image_id: "img".into(),
+            session_id: "s".into(),
+            root,
+            mode: ImageMode::Write,
+        };
+        assert!(matches!(
+            set_value(&mut image, VENDOR_QUESTION_ITEM, 1),
+            Err(HiiError::MutationBehindCompression)
+        ));
+        assert_eq!(
+            image.root.children[0].children[0].children[0].children[0].body,
+            nvar_store_body()
+        );
+        assert_eq!(
+            image.root.children[0].children[0].children[0].children[0].action,
+            Action::NoAction
+        );
+    }
+
+    #[test]
+    fn set_value_repeated_is_noop_report() {
+        let mut image = image_with_nvar_stores();
+        set_value(&mut image, VENDOR_QUESTION_ITEM, 1).unwrap();
+        let fv0_before = fv0_store_body(&image).to_vec();
+        let fv2_before = fv2_store_body(&image).to_vec();
+        let outcome = set_value(&mut image, VENDOR_QUESTION_ITEM, 1).unwrap();
+        assert_eq!(outcome.applied.len(), 2);
+        assert!(outcome.applied.iter().all(|a| a.contains("01 -> 01")));
+        assert_eq!(fv0_store_body(&image), fv0_before);
+        assert_eq!(fv2_store_body(&image), fv2_before);
+    }
+
+    #[test]
+    fn set_value_idempotent_bytes() {
+        let mut image = image_with_nvar_stores();
+        let fv0_len = fv0_store_body(&image).len();
+        let fv2_len = fv2_store_body(&image).len();
+        set_value(&mut image, VENDOR_QUESTION_ITEM, 1).unwrap();
+        assert_eq!(fv0_store_body(&image).len(), fv0_len);
+        assert_eq!(fv2_store_body(&image).len(), fv2_len);
+        assert_eq!(fv0_store_body(&image)[0x28 + 0x3A], 1);
+        assert_eq!(fv2_store_body(&image)[0x28 + 0x3A], 1);
+        set_value(&mut image, VENDOR_QUESTION_ITEM, 1).unwrap();
+        assert_eq!(fv0_store_body(&image).len(), fv0_len);
+        assert_eq!(fv2_store_body(&image).len(), fv2_len);
+        assert_eq!(fv0_store_body(&image)[0x28 + 0x3A], 1);
+        assert_eq!(fv2_store_body(&image)[0x28 + 0x3A], 1);
     }
 }

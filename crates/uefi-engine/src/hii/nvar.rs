@@ -95,6 +95,10 @@ pub fn std_defaults_data(buf: &[u8]) -> Option<(usize, &[u8])> {
     ))
 }
 
+pub fn is_std_defaults(body: &[u8]) -> bool {
+    std_defaults_data(body).is_some()
+}
+
 pub fn find_varstore_record<'a>(
     body: &'a [u8],
     name: &str,
