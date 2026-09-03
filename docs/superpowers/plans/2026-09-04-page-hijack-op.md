@@ -507,7 +507,7 @@ git commit -m "feat(uefi-engine): page-hijack-op Task 4 — pub \$SPF payload re
 
 - [ ] **Step 1: Тесты ядра на синтетическом bare-канале (в `mod tests` form_hijack.rs)**
 
-Тестовым образом: флешка с двумя файлами — Setup (RAW-секции: form-пакет + строковый пакет) и AMITSESetupData (UI-секция с именем "AMITSESetupData" + RAW-секция 0x18 с $SPF-телом; имя нужно find_ami_module при setupdata_guid=None). $SPF-записи строятся по ifr-offsets реального form-пакета фикстуры.
+Тестовым образом: флешка с двумя файлами — Setup (RAW-секции: form-пакет + строковый пакет) и AMITSESetupData (UI-секция с именем "AMITSESetupData" + RAW-секция 0x18 с $SPF-телом; имя нужно find_ami_module при setupdata_guid=None). Секции внутри файла выравниваются на 4 байта (`file_sections`) — как в реальном FFS, иначе parse_sections теряет секцию после 58-байтового form-пакета. $SPF-записи строятся по ifr-offsets реального form-пакета фикстуры.
 
 ```rust
     use crate::builder::build_image;
@@ -610,22 +610,31 @@ git commit -m "feat(uefi-engine): page-hijack-op Task 4 — pub \$SPF payload re
         let spf_body = spf_container(&records, 0x400);
         let setup = ffs_file_bytes(
             &Guid::from_str(FILE_GUID).unwrap(),
-            &[
+            &file_sections(&[
                 section_bytes(EFI_SECTION_RAW, &pkg),
                 section_bytes(EFI_SECTION_RAW, &string_package_bytes()),
-            ]
-            .concat(),
+            ]),
         );
         let sd = ffs_file_bytes(
             &Guid::from_str(SETUPDATA_GUID_STR).unwrap(),
-            &[
+            &file_sections(&[
                 section_bytes(EFI_SECTION_UI, &ui_name("AMITSESetupData")),
                 section_bytes(EFI_SECTION_FREEFORM_SUBTYPE_GUID, &spf_body),
-            ]
-            .concat(),
+            ]),
         );
         let flash = flash_with_files(vec![setup, sd]);
         (flash, pkg, spf_body)
+    }
+
+    fn file_sections(sections: &[Vec<u8>]) -> Vec<u8> {
+        let mut out = Vec::new();
+        for s in sections {
+            out.extend_from_slice(s);
+            while out.len() % 4 != 0 {
+                out.push(0);
+            }
+        }
+        out
     }
 
     fn ui_name(name: &str) -> Vec<u8> {
