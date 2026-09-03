@@ -807,6 +807,9 @@ pub fn set_value(image: &mut Image, item_id: &str, value: u64) -> Result<ValueOu
 }
 ```
 
+(скетч до fix-раунда; актуальная семантика — no-op копии пропускаются
+до мутации/mark/report, см. тест 9 и 36e079a)
+
 `validate_set_value(map, value) -> Result<u8, HiiError>`: kind Other →
 отказ; width 0/`>8` → отказ; `value >= (1 << (8*width))` → отказ
 «does not fit»; CheckBox: value>1 → отказ; OneOf: нет опции со
