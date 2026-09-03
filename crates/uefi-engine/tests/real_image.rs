@@ -1018,6 +1018,208 @@ fn real_image_hii_formset_add_pe_resource_grows_reloc_tail() {
     );
 }
 
+fn find_file_node(node: &FfsNode, guid: Guid) -> Option<&FfsNode> {
+    for c in &node.children {
+        if c.node_type == FfsType::File && c.guid == Some(guid) {
+            return Some(c);
+        }
+        if let Some(found) = find_file_node(c, guid) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn find_first_leaf(node: &FfsNode, pred: impl Fn(&FfsNode) -> bool + Copy) -> Option<&FfsNode> {
+    for c in &node.children {
+        if c.children.is_empty() && pred(c) {
+            return Some(c);
+        }
+        if let Some(found) = find_first_leaf(c, pred) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn collect_rebuilt_file_regions(node: &FfsNode, out: &mut Vec<(usize, usize)>) {
+    if node.node_type == FfsType::File && node.action == Action::Rebuild {
+        let start = node.offset as usize;
+        out.push((
+            start,
+            start + node.header.len() + node.body.len() + node.tail.len(),
+        ));
+    }
+    for c in &node.children {
+        collect_rebuilt_file_regions(c, out);
+    }
+}
+
+#[test]
+#[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
+fn real_image_hii_formset_add_ami_records_in_built_bytes() {
+    use uefi_engine::builder::build_image;
+    use uefi_engine::guid_to_upper_string;
+    use uefi_engine::hii::ami_patcher::{
+        AMI_DEFAULT_ACCESS_LEVEL, AMI_RECORD_SIZE, QuestionAmiRecord, make_ami_record,
+    };
+    use uefi_engine::hii::formset_add::add_setup_formset;
+    use uefi_engine::hii::schema;
+    use uefi_engine::types::ImageMode;
+
+    const FORMSET_GUID: &str = "5E7D8C9E-4F5A-4B62-C3D4-9BCDEF012345";
+    const FORM_ID: u16 = 0x7A21;
+    const QUESTION_ID: u16 = 0x7F71;
+
+    let data = load_fw();
+    assert_eq!(data.len(), 0x0100_0000, "16 MiB image expected");
+    let mut img = parse_image(&data, ImageMode::Write, "img1", "s1").unwrap();
+
+    let mut ui_owners = vec![];
+    collect_ui_owners(&img.root, None, &mut ui_owners);
+    let find_ui = |needle: &str| {
+        ui_owners
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(needle))
+            .map(|(_, g)| *g)
+            .unwrap()
+    };
+    let setupdata_guid = find_ui("AMITSESetupData");
+    let amitse_guid = find_ui("AMITSE");
+    let setup_module_guid = Guid::try_parse("899407D7-99FE-43D8-9A21-79EC328CAC21").unwrap();
+
+    let orig_pe32 = find_first_leaf(find_file_node(&img.root, amitse_guid).unwrap(), |n| {
+        n.subtype == EFI_SECTION_PE32
+    })
+    .unwrap()
+    .body
+    .clone();
+    let orig_pfs = find_first_leaf(find_file_node(&img.root, setupdata_guid).unwrap(), |n| {
+        n.body.windows(4).any(|w| w == b"$SPF")
+    })
+    .unwrap()
+    .body
+    .clone();
+
+    let sc = schema::FormSetSchema {
+        formset_guid: FORMSET_GUID.into(),
+        title: "AMI PATCH OP FORMSET".into(),
+        help: "AMI PATCH OP HELP".into(),
+        class_guids: vec![],
+        varstores: vec![],
+        default_stores: vec![],
+        forms: vec![schema::FormSchema {
+            id: FORM_ID,
+            title: "AMI PATCH OP FORM".into(),
+            items: vec![schema::ItemSchema::Numeric(schema::NumericItem {
+                prompt: "AMI PATCH OP PROMPT".into(),
+                help: "AMI PATCH OP ITEM HELP".into(),
+                question_id: QUESTION_ID,
+                var_store_id: 0x7F00,
+                var_offset: 0,
+                size: 1,
+                min: 0,
+                max: 255,
+                step: 1,
+                display: schema::DisplayMode::UintDec,
+                defaults: schema::Defaults::default(),
+            })],
+        }],
+        setupdata_guid: Some(guid_to_upper_string(&setupdata_guid)),
+        amitse_guid: Some(guid_to_upper_string(&amitse_guid)),
+    };
+    let res = add_setup_formset(&mut img, &sc, Some(&setup_module_guid))
+        .expect("add_setup_formset with AMI guids must succeed on HNX99TF");
+    assert_eq!(res.inserted_form_ids, vec![FORM_ID]);
+
+    let mut allowed = vec![];
+    collect_rebuilt_file_regions(&img.root, &mut allowed);
+    assert!(
+        allowed.len() >= 3,
+        "expected the HII module plus both AMI files to be rebuilt, got {allowed:?}"
+    );
+
+    let built = build_image(&img).expect("build_image after formset add");
+    assert_eq!(
+        built.len(),
+        data.len(),
+        "total flash length must be preserved"
+    );
+    eprintln!("allowed regions: {allowed:?}");
+    let mut outside = vec![];
+    for (i, (a, b)) in data.iter().zip(built.iter()).enumerate() {
+        if a != b && !allowed.iter().any(|(s, e)| i >= *s && i < *e) {
+            outside.push(i);
+        }
+    }
+    if !outside.is_empty() {
+        let mut ranges = vec![];
+        let mut s0 = outside[0];
+        let mut p0 = outside[0];
+        for &i in &outside[1..] {
+            if i == p0 + 1 {
+                p0 = i;
+            } else {
+                ranges.push((s0, p0));
+                s0 = i;
+                p0 = i;
+            }
+        }
+        ranges.push((s0, p0));
+        eprintln!("outside diff ranges: {ranges:?}");
+        panic!(
+            "{} bytes changed outside rebuilt AMI/HII files",
+            outside.len()
+        );
+    }
+
+    let record = make_ami_record(&QuestionAmiRecord {
+        question_id: QUESTION_ID,
+        page_id: None,
+        access_level: AMI_DEFAULT_ACCESS_LEVEL,
+        failsafe: 0,
+        optimal: 0,
+    });
+
+    let re = parse_image(&built, ImageMode::Read, "img2", "s2").unwrap();
+    let pfs = find_first_leaf(find_file_node(&re.root, setupdata_guid).unwrap(), |n| {
+        n.body.windows(4).any(|w| w == b"$SPF")
+    })
+    .unwrap();
+    assert_eq!(pfs.body.len(), orig_pfs.len() + AMI_RECORD_SIZE);
+    assert_eq!(
+        &pfs.body[pfs.body.len() - AMI_RECORD_SIZE..],
+        record.as_slice()
+    );
+
+    let pe32 = find_first_leaf(find_file_node(&re.root, amitse_guid).unwrap(), |n| {
+        n.subtype == EFI_SECTION_PE32
+    })
+    .unwrap();
+    assert_eq!(pe32.body.len(), orig_pe32.len() + 2);
+    let entries = FORM_ID.to_le_bytes();
+    let diverge = pe32
+        .body
+        .iter()
+        .zip(orig_pe32.iter())
+        .position(|(a, b)| a != b)
+        .unwrap_or(orig_pe32.len());
+    assert_eq!(
+        &pe32.body[diverge..diverge + 2],
+        &entries,
+        "AMITSE PE32 must carry the form-id entry at the splice position"
+    );
+    assert_eq!(&pe32.body[..diverge], &orig_pe32[..diverge]);
+    assert_eq!(&pe32.body[diverge + 2..], &orig_pe32[diverge..]);
+
+    eprintln!(
+        "real_image ami-patch-op: setupdata={} (records appended into $SPF), amitse={} (form-id splice @pe+{:#x}), rebuilt files={allowed:?}",
+        guid_to_upper_string(&setupdata_guid),
+        guid_to_upper_string(&amitse_guid),
+        diverge
+    );
+}
+
 #[test]
 #[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
 fn real_image_hii_form_add_into_setup_formset() {
