@@ -1,4 +1,10 @@
-use r_efi::hii::{IFR_EQ_ID_VAL_OP, IFR_EQUAL_OP, IFR_TRUE_OP, IFR_UINT64_OP};
+use super::ifr::is_form_package;
+use r_efi::hii::{
+    IFR_ACTION_OP, IFR_CHECKBOX_OP, IFR_DATE_OP, IFR_DEFAULT_OP, IFR_END_OP, IFR_EQ_ID_VAL_OP,
+    IFR_EQUAL_OP, IFR_FORM_OP, IFR_GRAY_OUT_IF_OP, IFR_NUMERIC_OP, IFR_ONE_OF_OP,
+    IFR_ONE_OF_OPTION_OP, IFR_ORDERED_LIST_OP, IFR_PASSWORD_OP, IFR_REF_OP, IFR_STRING_OP,
+    IFR_SUBTITLE_OP, IFR_SUPPRESS_IF_OP, IFR_TEXT_OP, IFR_TIME_OP, IFR_TRUE_OP, IFR_UINT64_OP,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GateKind {
@@ -79,9 +85,439 @@ pub fn decode_expr(region: &[u8]) -> GateExpr {
     }
 }
 
+fn package_bounds(body: &[u8]) -> (usize, usize) {
+    if is_form_package(body) {
+        let plen = body[0] as usize | (body[1] as usize) << 8 | (body[2] as usize) << 16;
+        (4, plen.min(body.len()))
+    } else {
+        (0, body.len())
+    }
+}
+
+fn is_gate_op(op: u8) -> bool {
+    op == IFR_SUPPRESS_IF_OP || op == IFR_GRAY_OUT_IF_OP
+}
+
+fn is_statement_op(op: u8) -> bool {
+    matches!(
+        op,
+        IFR_FORM_OP
+            | IFR_SUBTITLE_OP
+            | IFR_TEXT_OP
+            | IFR_REF_OP
+            | IFR_ONE_OF_OP
+            | IFR_CHECKBOX_OP
+            | IFR_NUMERIC_OP
+            | IFR_PASSWORD_OP
+            | IFR_ORDERED_LIST_OP
+            | IFR_STRING_OP
+            | IFR_DATE_OP
+            | IFR_TIME_OP
+            | IFR_ACTION_OP
+            | IFR_ONE_OF_OPTION_OP
+            | IFR_DEFAULT_OP
+    )
+}
+
+fn is_question_op(op: u8) -> bool {
+    matches!(
+        op,
+        IFR_ONE_OF_OP
+            | IFR_CHECKBOX_OP
+            | IFR_NUMERIC_OP
+            | IFR_PASSWORD_OP
+            | IFR_ORDERED_LIST_OP
+            | IFR_STRING_OP
+            | IFR_DATE_OP
+            | IFR_TIME_OP
+            | IFR_ACTION_OP
+    )
+}
+
+struct Frame {
+    op: u8,
+    offset: usize,
+    expr_end: Option<usize>,
+    form_id: Option<u16>,
+}
+
+pub fn find_gates(body: &[u8], target: &GateTarget) -> Vec<Gate> {
+    let (start, end) = package_bounds(body);
+    let mut gates = Vec::new();
+    let mut stack: Vec<Frame> = Vec::new();
+    let mut i = start;
+    while i + 2 <= end {
+        let op = body[i];
+        let length_and_scope = body[i + 1];
+        let length = (length_and_scope & 0x7F) as usize;
+        if length < 2 || i + length > end {
+            break;
+        }
+        if op == IFR_END_OP {
+            stack.pop();
+            i += length;
+            continue;
+        }
+        let in_gate_expr =
+            matches!(stack.last(), Some(f) if is_gate_op(f.op) && f.expr_end.is_none());
+        if in_gate_expr && !is_statement_op(op) && !is_gate_op(op) {
+            i += length;
+            continue;
+        }
+        let mut form_id = None;
+        if is_statement_op(op) {
+            for f in stack.iter_mut() {
+                if f.expr_end.is_none() {
+                    f.expr_end = Some(i);
+                }
+            }
+            emit_gates(body, &stack, i, op, length, target, &mut gates);
+            if op == IFR_FORM_OP && length >= 6 {
+                form_id = Some(u16::from_le_bytes([body[i + 2], body[i + 3]]));
+            }
+        }
+        if length_and_scope & 0x80 != 0 {
+            stack.push(Frame {
+                op,
+                offset: i,
+                expr_end: None,
+                form_id,
+            });
+        }
+        i += length;
+    }
+    gates
+}
+
+fn emit_gates(
+    body: &[u8],
+    stack: &[Frame],
+    stmt_offset: usize,
+    op: u8,
+    length: usize,
+    target: &GateTarget,
+    gates: &mut Vec<Gate>,
+) {
+    let current_form = stack.iter().rev().find_map(|f| f.form_id);
+    let wraps = if op == IFR_FORM_OP && length >= 6 {
+        let fid = u16::from_le_bytes([body[stmt_offset + 2], body[stmt_offset + 3]]);
+        if fid == target.form_id && target.question_id.is_none() {
+            Some(Wraps::Form { form_id: fid })
+        } else {
+            None
+        }
+    } else if op == IFR_REF_OP && length >= 15 && target.question_id.is_none() {
+        let fid = u16::from_le_bytes([body[stmt_offset + 13], body[stmt_offset + 14]]);
+        if fid == target.form_id {
+            Some(Wraps::Ref {
+                form_id: fid,
+                host_form_id: current_form.unwrap_or(0),
+            })
+        } else {
+            None
+        }
+    } else if is_question_op(op) && length >= 8 {
+        let qid = u16::from_le_bytes([body[stmt_offset + 6], body[stmt_offset + 7]]);
+        if target.question_id == Some(qid) && current_form == Some(target.form_id) {
+            Some(Wraps::Question {
+                form_id: target.form_id,
+                question_id: qid,
+            })
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    let Some(wraps) = wraps else { return };
+    for f in stack.iter().rev() {
+        if !is_gate_op(f.op) {
+            continue;
+        }
+        let expr_end = f.expr_end.unwrap_or(stmt_offset);
+        gates.push(Gate {
+            kind: if f.op == IFR_SUPPRESS_IF_OP {
+                GateKind::Suppress
+            } else {
+                GateKind::Grayout
+            },
+            wraps,
+            scope_offset: f.offset,
+            expr_offset: f.offset + 2,
+            expr_end,
+            expr: decode_expr(&body[f.offset + 2..expr_end.min(body.len())]),
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::Guid;
+    use r_efi::hii::{
+        IFR_FORM_OP, IFR_FORM_SET_OP, IFR_GRAY_OUT_IF_OP, IFR_ONE_OF_OP, IFR_SUPPRESS_IF_OP,
+        PACKAGE_FORMS,
+    };
+    use std::str::FromStr;
+
+    const FORMSET_GUID: &str = "7B59104A-C00D-4158-87FF-F04D6396A915";
+
+    fn opcode(op_code: u8, scope: bool, payload: &[u8]) -> Vec<u8> {
+        let mut v = Vec::with_capacity(payload.len() + 2);
+        v.push(op_code);
+        v.push(((payload.len() + 2) as u8) | if scope { 0x80 } else { 0 });
+        v.extend_from_slice(payload);
+        v
+    }
+
+    fn form_set(title: u16) -> Vec<u8> {
+        let g = Guid::from_str(FORMSET_GUID).unwrap();
+        let mut p = Vec::new();
+        p.extend_from_slice(&g.to_bytes());
+        p.extend_from_slice(&title.to_le_bytes());
+        p.extend_from_slice(&0u16.to_le_bytes());
+        p.push(0u8);
+        opcode(IFR_FORM_SET_OP, true, &p)
+    }
+
+    fn form(id: u16, title: u16) -> Vec<u8> {
+        opcode(
+            IFR_FORM_OP,
+            true,
+            &[id.to_le_bytes(), title.to_le_bytes()].concat(),
+        )
+    }
+
+    fn end() -> Vec<u8> {
+        vec![r_efi::hii::IFR_END_OP, 0x02]
+    }
+
+    fn package(ifr: &[u8]) -> Vec<u8> {
+        let total = 4 + ifr.len();
+        let mut b = vec![
+            (total & 0xFF) as u8,
+            ((total >> 8) & 0xFF) as u8,
+            ((total >> 16) & 0xFF) as u8,
+            PACKAGE_FORMS,
+        ];
+        b.extend_from_slice(ifr);
+        b
+    }
+
+    fn ref_op(form_id: u16, question_id: u16) -> Vec<u8> {
+        let mut p = vec![0u8; 11];
+        p[4..6].copy_from_slice(&question_id.to_le_bytes());
+        let mut v = vec![r_efi::hii::IFR_REF_OP, 0x0F];
+        v.extend_from_slice(&p);
+        v.extend_from_slice(&form_id.to_le_bytes());
+        v
+    }
+
+    fn one_of_op(question_id: u16) -> Vec<u8> {
+        let mut p = vec![0u8; 10];
+        p[4..6].copy_from_slice(&question_id.to_le_bytes());
+        opcode(IFR_ONE_OF_OP, true, &p)
+    }
+
+    fn vendor_ifr() -> Vec<u8> {
+        let mut ifr = form_set(7);
+        ifr.extend(form(10002, 20));
+        ifr.extend(opcode(IFR_SUPPRESS_IF_OP, true, &[]));
+        ifr.extend(uint64(1));
+        ifr.extend(uint64(1));
+        ifr.extend(equal());
+        ifr.extend(ref_op(10029, 0x003A));
+        ifr.extend(end());
+        ifr.extend(end());
+        ifr.extend(form(10029, 21));
+        ifr.extend(opcode(IFR_GRAY_OUT_IF_OP, true, &[]));
+        ifr.extend(eq_id_val(0x009A, 1));
+        ifr.extend(one_of_op(0x003B));
+        ifr.extend(end());
+        ifr.extend(end());
+        ifr.extend(end());
+        ifr.extend(end());
+        ifr
+    }
+
+    const FORM_GATE_TARGET: GateTarget = GateTarget {
+        form_id: 10029,
+        question_id: None,
+    };
+    const QUESTION_GATE_TARGET: GateTarget = GateTarget {
+        form_id: 10029,
+        question_id: Some(0x003B),
+    };
+
+    #[test]
+    fn find_gates_reports_ref_suppress_for_target_form() {
+        let pkg = package(&vendor_ifr());
+        let gates = find_gates(&pkg, &FORM_GATE_TARGET);
+        assert_eq!(gates.len(), 1);
+        assert_eq!(gates[0].kind, GateKind::Suppress);
+        assert_eq!(
+            gates[0].wraps,
+            Wraps::Ref {
+                form_id: 10029,
+                host_form_id: 10002
+            }
+        );
+        assert_eq!(gates[0].expr, GateExpr::EqConst { a: 1, b: 1 });
+        assert_eq!(pkg[gates[0].scope_offset], IFR_SUPPRESS_IF_OP);
+        assert_eq!(pkg[gates[0].expr_offset], IFR_UINT64_OP);
+        assert!(gates[0].expr_offset < gates[0].expr_end);
+        assert_eq!(
+            &pkg[gates[0].expr_end..gates[0].expr_end + 2],
+            &ref_op(10029, 0x003A)[..2]
+        );
+    }
+
+    #[test]
+    fn find_gates_reports_question_grayout() {
+        let pkg = package(&vendor_ifr());
+        let gates = find_gates(&pkg, &QUESTION_GATE_TARGET);
+        assert_eq!(gates.len(), 1);
+        assert_eq!(gates[0].kind, GateKind::Grayout);
+        assert_eq!(
+            gates[0].wraps,
+            Wraps::Question {
+                form_id: 10029,
+                question_id: 0x003B
+            }
+        );
+        assert_eq!(
+            gates[0].expr,
+            GateExpr::EqIdVal {
+                question_id: 0x009A,
+                value: 1
+            }
+        );
+        assert_eq!(pkg[gates[0].scope_offset], IFR_GRAY_OUT_IF_OP);
+    }
+
+    #[test]
+    fn find_gates_walks_despite_scope_bit_quirk_in_expr() {
+        let mut ifr = vendor_ifr();
+        let quirk_pos = ifr
+            .windows(2)
+            .position(|w| w == [IFR_SUPPRESS_IF_OP, 0x82])
+            .unwrap()
+            + 2;
+        assert_eq!(ifr[quirk_pos + 1], 0x0A);
+        ifr[quirk_pos + 1] = 0x8A;
+        let pkg = package(&ifr);
+        let gates = find_gates(&pkg, &FORM_GATE_TARGET);
+        assert_eq!(
+            gates.len(),
+            1,
+            "scope bit on expression operand must not derail the walk"
+        );
+        assert_eq!(gates[0].expr, GateExpr::EqConst { a: 1, b: 1 });
+    }
+
+    #[test]
+    fn find_gates_reports_direct_form_suppress() {
+        let mut ifr = form_set(7);
+        ifr.extend(opcode(IFR_SUPPRESS_IF_OP, true, &[]));
+        ifr.extend(uint64(1));
+        ifr.extend(uint64(1));
+        ifr.extend(equal());
+        ifr.extend(form(901, 30));
+        ifr.extend(end());
+        ifr.extend(end());
+        ifr.extend(end());
+        ifr.extend(end());
+        let gates = find_gates(
+            &package(&ifr),
+            &GateTarget {
+                form_id: 901,
+                question_id: None,
+            },
+        );
+        assert_eq!(gates.len(), 1);
+        assert_eq!(gates[0].wraps, Wraps::Form { form_id: 901 });
+    }
+
+    #[test]
+    fn find_gates_reports_every_enclosing_gate_innermost_first() {
+        let mut ifr = form_set(7);
+        ifr.extend(form(10029, 21));
+        ifr.extend(opcode(IFR_SUPPRESS_IF_OP, true, &[]));
+        ifr.extend(uint64(1));
+        ifr.extend(uint64(1));
+        ifr.extend(equal());
+        ifr.extend(opcode(IFR_GRAY_OUT_IF_OP, true, &[]));
+        ifr.extend(eq_id_val(0x009A, 1));
+        ifr.extend(one_of_op(0x003B));
+        ifr.extend(end());
+        ifr.extend(end());
+        ifr.extend(end());
+        ifr.extend(end());
+        ifr.extend(end());
+        let gates = find_gates(&package(&ifr), &QUESTION_GATE_TARGET);
+        assert_eq!(gates.len(), 2);
+        assert_eq!(gates[0].kind, GateKind::Grayout);
+        assert_eq!(
+            gates[0].expr,
+            GateExpr::EqIdVal {
+                question_id: 0x009A,
+                value: 1
+            }
+        );
+        assert_eq!(gates[1].kind, GateKind::Suppress);
+        assert_eq!(
+            gates[1].expr,
+            GateExpr::Other,
+            "outer suppress region contains the nested grayout opcode"
+        );
+    }
+
+    #[test]
+    fn find_gates_ignores_question_in_other_form() {
+        let ifr = vendor_ifr();
+        let pkg = package(&ifr);
+        let wrong_form = find_gates(
+            &pkg,
+            &GateTarget {
+                form_id: 10028,
+                question_id: Some(0x003B),
+            },
+        );
+        assert!(wrong_form.is_empty());
+    }
+
+    #[test]
+    fn find_gates_unknown_target_is_empty() {
+        let pkg = package(&vendor_ifr());
+        assert!(
+            find_gates(
+                &pkg,
+                &GateTarget {
+                    form_id: 4242,
+                    question_id: None,
+                }
+            )
+            .is_empty()
+        );
+        assert!(
+            find_gates(
+                &pkg,
+                &GateTarget {
+                    form_id: 4242,
+                    question_id: Some(9),
+                }
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn find_gates_stops_gracefully_on_truncated_package() {
+        let mut pkg = package(&vendor_ifr());
+        pkg.truncate(pkg.len() - 3);
+        let gates = find_gates(&pkg, &FORM_GATE_TARGET);
+        assert!(gates.len() <= 1);
+    }
 
     fn uint64(v: u64) -> Vec<u8> {
         let mut b = vec![IFR_UINT64_OP, 0x0A];
