@@ -173,7 +173,9 @@ pub struct GateTarget { form_id: u16, question_id: Option<u16> }
   изменён). `a != b` — гейт уже false, флипа нет;
 - `EqIdVal{qid, val}` — val (2 байта @ `expr_offset+4`) → `0xFFFF`;
   guard: если `question_storage_width` нашла вопрос и ширина > 1 байта —
-  флип запрещён (0xFFFF достижим);
+  флип запрещён (0xFFFF достижим); `val == 0xFFFF` — гейт уже false
+  (недостижимое значение уже вписано), флипа нет — симметрично `a != b`
+  у EqConst;
 - `True`/`Other` — флипа нет (отчёт «не сводится», для TRUE — отдельный
   TODO-класс).
 

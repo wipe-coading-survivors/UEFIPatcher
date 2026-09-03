@@ -812,6 +812,31 @@ git commit -m "feat(uefi-engine): hii gates walker (grammar-aware, vendor scope-
         assert_eq!(gates[0].expr, GateExpr::EqConst { a: 1, b: 2 });
         assert!(plan_gates(&body, &gates).is_err(), "already-false expression must not flip again");
     }
+
+    fn grayout_ffff_ifr() -> Vec<u8> {
+        let mut ifr = form_set(7);
+        ifr.extend(form(10029, 21));
+        ifr.extend(opcode(IFR_GRAY_OUT_IF_OP, true, &[]));
+        ifr.extend(eq_id_val(0x009A, 0xFFFF));
+        ifr.extend(one_of_op(0x003B));
+        ifr.extend(end());
+        ifr.extend(end());
+        ifr.extend(end());
+        ifr.extend(end());
+        ifr
+    }
+
+    #[test]
+    fn plan_eq_id_val_with_ffff_value_is_not_a_flip() {
+        let pkg = package(&grayout_ffff_ifr());
+        let gates = find_gates(&pkg, &QUESTION_GATE_TARGET);
+        assert_eq!(
+            gates[0].expr,
+            GateExpr::EqIdVal { question_id: 0x009A, value: 0xFFFF }
+        );
+        assert!(plan_flip(&pkg, &gates[0]).is_none());
+        assert!(plan_gates(&pkg, &gates).is_err());
+    }
 ```
 
 Ширина мастера известна только для NUMERIC/CHECKBOX (`question_storage_width`); CHECKBOX-ветка (`IFR_CHECKBOX_OP => Some(1)`) покрыта ревью реализации — отдельной фикстуры не требует (CHECKBOX-гейтнутые мастера на живых образах не встречены, см. спеку §7).
@@ -869,7 +894,7 @@ pub(crate) fn plan_flip(body: &[u8], gate: &Gate) -> Option<PlannedFlip> {
                 to: vec![from.wrapping_add(1)],
             })
         }
-        GateExpr::EqIdVal { question_id, value } => {
+        GateExpr::EqIdVal { question_id, value } if value != 0xFFFF => {
             if question_storage_width(body, question_id).is_some_and(|w| w > 1) {
                 return None;
             }
@@ -2177,6 +2202,7 @@ fn real_image_hii_unlock_matches_e12() {
     assert!(!gates_after[0].flippable, "already-false gate offers no flip");
     let qgates_after = uefi_engine::hii::gates_list(&rebuilt, &question_item).unwrap();
     assert_eq!(qgates_after[0].expression, "0x009A == 0xFFFF");
+    assert!(!qgates_after[0].flippable, "already-unreachable value offers no flip");
 
     let forms = uefi_engine::hii::forms::collect_forms(&rebuilt);
     assert!(
