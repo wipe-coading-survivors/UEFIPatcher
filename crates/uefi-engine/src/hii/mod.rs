@@ -515,16 +515,14 @@ struct StoreHit {
     body_offset: usize,
 }
 
-fn store_desc(node: &FfsNode) -> String {
-    match node.node_type {
-        FfsType::File => format!(
-            "file {} (raw body)",
-            node.guid
-                .as_ref()
-                .map(crate::guid_to_upper_string)
-                .unwrap_or_else(|| "unknown".into())
-        ),
-        _ => format!("section {:#04x} raw body", node.subtype),
+fn store_desc(node: &FfsNode, file_guid: Option<&Guid>) -> String {
+    let guid_text = file_guid
+        .map(crate::guid_to_upper_string)
+        .unwrap_or_else(|| "unknown".into());
+    if node.node_type == FfsType::File {
+        format!("file {guid_text} (raw body)")
+    } else {
+        format!("file {guid_text} section {:#04x} raw body", node.subtype)
     }
 }
 
@@ -532,10 +530,16 @@ fn collect_std_defaults_hits(
     node: &FfsNode,
     path: &mut Vec<usize>,
     barrier: bool,
+    file_guid: Option<&Guid>,
     name: &str,
     data_len: usize,
     out: &mut Vec<StoreHit>,
 ) -> Result<(), HiiError> {
+    let own_file_guid = if node.node_type == FfsType::File {
+        node.guid.as_ref()
+    } else {
+        file_guid
+    };
     let is_store_body = |n: &FfsNode| {
         matches!(n.node_type, FfsType::File | FfsType::Section)
             && (n.node_type != FfsType::File || n.children.is_empty())
@@ -548,13 +552,13 @@ fn collect_std_defaults_hits(
         if let Some((off, _)) = nvar::find_varstore_record(&node.body, name, data_len) {
             out.push(StoreHit {
                 path: path.clone(),
-                desc: store_desc(node),
+                desc: store_desc(node, own_file_guid),
                 body_offset: off,
             });
         } else {
             return Err(HiiError::ValueOpUnsupported(format!(
                 "StdDefaults store {} has no record {:?} of {} bytes",
-                store_desc(node),
+                store_desc(node, own_file_guid),
                 name,
                 data_len
             )));
@@ -572,7 +576,15 @@ fn collect_std_defaults_hits(
             ));
     for (i, child) in node.children.iter().enumerate() {
         path.push(i);
-        collect_std_defaults_hits(child, path, child_barrier, name, data_len, out)?;
+        collect_std_defaults_hits(
+            child,
+            path,
+            child_barrier,
+            own_file_guid,
+            name,
+            data_len,
+            out,
+        )?;
         path.pop();
     }
     Ok(())
@@ -626,6 +638,7 @@ pub fn set_value(image: &mut Image, item_id: &str, value: u64) -> Result<ValueOu
         &image.root,
         &mut path,
         false,
+        None,
         &varstore.name,
         varstore.size as usize,
         &mut hits,
@@ -660,6 +673,9 @@ pub fn set_value(image: &mut Image, item_id: &str, value: u64) -> Result<ValueOu
     let mut applied = Vec::new();
     for plan in &plans {
         let hit = &hits[plan.hit_index];
+        if plan.from == plan.to {
+            continue;
+        }
         let off = hit.body_offset + map.var_offset as usize;
         {
             let node = node_at_mut(&mut image.root, &hit.path);
@@ -1616,8 +1632,12 @@ mod tests {
         e
     }
 
+    const SETUP_DECOY_DATA_OFF: usize = 0x28;
+    const SETUP_114_DATA_OFF: usize = 0x3F;
+
     fn nvar_store_body() -> Vec<u8> {
-        let inner = nvar_entry(Some("Setup"), &[0u8; 114], 0x82, Some(0));
+        let mut inner = nvar_entry(Some("Setup"), &[0x11u8; 6], 0x82, Some(0));
+        inner.extend_from_slice(&nvar_entry(Some("Setup"), &[0u8; 114], 0x82, Some(0)));
         nvar_entry(Some("StdDefaults"), &inner, 0x82, Some(0))
     }
 
@@ -1657,6 +1677,11 @@ mod tests {
 
     fn fv2_store_body(image: &Image) -> &[u8] {
         &image.root.children[1].children[0].children[0].children[0].body
+    }
+
+    fn marked_count(node: &FfsNode) -> usize {
+        node.children.iter().map(marked_count).sum::<usize>()
+            + usize::from(node.action != Action::NoAction)
     }
 
     #[test]
@@ -1716,10 +1741,21 @@ mod tests {
         assert_eq!(outcome.applied.len(), 2);
         assert_eq!(outcome.stores.len(), 2);
         assert_eq!(outcome.question.question_id, 0x3B);
+        assert_ne!(outcome.stores[0], outcome.stores[1]);
+        assert!(outcome.stores[0].contains(NVAR_FV0_GUID_STR));
         assert!(outcome.stores[0].starts_with("file "));
-        assert!(outcome.stores[1].starts_with("section "));
-        assert_eq!(image.root.children[0].children[0].body[0x28 + 0x3A], 1);
-        assert_eq!(fv2_store_body(&image)[0x28 + 0x3A], 1);
+        assert!(outcome.stores[1].contains(NVAR_FV2_GUID_STR));
+        assert!(outcome.stores[1].contains("section"));
+        assert_eq!(
+            image.root.children[0].children[0].body[SETUP_114_DATA_OFF + 0x3A],
+            1
+        );
+        assert_eq!(fv2_store_body(&image)[SETUP_114_DATA_OFF + 0x3A], 1);
+        assert_eq!(
+            &fv0_store_body(&image)[SETUP_DECOY_DATA_OFF..SETUP_DECOY_DATA_OFF + 6],
+            &[0x11u8; 6],
+            "decoy 6-byte Setup record must not be touched"
+        );
         assert_eq!(image.root.children[0].children[0].body.len(), fv0_len);
         assert_eq!(fv2_store_body(&image).len(), fv2_len);
         assert_eq!(image.root.children[0].children[0].action, Action::Rebuild);
@@ -1746,7 +1782,7 @@ mod tests {
             set_value(&mut image, VENDOR_QUESTION_ITEM, 1),
             Err(HiiError::NotWritable)
         ));
-        assert_eq!(fv0_store_body(&image)[0x28 + 0x3A], 0);
+        assert_eq!(fv0_store_body(&image)[SETUP_114_DATA_OFF + 0x3A], 0);
     }
 
     #[test]
@@ -1839,11 +1875,33 @@ mod tests {
         set_value(&mut image, VENDOR_QUESTION_ITEM, 1).unwrap();
         let fv0_before = fv0_store_body(&image).to_vec();
         let fv2_before = fv2_store_body(&image).to_vec();
+        let marks_before = marked_count(&image.root);
         let outcome = set_value(&mut image, VENDOR_QUESTION_ITEM, 1).unwrap();
-        assert_eq!(outcome.applied.len(), 2);
-        assert!(outcome.applied.iter().all(|a| a.contains("01 -> 01")));
+        assert!(outcome.applied.is_empty());
+        assert_eq!(outcome.stores.len(), 2);
         assert_eq!(fv0_store_body(&image), fv0_before);
         assert_eq!(fv2_store_body(&image), fv2_before);
+        assert_eq!(marked_count(&image.root), marks_before);
+    }
+
+    #[test]
+    fn set_value_partial_noop_reports_only_real_changes() {
+        let mut image = image_with_nvar_stores();
+        image.root.children[0].children[0].body[SETUP_114_DATA_OFF + 0x3A] = 1;
+        let fv0_before = fv0_store_body(&image).to_vec();
+        let outcome = set_value(&mut image, VENDOR_QUESTION_ITEM, 1).unwrap();
+        assert_eq!(outcome.applied.len(), 1);
+        assert_eq!(outcome.stores.len(), 2);
+        assert!(outcome.applied[0].contains(NVAR_FV2_GUID_STR));
+        assert_eq!(fv0_store_body(&image), fv0_before);
+        assert_eq!(fv2_store_body(&image)[SETUP_114_DATA_OFF + 0x3A], 1);
+        assert_eq!(image.root.children[0].children[0].action, Action::NoAction);
+        assert_eq!(image.root.children[0].action, Action::NoAction);
+        assert_eq!(
+            image.root.children[1].children[0].children[0].children[0].action,
+            Action::Rebuild
+        );
+        assert_eq!(image.root.action, Action::Rebuild);
     }
 
     #[test]
@@ -1854,12 +1912,12 @@ mod tests {
         set_value(&mut image, VENDOR_QUESTION_ITEM, 1).unwrap();
         assert_eq!(fv0_store_body(&image).len(), fv0_len);
         assert_eq!(fv2_store_body(&image).len(), fv2_len);
-        assert_eq!(fv0_store_body(&image)[0x28 + 0x3A], 1);
-        assert_eq!(fv2_store_body(&image)[0x28 + 0x3A], 1);
+        assert_eq!(fv0_store_body(&image)[SETUP_114_DATA_OFF + 0x3A], 1);
+        assert_eq!(fv2_store_body(&image)[SETUP_114_DATA_OFF + 0x3A], 1);
         set_value(&mut image, VENDOR_QUESTION_ITEM, 1).unwrap();
         assert_eq!(fv0_store_body(&image).len(), fv0_len);
         assert_eq!(fv2_store_body(&image).len(), fv2_len);
-        assert_eq!(fv0_store_body(&image)[0x28 + 0x3A], 1);
-        assert_eq!(fv2_store_body(&image)[0x28 + 0x3A], 1);
+        assert_eq!(fv0_store_body(&image)[SETUP_114_DATA_OFF + 0x3A], 1);
+        assert_eq!(fv2_store_body(&image)[SETUP_114_DATA_OFF + 0x3A], 1);
     }
 }
