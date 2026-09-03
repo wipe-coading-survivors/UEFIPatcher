@@ -294,7 +294,7 @@ pub(crate) fn plan_flip(body: &[u8], gate: &Gate) -> Option<PlannedFlip> {
                 to: vec![from.wrapping_add(1)],
             })
         }
-        GateExpr::EqIdVal { question_id, value } => {
+        GateExpr::EqIdVal { question_id, value } if value != 0xFFFF => {
             if question_storage_width(body, question_id).is_some_and(|w| w > 1) {
                 return None;
             }
@@ -821,6 +821,34 @@ mod tests {
             plan_gates(&body, &gates).is_err(),
             "already-false expression must not flip again"
         );
+    }
+
+    fn grayout_ffff_ifr() -> Vec<u8> {
+        let mut ifr = form_set(7);
+        ifr.extend(form(10029, 21));
+        ifr.extend(opcode(IFR_GRAY_OUT_IF_OP, true, &[]));
+        ifr.extend(eq_id_val(0x009A, 0xFFFF));
+        ifr.extend(one_of_op(0x003B));
+        ifr.extend(end());
+        ifr.extend(end());
+        ifr.extend(end());
+        ifr.extend(end());
+        ifr
+    }
+
+    #[test]
+    fn plan_eq_id_val_with_ffff_value_is_not_a_flip() {
+        let pkg = package(&grayout_ffff_ifr());
+        let gates = find_gates(&pkg, &QUESTION_GATE_TARGET);
+        assert_eq!(
+            gates[0].expr,
+            GateExpr::EqIdVal {
+                question_id: 0x009A,
+                value: 0xFFFF
+            }
+        );
+        assert!(plan_flip(&pkg, &gates[0]).is_none());
+        assert!(plan_gates(&pkg, &gates).is_err());
     }
 
     fn uint64(v: u64) -> Vec<u8> {

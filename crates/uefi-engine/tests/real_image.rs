@@ -1429,6 +1429,10 @@ fn real_image_hii_unlock_matches_e12() {
     );
     let qgates_after = uefi_engine::hii::gates_list(&rebuilt, &question_item).unwrap();
     assert_eq!(qgates_after[0].expression, "0x009A == 0xFFFF");
+    assert!(
+        !qgates_after[0].flippable,
+        "already-unreachable value offers no flip"
+    );
 
     let forms = uefi_engine::hii::forms::collect_forms(&rebuilt);
     assert!(
