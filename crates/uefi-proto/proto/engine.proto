@@ -207,4 +207,26 @@ message HiiGatesListResponse { repeated GateInfo gates = 1; }
 message HiiUnlockRequest     { string image_id = 1; string item_id = 2; }
 message HiiUnlockResponse    { repeated GateInfo gates = 1; repeated string applied_flips = 2; }
 
+message VarStoreInfo { uint32 id = 1; string guid = 2; uint32 size = 3; string name = 4; }
+message OptionEntry  { uint32 string_id = 1; uint64 value = 2; uint32 flags = 3; }
+message DefaultEntry { uint32 default_id = 1; uint32 type = 2; uint64 value = 3; }
+message QuestionInfo {
+  uint32 form_id = 1;
+  uint32 question_id = 2;
+  string kind = 3;
+  uint32 var_store_id = 4;
+  VarStoreInfo varstore = 5;
+  uint32 var_offset = 6;
+  uint32 width = 7;
+  uint64 min = 8;
+  uint64 max = 9;
+  uint64 step = 10;
+  repeated OptionEntry options = 11;
+  repeated DefaultEntry defaults = 12;
+}
+message HiiQuestionInfoRequest  { string image_id = 1; string item_id = 2; }
+message HiiQuestionInfoResponse { QuestionInfo question = 1; }
+message HiiSetValueRequest      { string image_id = 1; string item_id = 2; uint64 value = 3; }
+message HiiSetValueResponse     { QuestionInfo question = 1; repeated string applied_flips = 2; repeated string stores = 3; }
+
 message Empty {}
