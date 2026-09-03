@@ -280,16 +280,15 @@ git commit -m "feat(uefi-engine): page-hijack-op Task 2 — hijack JSON schema +
 `crates/uefi-engine/src/hii/form_hijack.rs`:
 
 ```rust
-use crate::types::*;
 use r_efi::hii::IFR_FORM_OP;
 
-use super::HiiError;
 use super::values;
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::hii::ifr_builder::IfrBuilder;
+    use crate::types::Guid;
     use r_efi::hii::IFR_ONE_OF_OP;
     use std::str::FromStr;
 
@@ -364,12 +363,12 @@ Expected: FAIL — `locate_form` не найден.
 Выше `mod tests` в `form_hijack.rs`:
 
 ```rust
-pub(crate) struct HijackFormSpan {
+pub struct HijackFormSpan {
     pub form_op: usize,
     pub next_form_op: usize,
 }
 
-pub(crate) fn locate_form(pkg: &[u8], form_id: u16) -> Option<HijackFormSpan> {
+pub fn locate_form(pkg: &[u8], form_id: u16) -> Option<HijackFormSpan> {
     let mut forms: Vec<(usize, u16)> = Vec::new();
     values::walk_statements(pkg, |op, off, len, _| {
         if op == IFR_FORM_OP && len >= 6 {
@@ -387,7 +386,7 @@ pub(crate) fn locate_form(pkg: &[u8], form_id: u16) -> Option<HijackFormSpan> {
     })
 }
 
-pub(crate) fn locate_questions(pkg: &[u8], form_id: u16) -> Vec<(usize, u16)> {
+pub fn locate_questions(pkg: &[u8], form_id: u16) -> Vec<(usize, u16)> {
     let mut qs = Vec::new();
     values::walk_statements(pkg, |op, off, len, current_form| {
         if values::is_question_op(op) && len >= 13 && current_form == Some(form_id) {
@@ -397,11 +396,11 @@ pub(crate) fn locate_questions(pkg: &[u8], form_id: u16) -> Vec<(usize, u16)> {
     qs
 }
 
-pub(crate) fn rewrite_form_title(pkg: &mut [u8], form_op: usize, title_id: u16) {
+pub fn rewrite_form_title(pkg: &mut [u8], form_op: usize, title_id: u16) {
     pkg[form_op + 4..form_op + 6].copy_from_slice(&title_id.to_le_bytes());
 }
 
-pub(crate) fn rewrite_question_strings(
+pub fn rewrite_question_strings(
     pkg: &mut [u8],
     q_off: usize,
     prompt_id: u16,
