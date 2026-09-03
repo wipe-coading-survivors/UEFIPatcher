@@ -1006,9 +1006,10 @@ git commit -m "refactor(uefi-engine): drop falsified UPG/PRC patch path (E8)"
 **Interfaces:**
 - Consumes: Tasks 1–3 (`gates::{GateTarget, GateKind, Wraps, GateExpr, Gate, find_gates, plan_gates, apply_flips}`), `crate::parser::target::{parse_target, find_item_path, find_item_mut}`, `pe_resource_form_packages`, `ops::mark_rebuild_to_root_by_path`, `uefi_proto::GateInfo`.
 - Produces (для Tasks 6, 8):
-  - `fn parse_item_id(item_id: &str) -> Result<(crate::parser::target::Target, u16, Option<u16>), HiiError>` — private
-  - `fn resolve_writable_path(image: &Image, target: &crate::parser::target::Target) -> Result<Vec<usize>, HiiError>` — private
-  - `pub struct UnlockOutcome { pub gates: Vec<uefi_proto::GateInfo>, pub applied: Vec<String> }`
+  - `fn parse_item_id(item_id: &str) -> Result<(crate::types::Target, u16, Option<u16>), HiiError>` — private
+  - `fn resolve_writable_path(image: &Image, target: &crate::types::Target) -> Result<Vec<usize>, HiiError>` — private
+  - `#[derive(Debug)] #[derive(Debug)]
+pub struct UnlockOutcome { pub gates: Vec<uefi_proto::GateInfo>, pub applied: Vec<String> }`
   - `pub fn gates_list(image: &Image, item_id: &str) -> Result<Vec<uefi_proto::GateInfo>, HiiError>`
   - `pub fn unlock(image: &mut Image, item_id: &str) -> Result<UnlockOutcome, HiiError>`
   - `pub enum HiiError::GateExpressionUnsupported(String)` — новый вариант (последним в enum; `SibtBlockUnsupported` удалён вместе с PRC-механикой в Task 4)
@@ -1154,7 +1155,6 @@ message GateInfo {
         b
     }
 
-    const VENDOR_TARGET: &str = "5c60f367-a505-419a-859e-2a4ff6ca6fe5:0x19:0";
     const VENDOR_FORM_ITEM: &str = "5c60f367-a505-419a-859e-2a4ff6ca6fe5:0x19:0#10029";
     const VENDOR_QUESTION_ITEM: &str = "5c60f367-a505-419a-859e-2a4ff6ca6fe5:0x19:0#10029:0x3B";
 ```
@@ -1366,7 +1366,7 @@ fn parse_u16_loose(s: &str) -> Option<u16> {
 
 fn parse_item_id(
     item_id: &str,
-) -> Result<(crate::parser::target::Target, u16, Option<u16>), HiiError> {
+) -> Result<(crate::types::Target, u16, Option<u16>), HiiError> {
     let (target_str, disc) = item_id.rsplit_once('#').ok_or(HiiError::NotFound)?;
     let (form_str, qid_str) = match disc.split_once(':') {
         Some((f, q)) => (f, Some(q)),
@@ -1384,7 +1384,7 @@ fn parse_item_id(
 
 fn resolve_writable_path(
     image: &Image,
-    target: &crate::parser::target::Target,
+    target: &crate::types::Target,
 ) -> Result<Vec<usize>, HiiError> {
     if image.mode != ImageMode::Write {
         return Err(HiiError::NotWritable);
@@ -1492,6 +1492,7 @@ pub fn gates_list(image: &Image, item_id: &str) -> Result<Vec<uefi_proto::GateIn
     Ok(out)
 }
 
+#[derive(Debug)]
 pub struct UnlockOutcome {
     pub gates: Vec<uefi_proto::GateInfo>,
     pub applied: Vec<String>,
@@ -1573,7 +1574,7 @@ pub fn unlock(image: &mut Image, item_id: &str) -> Result<UnlockOutcome, HiiErro
     GateExpressionUnsupported(String),
 ```
 
-и `set_item_visibility` переключить на `parse_item_id` + `resolve_writable_path` (существующие тесты — регрессия: reject Read-mode, malformed discriminator, compression — уже покрывают рефакторинг).
+и `set_item_visibility` переключить на `parse_item_id` + `resolve_writable_path` (существующие тесты — регрессия: reject Read-mode, malformed discriminator, compression — уже покрывают рефакторинг). Важно: существующие регрессионные тесты используют item_id БЕЗ `#` (бэрые таргеты) — сохранить ветку без `#` (прямой `parse_target`), `parse_item_id` применять только к строкам с `#`; question-suffix (`#form:qid`) в `set_item_visibility` отклонять `HiiError::NotFound`.
 
 - [ ] **Step 5: Прогнать + lint + коммит**
 
@@ -2203,7 +2204,7 @@ git commit -m "test(uefi-engine): real-image unlock matches E12 dataflip"
 
 - [ ] **Step 1: Актуализировать TODO.md**
 
-В секции «Мини-цикл „unlock-op“»: пункты u1–u5 отметить `[x]` с кратким перечнем коммитов (по факту реализации); в пункте «Критические находки» отметить закрытие подпункта про PRC (удалён) и «hii string list»-пункта, если он закрывался этим циклом (по факту — он закрыт ранее, циклом 2026-09-02). Добавить отложенные миноры из ревью (по факту находок реализации): TRUE→FALSE-класс; quirk 0x8a в легаси-walker'ах `ifr.rs` (путь set-visibility на setup-модуле — no-op); FormInfo «gated»-поле для REF-гейтнутых форм (клиенты TUI/WebUI).
+В секции «Мини-цикл „unlock-op“»: пункты u1–u5 отметить `[x]` с кратким перечнем коммитов (по факту реализации); в пункте «Критические находки» отметить закрытие подпункта про PRC (удалён) и «hii string list»-пункта, если он закрывался этим циклом (по факту — он закрыт ранее, циклом 2026-09-02). Добавить отложенные миноры из ревью (по факту находок реализации): TRUE→FALSE-класс; quirk 0x8a в легаси-walker'ах `ifr.rs` (путь set-visibility на setup-модуле — no-op); FormInfo «gated»-поле для REF-гейтнутых форм (клиенты TUI/WebUI); error-precedence в set_item_visibility — malformed item_id в Read-режиме теперь даёт NotFound вместо NotWritable (parse идёт перед проверкой режима).
 
 - [ ] **Step 2: Коммит**
 
