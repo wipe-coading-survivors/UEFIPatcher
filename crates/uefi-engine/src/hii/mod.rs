@@ -872,9 +872,9 @@ mod tests {
         let mut blob = g.to_bytes().to_vec();
         let total = 20 + forms.len() + display.len() + 4;
         blob.extend_from_slice(&(total as u32).to_le_bytes());
-        blob.extend(&forms);
-        blob.extend(&display);
-        blob.extend(&[0x04, 0x00, 0x00, r_efi::hii::PACKAGE_END]);
+        blob.extend_from_slice(&forms);
+        blob.extend_from_slice(&display);
+        blob.extend_from_slice(&[0x04, 0x00, 0x00, r_efi::hii::PACKAGE_END]);
         let mut image = pe32_image_with(&blob);
         set_item_visibility(
             &mut image,
