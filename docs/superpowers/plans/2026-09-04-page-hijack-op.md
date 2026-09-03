@@ -147,7 +147,7 @@ pub fn scan_question_records(body: &[u8]) -> Vec<SpfQuestionRecord> {
             continue;
         }
         let qid = u32::from_le_bytes(body[p..p + 4].try_into().unwrap());
-        if qid > u16::MAX as u32 {
+        if qid == 0 || qid > u16::MAX as u32 {
             continue;
         }
         out.push(SpfQuestionRecord {
