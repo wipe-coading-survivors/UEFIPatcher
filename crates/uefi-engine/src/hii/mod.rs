@@ -3,6 +3,7 @@ pub mod ffs_assembler;
 pub mod form_add;
 pub mod forms;
 pub mod formset_add;
+pub mod gates;
 pub mod ifr;
 pub mod ifr_builder;
 pub mod package_list;
