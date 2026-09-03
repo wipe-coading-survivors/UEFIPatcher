@@ -463,15 +463,83 @@ git commit -m "feat(uefi-engine): hii/nvar.rs NVAR StdDefaults store reader"
 
 ---
 
-### Task 3: `hii/mod.rs` — question_info + set_value
+### Task 3: proto-сообщения value-op (без service-методов)
+
+**Files:**
+- Modify: `crates/uefi-proto/proto/engine.proto` (только message-блоки)
+- Modify: `crates/uefi-proto/build.rs` (serde-атрибуты)
+
+**Interfaces:**
+- Consumes: —
+- Produces: типы `uefi_proto::{VarStoreInfo, OptionEntry, DefaultEntry,
+  QuestionInfo}` (serde::Serialize) для Task 4 (движок) и Task 6 (CLI).
+  Service-методы `HiiQuestionInfo`/`HiiSetValue` — Task 5 (иначе
+  uefi-engine не соберётся: tonic требует реализацию всех методов
+  server-trait).
+
+- [ ] **Step 1: messages + build.rs**
+
+В `engine.proto` после `HiiUnlockResponse` (блок — из спеки §4.4):
+
+```proto
+message VarStoreInfo { uint32 id = 1; string guid = 2; uint32 size = 3; string name = 4; }
+message OptionEntry  { uint32 string_id = 1; uint64 value = 2; uint32 flags = 3; }
+message DefaultEntry { uint32 default_id = 1; uint32 type = 2; uint64 value = 3; }
+message QuestionInfo {
+  uint32 form_id = 1;
+  uint32 question_id = 2;
+  string kind = 3;
+  uint32 var_store_id = 4;
+  VarStoreInfo varstore = 5;
+  uint32 var_offset = 6;
+  uint32 width = 7;
+  uint64 min = 8;
+  uint64 max = 9;
+  uint64 step = 10;
+  repeated OptionEntry options = 11;
+  repeated DefaultEntry defaults = 12;
+}
+message HiiQuestionInfoRequest  { string image_id = 1; string item_id = 2; }
+message HiiQuestionInfoResponse { QuestionInfo question = 1; }
+message HiiSetValueRequest      { string image_id = 1; string item_id = 2; uint64 value = 3; }
+message HiiSetValueResponse     { QuestionInfo question = 1; repeated string applied_flips = 2; repeated string stores = 3; }
+```
+
+`build.rs` — четыре строки:
+
+```rust
+.message_attribute("engine.VarStoreInfo", "#[derive(serde::Serialize)]")
+.message_attribute("engine.OptionEntry", "#[derive(serde::Serialize)]")
+.message_attribute("engine.DefaultEntry", "#[derive(serde::Serialize)]")
+.message_attribute("engine.QuestionInfo", "#[derive(serde::Serialize)]")
+```
+
+- [ ] **Step 2: сборка + тесты proto-зависимых крейтов**
+
+```bash
+cargo test -p uefi-proto && cargo build -p uefi-engine
+cargo clippy -p uefi-proto -p uefi-engine -- -D warnings
+```
+
+- [ ] **Step 3: коммит**
+
+```bash
+git add crates/uefi-proto
+git commit -m "feat(uefi-proto): value-op messages (QuestionInfo + request/response)"
+```
+
+---
+
+### Task 4: `hii/mod.rs` — question_info + set_value
 
 **Files:**
 - Modify: `crates/uefi-engine/src/hii/mod.rs` (новые функции + ошибка + тесты)
 
 **Interfaces:**
-- Consumes: Task 1 `values::*`, Task 2 `nvar::*`, существующие
-  `parse_item_id`, `form_package_ranges`, `resolve_writable_path`-стиль
-  (для set_value — свой обход, см. ниже), `ops::mark_rebuild_to_root_by_path`.
+- Consumes: Task 1 `values::*`, Task 2 `nvar::*`, Task 3 proto-типы
+  `uefi_proto::{QuestionInfo, VarStoreInfo, OptionEntry, DefaultEntry}`,
+  существующие `parse_item_id`, `form_package_ranges`,
+  `ops::mark_rebuild_to_root_by_path`.
 - Produces:
   - `HiiError::ValueOpUnsupported(String)`
   - `pub fn question_info(image: &Image, item_id: &str) -> Result<uefi_proto::QuestionInfo, HiiError>`
@@ -764,22 +832,20 @@ git commit -m "feat(uefi-engine): hii question_info + set_value via StdDefaults"
 
 ---
 
-### Task 4: proto + RPC + mock-заглушки
+### Task 5: RPC service + handlers + mock-заглушки
 
 **Files:**
-- Modify: `crates/uefi-proto/proto/engine.proto`
-- Modify: `crates/uefi-proto/build.rs`
+- Modify: `crates/uefi-proto/proto/engine.proto` (rpc-строки в service)
 - Modify: `crates/uefi-engine/src/rpc/server.rs` (2 handler'а + arm маппинга)
 - Modify: `crates/uefi-cli/tests/mock_server.rs`, `crates/uefi-tui/tests/mock_server.rs`, `crates/uefi-gateway/tests/mock_server.rs`
 
 **Interfaces:**
-- Consumes: Task 3 `hii::question_info`/`hii::set_value`/`ValueOutcome`.
-- Produces: RPC `HiiQuestionInfo`/`HiiSetValue`; messages
-  `VarStoreInfo`/`OptionEntry`/`DefaultEntry`/`QuestionInfo` +
-  request/response; serde-derive; `hii_error_status` arm
-  `ValueOpUnsupported → failed_precondition`.
+- Consumes: Task 3 proto-сообщения, Task 4 `hii::question_info`/
+  `hii::set_value`/`ValueOutcome`.
+- Produces: RPC `HiiQuestionInfo`/`HiiSetValue` в service;
+  `hii_error_status` arm `ValueOpUnsupported → failed_precondition`.
 
-- [ ] **Step 1: proto-правки**
+- [ ] **Step 1: rpc-строки в service**
 
 В service после `rpc HiiUnlock…`:
 
@@ -788,42 +854,7 @@ git commit -m "feat(uefi-engine): hii question_info + set_value via StdDefaults"
   rpc HiiSetValue(HiiSetValueRequest)       returns (HiiSetValueResponse);
 ```
 
-В messages после `HiiUnlockResponse`:
-
-```proto
-message VarStoreInfo { uint32 id = 1; string guid = 2; uint32 size = 3; string name = 4; }
-message OptionEntry  { uint32 string_id = 1; uint64 value = 2; uint32 flags = 3; }
-message DefaultEntry { uint32 default_id = 1; uint32 type = 2; uint64 value = 3; }
-message QuestionInfo {
-  uint32 form_id = 1;
-  uint32 question_id = 2;
-  string kind = 3;
-  uint32 var_store_id = 4;
-  VarStoreInfo varstore = 5;
-  uint32 var_offset = 6;
-  uint32 width = 7;
-  uint64 min = 8;
-  uint64 max = 9;
-  uint64 step = 10;
-  repeated OptionEntry options = 11;
-  repeated DefaultEntry defaults = 12;
-}
-message HiiQuestionInfoRequest  { string image_id = 1; string item_id = 2; }
-message HiiQuestionInfoResponse { QuestionInfo question = 1; }
-message HiiSetValueRequest      { string image_id = 1; string item_id = 2; uint64 value = 3; }
-message HiiSetValueResponse     { QuestionInfo question = 1; repeated string applied_flips = 2; repeated string stores = 3; }
-```
-
-`build.rs` — четыре строки:
-
-```rust
-.message_attribute("engine.VarStoreInfo", "#[derive(serde::Serialize)]")
-.message_attribute("engine.OptionEntry", "#[derive(serde::Serialize)]")
-.message_attribute("engine.DefaultEntry", "#[derive(serde::Serialize)]")
-.message_attribute("engine.QuestionInfo", "#[derive(serde::Serialize)]")
-```
-
-Сборка: `cargo build -p uefi-proto` — ок (тоник перегенерирует).
+(messages уже добавлены Task 3; build.rs — тоже.)
 
 - [ ] **Step 2: серверные handler'ы**
 
@@ -932,7 +963,7 @@ git commit -m "feat(uefi-proto,uefi-engine): HiiQuestionInfo/HiiSetValue RPC"
 
 ---
 
-### Task 5: CLI
+### Task 6: CLI
 
 **Files:**
 - Modify: `crates/uefi-cli/src/client.rs` (2 метода)
@@ -942,7 +973,7 @@ git commit -m "feat(uefi-proto,uefi-engine): HiiQuestionInfo/HiiSetValue RPC"
 - Test: `crates/uefi-cli/tests/cli_integration.rs`, `crates/uefi-cli/tests/e2e.rs`
 
 **Interfaces:**
-- Consumes: Task 4 proto-типы.
+- Consumes: Task 5 rpc-методы/типы (client) и Task 3 proto-типы.
 - Produces:
   - `Client::hii_question_info(&self, image_id: &str, item_id: &str) -> Result<QuestionInfo, AppError>`
   - `Client::hii_set_value(&self, image_id: &str, item_id: &str, value: u64) -> Result<(QuestionInfo, Vec<String>, Vec<String>), AppError>`
@@ -1062,7 +1093,7 @@ git commit -m "feat(uefi-cli): hii question info/set-value commands"
 
 ---
 
-### Task 6: real-image приёмка (info + set-value ≡ E14)
+### Task 7: real-image приёмка (info + set-value ≡ E14)
 
 **Files:**
 - Modify: `crates/uefi-engine/tests/real_image.rs`
@@ -1176,7 +1207,7 @@ git commit -m "test(uefi-engine): real-image question map + set-value matches E1
 
 ---
 
-### Task 7: полные прогоны + актуализация TODO.md
+### Task 8: полные прогоны + актуализация TODO.md
 
 **Files:**
 - Modify: `TODO.md`
@@ -1194,8 +1225,8 @@ Expected: всё зелёное.
 
 - [ ] **Step 2: TODO.md**
 
-В секции «Мини-цикл „value-op“»: v1 → `[x]` (коммит Task 1/3/4/5),
-v5 → `[x]` (Task 2/3/6); заголовок секции — «завершён (2026-09-03)»;
+В секции «Мини-цикл „value-op“»: v1 → `[x]` (коммиты Task 1/4/5/6),
+v5 → `[x]` (Task 2/4/7); заголовок секции — «завершён (2026-09-03)»;
 v2/v3 — пометить явно «отложено (E13: инертны для посева; остаются
 для Load-Defaults-семантики)», оставить `[ ]`. Новая секция
 «Находки ревью мини-цикла value-op» с minors, найденными при
@@ -1213,15 +1244,15 @@ git commit -m "docs(todo): value-op mini-cycle complete"
 
 ## Self-Review
 
-- Спека §2 цели v1/v5 → Tasks 1–6; §4.4/4.5 → Tasks 4/5; §6 real-image
-  → Task 6; §8 компоненты → все файлы перечислены. Не-цели (v2/v3,
+- Спека §2 цели v1/v5 → Tasks 1–6; §4.4/4.5 → Tasks 3/5/6; §6 real-image
+  → Task 7; §8 компоненты → все файлы перечислены. Не-цели (v2/v3,
   option-тексты, TUI/WebUI) задач не имеют — сознательно.
 - Placeholder-скан: код-блоки всех шагов содержат конкретику;
-  «same as above» встречается один раз в mock-коде Task 4 Step 3
+  «same as above» встречается один раз в mock-коде Task 5 Step 3
   (осознанно — полный дубль QuestionInfo приведён в том же блоке выше).
 - Типы: `values::QuestionMap`/`VarStoreMap` (Task 1) потреблены в
-  Task 3 (`find_question`, `question_info_proto`); `nvar::
-  find_varstore_record` (Task 2) потреблён в Task 3
-  (`collect_std_defaults_hits`); proto-имена Task 4 совпадают с
-  usage в Task 5; `ValueOutcome` поля `{question, applied, stores}`
-  согласованы между Task 3 и Task 4 handler'ом.
+  Task 4 (`find_question`, `question_info_proto`); `nvar::
+  find_varstore_record` (Task 2) потреблён в Task 4
+  (`collect_std_defaults_hits`); proto-имена Task 3 совпадают с
+  usage в Task 4/6; `ValueOutcome` поля `{question, applied, stores}`
+  согласованы между Task 4 и Task 5 handler'ом.
