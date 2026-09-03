@@ -451,9 +451,16 @@ git commit -m "feat(uefi-engine): page-hijack-op Task 3 — IFR form/question lo
             Err(HiiError::AmiFilesNotFound)
         ));
 
+        let sd = Guid::try_parse(SETUPDATA_GUID_STR).unwrap();
+        assert_eq!(pfs_payload_path(&img, Some(&sd)).unwrap(), vec![0, 0, 0]);
+
         let bogus = Guid::try_parse("00000000-0000-0000-0000-00000000DEAD").unwrap();
+        let unmatched = ami_image(
+            vec![pfs_section(), ui_section("OtherModule")],
+            vec![pe32_section(), ui_section("AMITSE")],
+        );
         assert!(matches!(
-            pfs_payload_path(&img, Some(&bogus)),
+            pfs_payload_path(&unmatched, Some(&bogus)),
             Err(HiiError::AmiFilesNotFound)
         ));
     }
@@ -467,12 +474,13 @@ Expected: FAIL — функция не найдена.
 - [ ] **Step 3: Реализация (рядом с `resolve_ami_payloads`)**
 
 ```rust
-pub(crate) fn pfs_payload_path(
+pub fn pfs_payload_path(
     image: &Image,
     setupdata_guid: Option<&Guid>,
 ) -> Result<Vec<usize>, HiiError> {
     let (vi, fi) = find_ami_module(image, setupdata_guid, "setupdata")?;
-    find_payload_path(&image.root.children[vi].children[fi], is_pfs_payload)
+    let rel = find_payload_path(&image.root.children[vi].children[fi], is_pfs_payload)?;
+    Ok([vec![vi, fi], rel].concat())
 }
 ```
 
@@ -481,7 +489,7 @@ pub(crate) fn pfs_payload_path(
 ```bash
 cargo test -p uefi-engine pfs_payload_path && cargo clippy -p uefi-engine -- -D warnings
 git add crates/uefi-engine/src/hii/ami_patcher.rs
-git commit -m "feat(uefi-engine): page-hijack-op Task 4 — pub(crate) \$SPF payload resolver for hijack"
+git commit -m "feat(uefi-engine): page-hijack-op Task 4 — pub \$SPF payload resolver for hijack"
 ```
 
 ---
