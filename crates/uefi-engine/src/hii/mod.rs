@@ -1,6 +1,7 @@
 pub mod ami_patcher;
 pub mod ffs_assembler;
 pub mod form_add;
+pub mod form_hijack;
 pub mod forms;
 pub mod formset_add;
 pub mod gates;

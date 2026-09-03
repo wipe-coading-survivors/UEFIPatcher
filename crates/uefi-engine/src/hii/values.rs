@@ -88,7 +88,7 @@ fn is_statement_op(op: u8) -> bool {
     )
 }
 
-fn is_question_op(op: u8) -> bool {
+pub(crate) fn is_question_op(op: u8) -> bool {
     matches!(
         op,
         IFR_ONE_OF_OP
@@ -109,7 +109,7 @@ struct Frame {
     form_id: Option<u16>,
 }
 
-fn walk_statements(body: &[u8], mut visit: impl FnMut(u8, usize, usize, Option<u16>)) {
+pub(crate) fn walk_statements(body: &[u8], mut visit: impl FnMut(u8, usize, usize, Option<u16>)) {
     let (start, end) = package_bounds(body);
     let mut stack: Vec<Frame> = Vec::new();
     let mut i = start;
