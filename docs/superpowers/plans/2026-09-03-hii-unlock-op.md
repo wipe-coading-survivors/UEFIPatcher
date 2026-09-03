@@ -1000,6 +1000,7 @@ git commit -m "refactor(uefi-engine): drop falsified UPG/PRC patch path (E8)"
 
 **Files:**
 - Modify: `crates/uefi-engine/src/hii/mod.rs`
+- Modify: `crates/uefi-proto/proto/engine.proto` (добавить `message GateInfo` — БЕЗ rpc; rpc и request/response-сообщения появляются в Task 6)
 - Test: там же (`mod tests`)
 
 **Interfaces:**
@@ -1012,7 +1013,27 @@ git commit -m "refactor(uefi-engine): drop falsified UPG/PRC patch path (E8)"
   - `pub fn unlock(image: &mut Image, item_id: &str) -> Result<UnlockOutcome, HiiError>`
   - `pub enum HiiError::GateExpressionUnsupported(String)` — новый вариант (последним в enum; `SibtBlockUnsupported` удалён вместе с PRC-механикой в Task 4)
 
-- [ ] **Step 1: Написать падающие тесты**
+- [ ] **Step 1: Добавить `message GateInfo` в proto**
+
+`crates/uefi-proto/proto/engine.proto`, после `message HiiFormAddResponse`:
+
+```proto
+message GateInfo {
+  string gate_kind = 1;
+  string wraps = 2;
+  uint32 form_id = 3;
+  uint32 host_form_id = 4;
+  uint32 question_id = 5;
+  string expression = 6;
+  bool   flippable = 7;
+  string flip = 8;
+  uint32 scope_offset = 9;
+}
+```
+
+(message без rpc не ломает server-trait; serde-атрибут в build.rs добавит Task 6.)
+
+- [ ] **Step 2: Написать падающие тесты**
 
 В `hii/mod.rs` `mod tests` добавить фикстуры и тесты. Гейт-фикстуры дублируют `gates.rs` tests (конвенция — см. TODO):
 
@@ -1325,12 +1346,12 @@ git commit -m "refactor(uefi-engine): drop falsified UPG/PRC patch path (E8)"
     }
 ```
 
-- [ ] **Step 2: Запустить — падение**
+- [ ] **Step 3: Запустить — падение**
 
 Run: `cargo test -p uefi-engine hii::`
 Expected: FAIL (compile error: `gates_list`/`unlock`/`parse_item_id` не найдены).
 
-- [ ] **Step 3: Реализовать интеграцию**
+- [ ] **Step 4: Реализовать интеграцию**
 
 В `hii/mod.rs` prod-часть (после `set_item_visibility`; `set_item_visibility` рефакторится на `parse_item_id` + `resolve_writable_path` с сохранением поведения — его существующие тесты являются регрессией):
 
@@ -1554,14 +1575,14 @@ pub fn unlock(image: &mut Image, item_id: &str) -> Result<UnlockOutcome, HiiErro
 
 и `set_item_visibility` переключить на `parse_item_id` + `resolve_writable_path` (существующие тесты — регрессия: reject Read-mode, malformed discriminator, compression — уже покрывают рефакторинг).
 
-- [ ] **Step 4: Прогнать + lint + коммит**
+- [ ] **Step 5: Прогнать + lint + коммит**
 
-Run: `cargo test -p uefi-engine && cargo clippy -p uefi-engine --all-targets -- -D warnings && cargo fmt --all`
+Run: `cargo test -p uefi-engine && cargo clippy -p uefi-engine -p uefi-proto --all-targets -- -D warnings && cargo fmt --all`
 Expected: PASS / clean.
 
 ```bash
-git add crates/uefi-engine/src/hii/mod.rs
-git commit -m "feat(uefi-engine): gates_list + unlock hii ops (atomic E12 literal flips)"
+git add crates/uefi-engine/src/hii/mod.rs crates/uefi-proto/proto/engine.proto
+git commit -m "feat(uefi-engine,uefi-proto): gates_list + unlock hii ops (atomic E12 literal flips)"
 ```
 
 ---
@@ -1587,21 +1608,10 @@ git commit -m "feat(uefi-engine): gates_list + unlock hii ops (atomic E12 litera
   rpc HiiUnlock(HiiUnlockRequest)                       returns (HiiUnlockResponse);
 ```
 
-После `message HiiFormAddResponse`:
+После `message HiiFormAddResponse` (сообщение `GateInfo` уже добавлено Task 5 — не дублировать):
 
 ```proto
 message HiiGatesListRequest  { string image_id = 1; string item_id = 2; }
-message GateInfo {
-  string gate_kind = 1;
-  string wraps = 2;
-  uint32 form_id = 3;
-  uint32 host_form_id = 4;
-  uint32 question_id = 5;
-  string expression = 6;
-  bool   flippable = 7;
-  string flip = 8;
-  uint32 scope_offset = 9;
-}
 message HiiGatesListResponse { repeated GateInfo gates = 1; }
 
 message HiiUnlockRequest     { string image_id = 1; string item_id = 2; }
