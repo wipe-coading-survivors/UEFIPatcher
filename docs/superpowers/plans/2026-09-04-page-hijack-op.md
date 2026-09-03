@@ -1356,6 +1356,7 @@ git commit -m "feat(uefi-engine): page-hijack-op Task 7 — HiiFormHijack RPC (p
 - Modify: `crates/uefi-cli/src/commands/hii.rs`
 - Modify: `crates/uefi-cli/src/main.rs`
 - Modify: `crates/uefi-cli/src/output.rs`
+- Modify: `crates/uefi-cli/tests/mock_server.rs` (Task 7 RPC сломал компиляцию трейт-импла MockEngine: E0046 missing `hii_form_hijack`; добавить стаб рядом с `hii_form_add`)
 
 **Interfaces:**
 - Produces: `Client::hii_form_hijack(&self, &str, &str, &str, Option<&str>) -> Result<uefi_proto::HiiFormHijackResponse, AppError>`; команда `uefi-cli hii form hijack --target <item_id> --file <schema.json> [--setupdata-guid <GUID>]`.
