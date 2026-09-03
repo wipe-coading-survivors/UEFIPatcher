@@ -1246,92 +1246,6 @@ fn setup_pe32_node_path(img: &Image) -> Vec<usize> {
     uefi_engine::parser::target::find_item_path(&img.root, &target).expect("setup PE32 node")
 }
 
-fn node_at_path<'a>(img: &'a Image, path: &[usize]) -> &'a FfsNode {
-    let mut node = &img.root;
-    for &i in path {
-        node = &node.children[i];
-    }
-    node
-}
-
-fn resource_string_ids(img: &Image, path: &[usize], language: &str) -> Vec<(u16, String)> {
-    let pe = &node_at_path(img, path).body;
-    for (off, len) in uefi_engine::hii::pe_resource::hii_resource_ranges(pe) {
-        let Some(blob) = pe.get(off..off + len) else {
-            continue;
-        };
-        let Some(list) = uefi_engine::hii::package_list::parse_package_list(blob) else {
-            continue;
-        };
-        for pkg in &list.packages {
-            if pkg.kind == r_efi::hii::PACKAGE_STRINGS
-                && let Some(sp) = uefi_engine::hii::strings::parse_string_package(pkg.bytes)
-                && sp.language == language
-            {
-                return sp.strings;
-            }
-        }
-    }
-    Vec::new()
-}
-
-fn form_901_suppressed(img: &Image, path: &[usize]) -> bool {
-    let pe = &node_at_path(img, path).body;
-    for (off, len) in uefi_engine::hii::pe_resource::hii_resource_ranges(pe) {
-        let Some(blob) = pe.get(off..off + len) else {
-            continue;
-        };
-        let Some(list) = uefi_engine::hii::package_list::parse_package_list(blob) else {
-            continue;
-        };
-        for pkg in &list.packages {
-            if pkg.kind == r_efi::hii::PACKAGE_FORMS
-                && uefi_engine::hii::ifr::find_form_suppress_scope(pkg.bytes, HIDDEN_FORM_ID)
-                    .is_some()
-            {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-#[ignore]
-#[test]
-fn real_image_unhide_patches_prc_tokens() {
-    let data = load_fw();
-    let mut img = parse_image(&data, ImageMode::Write, "img1", "s1").expect("parse_image");
-    let path = setup_pe32_node_path(&img);
-    let display_before = resource_string_ids(&img, &path, "en-US");
-    let token_before = resource_string_ids(&img, &path, "x-UEFI-AMI");
-    assert!(!token_before.iter().any(|(i, _)| *i == 4894));
-    assert!(form_901_suppressed(&img, &path));
-
-    uefi_engine::hii::set_item_visibility(
-        &mut img,
-        &format!("{SETUP_MODULE_GUID}:0x10:0#{HIDDEN_FORM_ID}"),
-        true,
-    )
-    .expect("unhide with PRC patch");
-
-    assert!(!form_901_suppressed(&img, &path));
-    let display_after = resource_string_ids(&img, &path, "en-US");
-    let token_after = resource_string_ids(&img, &path, "x-UEFI-AMI");
-    assert_eq!(display_after, display_before);
-    for id in [4894u16, 4965, 4969] {
-        assert!(
-            token_after
-                .iter()
-                .any(|(i, t)| *i == id && t.starts_with("UPG")),
-            "missing PRC token for id {id}"
-        );
-    }
-    assert!(!token_after.iter().any(|(i, _)| *i == 5071));
-    for (id, text) in &token_before {
-        assert!(token_after.contains(&(*id, text.clone())));
-    }
-}
-
 fn file_extent(img: &Image, path: &[usize]) -> (usize, usize) {
     let mut node = &img.root;
     let mut vol = &img.root;
@@ -1392,10 +1306,4 @@ fn real_image_unhide_rebuild_keeps_layout() {
     let (_, new_file_end) = file_extent(&rebuilt, &new_path);
     assert_eq!(new_file_end, file_end);
     assert_eq!(guided_body_len(&rebuilt, &new_path), guided_before);
-    let token = resource_string_ids(&rebuilt, &new_path, "x-UEFI-AMI");
-    assert!(
-        token
-            .iter()
-            .any(|(i, t)| *i == 4894 && t.starts_with("UPG"))
-    );
 }

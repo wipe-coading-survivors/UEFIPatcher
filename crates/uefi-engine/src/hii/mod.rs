@@ -47,8 +47,6 @@ pub enum HiiError {
     MutationBehindCompression,
     #[error("cannot grow PE resource section")]
     PeGrowthUnsupported,
-    #[error("PRC token patch unsupported for this target")]
-    PrcPatchUnsupported,
     #[error("unsupported SIBT block 0x{0:02x} with pending inserts")]
     SibtBlockUnsupported(u8),
 }
@@ -109,31 +107,6 @@ pub fn set_item_visibility(
             let Some(packages) = pe_resource_form_packages(&node.body) else {
                 return Err(HiiError::NotASetupItem);
             };
-            let prc_entries = if visible {
-                match form_id {
-                    Some(fid) => plan_prc_entries(&node.body, fid)?,
-                    None => None,
-                }
-            } else {
-                None
-            };
-            let prc_entry_refs: Option<Vec<(u16, &str)>> = prc_entries
-                .as_ref()
-                .map(|es| es.iter().map(|(i, t)| (*i, t.as_str())).collect());
-            if let Some(entries) = &prc_entry_refs
-                && !entries.is_empty()
-            {
-                let mut probe = node.body.clone();
-                string_pack::insert_strings_at_ids_in_resource(
-                    &mut probe,
-                    PRC_TOKEN_LANGUAGE,
-                    entries,
-                )
-                .map_err(|e| match e {
-                    HiiError::IdOccupied(id) => HiiError::IdOccupied(id),
-                    _ => HiiError::PrcPatchUnsupported,
-                })?;
-            }
             if visible {
                 for (start, len) in packages {
                     let scope = {
@@ -149,17 +122,6 @@ pub fn set_item_visibility(
                         break;
                     }
                 }
-            }
-            if let Some(entries) = &prc_entry_refs
-                && !entries.is_empty()
-            {
-                string_pack::insert_strings_at_ids_in_resource(
-                    &mut node.body,
-                    PRC_TOKEN_LANGUAGE,
-                    entries,
-                )
-                .map_err(|_| HiiError::PrcPatchUnsupported)?;
-                changed = true;
             }
         } else {
             return Err(HiiError::NotASetupItem);
@@ -189,71 +151,6 @@ fn pe_resource_form_packages(body: &[u8]) -> Option<Vec<(usize, usize)>> {
         }
     }
     if out.is_empty() { None } else { Some(out) }
-}
-
-const PRC_TOKEN_LANGUAGE: &str = "x-UEFI-AMI";
-const PRC_NAME_PREFIX: &str = "UPG";
-
-fn plan_prc_entries(pe: &[u8], form_id: u16) -> Result<Option<Vec<(u16, String)>>, HiiError> {
-    for (off, len) in crate::hii::pe_resource::hii_resource_ranges(pe) {
-        let Some(blob) = pe.get(off..off + len) else {
-            continue;
-        };
-        let Some(list) = crate::hii::package_list::parse_package_list(blob) else {
-            continue;
-        };
-        let mut form_ids: Option<Vec<u16>> = None;
-        let mut display: Option<crate::hii::strings::ParsedStringPackage> = None;
-        let mut token: Option<crate::hii::strings::ParsedStringPackage> = None;
-        for pkg in &list.packages {
-            if pkg.kind == r_efi::hii::PACKAGE_FORMS && form_ids.is_none() {
-                let ids = ifr::collect_form_string_ids(pkg.bytes, form_id);
-                if !ids.is_empty() {
-                    form_ids = Some(ids);
-                }
-            }
-            if pkg.kind == r_efi::hii::PACKAGE_STRINGS
-                && let Some(sp) = crate::hii::strings::parse_string_package(pkg.bytes)
-            {
-                if sp.language == PRC_TOKEN_LANGUAGE {
-                    token = Some(sp);
-                } else if display.is_none() {
-                    display = Some(sp);
-                }
-            }
-        }
-        let (Some(ids), Some(display), Some(token)) = (form_ids, display, token) else {
-            continue;
-        };
-        let display_by_id: std::collections::HashMap<u16, &String> =
-            display.strings.iter().map(|(i, t)| (*i, t)).collect();
-        let token_ids: std::collections::HashSet<u16> =
-            token.strings.iter().map(|(i, _)| *i).collect();
-        let token_texts: std::collections::HashSet<&str> =
-            token.strings.iter().map(|(_, t)| t.as_str()).collect();
-        let mut counter = 1u32;
-        let mut entries = Vec::new();
-        for id in ids {
-            if token_ids.contains(&id) {
-                continue;
-            }
-            let Some(text) = display_by_id.get(&id) else {
-                continue;
-            };
-            if text.is_empty() {
-                continue;
-            }
-            let mut name = format!("{PRC_NAME_PREFIX}{counter:04X}");
-            while token_texts.contains(name.as_str()) {
-                counter += 1;
-                name = format!("{PRC_NAME_PREFIX}{counter:04X}");
-            }
-            counter += 1;
-            entries.push((id, name));
-        }
-        return Ok(Some(entries));
-    }
-    Ok(None)
 }
 
 #[cfg(test)]
@@ -727,25 +624,6 @@ mod tests {
         ]
     }
 
-    fn token_sibt() -> Vec<u8> {
-        vec![
-            0x10, b'P', b'R', b'C', b'0', b'1', 0, 0x21, 0x4C, 0x0A, 0x10, b'P', b'R', b'C', b'0',
-            b'A', b'E', 0, 0x00,
-        ]
-    }
-
-    fn prc_blob(forms: Vec<u8>, display: Vec<u8>, token: Vec<u8>) -> Vec<u8> {
-        let g = Guid::try_parse("ABBCE13D-E25A-4D9F-A1F9-2F7710786892").unwrap();
-        let mut b = g.to_bytes().to_vec();
-        let total = 20 + forms.len() + display.len() + token.len() + 4;
-        b.extend_from_slice(&(total as u32).to_le_bytes());
-        b.extend_from_slice(&forms);
-        b.extend_from_slice(&display);
-        b.extend_from_slice(&token);
-        b.extend_from_slice(&[0x04, 0x00, 0x00, r_efi::hii::PACKAGE_END]);
-        b
-    }
-
     fn pe32_image_with(blob: &[u8]) -> Image {
         let pe = crate::hii::pe_resource::synth_hii_pe("HII", blob);
         let mut section = mk_node(FfsType::Section, pe, vec![]);
@@ -765,45 +643,6 @@ mod tests {
     fn resource_string_pkgs(image: &Image) -> Vec<crate::hii::strings::ParsedStringPackage> {
         let node = &image.root.children[0].children[0].children[0];
         crate::hii::strings::resource_string_packages(&node.body)
-    }
-
-    fn image_snapshot(image: &Image) -> Vec<u8> {
-        image.root.children[0].children[0].children[0].body.clone()
-    }
-
-    #[test]
-    fn set_item_visibility_patches_prc_tokens_for_unhidden_form() {
-        let blob = prc_blob(
-            suppressed_form_901_pkg(),
-            sppkg("en-US", &display_sibt()),
-            sppkg("x-UEFI-AMI", &token_sibt()),
-        );
-        let mut image = pe32_image_with(&blob);
-        set_item_visibility(
-            &mut image,
-            "5c60f367-a505-419a-859e-2a4ff6ca6fe5:0x10:0#901",
-            true,
-        )
-        .unwrap();
-        let pkgs = resource_string_pkgs(&image);
-        assert_eq!(pkgs.len(), 2);
-        let display = pkgs.iter().find(|p| p.language == "en-US").unwrap();
-        let token = pkgs.iter().find(|p| p.language == "x-UEFI-AMI").unwrap();
-        let tok_by_id: std::collections::HashMap<u16, &String> =
-            token.strings.iter().map(|(i, t)| (*i, t)).collect();
-        assert_eq!(tok_by_id.get(&4894).map(|s| s.as_str()), Some("UPG0001"));
-        assert_eq!(tok_by_id.get(&4965).map(|s| s.as_str()), Some("UPG0002"));
-        assert_eq!(tok_by_id.get(&4969).map(|s| s.as_str()), Some("UPG0003"));
-        assert!(!tok_by_id.contains_key(&5071));
-        assert_eq!(tok_by_id.get(&2638).map(|s| s.as_str()), Some("PRC0AE"));
-        let disp_by_id: std::collections::HashMap<u16, &String> =
-            display.strings.iter().map(|(i, t)| (*i, t)).collect();
-        assert_eq!(disp_by_id.get(&4894).map(|s| s.as_str()), Some("HWPM"));
-        assert_eq!(disp_by_id.get(&5071).map(|s| s.as_str()), Some(""));
-        assert_eq!(
-            image.root.children[0].children[0].children[0].action,
-            Action::Rebuild
-        );
     }
 
     #[test]
@@ -828,28 +667,5 @@ mod tests {
         assert_eq!(pkgs.len(), 1);
         assert_eq!(pkgs[0].language, "en-US");
         assert_eq!(pkgs[0].strings.len(), 6);
-    }
-
-    #[test]
-    fn set_item_visibility_prc_growth_failure_leaves_image_untouched() {
-        let blob = prc_blob(
-            suppressed_form_901_pkg(),
-            sppkg("en-US", &display_sibt()),
-            sppkg("x-UEFI-AMI", &token_sibt()),
-        );
-        let mut image = pe32_image_with(&blob);
-        {
-            let node = &mut image.root.children[0].children[0].children[0];
-            node.body[0xe8..0xec].copy_from_slice(&0x5000u32.to_le_bytes());
-        }
-        let snapshot = image_snapshot(&image);
-        let err = set_item_visibility(
-            &mut image,
-            "5c60f367-a505-419a-859e-2a4ff6ca6fe5:0x10:0#901",
-            true,
-        )
-        .unwrap_err();
-        assert!(matches!(err, HiiError::PrcPatchUnsupported));
-        assert_eq!(image_snapshot(&image), snapshot);
     }
 }
