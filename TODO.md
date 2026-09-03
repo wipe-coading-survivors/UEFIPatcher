@@ -1369,11 +1369,12 @@ atomic_write. После первой мутации хранимый файл �
   Section с детьми и телом-стором шорт-кружит обход (не спускается);
   на живых образах сторы — листья. Контекст: `hii/mod.rs`
   collect_std_defaults_hits; ужесточить до leaf-sections при встрече.
-* [ ] **real_image: `decompressed_diff` обрезает zip'ом до короткого
+* [x] **real_image: `decompressed_diff` обрезает zip'ом до короткого
   потока** — нет `assert_eq!(old.len(), new.len())`; регрессия хвоста
   декомпрессата пройдёт. Плюс нет pre-check `data[0x8000C2]==0`
   (направление 0→1 держится на фикстуре). Контекст: тест set_value
-  в `tests/real_image.rs`.
+  в `tests/real_image.rs`. Закрыто финальным ревью-циклом (коммит
+  `d2ebc3e`: len-ассерт + fixture pre-check).
 * [ ] **CLI: defaults-ветка принтера question info не покрыта тестами** —
   `mock_question()` всегда с пустыми defaults. Контекст: `uefi-cli`
   output.rs; одна DefaultEntry в фикстуре.
