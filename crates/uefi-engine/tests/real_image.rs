@@ -1440,3 +1440,80 @@ fn real_image_hii_unlock_matches_e12() {
         "form 10029 stays discoverable after unlock"
     );
 }
+
+#[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
+#[test]
+fn real_image_hii_question_info_4g() {
+    let data = load_fw();
+    let img = parse_image(&data, ImageMode::Read, "img1", "s1").expect("parse_image");
+    let item = format!("{PCI_SETUP_MODULE_GUID}:0x10:0#10029:0x3B");
+    let q = uefi_engine::hii::question_info(&img, &item).expect("question_info");
+    assert_eq!(q.form_id, 10029);
+    assert_eq!(q.question_id, 0x3B);
+    assert_eq!(q.kind, "one_of");
+    assert_eq!(q.var_store_id, 1);
+    let vs = q.varstore.expect("varstore declared");
+    assert_eq!(vs.id, 1);
+    assert_eq!(vs.size, 0x72);
+    assert_eq!(vs.name, "Setup");
+    assert_eq!(vs.guid, "EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9");
+    assert_eq!(q.var_offset, 0x3A);
+    assert_eq!(q.width, 1);
+    assert_eq!(q.options.len(), 2);
+    assert_eq!(q.options[0].value, 0);
+    assert_eq!(q.options[0].flags, 0x30);
+    assert_eq!(q.options[1].value, 1);
+    assert_eq!(q.options[1].flags, 0x00);
+    assert!(q.defaults.is_empty());
+}
+
+fn decompressed_diff(orig: &[u8], built: &[u8], sec_off: usize) -> Vec<(usize, u8, u8)> {
+    let data_offset = u16::from_le_bytes([orig[sec_off + 20], orig[sec_off + 21]]) as usize;
+    let size = (orig[sec_off] as usize)
+        | ((orig[sec_off + 1] as usize) << 8)
+        | ((orig[sec_off + 2] as usize) << 16);
+    let lzma = uefi_common::pi::CompressionType::Lzma as u8;
+    let old =
+        uefi_engine::decompress::decompress(&orig[sec_off + data_offset..sec_off + size], lzma)
+            .expect("decompress orig stream");
+    let new =
+        uefi_engine::decompress::decompress(&built[sec_off + data_offset..sec_off + size], lzma)
+            .expect("decompress built stream");
+    old.iter()
+        .zip(new.iter())
+        .enumerate()
+        .filter(|(_, (a, b))| a != b)
+        .map(|(i, (a, b))| (i, *a, *b))
+        .collect()
+}
+
+#[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
+#[test]
+fn real_image_hii_set_value_matches_e14() {
+    let data = load_fw();
+    let mut img = parse_image(&data, ImageMode::Write, "img1", "s1").expect("parse_image");
+    let item = format!("{PCI_SETUP_MODULE_GUID}:0x10:0#10029:0x3B");
+    let outcome = uefi_engine::hii::set_value(&mut img, &item, 1).expect("set_value");
+    assert_eq!(outcome.stores.len(), 2, "FV0 raw copy + FV2 LZMA copy");
+    assert_eq!(outcome.applied.len(), 2);
+    let built = uefi_engine::builder::build_image(&img).expect("build_image");
+
+    assert_eq!(built.len(), data.len(), "total flash length preserved");
+    assert_eq!(built[0x8000C2], 1, "FV0 StdDefaults 4G byte 0 -> 1 (E14)");
+    let diff: Vec<usize> = (0..data.len()).filter(|&i| data[i] != built[i]).collect();
+    let sec_extent = 0xa77d40..0xa77d40 + 0x366;
+    assert!(
+        diff.iter()
+            .all(|&i| i == 0x8000C2 || sec_extent.contains(&i)),
+        "flash diff must stay inside the two StdDefaults store slots"
+    );
+
+    let lzma_diff = decompressed_diff(&data, &built, 0xa77d40);
+    assert_eq!(lzma_diff, vec![(0x66, 0, 1)]);
+
+    let rebuilt = parse_image(&built, ImageMode::Read, "img2", "s2").expect("re-parse");
+    let q = uefi_engine::hii::question_info(&rebuilt, &item).expect("info after set");
+    assert_eq!(q.var_offset, 0x3A);
+    let built2 = uefi_engine::builder::build_image(&rebuilt).expect("build2");
+    assert_eq!(built2.len(), built.len());
+}
