@@ -507,7 +507,7 @@ git commit -m "feat(uefi-engine): page-hijack-op Task 4 — pub \$SPF payload re
 
 - [ ] **Step 1: Тесты ядра на синтетическом bare-канале (в `mod tests` form_hijack.rs)**
 
-Тестовым образом: флешка с двумя файлами — Setup (RAW-секции: form-пакет + строковый пакет) и AMITSESetupData (UI-секция с именем "AMITSESetupData" + RAW-секция 0x18 с $SPF-телом; имя нужно find_ami_module при setupdata_guid=None). Секции внутри файла выравниваются на 4 байта (`file_sections`) — как в реальном FFS, иначе parse_sections теряет секцию после 58-байтового form-пакета. $SPF-записи строятся по ifr-offsets реального form-пакета фикстуры.
+Тестовым образом: флешка с двумя файлами — Setup (RAW-секции: form-пакет + строковый пакет) и AMITSESetupData (UI-секция с именем "AMITSESetupData" + RAW-секция 0x18 с $SPF-телом; имя нужно find_ami_module при setupdata_guid=None). Секции внутри файла выравниваются на 4 байта (`file_sections`) — как в реальном FFS, иначе parse_sections теряет секцию после 58-байтового form-пакета. Кейс "missing $SPF file" удаляет файл SetupData из распарсенного дерева: на UI-именованной фикстуре Some(чужой guid) не отклоняется — find_ami_module по дизайну падает в name-эвристику (класс дефекта Task 4 64bfa21). $SPF-записи строятся по ifr-offsets реального form-пакета фикстуры.
 
 ```rust
     use crate::builder::build_image;
@@ -733,6 +733,14 @@ git commit -m "feat(uefi-engine): page-hijack-op Task 4 — pub \$SPF payload re
 
         let (flash, _, _) = hijack_flash_image();
         let mut img2 = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+        let vol = img2
+            .root
+            .children
+            .iter_mut()
+            .find(|v| v.children.iter().any(|f| f.guid == Some(Guid::from_str(SETUPDATA_GUID_STR).unwrap())))
+            .unwrap();
+        vol.children
+            .retain(|f| f.guid != Some(Guid::from_str(SETUPDATA_GUID_STR).unwrap()));
         assert!(
             hijack_form(&mut img2, ITEM, &hijack_schema(), Some(&Guid::from_str("00000000-0000-0000-0000-00000000DEAD").unwrap())).is_err(),
             "missing $SPF file"
