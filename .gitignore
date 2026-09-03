@@ -3,6 +3,9 @@
 **/target/
 Cargo.lock
 
+# Python
+__pycache__/
+
 # Node/WebUI
 /webui/node_modules/
 /webui/.svelte-kit/
