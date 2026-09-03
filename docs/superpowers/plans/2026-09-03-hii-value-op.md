@@ -1083,7 +1083,7 @@ help-строки: `info: show question value map (varstore/offset/width/options
 
 `cli_integration.rs`/`e2e.rs` — по образцу gates-кейсов: запуск с
 mock-сервером, `hii question info <item>` → exit 0, stdout содержит
-`"Setup"`, `0x3a`/`58`, `one_of`, `1 = ` (value=1 опция); `hii
+`"Setup"`, `0x3a`/`58`, `one_of`, `value = 1` (value=1 опция); `hii
 question set-value <item> 1` → stdout содержит `00 -> 01`. Плюс кейс
 `0x1`-hex значения.
 
