@@ -1598,6 +1598,8 @@ git commit -m "feat(uefi-engine,uefi-proto): gates_list + unlock hii ops (atomic
 - Modify: `crates/uefi-proto/build.rs`
 - Modify: `crates/uefi-engine/src/rpc/server.rs`
 - Modify: `crates/uefi-cli/tests/mock_server.rs` (заглушки — иначе uefi-cli не соберётся)
+- Modify: `crates/uefi-tui/tests/mock_server.rs` (заглушки — TUI-мок тоже реализует весь server-trait)
+- Modify: `crates/uefi-gateway/tests/mock_server.rs` (заглушки — gateway-мок тоже реализует весь server-trait)
 
 **Interfaces:**
 - Consumes: Task 5 (`hii::gates_list`, `hii::unlock`, `UnlockOutcome`, `HiiError::GateExpressionUnsupported`), `hii_error_status`.
@@ -1737,11 +1739,11 @@ message HiiUnlockResponse    { repeated GateInfo gates = 1; repeated string appl
     }
 ```
 
-Run: `cargo test -p uefi-engine && cargo test -p uefi-proto && cargo test -p uefi-cli && cargo clippy -p uefi-engine -p uefi-cli --all-targets -- -D warnings && cargo fmt --all`
+Run: `cargo test -p uefi-engine && cargo test -p uefi-proto && cargo test -p uefi-cli && cargo test -p uefi-tui && cargo test -p uefi-gateway && cargo clippy --all --all-targets -- -D warnings && cargo fmt --all`
 Expected: PASS / clean (mock-заглушки возвращают данные, клиентских вызовов ещё нет).
 
 ```bash
-git add crates/uefi-proto/proto/engine.proto crates/uefi-proto/build.rs crates/uefi-engine/src/rpc/server.rs crates/uefi-cli/tests/mock_server.rs
+git add crates/uefi-proto/proto/engine.proto crates/uefi-proto/build.rs crates/uefi-engine/src/rpc/server.rs crates/uefi-cli/tests/mock_server.rs crates/uefi-tui/tests/mock_server.rs crates/uefi-gateway/tests/mock_server.rs
 git commit -m "feat(uefi-proto,uefi-engine): HiiGatesList/HiiUnlock RPC"
 ```
 
