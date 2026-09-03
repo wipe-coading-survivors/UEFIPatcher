@@ -1252,13 +1252,21 @@ atomic_write. После первой мутации хранимый файл �
   как «метод RPC не поддерживается». Контекст: hii_error_status /
   отдельный код NotFound для HII-таргетов.
 
-### Мини-цикл «value-op» (engine): задать значение настройки — кандидат следующим (2026-09-03)
+### Мини-цикл «value-op» (engine): задать значение настройки — завершён (v1+v5, 2026-09-03)
 
 > Ревизия u1–u5 — §13 отчёта: движковый unlock ≡ E12 побайтово на уровне
 > декомпрессата, CLI-smoke на живом образе зелёный. Следующая цель —
 > патчер задаёт значение, а не только открывает доступ (UI-путь записи
 > валидирован ещё на E12: значение, изменённое в Setup, сохранилось в
 > NVRAM после перезагрузки).
+>
+> **Цикл завершён** (2026-09-03): v1+v5 закрыты (коммиты в пунктах ниже);
+> v2/v3 отложены (E13: инертны для посева первого бута; остаются
+> кандидатами только для Load-Defaults-семантики меню Setup). Real-image
+> приёмка — движковый set-value побайтово ≡ аппаратно-валидированному
+> эталону E14, 22/22 `#[ignore]`-тестов `real_image.rs` зелёные (включая
+> `real_image_hii_set_value_matches_e14`). Отложенные миноры ревью —
+> секция ниже.
 >
 > Ключевой факт образа HNX99TF: переменного стора в прошивке НЕТ — во
 > всём 16 МиБ нет сигнатур EVSA/$VSS/FTWS/FTWB; дескриптор: BIOS-регион
@@ -1273,12 +1281,16 @@ atomic_write. После первой мутации хранимый файл �
 > не влияют, E13; остаются только для Load-Defaults-семантики меню Setup,
 > не проверялось — низкий приоритет).
 
-* [ ] **v1. Экспозиция карты «вопрос → значение»** — RPC/CLI `hii
+* [x] **v1. Экспозиция карты «вопрос → значение»** — RPC/CLI `hii
   question info`: varstore (GUID/имя/размер), var_offset, width,
   допустимые значения (OneOf-опции со значениями, Numeric
   min/max/step), текущие дефолты (IFR DEFAULT / DEFAULT-флаг опции).
   schema.rs уже читает varstore-карту — довести до RPC/CLI + парсер
   опций/дефолтов в выдаче.
+  Закрыто: values-walker карты вопросов/сторов (`09e9c83`, bounds-фикс
+  `5437dc7`) + движковый `question_info` (`72c6576`) + RPC
+  `HiiQuestionInfo` (`f03cb58`) + CLI `hii question info` (`add5d49`);
+  real-image-гейт `bbddb5d`.
 * [ ] **v2. Операция set-default (класс E12)** — флип значения в
   IFR DEFAULT-опкоде / перенос DEFAULT-флага на нужную OneOf-опцию:
   только данные, длины form-пакета/PE неизменны; валидация значения по
@@ -1288,6 +1300,9 @@ atomic_write. После первой мутации хранимый файл �
   Disabled=0 (строка 4, флаги 0x30=DEFAULT|MFG @pkg+0xDE8) и Enabled=1
   (строка 3, флаги 0x00 @pkg+0x0DEF) — IFR DEFAULT-опкода нет, дефолт
   живёт во флагах опций; флип = `0x30→0x00` + `0x00→0x30`.
+  Отложено (E13: инертно для посева первого бута — флаги опций/IFR-дефолты
+  посевом НЕ читаются; остаётся кандидатом только для Load-Defaults-
+  семантики меню Setup).
 * [ ] **v3. SDP setupdata: optimal/failsafe** — парсер Table-3 записей
   (qid@0, access@+16, failsafe@+52, optimal@+53) + флип байтов.
   УТОЧНЕНИЕ (пробник E13): setupdata НЕ plain-RAW — $PFS-стор лежит
@@ -1299,13 +1314,16 @@ atomic_write. После первой мутации хранимый файл �
   optimal@+53=0x00 (Disabled); поле @+28 = 0x0DD3 — абсолютное IFR-смещение
   вопроса (третье независимое подтверждение правила E9; у мастера 0x9A
   @+28=0x252F ✓).
+  Отложено (E13: инертно для посева первого бута — SDP optimal/failsafe
+  посевом НЕ читаются; остаётся кандидатом только для Load-Defaults-
+  семантики меню Setup).
 * [x] **v4. Real-image gate + E13 (прошит — НЕ сработал)** — кандидат был
   `refs/amibcp/e13-unlock-plus-4g-default.bin` (unlock + IFR-флаги +
   SDP optimal/failsafe). Итог на железе: 4G [Disabled] — посев первого
   бута НЕ читает ни SDP optimal/failsafe, ни IFR-флаги опций. Реальный
   источник — см. v5. Real-image gate (диффы/round-trip/slot-fit обоих
   механизмов) — оставить для value-op.
-* [ ] **v5. NVAR «StdDefaults» — реальный источник посева дефолтов**
+* [x] **v5. NVAR «StdDefaults» — реальный источник посева дефолтов**
   [**валидировано на железе, E14** — чеклист пройден полностью: 4G
   поднялся [Enabled] сам при первом буте, пережил Save/ребут]:
   NVAR-стор с записями `StdDefaults`/`Setup` (данные «Setup» =
@@ -1317,8 +1335,59 @@ atomic_write. После первой мутации хранимый файл �
   согласованный флип байта по var_offset в ОБОИХ копиях (FV0 — сырье;
   FV2 — decompress→flip→repack→slot-fit). Кандидат был
   `refs/amibcp/e14-stddefaults-4g.bin` (sha256 e58bc77b…).
+  Закрыто: NVAR-reader (`ac1a707`, bounds-фикс `015e610`); движок
+  `set_value` — согласованный флип обеих копий, no-op-копии
+  пропускаются (`72c6576`, `1200d75`); RPC `HiiSetValue` (`f03cb58`);
+  CLI `hii question set-value` (`add5d49`); real-image `bbddb5d` —
+  диф ≡ эталону E14 (FV0 байт 0x8000C2, FV2 dec-диф ровно
+  `[(0x66,0,1)]`), slot-fit, round-trip; 22/22 ignored-тестов зелёные.
 * Вне скоупа: runtime-запись в живой NVRAM (setup_var-класс) — нужен
   UEFI-приложение-агент, не задача флеш-патчера.
+
+### Находки ревью мини-цикла value-op (2026-09-03)
+
+> Отложенные minors из per-task и финального ревью цикла (ветка
+> `fix/cycle6-reimplent`; v1+v5 закрыты выше).
+
+* [ ] **hii/gates: `question_storage_width` читает qflags@+12 вместо
+  numeric-flags@+13** — `hii/values.rs` (Task 1) следует r-efi-раскладке
+  (numeric size-flags @+13), gates.rs читает байт вопросных флагов; для
+  реального мастера 0x9A непокрыт (width-guard пропускает) — латентно,
+  E12-тесты не задеты. Контекст: values.rs корректен; выровнять gates.rs
+  при следующем касании.
+* [ ] **values: покрытие NUMERIC width 2/4/8 и DEFAULT-типов 2..4** —
+  width-вывод тестируется только на SIZE_1/type 1. Контекст: тесты
+  `hii/values.rs`.
+* [ ] **set_value: 7 веток `ValueOpUnsupported` без тестов** —
+  record-missing-in-store, nameless varstore, var_offset+width>size,
+  width 0/>8, CheckBox>1, Numeric вне диапазона, kind Other. Контекст:
+  `hii/mod.rs` validate_set_value/collect; параметризованный набор
+  закрыл бы дёшево.
+* [ ] **set_value: `is_store_body` принимает Section с детьми** —
+  Section с детьми и телом-стором шорт-кружит обход (не спускается);
+  на живых образах сторы — листья. Контекст: `hii/mod.rs`
+  collect_std_defaults_hits; ужесточить до leaf-sections при встрече.
+* [ ] **real_image: `decompressed_diff` обрезает zip'ом до короткого
+  потока** — нет `assert_eq!(old.len(), new.len())`; регрессия хвоста
+  декомпрессата пройдёт. Плюс нет pre-check `data[0x8000C2]==0`
+  (направление 0→1 держится на фикстуре). Контекст: тест set_value
+  в `tests/real_image.rs`.
+* [ ] **CLI: defaults-ветка принтера question info не покрыта тестами** —
+  `mock_question()` всегда с пустыми defaults. Контекст: `uefi-cli`
+  output.rs; одна DefaultEntry в фикстуре.
+* [ ] **CLI: e2e tsv-подкейс без content-ассертов** — `--format tsv hii
+  question info 0#42:0x1` ассертит только exit success. Контекст:
+  e2e.rs.
+* [ ] **uefi-cli мок: дублирование ~40-строчного QuestionInfo-литерала**
+  между hii_question_info/hii_set_value. Контекст: tests/mock_server.rs;
+  кандидат — fn `mock_question()`.
+* [ ] **set_value: NotWritable проверяется до парсинга item_id** —
+  Read-режим + мусорный item_id → NotWritable вместо NotFound; зеркально
+  `resolve_writable_path`. Контекст: `hii/mod.rs`; выровнять при
+  следующем касании (как minors unlock-op).
+* [ ] **option-тексты в question info** — отдаются string_id без
+  резолюции по string-package. Контекст: спека value-op «Отложенное»;
+  при подключении TUI/WebUI.
 
 ### R2-обновление (риск «новые формы не рендерятся»)
 
