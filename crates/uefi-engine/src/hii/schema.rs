@@ -186,6 +186,26 @@ pub fn parse_schema(json: &str) -> Result<FormSetSchema, HiiError> {
     serde_json::from_str(json).map_err(|e| HiiError::InvalidSchema(e.to_string()))
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HijackQuestionSchema {
+    pub question_id: u16,
+    pub prompt: String,
+    pub help: String,
+    pub failsafe: u8,
+    pub optimal: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HijackSchema {
+    pub title: String,
+    #[serde(default)]
+    pub questions: Vec<HijackQuestionSchema>,
+}
+
+pub fn parse_hijack_schema(json: &str) -> Result<HijackSchema, HiiError> {
+    serde_json::from_str(json).map_err(|e| HiiError::InvalidSchema(e.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,5 +253,32 @@ mod tests {
     #[test]
     fn parse_invalid_json() {
         assert!(parse_schema("{invalid").is_err());
+    }
+
+    #[test]
+    fn parse_hijack_schema_minimal() {
+        let s = parse_hijack_schema(r#"{"title": "UEFIPATCHER E18"}"#).unwrap();
+        assert_eq!(s.title, "UEFIPATCHER E18");
+        assert!(s.questions.is_empty());
+    }
+
+    #[test]
+    fn parse_hijack_schema_with_questions() {
+        let s = parse_hijack_schema(
+            r#"{"title": "T", "questions": [
+                {"question_id": 59, "prompt": "P", "help": "H", "failsafe": 1, "optimal": 1}
+            ]}"#,
+        )
+        .unwrap();
+        assert_eq!(s.questions.len(), 1);
+        assert_eq!(s.questions[0].question_id, 59);
+        assert_eq!(s.questions[0].failsafe, 1);
+        assert_eq!(s.questions[0].optimal, 1);
+    }
+
+    #[test]
+    fn parse_hijack_schema_rejects_garbage() {
+        assert!(parse_hijack_schema("{").is_err());
+        assert!(parse_hijack_schema(r#"{"questions": []}"#).is_err());
     }
 }
