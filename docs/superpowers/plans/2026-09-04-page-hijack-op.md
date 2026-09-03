@@ -1023,39 +1023,72 @@ git commit -m "feat(uefi-engine): page-hijack-op Task 5 — hijack_form core: at
 
 - [ ] **Step 1: Тест — $SPF за LZMA переживает build, дифф confined**
 
-Фикстура: как `hijack_flash_image()`, но sd-файл оборачивается GUIDed-LZMA (локальная копия `lzma_guided_file_bytes` из `ami_patcher.rs` tests), setup-файл остаётся bare:
+Фикстура: как `hijack_flash_image()`, но sd-файл оборачивается GUIDed-LZMA (локальная копия `lzma_guided_file_bytes` из `ami_patcher.rs` tests) и идёт ПЕРВЫМ файлом (слот позиционно стабилен), setup-файл остаётся bare вторым:
 
 ```rust
+    fn lzma_guided_file_bytes(guid: &Guid, children: &[u8]) -> (Vec<u8>, usize) {
+        let mut stream = crate::compress::compress_lzma(children).unwrap();
+        stream.resize(stream.len().max(64), 0x00);
+        let mut body = crate::ffs::lzma_guid().to_bytes().to_vec();
+        body.extend_from_slice(&0x18u16.to_le_bytes());
+        body.extend_from_slice(&1u16.to_le_bytes());
+        body.extend_from_slice(&stream);
+        let sec = section_bytes(crate::ffs::EFI_SECTION_GUID_DEFINED, &body);
+        let slot_len = stream.len();
+        (ffs_file_bytes(guid, &sec), slot_len)
+    }
+
+    fn find_spf_leaf<'a>(node: &'a FfsNode) -> Option<&'a FfsNode> {
+        if node.children.is_empty() && node.body.windows(4).any(|w| w == b"$SPF") {
+            return Some(node);
+        }
+        node.children.iter().find_map(find_spf_leaf)
+    }
+
     #[test]
     fn hijack_form_survives_lzma_slot_fit() {
         let (_, pkg, spf_body) = hijack_flash_image();
         let setup = ffs_file_bytes(
             &Guid::from_str(FILE_GUID).unwrap(),
-            &[
+            &file_sections(&[
                 section_bytes(EFI_SECTION_RAW, &pkg),
                 section_bytes(EFI_SECTION_RAW, &string_package_bytes()),
-            ]
-            .concat(),
+            ]),
         );
         let sd = lzma_guided_file_bytes(
             &Guid::from_str(SETUPDATA_GUID_STR).unwrap(),
             &section_bytes(EFI_SECTION_FREEFORM_SUBTYPE_GUID, &spf_body),
         );
-        let sd_start = setup.len().max(8);
-        let data = flash_with_files(vec![setup, sd.0.clone()]);
+        let data = flash_with_files(vec![sd.0.clone(), setup]);
+        let sd_start = data
+            .windows(16)
+            .position(|w| w == sd_guid_bytes())
+            .expect("sd file header at slot start");
         let sd_slot = (sd_start, sd_start + sd.0.len());
+        let setup_start = (sd_slot.1 + 7) & !7;
 
         let mut img = parse_image(&data, ImageMode::Write, "i", "s").unwrap();
-        let res = hijack_form(&mut img, ITEM, &hijack_schema(), None).unwrap();
+        let res = hijack_form(
+            &mut img,
+            ITEM,
+            &hijack_schema(),
+            Some(&Guid::from_str(SETUPDATA_GUID_STR).unwrap()),
+        )
+        .unwrap();
         assert_eq!(res.records.len(), 1);
         let built = build_image(&img).unwrap();
         assert_eq!(built.len(), data.len(), "slot-fit must preserve total length");
+        assert_eq!(
+            &built[..sd_start],
+            &data[..sd_start],
+            "bytes before the $SPF LZMA slot must not change"
+        );
 
         for (i, (a, b)) in data.iter().zip(built.iter()).enumerate() {
             if a != b {
                 assert!(
-                    i >= sd_slot.0 && i < sd_slot.1,
-                    "byte {i:#x} changed outside the \$SPF LZMA slot"
+                    (i >= sd_slot.0 && i < sd_slot.1) || i >= setup_start,
+                    "byte {i:#x} changed outside the $SPF LZMA slot and the setup module slot"
                 );
             }
         }
@@ -1071,22 +1104,24 @@ git commit -m "feat(uefi-engine): page-hijack-op Task 5 — hijack_form core: at
                     .find(|f| f.guid == Some(Guid::from_str(SETUPDATA_GUID_STR).unwrap()))
             })
             .unwrap();
-        let pfs_leaf = sd_file
-            .children
-            .iter()
-            .find(|c| c.body.windows(4).any(|w| w == b"$SPF"))
-            .unwrap();
+        let pfs_leaf = find_spf_leaf(sd_file).unwrap();
         let recs = spf::scan_question_records(&pfs_leaf.body);
         assert_eq!(recs[0].failsafe, 1, "fs edit must survive rebuild");
         assert_eq!(recs[0].optimal, 1);
     }
 ```
 
-(`lzma_guided_file_bytes` возвращает пару `(file_bytes, slot_len)` — как в ami_patcher tests; `sd_start` вычисляется по фактической раскладке `flash_with_files`: первый файл без паддинга начинается с 32+56, при необходимости вычислить по позиции в `data` поиском GUID.)
+Дефекты исходного текста (каждый воспроизведён RED-прогоном, исправлено до реализации):
 
-- [ ] **Step 2: Падение → реализация (при необходимости — фикс маркировки/сборки)**
+1. sd-файл за LZMA необнаружим при `setupdata_guid=None`: UI-секции среди direct children нет (только GUIDed-обёртка), а тело файла (88 байт GUIDed-секции) не кратно `AMI_RECORD_SIZE` — `find_ami_module` проходит все три фолбэка и возвращает `AmiFilesNotFound`. Фикс: `Some(&sd_guid)` — как LZMA-тест `patch_ami` (класс дефекта 81f35b8 Task 5).
+2. `[...].concat()` без 4-байтового выравнивания секций: `parse_sections` шагает выровненными страйдами, строковая секция поглощается — `StringPackageNotFound`. Фикс: `file_sections(&[...])` (класс дефекта 9a46a30 Task 5).
+3. Строгий confinement к одному слоту невыполним для `hijack_form`: hijack обязан мутировать bare setup-модуль (строки + IFR string-id), а `build_volume` перекладирует файлы последовательно — выросший setup сдвигает слот sd, и дифф ложится вне `[sd_start, sd_start+len)` (наблюдение: byte 0x68 внутри setup-файла). Дизайн §5 для real-image сам требует «дифф confined ровно к двум слотам (Setup-модуль: строки + IFR; AMITSESetupData: fs/opt)». Фикс: sd-файл первым (слот стабилен, прецедент — LZMA-тест ami_patcher со `sd_start = 88`), дифф confined к слоту sd ∪ региону setup-модуля; неизменность префикса `[0, sd_start)` и паддинга `[sd_slot.1, setup_start)` — гейт переполнения LZMA-слота (если recompress не влезает в budget, поток удлиняет файл и меняет паддинг).
+4. Reparse-хвост искал `$SPF` только среди direct children sd-файла: за GUIDed-обёрткой лист — внук, а body обёртки — сжатый поток без plaintext `$SPF` — `unwrap()` на `None`. Фикс: рекурсивный `find_spf_leaf` (паттерн `find_leaf` из ami_patcher tests).
+5. `\$SPF` — невалидный Rust-escape (утечка heredoc, класс 81f35b8); `sd_start = setup.len().max(8)` не соответствует раскладке — заменено поиском GUID-байтов заголовка sd-файла в `data` (санкционировано заметкой самого плана).
 
-Тест может пройти сразу (механика маркировки от ami-patch-op уже в `hijack_form`). Если падает — причина в том, что `mark_rebuild_to_root_by_path` от пути $SPF-секции не поднимает Rebuild через LZMA-обёртку; сверить с `patch_ami` (ami_patcher.rs:49) — путь должен быть путём payload-секции (Task 4 возвращает именно его).
+- [ ] **Step 2: Маркировка через LZMA-обёртку**
+
+Механика маркировки от ami-patch-op уже в `hijack_form`: `mark_rebuild_to_root_by_path` от пути payload-секции (Task 4 возвращает именно его, ср. `patch_ami` ami_patcher.rs:49) поднимает Rebuild через LZMA-обёртку — отдельный фикс не требуется.
 
 - [ ] **Step 3: Прогон + clippy + commit**
 
