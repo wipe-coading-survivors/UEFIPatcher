@@ -24,26 +24,33 @@ pub fn parse_entry(buf: &[u8], off: usize) -> Option<NvarRecord> {
         return None;
     }
     let attributes = buf[off + 9];
+    let entry_end = off + size;
     let mut p = off + 10;
     let mut guid_index = None;
     if attributes & ATTR_VALID != 0 && attributes & ATTR_DATA_ONLY == 0 {
         if attributes & ATTR_LOCAL_GUID != 0 {
             p += 16;
         } else {
-            guid_index = Some(buf[p]);
+            guid_index = Some(*buf.get(p)?);
             p += 1;
+        }
+        if p > entry_end {
+            return None;
         }
     }
     let mut name = None;
     if attributes & ATTR_VALID != 0 && attributes & ATTR_DATA_ONLY == 0 {
         if attributes & ATTR_ASCII_NAME != 0 {
-            let end = buf[p..off + size].iter().position(|&b| b == 0)? + p;
+            let end = buf[p..entry_end].iter().position(|&b| b == 0)? + p;
             name = Some(String::from_utf8_lossy(&buf[p..end]).into_owned());
             p = end + 1;
         } else {
             let mut end = p;
-            while end + 1 < off + size && !(buf[end] == 0 && buf[end + 1] == 0) {
+            while end + 1 < entry_end && !(buf[end] == 0 && buf[end + 1] == 0) {
                 end += 2;
+            }
+            if end + 1 >= entry_end {
+                return None;
             }
             let units: Vec<u16> = buf[p..end]
                 .chunks_exact(2)
@@ -51,6 +58,9 @@ pub fn parse_entry(buf: &[u8], off: usize) -> Option<NvarRecord> {
                 .collect();
             name = Some(String::from_utf16_lossy(&units));
             p = end + 2;
+        }
+        if p > entry_end {
+            return None;
         }
     }
     Some(NvarRecord {
@@ -60,7 +70,7 @@ pub fn parse_entry(buf: &[u8], off: usize) -> Option<NvarRecord> {
         guid_index,
         name,
         data_offset: p,
-        data_len: off + size - p,
+        data_len: entry_end - p,
     })
 }
 
@@ -246,5 +256,56 @@ mod tests {
         assert_eq!(r.name.as_deref(), Some("Boot"));
         assert_eq!(r.data_offset, 10 + 16 + 5);
         assert_eq!(r.data_len, 2);
+    }
+
+    fn raw_entry(size: u16, attributes: u8, body: &[u8]) -> Vec<u8> {
+        let mut e = Vec::new();
+        e.extend_from_slice(b"NVAR");
+        e.extend_from_slice(&size.to_le_bytes());
+        e.extend_from_slice(&[0xFF, 0xFF, 0xFF]);
+        e.push(attributes);
+        e.extend_from_slice(body);
+        e
+    }
+
+    #[test]
+    fn parse_entry_malformed_geometries_return_none() {
+        let e = raw_entry(10, ATTR_VALID, &[]);
+        assert_eq!(parse_entry(&e, 0), None);
+        let e = raw_entry(
+            12,
+            ATTR_VALID | ATTR_LOCAL_GUID | ATTR_ASCII_NAME,
+            &[0x00, 0x00],
+        );
+        assert_eq!(parse_entry(&e, 0), None);
+        let e = raw_entry(15, ATTR_VALID, &[0x00, 0x42, 0x00, 0x43, 0x00]);
+        assert_eq!(parse_entry(&e, 0), None);
+    }
+
+    #[test]
+    fn parse_entry_ucs2_name_reads_name() {
+        let mut body = Vec::new();
+        body.push(0);
+        for u in "Bo".encode_utf16() {
+            body.extend_from_slice(&u.to_le_bytes());
+        }
+        body.extend_from_slice(&0u16.to_le_bytes());
+        body.extend_from_slice(&[0xEE, 0xFF]);
+        let size = (10 + body.len()) as u16;
+        let e = raw_entry(size, ATTR_VALID, &body);
+        let r = parse_entry(&e, 0).expect("ucs2-name entry parses");
+        assert_eq!(r.guid_index, Some(0));
+        assert_eq!(r.name.as_deref(), Some("Bo"));
+        assert_eq!(r.data_offset, 17);
+        assert_eq!(r.data_len, 2);
+    }
+
+    #[test]
+    fn walk_stops_at_ff_tail() {
+        let store = store_fixture();
+        let records = walk(&store);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].name.as_deref(), Some("StdDefaults"));
+        assert_eq!(records[0].size, store.len() - 8);
     }
 }
