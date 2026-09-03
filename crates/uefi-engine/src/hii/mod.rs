@@ -11,6 +11,7 @@ pub mod pe_resource;
 pub mod schema;
 pub mod string_pack;
 pub mod strings;
+pub mod values;
 
 use crate::ffs::{
     EFI_SECTION_COMPRESSION, EFI_SECTION_GUID_DEFINED, EFI_SECTION_PE32, EFI_SECTION_RAW,
