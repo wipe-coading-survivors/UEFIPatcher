@@ -52,7 +52,7 @@ pub mod gates;
 `crates/uefi-engine/src/hii/gates.rs` — каркас: типы из Interfaces + пустой `mod tests`, пока без реализации `decode_expr` (тесты Step 2 не скомпилируются — это и есть «красная» фаза).
 
 ```rust
-use r_efi::hii::{IFR_EQ_ID_VAL_OP, IFR_EQUAL_OP, IFR_TRUE_OP, IFR_UINT64_OP};
+use r_efi::hii::{IFR_END_OP, IFR_EQ_ID_VAL_OP, IFR_EQUAL_OP, IFR_TRUE_OP, IFR_UINT64_OP};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GateKind {
@@ -225,11 +225,12 @@ pub fn decode_expr(region: &[u8]) -> GateExpr {
         if len < 2 || i + len > region.len() {
             return GateExpr::Other;
         }
+        if op == IFR_END_OP {
+            i += len;
+            continue;
+        }
         ops.push((op, &region[i + 2..i + len]));
         i += len;
-    }
-    if i != region.len() {
-        return GateExpr::Other;
     }
     match ops.as_slice() {
         [(IFR_UINT64_OP, a), (IFR_UINT64_OP, b), (IFR_EQUAL_OP, _)]
@@ -250,7 +251,7 @@ pub fn decode_expr(region: &[u8]) -> GateExpr {
 }
 ```
 
-Импорты в `use` — ровно используемые этим шагом (`-D warnings`); `IFR_END_OP`/`IFR_FORM_OP`/`is_form_package` и statement-константы добавит Task 2 вместе с walker'ом.
+Импорты в `use` — ровно используемые этим шагом (`-D warnings`); statement-константы добавит Task 2 вместе с walker'ом. END-опкоды внутри региона пропускаются по длине: вендорский quirk — scoped-операнды (`[45 8A]`) несут свои END-терминаторы внутри области выражения (реальная прошивка HNX99TF; найдено приёмкой Task 8); тест на это — `decode_stops_at_end_terminators_of_scoped_operands` (фикстура `[uint64_quirk, END, uint64_quirk, END, equal]` → `EqConst{1,1}`).
 
 - [ ] **Step 5: Прогнать + lint + коммит**
 
@@ -565,7 +566,7 @@ pub fn find_gates(body: &[u8], target: &GateTarget) -> Vec<Gate> {
         }
         let in_gate_expr =
             matches!(stack.last(), Some(f) if is_gate_op(f.op) && f.expr_end.is_none());
-        if in_gate_expr && !is_statement_op(op) && !is_gate_op(op) {
+        if in_gate_expr && !is_statement_op(op) && !is_gate_op(op) && length_and_scope & 0x80 == 0 {
             i += length;
             continue;
         }
@@ -642,6 +643,8 @@ fn emit_gates(
 ```
 
 `expr_end` в нормальном пути выставлен statement-циклом до вызова `emit_gates`; `unwrap_or(stmt_offset)` — защита от дегенеративного пакета (пустое выражение).
+
+Условие `&& length_and_scope & 0x80 == 0` в skip-ветке (поправка по приёмке Task 8): scoped-операнды выражений (`[45 8A]`, вендорский quirk реальной прошивки) НЕ пропускаются линейно — они получают собственный фрейм, их END-терминаторы pop'ят этот фрейм, а не гейт. Юнит-тест на реальную форму quirk обязателен: фикстура с scoped-операндами + END-терминаторами внутри выражения гейта (зеркалит байты живого образца) — гейт находится, выражение декодируется.
 
 - [ ] **Step 4: Прогнать + lint + коммит**
 
@@ -2076,7 +2079,7 @@ git commit -m "feat(uefi-cli): hii form/question gates/unlock commands"
 
 ```rust
 const PCI_SETUP_MODULE_GUID: &str = "899407D7-99FE-43D8-9A21-79EC328CAC21";
-const E12_FLIP_BYTES: [(usize, u8, u8); 3] = [(0x67A, 1, 2), (0xDD1, 1, 0xFF), (0xDD2, 1, 0xFF)];
+const E12_FLIP_BYTES: [(usize, u8, u8); 3] = [(0x67A, 1, 2), (0xDD1, 1, 0xFF), (0xDD2, 0, 0xFF)];
 
 fn node_at_path<'a>(img: &'a Image, path: &[usize]) -> &'a FfsNode {
     let mut node = &img.root;
