@@ -103,6 +103,90 @@ async fn formset_add_flow() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn hii_question_info_and_set_value_flow() {
+    let (td, sock) = setup_env().await;
+    let cwd = td.path();
+
+    cli(&sock, cwd).args(["session", "init"]).assert().success();
+    cli(&sock, cwd)
+        .args(["image", "open", "/dev/null", "--mode", "write"])
+        .assert()
+        .success();
+
+    cli(&sock, cwd)
+        .args(["hii", "question", "info", "0#10029:0x3B"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("one_of"))
+        .stdout(predicates::str::contains("Setup"))
+        .stdout(predicates::str::contains("0x3a"))
+        .stdout(predicates::str::contains("58"))
+        .stdout(predicates::str::contains("value = 1"));
+
+    cli(&sock, cwd)
+        .args([
+            "--format",
+            "json",
+            "hii",
+            "question",
+            "info",
+            "0#10029:0x3B",
+        ])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("\"varstore\""))
+        .stdout(predicates::str::contains("\"kind\": \"one_of\""));
+
+    cli(&sock, cwd)
+        .args(["--format", "tsv", "hii", "question", "info", "0#10029:0x3B"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("form_id\tquestion_id\tkind"))
+        .stdout(predicates::str::contains("option\t3\t1\t0"));
+
+    cli(&sock, cwd)
+        .args(["hii", "question", "set-value", "0#10029:0x3B", "1"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("one_of"))
+        .stdout(predicates::str::contains(
+            "applied file …raw body store+0x62: 00 -> 01",
+        ))
+        .stdout(predicates::str::contains("stores: 1"));
+
+    cli(&sock, cwd)
+        .args(["hii", "question", "set-value", "0#10029:0x3B", "0x1"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("00 -> 01"));
+
+    cli(&sock, cwd)
+        .args([
+            "--format",
+            "json",
+            "hii",
+            "question",
+            "set-value",
+            "0#10029:0x3B",
+            "1",
+        ])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("\"applied\""))
+        .stdout(predicates::str::contains("\"stores\""));
+
+    cli(&sock, cwd)
+        .args(["hii", "question", "set-value", "0#10029:0x3B", "zz"])
+        .assert()
+        .failure();
+
+    cli(&sock, cwd)
+        .args(["session", "destroy"])
+        .assert()
+        .success();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn form_add_flow() {
     let (td, sock) = setup_env().await;
     let cwd = td.path();

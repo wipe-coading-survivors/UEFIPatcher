@@ -229,8 +229,21 @@ enum HiiFormSetCmd {
 
 #[derive(Subcommand)]
 enum HiiQuestionCmd {
-    Gates { item_id: String },
-    Unlock { item_id: String },
+    Gates {
+        item_id: String,
+    },
+    Unlock {
+        item_id: String,
+    },
+    #[command(about = "show question value map (varstore/offset/width/options)")]
+    Info {
+        item_id: String,
+    },
+    #[command(about = "seed a default value via NVAR StdDefaults stores")]
+    SetValue {
+        item_id: String,
+        value: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -390,6 +403,13 @@ async fn dispatch(cli: &Cli, format: output::OutputFormat) -> Result<(), error::
                 HiiQuestionCmd::Unlock { item_id } => {
                     commands::hii::question_unlock(item_id, sock, format).await
                 }
+                HiiQuestionCmd::Info { item_id } => {
+                    commands::hii::question_info(item_id, sock, format).await
+                }
+                HiiQuestionCmd::SetValue { item_id, value } => {
+                    let v = commands::hii::parse_u64_loose(value)?;
+                    commands::hii::question_set_value(item_id, v, sock, format).await
+                }
             },
             HiiCmd::String { sub } => match sub {
                 HiiStringCmd::List => commands::hii::string_list(sock, format).await,
@@ -477,6 +497,43 @@ mod tests {
                     },
             } => assert_eq!(item_id, "g:0x10:0#10029:0x3B"),
             _ => panic!("expected hii question unlock"),
+        }
+    }
+
+    #[test]
+    fn parse_hii_question_info_and_set_value() {
+        let cli =
+            Cli::try_parse_from(["uefi-cli", "hii", "question", "info", "0#10029:0x3B"]).unwrap();
+        match cli.cmd {
+            Cmd::Hii {
+                sub:
+                    HiiCmd::Question {
+                        sub: HiiQuestionCmd::Info { item_id },
+                    },
+            } => assert_eq!(item_id, "0#10029:0x3B"),
+            _ => panic!("expected hii question info"),
+        }
+        let cli = Cli::try_parse_from([
+            "uefi-cli",
+            "hii",
+            "question",
+            "set-value",
+            "0#10029:0x3B",
+            "0x1",
+        ])
+        .unwrap();
+        match cli.cmd {
+            Cmd::Hii {
+                sub:
+                    HiiCmd::Question {
+                        sub: HiiQuestionCmd::SetValue { item_id, value },
+                    },
+            } => {
+                assert_eq!(item_id, "0#10029:0x3B");
+                assert_eq!(value, "0x1");
+                assert_eq!(commands::hii::parse_u64_loose(&value).unwrap(), 1);
+            }
+            _ => panic!("expected hii question set-value"),
         }
     }
 

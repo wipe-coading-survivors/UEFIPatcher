@@ -350,6 +350,46 @@ impl Client {
         Ok((resp.gates, resp.applied_flips))
     }
 
+    pub async fn hii_question_info(
+        &mut self,
+        image_id: &str,
+        item_id: &str,
+    ) -> Result<QuestionInfo, AppError> {
+        let req = HiiQuestionInfoRequest {
+            image_id: image_id.into(),
+            item_id: item_id.into(),
+        };
+        let resp = self
+            .inner
+            .hii_question_info(auth_req(&self.state, req))
+            .await?
+            .into_inner();
+        resp.question
+            .ok_or_else(|| AppError::new(ErrKind::RpcNotFound, "empty question info"))
+    }
+
+    pub async fn hii_set_value(
+        &mut self,
+        image_id: &str,
+        item_id: &str,
+        value: u64,
+    ) -> Result<(QuestionInfo, Vec<String>, Vec<String>), AppError> {
+        let req = HiiSetValueRequest {
+            image_id: image_id.into(),
+            item_id: item_id.into(),
+            value,
+        };
+        let resp = self
+            .inner
+            .hii_set_value(auth_req(&self.state, req))
+            .await?
+            .into_inner();
+        let q = resp
+            .question
+            .ok_or_else(|| AppError::new(ErrKind::RpcNotFound, "empty question info"))?;
+        Ok((q, resp.applied_flips, resp.stores))
+    }
+
     pub async fn hii_form_set_add(
         &mut self,
         image_id: &str,

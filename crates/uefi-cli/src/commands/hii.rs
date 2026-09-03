@@ -129,3 +129,58 @@ pub async fn question_unlock(
 ) -> Result<(), AppError> {
     unlock(item_id, cli_sock, format).await
 }
+
+pub async fn question_info(
+    item_id: &str,
+    cli_sock: Option<&str>,
+    format: OutputFormat,
+) -> Result<(), AppError> {
+    let st = state::require_state()?;
+    let mut client = Client::connect(cli_sock, st).await?;
+    let image_id = client.active_image()?;
+    let q = client.hii_question_info(&image_id, item_id).await?;
+    crate::output::print_question_info(&q, format);
+    Ok(())
+}
+
+pub async fn question_set_value(
+    item_id: &str,
+    value: u64,
+    cli_sock: Option<&str>,
+    format: OutputFormat,
+) -> Result<(), AppError> {
+    let st = state::require_state()?;
+    let mut client = Client::connect(cli_sock, st).await?;
+    let image_id = client.active_image()?;
+    let (q, applied, stores) = client.hii_set_value(&image_id, item_id, value).await?;
+    crate::output::print_set_value(&q, &applied, &stores, format);
+    Ok(())
+}
+
+pub fn parse_u64_loose(s: &str) -> Result<u64, AppError> {
+    if let Some(hex) = s.strip_prefix("0x") {
+        u64::from_str_radix(hex, 16)
+    } else {
+        s.parse::<u64>()
+    }
+    .map_err(|e| {
+        AppError::new(
+            ErrKind::RpcInvalidArgument,
+            format!("invalid value '{s}': {e}"),
+        )
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_u64_loose;
+
+    #[test]
+    fn parse_u64_loose_hex_and_dec() {
+        assert_eq!(parse_u64_loose("0x1").unwrap(), 1);
+        assert_eq!(parse_u64_loose("0xFF").unwrap(), 255);
+        assert_eq!(parse_u64_loose("42").unwrap(), 42);
+        assert!(parse_u64_loose("0xG").is_err());
+        assert!(parse_u64_loose("").is_err());
+    }
+}

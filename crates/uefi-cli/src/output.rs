@@ -1,4 +1,4 @@
-use uefi_proto::{FormInfo, GateInfo, ImageInfo, Node, SessionInfo, StringInfo};
+use uefi_proto::{FormInfo, GateInfo, ImageInfo, Node, QuestionInfo, SessionInfo, StringInfo};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum OutputFormat {
@@ -222,6 +222,92 @@ pub fn print_unlock(item_id: &str, gates: &[GateInfo], applied: &[String], forma
     }
 }
 
+pub fn print_question_info(q: &QuestionInfo, format: OutputFormat) {
+    match format {
+        OutputFormat::Json => {
+            let v = serde_json::to_string_pretty(q).unwrap_or_else(|_| "{}".into());
+            println!("{v}");
+        }
+        OutputFormat::Tsv => {
+            println!(
+                "form_id\tquestion_id\tkind\tvar_store_id\tvarstore\tvar_offset\twidth\tmin\tmax\tstep"
+            );
+            println!(
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                q.form_id,
+                q.question_id,
+                q.kind,
+                q.var_store_id,
+                q.varstore.as_ref().map(|v| v.name.as_str()).unwrap_or(""),
+                q.var_offset,
+                q.width,
+                q.min,
+                q.max,
+                q.step
+            );
+            for o in &q.options {
+                println!("option\t{}\t{}\t{}", o.string_id, o.value, o.flags);
+            }
+        }
+        OutputFormat::Text => {
+            println!("question {} #{}:{:#x}", q.kind, q.form_id, q.question_id);
+            match &q.varstore {
+                Some(vs) => println!(
+                    "varstore {} ({}) id {} size {:#x}",
+                    vs.name, vs.guid, vs.id, vs.size
+                ),
+                None => println!("varstore id {} (undeclared)", q.var_store_id),
+            }
+            println!(
+                "width {}, offset {:#x} ({})",
+                q.width, q.var_offset, q.var_offset
+            );
+            if q.options.is_empty() {
+                println!("no options");
+            }
+            for o in &q.options {
+                println!(
+                    "value = {} (string {}, flags {:#x})",
+                    o.value, o.string_id, o.flags
+                );
+            }
+            for d in &q.defaults {
+                println!(
+                    "default = {} (id {}, type {})",
+                    d.value, d.default_id, d.r#type
+                );
+            }
+        }
+    }
+}
+
+pub fn print_set_value(
+    q: &QuestionInfo,
+    applied: &[String],
+    stores: &[String],
+    format: OutputFormat,
+) {
+    match format {
+        OutputFormat::Json => {
+            let q_json = serde_json::to_string(q).unwrap_or_else(|_| "{}".into());
+            let applied_json = serde_json::to_string(applied).unwrap_or_else(|_| "[]".into());
+            let stores_json = serde_json::to_string(stores).unwrap_or_else(|_| "[]".into());
+            println!(
+                "{{\"question\":{q_json},\"applied\":{applied_json},\"stores\":{stores_json}}}"
+            );
+        }
+        _ => {
+            print_question_info(q, format);
+            for f in applied {
+                println!("applied {f}");
+            }
+            if matches!(format, OutputFormat::Text) {
+                println!("stores: {}", stores.len());
+            }
+        }
+    }
+}
+
 pub fn print_node_id(item_id: &str, format: OutputFormat) {
     match format {
         OutputFormat::Json => println!("{{\"item_id\":\"{item_id}\"}}"),
@@ -304,6 +390,66 @@ mod tests {
         string_ids.insert("NewForm".to_string(), 3u32);
         print_form_add(&[42], &string_ids, OutputFormat::Json);
         print_form_add(&[], &string_ids, OutputFormat::Text);
+    }
+
+    fn mock_question() -> QuestionInfo {
+        QuestionInfo {
+            form_id: 10029,
+            question_id: 0x3B,
+            kind: "one_of".into(),
+            var_store_id: 1,
+            varstore: Some(uefi_proto::VarStoreInfo {
+                id: 1,
+                guid: "EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9".into(),
+                size: 0x72,
+                name: "Setup".into(),
+            }),
+            var_offset: 0x3A,
+            width: 1,
+            min: 0,
+            max: 0,
+            step: 0,
+            options: vec![
+                uefi_proto::OptionEntry {
+                    string_id: 4,
+                    value: 0,
+                    flags: 0x30,
+                },
+                uefi_proto::OptionEntry {
+                    string_id: 3,
+                    value: 1,
+                    flags: 0x00,
+                },
+            ],
+            defaults: vec![],
+        }
+    }
+
+    #[test]
+    fn question_info_print_smoke() {
+        let q = mock_question();
+        print_question_info(&q, OutputFormat::Json);
+        print_question_info(&q, OutputFormat::Tsv);
+        print_question_info(&q, OutputFormat::Text);
+    }
+
+    #[test]
+    fn question_info_no_options_print_smoke() {
+        let mut q = mock_question();
+        q.options.clear();
+        q.varstore = None;
+        print_question_info(&q, OutputFormat::Text);
+        print_question_info(&q, OutputFormat::Tsv);
+    }
+
+    #[test]
+    fn set_value_print_smoke() {
+        let q = mock_question();
+        let applied = vec!["file …raw body store+0x62: 00 -> 01".to_string()];
+        let stores = vec!["mock store".to_string()];
+        print_set_value(&q, &applied, &stores, OutputFormat::Json);
+        print_set_value(&q, &applied, &stores, OutputFormat::Tsv);
+        print_set_value(&q, &applied, &stores, OutputFormat::Text);
     }
 
     #[test]
