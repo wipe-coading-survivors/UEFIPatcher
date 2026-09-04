@@ -1928,6 +1928,10 @@ $SPF — сигнатурный скан контролов). Попутная �
   вопросов; сравнение оригинал/патч через AMIBCP бессмысленно для
   visibility-патчей (обе картинки Show=Yes). Метод верификации —
   побайтовый IFR-анализ (пробник `refs/amibcp/probes/suppress_probe.py`).
+* [ ] **gateway integration-тесты и sandbox-прокси**: `HTTP_PROXY` окружения
+  валит `health`/`create_session_and_list` 503 (reqwest гоняет loopback через
+  прокси); харднинг — `reqwest::Client::builder().no_proxy(true)` в
+  `crates/uefi-gateway/tests/integration.rs` (найдено в цикле hijack-v2, Task 6).
 * [ ] **spf::write_record_defaults без production-вызовов** — после
   hijack v2 (запись fs/opt в $SPF удалена, коммит 03b9b09) функцию
   (`crates/uefi-engine/src/hii/spf.rs:46`) никто в production не зовёт;
