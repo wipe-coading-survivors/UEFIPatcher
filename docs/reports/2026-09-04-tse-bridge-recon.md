@@ -244,11 +244,20 @@ E18/E19/E21 не «убивали» её, а не включали. Дальне
 | prompt вопроса | IFR prompt-id |
 | help вопроса | $SPF пул-контрол строк u16@0x5106 |
 | опции one_of | сток IFR (2 шт.) |
-| пункт меню | goto prompt-id |
-| заголовок страницы | TBD (IFR FORM title vs $SPF title-id) — не блокирует |
+| пункт меню + его хелп-строка | goto prompt-id / goto help-id (сток 395, подтверждено пользователем) |
+| заголовок страницы | $SPF title-id страницы@+0xE (структура 10029 @0x694, title-id=395); IFR FORM title не рендерится — подтверждено пользователем |
 
 Рецепт hijack страницы (для движковой op hijack-v2): unlock
 suppress-констант + строковые аппенды en-US + same-length IFR
 string-ids (title/prompt/help) + u16 хелп-контрола в $SPF-пуле
 (поиск по str-id). Асимметрия prompt(IFR)/help($SPF) — факт
 архитектуры AMITSE на этой плате.
+
+Заголовок закрыт без прошива (слова пользователя, 2026-09-04): шапка и
+пункт меню = сток «PCI Subsystem Settings» (395), хелп-строка пункта =
+сток «PCI, PCI-X and PCI Express Settings» (goto help-id); IFR FORM
+title 749 не отрендерился нигде → источник заголовка = $SPF
+title-id@+0xE страницы 10029 (@0x694, 395). Карта каналов закрыта
+полностью (6/6). Мини-цикл hijack-v2: unlock + аппенды + IFR
+prompt/help-ids + $SPF хелп-контрол; переименование страницы/пункта
+(если нужно) — $SPF title-id + goto ids, IFR FORM title не трогать.
