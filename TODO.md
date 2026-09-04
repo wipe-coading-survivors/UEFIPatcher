@@ -1799,6 +1799,43 @@ $SPF — сигнатурный скан контролов). Попутная �
   заложен `plan_gates_skip_unlocked`; сам `unlock` op не меняется —
   при необходимости сделать его идемпотентным отдельной правкой.
 
+**E27 собран движком (2026-09-05, Task 8 hijack-v2)**: артефакт
+`refs/amibcp/e27-hijack-v2-engine.bin` (НЕ коммитить, refs/ — данные),
+sha256 `a91c1a778c9bd79bfb8a2a49b49675d1a6fad8069144b2bbf4fba3382afe200a`.
+Собран чисто engine+CLI (сокет `/tmp/uefipatcher-e27.sock`): `session
+init --name e27 --force` → `image open … --mode write` → `hii form
+unlock 899407d7…:0x10:0#10029` (1 флип: хаб-REF `1==1`→`1==2`
+@pkg+0x8fae) → 7× `hii question unlock …#10029:{54,55,56,57,58,59,60}`
+(по 1 флипу `01 00 -> ff ff` на EqIdVal(0x9A,1)-grayout'ах; q59
+вскрыт ДО hijack — зеркало gate-сценария B; синтаксис CLI —
+позиционный ITEM_ID, не `--target`) → `hii form hijack --file
+/tmp/e27-schema.json --setupdata-guid FE612B72-203C-47B1-8560-A66D946EB371`
+→ `image save`. Контракт hijack: **string_ids=2** (prompt=749
+«UEFIPatcher E27: engine hijack-v2», help=750 «UEFIPatcher E27:
+engine-built help channel»), **unlock_flips=0** (идемпотентность на
+живых данных: всё вскрыто шагами unlock), **help_controls=1** ($SPF
+str@0x5116: 1A4→2EE, т.е. хелп-контрол q59 → id 750). Верификация
+(throwaway-скрипт, не в git): длина 16MiB сохранена; побайтовый дифф
+против оригинала confined в два слота — Setup-файл 899407D7
+[0x8D16D0..0x8D7BF1) и SetupData FE612B72 [0xA9C708..0xAA89E4)
+(GUID-скан FFS-заголовков, как `find_file_range` в gate-тестах),
+вне слотов 0 изменённых байт; re-parse артефакта: форма 10029 «PCI
+Subsystem Settings» на месте со сток title, строки 749/750 = наши
+аппенды, гейты form+q59 читаются вскрытыми (flip `-`), у q61 grayout
+остаётся планируемым + составной suppress без flip.
+
+* [ ] **флеш-чеклист E27** (отклонение от E26: **7 из 8** вопросов,
+  q61 скрыт — составной suppress-гейт `EQ(1,0) AND
+  EQ_ID_VAL(0x9A,1)` не вскрывается op unlock →
+  `GateExpressionUnsupported`, находка Task 7; его unlock НЕ
+  выполнялся): (1) страница «PCI Subsystem Settings» видна в Advanced;
+  (2) на странице 7 вопросов, включая наш q59 «UEFIPatcher E27:
+  engine hijack-v2» с опциями [Disabled]/[Enabled]; (3) выделение q59
+  показывает help «UEFIPatcher E27: engine-built help channel»;
+  (4) q61 ожидаемо ОТСУТСТВУЕТ (скрыт); (5) заголовок страницы и
+  пункта меню — сток; (6) смена значения q59 сохраняется после
+  Save&Exit + reboot (NVRAM).
+
 
 ### 450x: PCIe-бифуркация — AMIBCP правит, на плате не применяется (2026-09-03)
 
