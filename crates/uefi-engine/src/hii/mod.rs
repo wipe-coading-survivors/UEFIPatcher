@@ -237,7 +237,7 @@ fn hex(bytes: &[u8]) -> String {
         .join(" ")
 }
 
-fn flip_text(base: usize, flip: &gates::PlannedFlip) -> String {
+pub(crate) fn flip_text(base: usize, flip: &gates::PlannedFlip) -> String {
     format!(
         "pkg+{:#x}: {} -> {}",
         base + flip.offset,

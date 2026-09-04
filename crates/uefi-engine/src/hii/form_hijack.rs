@@ -5,6 +5,7 @@ use r_efi::hii::IFR_FORM_OP;
 use super::HiiError;
 use super::ami_patcher;
 use super::form_add;
+use super::gates;
 use super::ifr;
 use super::ops;
 use super::schema;
@@ -128,6 +129,33 @@ pub fn hijack_form(
         }
     }
 
+    let unlock_flips: Vec<gates::PlannedFlip> = {
+        let pkg = package_of(&image.root, &target)?;
+        let mut targets: Vec<gates::GateTarget> = vec![gates::GateTarget {
+            form_id,
+            question_id: None,
+        }];
+        targets.extend(hijack.questions.iter().map(|q| gates::GateTarget {
+            form_id,
+            question_id: Some(q.question_id),
+        }));
+        let mut merged: Vec<gates::PlannedFlip> = Vec::new();
+        for gt in &targets {
+            let found = gates::find_gates(pkg, gt);
+            if found.is_empty() {
+                continue;
+            }
+            let flips = gates::plan_gates_skip_unlocked(pkg, &found)
+                .map_err(HiiError::GateExpressionUnsupported)?;
+            for f in flips {
+                if !merged.iter().any(|m| m.offset == f.offset) {
+                    merged.push(f);
+                }
+            }
+        }
+        merged
+    };
+
     let sd_path = ami_patcher::pfs_payload_path(image, setupdata_guid)?;
     let spf_records = {
         let node = node_at(&image.root, &sd_path);
@@ -174,13 +202,18 @@ pub fn hijack_form(
         let root = &mut image.root;
         let pkg = package_of_mut(root, &target)?;
         apply_hijack_ifr(pkg, form_id, hijack, &string_ids)?;
+        gates::apply_flips(pkg, &unlock_flips).map_err(HiiError::GateExpressionUnsupported)?;
     }
     ops::mark_rebuild_to_root_by_path(&mut image.root, &path);
 
+    tracing::warn!(flips = unlock_flips.len(), "hijack auto-unlock applied");
     tracing::debug!(questions = hijack.questions.len(), "hijack_form done");
     Ok(HijackResult {
         string_ids,
-        unlock_flips: Vec::new(),
+        unlock_flips: unlock_flips
+            .iter()
+            .map(|f| crate::hii::flip_text(0, f))
+            .collect(),
         help_controls: Vec::new(),
         form_ifr_start,
         form_ifr_end,
@@ -254,7 +287,7 @@ pub(crate) mod test_fixtures {
     use crate::types::Guid;
     use std::str::FromStr;
 
-    const FORMSET_GUID: &str = "A1B2C3D4-E5F6-7890-ABCD-EF1234567890";
+    pub(crate) const FORMSET_GUID: &str = "A1B2C3D4-E5F6-7890-ABCD-EF1234567890";
     pub(crate) const FILE_GUID: &str = "5C60F367-A505-419A-859E-2A4FF6CA6FE5";
     pub(crate) const SETUPDATA_GUID_STR: &str = "12345678-90AB-CDEF-1234-567890ABCDEF";
 
@@ -409,7 +442,7 @@ mod tests {
     use super::test_fixtures::*;
     use super::*;
     use crate::builder::build_image;
-    use crate::ffs::{EFI_SECTION_FREEFORM_SUBTYPE_GUID, EFI_SECTION_RAW};
+    use crate::ffs::{EFI_SECTION_FREEFORM_SUBTYPE_GUID, EFI_SECTION_RAW, EFI_SECTION_UI};
     use crate::hii::spf;
     use crate::parser::image::parse_image;
     use crate::types::Guid;
@@ -745,6 +778,193 @@ mod tests {
             )
             .is_err(),
             "missing $SPF file"
+        );
+    }
+
+    fn opcode(op_code: u8, scope: bool, payload: &[u8]) -> Vec<u8> {
+        let mut v = Vec::with_capacity(payload.len() + 2);
+        v.push(op_code);
+        v.push(((payload.len() + 2) as u8) | if scope { 0x80 } else { 0 });
+        v.extend_from_slice(payload);
+        v
+    }
+
+    fn gated_pkg() -> Vec<u8> {
+        use r_efi::hii::{
+            IFR_EQ_ID_VAL_OP, IFR_EQUAL_OP, IFR_FORM_OP, IFR_FORM_SET_OP, IFR_GRAY_OUT_IF_OP,
+            IFR_ONE_OF_OP, IFR_SUPPRESS_IF_OP, IFR_UINT64_OP, PACKAGE_FORMS,
+        };
+        let form_set = {
+            let mut p = Vec::new();
+            p.extend_from_slice(&Guid::from_str(FORMSET_GUID).unwrap().to_bytes());
+            p.extend_from_slice(&7u16.to_le_bytes());
+            p.extend_from_slice(&0u16.to_le_bytes());
+            p.push(0u8);
+            opcode(IFR_FORM_SET_OP, true, &p)
+        };
+        let uint64 = |v: u64| {
+            let mut b = vec![IFR_UINT64_OP, 0x0A];
+            b.extend_from_slice(&v.to_le_bytes());
+            b
+        };
+        let equal = || vec![IFR_EQUAL_OP, 0x02];
+        let eq_id_val = |qid: u16, val: u16| {
+            let mut b = vec![IFR_EQ_ID_VAL_OP, 0x06];
+            b.extend_from_slice(&qid.to_le_bytes());
+            b.extend_from_slice(&val.to_le_bytes());
+            b
+        };
+        let ref_op = |form_id: u16| {
+            let mut v = vec![r_efi::hii::IFR_REF_OP, 0x0F];
+            v.extend_from_slice(&[0u8; 11]);
+            v.extend_from_slice(&form_id.to_le_bytes());
+            v
+        };
+        let mut ifr = form_set;
+        ifr.extend(opcode(
+            IFR_FORM_OP,
+            true,
+            &[6u16.to_le_bytes(), 1u16.to_le_bytes()].concat(),
+        ));
+        ifr.extend(opcode(IFR_SUPPRESS_IF_OP, true, &[]));
+        ifr.extend(uint64(1));
+        ifr.extend(uint64(1));
+        ifr.extend(equal());
+        ifr.extend(ref_op(7));
+        ifr.extend(vec![r_efi::hii::IFR_END_OP, 0x02]);
+        ifr.extend(vec![r_efi::hii::IFR_END_OP, 0x02]);
+        ifr.extend(opcode(
+            IFR_FORM_OP,
+            true,
+            &[7u16.to_le_bytes(), 1u16.to_le_bytes()].concat(),
+        ));
+        ifr.extend(opcode(IFR_GRAY_OUT_IF_OP, true, &[]));
+        ifr.extend(eq_id_val(0x9A, 1));
+        ifr.extend(opcode(IFR_ONE_OF_OP, true, &{
+            let mut p = vec![0u8; 11];
+            p[4..6].copy_from_slice(&0x11u16.to_le_bytes());
+            p
+        }));
+        ifr.extend(vec![r_efi::hii::IFR_END_OP, 0x02]);
+        ifr.extend(vec![r_efi::hii::IFR_END_OP, 0x02]);
+        ifr.extend(vec![r_efi::hii::IFR_END_OP, 0x02]);
+        ifr.extend(vec![r_efi::hii::IFR_END_OP, 0x02]);
+        let total = 4 + ifr.len();
+        let mut pkg = vec![
+            (total & 0xFF) as u8,
+            ((total >> 8) & 0xFF) as u8,
+            ((total >> 16) & 0xFF) as u8,
+            PACKAGE_FORMS,
+        ];
+        pkg.extend_from_slice(&ifr);
+        pkg
+    }
+
+    fn gated_flash_image() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        let pkg = gated_pkg();
+        let qs = locate_questions(&pkg, 7);
+        let records: Vec<spf::SpfQuestionRecord> = qs
+            .iter()
+            .enumerate()
+            .map(|(i, &(off, qid))| spf::SpfQuestionRecord {
+                offset: 0x100 + i * spf::SPF_RECORD_SIZE,
+                question_id: qid,
+                ifr_offset: off as u32,
+                failsafe: 0,
+                optimal: 0,
+            })
+            .collect();
+        let spf_body = spf_container(&records, 0x400);
+        let setup = ffs_file_bytes(
+            &Guid::from_str(FILE_GUID).unwrap(),
+            &file_sections(&[
+                section_bytes(EFI_SECTION_RAW, &pkg),
+                section_bytes(EFI_SECTION_RAW, &string_package_bytes()),
+            ]),
+        );
+        let sd = ffs_file_bytes(
+            &Guid::from_str(SETUPDATA_GUID_STR).unwrap(),
+            &file_sections(&[
+                section_bytes(EFI_SECTION_UI, &ui_name("AMITSESetupData")),
+                section_bytes(EFI_SECTION_FREEFORM_SUBTYPE_GUID, &spf_body),
+            ]),
+        );
+        let flash = flash_with_files(vec![setup, sd]);
+        (flash, pkg, spf_body)
+    }
+
+    const GATED_ITEM: &str = "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:0#7";
+
+    #[test]
+    fn hijack_auto_unlocks_victim_gates() {
+        let (flash, pkg_before, _) = gated_flash_image();
+        let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+        let res = hijack_form(&mut img, GATED_ITEM, &hijack_schema(), None).unwrap();
+        assert_eq!(res.unlock_flips.len(), 2, "REF suppress + question grayout");
+
+        let built = build_image(&img).unwrap();
+        let re = parse_image(&built, ImageMode::Read, "i2", "s2").unwrap();
+        let node = crate::parser::target::find_item(
+            &re.root,
+            &crate::parser::target::parse_target(&format!("{FILE_GUID}:0x19:0")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(node.body.len(), pkg_before.len());
+        let after = &node.body;
+        let mut diffs: Vec<usize> = Vec::new();
+        for i in 0..pkg_before.len() {
+            if pkg_before[i] != after[i] {
+                diffs.push(i);
+            }
+        }
+        let suppressed_const = {
+            let needle = {
+                let mut n = vec![r_efi::hii::IFR_UINT64_OP, 0x0A];
+                n.extend_from_slice(&1u64.to_le_bytes());
+                n
+            };
+            let mut hits = pkg_before
+                .windows(needle.len())
+                .enumerate()
+                .filter(|(_, w)| *w == &needle[..]);
+            let first = hits.next().unwrap().0;
+            let second = hits.next().unwrap().0;
+            assert_eq!(second, first + 10, "two adjacent uint64(1) operands");
+            second + 2
+        };
+        assert_eq!(pkg_before[suppressed_const], 1);
+        assert_eq!(after[suppressed_const], 2);
+        let grayout_const = after
+            .windows(6)
+            .position(|w| {
+                w[0] == 0x12 && w[1] == 0x06 && w[2..4] == [0x9A, 0] && w[4..6] == [0xFF, 0xFF]
+            })
+            .unwrap();
+        assert_eq!(pkg_before[grayout_const + 4], 1);
+    }
+
+    #[test]
+    fn hijack_keeps_atomicity_on_schema_refusal() {
+        let (flash, _, _) = gated_flash_image();
+        let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+        let before = build_image(&img).unwrap();
+        assert!(
+            hijack_form(
+                &mut img,
+                GATED_ITEM,
+                &{
+                    let mut sc = hijack_schema();
+                    sc.questions[0].question_id = 99;
+                    sc
+                },
+                None
+            )
+            .is_err()
+        );
+        assert_eq!(
+            build_image(&img).unwrap(),
+            before,
+            "no mutation on precheck failure"
         );
     }
 }

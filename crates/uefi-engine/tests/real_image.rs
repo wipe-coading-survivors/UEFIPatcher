@@ -1792,9 +1792,18 @@ fn real_image_hii_form_hijack_built_bytes() {
         .find(|f| f.form_id_ifr == 10029)
         .map(|f| f.title.clone())
         .expect("form 10029 before hijack");
+    let pe_path = module_pe32_node_path(&img, PCI_SETUP_MODULE_GUID);
+    let pkg_before = module_form_package(&img, &pe_path);
 
     let res = form_hijack::hijack_form(&mut img, ITEM, &sc, Some(&sd_guid)).unwrap();
-    assert!(res.unlock_flips.is_empty());
+    assert_eq!(
+        res.unlock_flips,
+        vec![
+            "pkg+0x67a: 01 -> 02".to_string(),
+            "pkg+0xdd1: 01 00 -> ff ff".to_string(),
+        ],
+        "hijack auto-unlock must plan exactly the E12 REF-suppress + question-grayout flips"
+    );
     assert!(res.help_controls.is_empty());
     assert!(res.form_ifr_end > res.form_ifr_start);
 
@@ -1812,6 +1821,27 @@ fn real_image_hii_form_hijack_built_bytes() {
         sd_before,
         "$SPF file must stay byte-identical"
     );
+
+    let new_pe_path = module_pe32_node_path(&re, PCI_SETUP_MODULE_GUID);
+    let pkg_after = module_form_package(&re, &new_pe_path);
+    assert_eq!(
+        pkg_after.len(),
+        pkg_before.len(),
+        "hijack + auto-unlock is length-preserving"
+    );
+    let diff: Vec<(usize, u8, u8)> = pkg_before
+        .iter()
+        .zip(pkg_after.iter())
+        .enumerate()
+        .filter(|(_, (a, b))| a != b)
+        .map(|(i, (a, b))| (i, *a, *b))
+        .collect();
+    for (off, from, to) in E12_FLIP_BYTES {
+        assert!(
+            diff.contains(&(off, from, to)),
+            "hijack built bytes must include the E12 flip at pkg+{off:#x}"
+        );
+    }
 
     let pfs_body = find_spf_leaf_body(&re, SETUPDATA_GUID);
     let recs = spf::scan_question_records(&pfs_body);
