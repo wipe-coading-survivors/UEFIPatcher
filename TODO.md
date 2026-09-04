@@ -1787,6 +1787,18 @@ prompt-id 395 (неотличимы при сток 395). Для op: если н
 goto prompt/help-ids; IFR FORM title можно не трогать. **Карта
 каналов рендера закрыта полностью (6/6).**
 
+**Мини-цикл hijack-v2 запущен (2026-09-04)**: брейнсторм закрыт,
+спека `docs/superpowers/specs/2026-09-04-hijack-v2-design.md`
+(u1 авто-unlock жертвы в hijack; u2 удалить fs/opt+title; u3 gate +
+флеш E27; подход — стадии в `hijack_form` + gates-слой напрямую,
+$SPF — сигнатурный скан контролов). Попутная находка при ревью кода:
+* [ ] **`plan_gates` неидемпотентен** — повторный `unlock` на уже
+  вскрытых гейтах падает с `GateExpressionUnsupported` (`plan_flip`
+  не матчит `EqConst` с `a≠b` / `EqIdVal` с `value==0xFFFF`, а
+  `plan_gates` трактует `None` как ошибку). Для hijack-v2 в спеке
+  заложен `plan_gates_skip_unlocked`; сам `unlock` op не меняется —
+  при необходимости сделать его идемпотентным отдельной правкой.
+
 
 ### 450x: PCIe-бифуркация — AMIBCP правит, на плате не применяется (2026-09-03)
 
