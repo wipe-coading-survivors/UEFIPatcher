@@ -1928,6 +1928,10 @@ $SPF — сигнатурный скан контролов). Попутная �
   вопросов; сравнение оригинал/патч через AMIBCP бессмысленно для
   visibility-патчей (обе картинки Show=Yes). Метод верификации —
   побайтовый IFR-анализ (пробник `refs/amibcp/probes/suppress_probe.py`).
+* [ ] **spf::write_record_defaults без production-вызовов** — после
+  hijack v2 (запись fs/opt в $SPF удалена, коммит 03b9b09) функцию
+  (`crates/uefi-engine/src/hii/spf.rs:46`) никто в production не зовёт;
+  кандидат на удаление в будущей чистке. Пока остаётся pub с unit-тестом.
 
 ### Находки финального ревью fix-цикла unhide (2026-09-02)
 

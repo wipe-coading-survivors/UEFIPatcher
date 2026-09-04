@@ -581,6 +581,10 @@ mod tests {
             pe_node.body.windows(2).any(|w| w == b"PH"),
             "appended strings must land inside the PE resource"
         );
+        assert!(
+            pe_node.body.windows(2).any(|w| w == b"PQ"),
+            "appended prompt must land inside the PE resource"
+        );
 
         let sd_file = re
             .root
