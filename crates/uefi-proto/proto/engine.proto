@@ -198,6 +198,12 @@ message HiiHelpControlEdit {
   uint32 old_string_id = 3;
   uint32 new_string_id = 4;
 }
+message HiiHelpRecordEdit {
+  uint32 question_id = 1;
+  uint32 record_offset = 2;
+  uint32 old_string_id = 3;
+  uint32 new_string_id = 4;
+}
 message HiiFormHijackRequest {
   string image_id = 1;
   string target = 2;
@@ -211,6 +217,7 @@ message HiiFormHijackResponse {
   uint32 form_ifr_end = 4;
   repeated string unlock_flips = 5;
   repeated HiiHelpControlEdit help_controls = 6;
+  repeated HiiHelpRecordEdit help_records = 7;
 }
 
 message GateInfo {

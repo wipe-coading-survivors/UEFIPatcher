@@ -233,6 +233,12 @@ impl EngineService for MockEngine {
                 old_string_id: 0x2A,
                 new_string_id: 3,
             }],
+            help_records: vec![HiiHelpRecordEdit {
+                question_id: 0x3B,
+                record_offset: 0x1F4,
+                old_string_id: 0x1A4,
+                new_string_id: 3,
+            }],
             form_ifr_start: 0x5A,
             form_ifr_end: 0x8C,
         }))

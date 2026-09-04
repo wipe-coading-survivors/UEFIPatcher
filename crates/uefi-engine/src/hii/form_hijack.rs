@@ -56,10 +56,18 @@ pub struct HelpControlEdit {
     pub new_string_id: u16,
 }
 
+pub struct HelpRecordEdit {
+    pub question_id: u16,
+    pub record_offset: usize,
+    pub old_string_id: u16,
+    pub new_string_id: u16,
+}
+
 pub struct HijackResult {
     pub string_ids: HashMap<String, u16>,
     pub unlock_flips: Vec<String>,
     pub help_controls: Vec<HelpControlEdit>,
+    pub help_records: Vec<HelpRecordEdit>,
     pub form_ifr_start: u32,
     pub form_ifr_end: u32,
 }
@@ -161,19 +169,33 @@ pub fn hijack_form(
         let node = node_at(&image.root, &sd_path);
         node.body.clone()
     };
-    for q in &hijack.questions {
-        let matched: Vec<_> = spf::scan_question_records(&spf_records)
-            .into_iter()
-            .filter(|r| {
-                r.question_id == q.question_id
-                    && r.ifr_offset >= form_ifr_start
-                    && r.ifr_offset < form_ifr_end
-            })
-            .collect();
-        if matched.len() != 1 {
-            return Err(HiiError::NotFound);
+    let record_edits: Vec<(u16, usize, u16)> = {
+        let records = spf::scan_question_records(&spf_records);
+        let mut out = Vec::new();
+        for q in &hijack.questions {
+            let matched: Vec<_> = records
+                .iter()
+                .filter(|r| {
+                    r.question_id == q.question_id
+                        && r.ifr_offset >= form_ifr_start
+                        && r.ifr_offset < form_ifr_end
+                })
+                .collect();
+            if matched.len() != 1 {
+                return Err(HiiError::NotFound);
+            }
+            let off = matched[0].offset;
+            out.push((
+                q.question_id,
+                off,
+                u16::from_le_bytes([
+                    spf_records[off + spf::SPF_RECORD_HELP_ID],
+                    spf_records[off + spf::SPF_RECORD_HELP_ID + 1],
+                ]),
+            ));
         }
-    }
+        out
+    };
 
     let help_ids: Vec<(u16, u16)> = {
         let pkg = package_of(&image.root, &target)?;
@@ -236,10 +258,13 @@ pub fn hijack_form(
     }
     ops::mark_rebuild_to_root_by_path(&mut image.root, &path);
 
-    let help_controls: Vec<HelpControlEdit> = {
+    let (help_controls, help_records): (Vec<HelpControlEdit>, Vec<HelpRecordEdit>) = {
         let node = node_at_mut(&mut image.root, &sd_path);
-        let mut out = Vec::new();
-        for &(qid, off, old) in &control_edits {
+        let mut ctrls = Vec::new();
+        let mut recs = Vec::new();
+        for (&(qid, off, old), &(_, rec_off, rec_old)) in
+            control_edits.iter().zip(record_edits.iter())
+        {
             let help = &hijack
                 .questions
                 .iter()
@@ -247,15 +272,22 @@ pub fn hijack_form(
                 .unwrap()
                 .help;
             let new_id = *string_ids.get(help).ok_or(HiiError::InvalidIfr)?;
+            spf::write_record_help_id(&mut node.body, rec_off, new_id);
             spf::write_string_control(&mut node.body, off, new_id);
-            out.push(HelpControlEdit {
+            recs.push(HelpRecordEdit {
+                question_id: qid,
+                record_offset: rec_off,
+                old_string_id: rec_old,
+                new_string_id: new_id,
+            });
+            ctrls.push(HelpControlEdit {
                 question_id: qid,
                 offset: off,
                 old_string_id: old,
                 new_string_id: new_id,
             });
         }
-        out
+        (ctrls, recs)
     };
     ops::mark_rebuild_to_root_by_path(&mut image.root, &sd_path);
 
@@ -268,6 +300,7 @@ pub fn hijack_form(
             .map(|f| crate::hii::flip_text(0, f))
             .collect(),
         help_controls,
+        help_records,
         form_ifr_start,
         form_ifr_end,
     })
@@ -1037,6 +1070,7 @@ mod tests {
     #[test]
     fn hijack_rewrites_help_control() {
         let (flash, _, spf_before) = hijack_flash_image();
+        let rec_before = spf::scan_question_records(&spf_before)[0];
         let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
         let res = hijack_form(&mut img, ITEM, &hijack_schema(), None).unwrap();
         assert_eq!(res.help_controls.len(), 1);
@@ -1044,6 +1078,11 @@ mod tests {
         assert_eq!(res.help_controls[0].old_string_id, 0);
         let new_help = *res.string_ids.get("PH").unwrap();
         assert_eq!(res.help_controls[0].new_string_id, new_help);
+        assert_eq!(res.help_records.len(), 1);
+        assert_eq!(res.help_records[0].question_id, 17);
+        assert_eq!(res.help_records[0].record_offset, rec_before.offset);
+        assert_eq!(res.help_records[0].old_string_id, 0);
+        assert_eq!(res.help_records[0].new_string_id, new_help);
 
         let built = build_image(&img).unwrap();
         let re = parse_image(&built, ImageMode::Read, "i2", "s2").unwrap();
@@ -1071,6 +1110,14 @@ mod tests {
         assert_eq!(ctrls.len(), 1);
         assert_eq!(ctrls[0].string_id, new_help);
         assert_eq!(ctrls[0].offset, res.help_controls[0].offset);
+        let recs = spf::scan_question_records(&pfs_leaf.body);
+        assert_eq!(recs.len(), 1);
+        let s14 = u16::from_le_bytes([
+            pfs_leaf.body[recs[0].offset + spf::SPF_RECORD_HELP_ID],
+            pfs_leaf.body[recs[0].offset + spf::SPF_RECORD_HELP_ID + 1],
+        ]);
+        assert_eq!(s14, new_help, "record s14 must carry the new help id");
+        assert_eq!(recs[0].offset, res.help_records[0].record_offset);
     }
 
     #[test]
@@ -1128,6 +1175,11 @@ mod tests {
         assert_eq!(
             res2.help_controls[0].old_string_id,
             res1.help_controls[0].new_string_id
+        );
+        assert_eq!(res2.help_records.len(), 1);
+        assert_eq!(
+            res2.help_records[0].old_string_id,
+            res1.help_records[0].new_string_id
         );
     }
 }

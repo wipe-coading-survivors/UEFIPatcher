@@ -1827,6 +1827,14 @@ fn real_image_hii_form_hijack_built_bytes() {
         res.help_controls[0].offset, matched_before[0].offset,
         "the patched control must be the one that carried help-id 420"
     );
+    assert_eq!(
+        res.help_records.len(),
+        1,
+        "the 4G question must have its $SPF record s14 rewritten"
+    );
+    assert_eq!(res.help_records[0].question_id, 59);
+    assert_eq!(res.help_records[0].old_string_id, 420);
+    assert_eq!(res.help_records[0].new_string_id, new_help_id);
     assert!(res.form_ifr_end > res.form_ifr_start);
 
     let built = build_image(&img).unwrap();
@@ -1888,6 +1896,28 @@ fn real_image_hii_form_hijack_built_bytes() {
         "4G record stays registered in built $SPF"
     );
     assert!(recs.len() >= 380, "record array must stay intact");
+    let q59_after: Vec<_> = recs
+        .iter()
+        .filter(|r| {
+            r.question_id == 59
+                && r.ifr_offset >= res.form_ifr_start
+                && r.ifr_offset < res.form_ifr_end
+        })
+        .collect();
+    assert_eq!(
+        q59_after.len(),
+        1,
+        "exactly one q59 record in the form span"
+    );
+    assert_eq!(q59_after[0].offset, res.help_records[0].record_offset);
+    assert_eq!(
+        u16::from_le_bytes([
+            pfs_body[q59_after[0].offset + spf::SPF_RECORD_HELP_ID],
+            pfs_body[q59_after[0].offset + spf::SPF_RECORD_HELP_ID + 1],
+        ]),
+        new_help_id,
+        "the q59 record s14 must carry the appended help id after build"
+    );
 
     let forms = collect_forms(&re);
     let f = forms
@@ -1968,6 +1998,10 @@ fn real_image_hijack_v2_scenario_a_unlocks_victim_only() {
     assert_eq!(res.help_controls[0].old_string_id, 420);
     let new_help_id = *res.string_ids.get("UEFIPatcher E27 A help").unwrap();
     assert_eq!(res.help_controls[0].new_string_id, new_help_id);
+    assert_eq!(res.help_records.len(), 1);
+    assert_eq!(res.help_records[0].question_id, 59);
+    assert_eq!(res.help_records[0].old_string_id, 420);
+    assert_eq!(res.help_records[0].new_string_id, new_help_id);
 
     let built = build_image(&img).unwrap();
     assert_eq!(built.len(), data.len(), "total flash length preserved");
@@ -2044,6 +2078,26 @@ fn real_image_hijack_v2_scenario_a_unlocks_victim_only() {
         .collect();
     assert_eq!(patched.len(), 1);
     assert_eq!(patched[0].string_id, new_help_id);
+
+    let recs_after = spf::scan_question_records(&spf_body);
+    let q59_rec: Vec<_> = recs_after
+        .iter()
+        .filter(|r| {
+            r.question_id == 59
+                && r.ifr_offset >= res.form_ifr_start
+                && r.ifr_offset < res.form_ifr_end
+        })
+        .collect();
+    assert_eq!(q59_rec.len(), 1, "scenario A: exactly one q59 record");
+    assert_eq!(q59_rec[0].offset, res.help_records[0].record_offset);
+    assert_eq!(
+        u16::from_le_bytes([
+            spf_body[q59_rec[0].offset + spf::SPF_RECORD_HELP_ID],
+            spf_body[q59_rec[0].offset + spf::SPF_RECORD_HELP_ID + 1],
+        ]),
+        new_help_id,
+        "scenario A: the q59 record s14 must carry the appended help id after build"
+    );
 
     let (setup_slot, sd_slot) = (
         find_file_range(&data, PCI_SETUP_MODULE_GUID),
@@ -2146,6 +2200,10 @@ fn real_image_hijack_v2_scenario_b_full_page_matches_e26_content() {
     assert_eq!(res.help_controls[0].old_string_id, 420);
     let new_help_id = *res.string_ids.get("UEFIPatcher E27 B help").unwrap();
     assert_eq!(res.help_controls[0].new_string_id, new_help_id);
+    assert_eq!(res.help_records.len(), 1);
+    assert_eq!(res.help_records[0].question_id, 59);
+    assert_eq!(res.help_records[0].old_string_id, 420);
+    assert_eq!(res.help_records[0].new_string_id, new_help_id);
 
     let built = build_image(&img).unwrap();
     assert_eq!(built.len(), data.len(), "total flash length preserved");
@@ -2238,6 +2296,26 @@ fn real_image_hijack_v2_scenario_b_full_page_matches_e26_content() {
         .collect();
     assert_eq!(patched.len(), 1);
     assert_eq!(patched[0].string_id, new_help_id);
+
+    let recs_after = spf::scan_question_records(&spf_body);
+    let q59_rec: Vec<_> = recs_after
+        .iter()
+        .filter(|r| {
+            r.question_id == 59
+                && r.ifr_offset >= res.form_ifr_start
+                && r.ifr_offset < res.form_ifr_end
+        })
+        .collect();
+    assert_eq!(q59_rec.len(), 1, "scenario B: exactly one q59 record");
+    assert_eq!(q59_rec[0].offset, res.help_records[0].record_offset);
+    assert_eq!(
+        u16::from_le_bytes([
+            spf_body[q59_rec[0].offset + spf::SPF_RECORD_HELP_ID],
+            spf_body[q59_rec[0].offset + spf::SPF_RECORD_HELP_ID + 1],
+        ]),
+        new_help_id,
+        "scenario B: the q59 record s14 must carry the appended help id after build"
+    );
 
     let (setup_slot, sd_slot) = (
         find_file_range(&data, PCI_SETUP_MODULE_GUID),

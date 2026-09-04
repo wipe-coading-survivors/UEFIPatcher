@@ -855,6 +855,16 @@ impl EngineService for EngineServer {
                     new_string_id: u32::from(c.new_string_id),
                 })
                 .collect(),
+            help_records: result
+                .help_records
+                .iter()
+                .map(|r| HiiHelpRecordEdit {
+                    question_id: u32::from(r.question_id),
+                    record_offset: r.record_offset as u32,
+                    old_string_id: u32::from(r.old_string_id),
+                    new_string_id: u32::from(r.new_string_id),
+                })
+                .collect(),
         }))
     }
 

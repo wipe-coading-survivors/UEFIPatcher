@@ -2,6 +2,7 @@ pub const SPF_RECORD_SIZE: usize = 72;
 pub const SPF_RECORD_IFR_OFFSET: usize = 28;
 pub const SPF_RECORD_FAILSAFE: usize = 52;
 pub const SPF_RECORD_OPTIMAL: usize = 53;
+pub const SPF_RECORD_HELP_ID: usize = 0x14;
 
 const SPF_SIGNATURE: [u8; 8] = [0xF8, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF];
 const SPF_TAIL: [u8; 4] = [0x01, 0x00, 0x01, 0x00];
@@ -46,6 +47,11 @@ pub fn scan_question_records(body: &[u8]) -> Vec<SpfQuestionRecord> {
 pub fn write_record_defaults(body: &mut [u8], offset: usize, failsafe: u8, optimal: u8) {
     body[offset + SPF_RECORD_FAILSAFE] = failsafe;
     body[offset + SPF_RECORD_OPTIMAL] = optimal;
+}
+
+pub fn write_record_help_id(body: &mut [u8], offset: usize, help_id: u16) {
+    body[offset + SPF_RECORD_HELP_ID..offset + SPF_RECORD_HELP_ID + 2]
+        .copy_from_slice(&help_id.to_le_bytes());
 }
 
 pub const SPF_STRING_CONTROL_STR_ID: usize = 2;
@@ -143,6 +149,24 @@ mod tests {
         assert_eq!(body[53], 2);
         for i in 0..body.len() {
             if i != 52 && i != 53 {
+                assert_eq!(body[i], before[i]);
+            }
+        }
+    }
+
+    #[test]
+    fn write_record_help_id_touches_exactly_two_bytes() {
+        let mut body = vec![0u8; 0x200];
+        let rec = question_record(0x3B, 0x0DD3, 0, 0);
+        body[0x80..0x80 + SPF_RECORD_SIZE].copy_from_slice(&rec);
+        let before = body.clone();
+        write_record_help_id(&mut body, 0x80, 0xBEEF);
+        assert_eq!(
+            &body[0x80 + SPF_RECORD_HELP_ID..0x80 + SPF_RECORD_HELP_ID + 2],
+            &[0xEF, 0xBE]
+        );
+        for i in 0..body.len() {
+            if i != 0x80 + SPF_RECORD_HELP_ID && i != 0x80 + SPF_RECORD_HELP_ID + 1 {
                 assert_eq!(body[i], before[i]);
             }
         }

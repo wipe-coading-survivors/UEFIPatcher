@@ -372,17 +372,29 @@ pub fn print_form_hijack(resp: &HiiFormHijackResponse, format: OutputFormat) {
                 })
                 .collect::<Vec<_>>()
                 .join(",");
+            let recs = resp
+                .help_records
+                .iter()
+                .map(|r| {
+                    format!(
+                        "{{\"question_id\":{},\"record_offset\":{},\"old_string_id\":{},\"new_string_id\":{}}}",
+                        r.question_id, r.record_offset, r.old_string_id, r.new_string_id
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(",");
             println!(
-                "{{\"string_ids\":{sids},\"unlock_flips\":{flips},\"help_controls\":[{ctrls}],\"form_ifr_start\":{},\"form_ifr_end\":{}}}",
+                "{{\"string_ids\":{sids},\"unlock_flips\":{flips},\"help_controls\":[{ctrls}],\"help_records\":[{recs}],\"form_ifr_start\":{},\"form_ifr_end\":{}}}",
                 resp.form_ifr_start, resp.form_ifr_end
             );
         }
         _ => {
             println!(
-                "hijack\tstring_ids\t{}\tunlock_flips\t{}\thelp_controls\t{}",
+                "hijack\tstring_ids\t{}\tunlock_flips\t{}\thelp_controls\t{}\thelp_records\t{}",
                 resp.string_ids.len(),
                 resp.unlock_flips.len(),
-                resp.help_controls.len()
+                resp.help_controls.len(),
+                resp.help_records.len()
             );
             for (name, sid) in &resp.string_ids {
                 println!("string_id\t{name}\t{sid}");
@@ -394,6 +406,12 @@ pub fn print_form_hijack(resp: &HiiFormHijackResponse, format: OutputFormat) {
                 println!(
                     "help_control\tqid=0x{:X}\tstr@0x{:X}\t{:X}→{:X}",
                     c.question_id, c.offset, c.old_string_id, c.new_string_id
+                );
+            }
+            for r in &resp.help_records {
+                println!(
+                    "help_record\tqid=0x{:X}\trec@0x{:X}\t{:X}→{:X}",
+                    r.question_id, r.record_offset, r.old_string_id, r.new_string_id
                 );
             }
             println!(
@@ -419,7 +437,7 @@ pub fn print_ok(format: OutputFormat) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use uefi_proto::HiiHelpControlEdit;
+    use uefi_proto::{HiiHelpControlEdit, HiiHelpRecordEdit};
 
     #[test]
     fn session_created_json() {
@@ -455,6 +473,12 @@ mod tests {
                 question_id: 0x3B,
                 offset: 0x40,
                 old_string_id: 0x2A,
+                new_string_id: 7,
+            }],
+            help_records: vec![HiiHelpRecordEdit {
+                question_id: 0x3B,
+                record_offset: 0x1F4,
+                old_string_id: 0x1A4,
                 new_string_id: 7,
             }],
             form_ifr_start: 0x5A,
