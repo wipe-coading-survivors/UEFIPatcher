@@ -1785,8 +1785,18 @@ fn real_image_hii_form_hijack_built_bytes() {
     .unwrap();
 
     let amitse_before = find_file_bytes(&img, AMITSE_GUID);
-    let sd_before = find_file_bytes(&img, SETUPDATA_GUID);
     let sd_guid = Guid::try_parse(SETUPDATA_GUID).unwrap();
+    let sd_spf_before = find_spf_leaf_body(&img, SETUPDATA_GUID);
+    let controls_before = spf::scan_string_controls(&sd_spf_before);
+    let matched_before: Vec<_> = controls_before
+        .iter()
+        .filter(|c| c.string_id == 420)
+        .collect();
+    assert_eq!(
+        matched_before.len(),
+        1,
+        "exactly one $SPF string-control must carry the q59 help-id 420"
+    );
     let title_before = collect_forms(&img)
         .iter()
         .find(|f| f.form_id_ifr == 10029)
@@ -1804,7 +1814,19 @@ fn real_image_hii_form_hijack_built_bytes() {
         ],
         "hijack auto-unlock must plan exactly the E12 REF-suppress + question-grayout flips"
     );
-    assert!(res.help_controls.is_empty());
+    assert_eq!(
+        res.help_controls.len(),
+        1,
+        "the 4G question must have its $SPF help control rewritten"
+    );
+    assert_eq!(res.help_controls[0].question_id, 59);
+    assert_eq!(res.help_controls[0].old_string_id, 420);
+    let new_help_id = *res.string_ids.get("PATCHER 4G HELP").unwrap();
+    assert_eq!(res.help_controls[0].new_string_id, new_help_id);
+    assert_eq!(
+        res.help_controls[0].offset, matched_before[0].offset,
+        "the patched control must be the one that carried help-id 420"
+    );
     assert!(res.form_ifr_end > res.form_ifr_start);
 
     let built = build_image(&img).unwrap();
@@ -1815,11 +1837,6 @@ fn real_image_hii_form_hijack_built_bytes() {
         find_file_bytes(&re, AMITSE_GUID),
         amitse_before,
         "AMITSE file must stay byte-identical"
-    );
-    assert_eq!(
-        find_file_bytes(&re, SETUPDATA_GUID),
-        sd_before,
-        "$SPF file must stay byte-identical"
     );
 
     let new_pe_path = module_pe32_node_path(&re, PCI_SETUP_MODULE_GUID);
@@ -1844,6 +1861,27 @@ fn real_image_hii_form_hijack_built_bytes() {
     }
 
     let pfs_body = find_spf_leaf_body(&re, SETUPDATA_GUID);
+    assert_eq!(
+        pfs_body.len(),
+        sd_spf_before.len(),
+        "$SPF payload length invariant"
+    );
+    let controls_after = spf::scan_string_controls(&pfs_body);
+    assert_eq!(
+        controls_after.len(),
+        controls_before.len(),
+        "$SPF string-control count invariant"
+    );
+    let patched: Vec<_> = controls_after
+        .iter()
+        .filter(|c| c.offset == res.help_controls[0].offset)
+        .collect();
+    assert_eq!(patched.len(), 1);
+    assert_eq!(
+        patched[0].string_id, new_help_id,
+        "the q59 help control must now carry the appended help string id"
+    );
+    assert!(controls_after.iter().all(|c| c.string_id != 420));
     let recs = spf::scan_question_records(&pfs_body);
     assert!(
         recs.iter().any(|r| r.question_id == 59),

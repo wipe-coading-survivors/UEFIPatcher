@@ -175,6 +175,36 @@ pub fn hijack_form(
         }
     }
 
+    let help_ids: Vec<(u16, u16)> = {
+        let pkg = package_of(&image.root, &target)?;
+        let qs = locate_questions(pkg, form_id);
+        let mut out = Vec::new();
+        for q in &hijack.questions {
+            let off = qs
+                .iter()
+                .find(|&&(_, qid)| qid == q.question_id)
+                .map(|&(o, _)| o)
+                .ok_or(HiiError::NotFound)?;
+            out.push((
+                q.question_id,
+                u16::from_le_bytes([pkg[off + 4], pkg[off + 5]]),
+            ));
+        }
+        out
+    };
+    let control_edits: Vec<(u16, usize, u16)> = {
+        let controls = spf::scan_string_controls(&spf_records);
+        let mut out = Vec::new();
+        for &(qid, sid) in &help_ids {
+            let matched: Vec<_> = controls.iter().filter(|c| c.string_id == sid).collect();
+            if matched.len() != 1 {
+                return Err(HiiError::NotFound);
+            }
+            out.push((qid, matched[0].offset, sid));
+        }
+        out
+    };
+
     let mut strings: Vec<String> = Vec::with_capacity(hijack.questions.len() * 2);
     for q in &hijack.questions {
         strings.push(q.prompt.clone());
@@ -206,6 +236,29 @@ pub fn hijack_form(
     }
     ops::mark_rebuild_to_root_by_path(&mut image.root, &path);
 
+    let help_controls: Vec<HelpControlEdit> = {
+        let node = node_at_mut(&mut image.root, &sd_path);
+        let mut out = Vec::new();
+        for &(qid, off, old) in &control_edits {
+            let help = &hijack
+                .questions
+                .iter()
+                .find(|q| q.question_id == qid)
+                .unwrap()
+                .help;
+            let new_id = *string_ids.get(help).ok_or(HiiError::InvalidIfr)?;
+            spf::write_string_control(&mut node.body, off, new_id);
+            out.push(HelpControlEdit {
+                question_id: qid,
+                offset: off,
+                old_string_id: old,
+                new_string_id: new_id,
+            });
+        }
+        out
+    };
+    ops::mark_rebuild_to_root_by_path(&mut image.root, &sd_path);
+
     tracing::warn!(flips = unlock_flips.len(), "hijack auto-unlock applied");
     tracing::debug!(questions = hijack.questions.len(), "hijack_form done");
     Ok(HijackResult {
@@ -214,7 +267,7 @@ pub fn hijack_form(
             .iter()
             .map(|f| crate::hii::flip_text(0, f))
             .collect(),
-        help_controls: Vec::new(),
+        help_controls,
         form_ifr_start,
         form_ifr_end,
     })
@@ -275,6 +328,14 @@ fn node_at<'a>(root: &'a FfsNode, path: &[usize]) -> &'a FfsNode {
     node
 }
 
+fn node_at_mut<'a>(root: &'a mut FfsNode, path: &[usize]) -> &'a mut FfsNode {
+    let mut node = root;
+    for &i in path {
+        node = &mut node.children[i];
+    }
+    node
+}
+
 #[cfg(test)]
 pub(crate) mod test_fixtures {
     use super::locate_questions;
@@ -295,7 +356,7 @@ pub(crate) mod test_fixtures {
         let mut b = IfrBuilder::new();
         b.emit_form_set(&Guid::from_str(FORMSET_GUID).unwrap(), 1, 1, &[]);
         b.emit_form(7, 1);
-        b.emit_one_of(2, 3, 0x11, 1, 0, 0, 1);
+        b.emit_one_of(2, 0, 0x11, 1, 0, 0, 1);
         b.emit_end();
         b.emit_end();
         let ifr = b.build();
@@ -378,6 +439,11 @@ pub(crate) mod test_fixtures {
             rec[53] = r.optimal;
             body[r.offset..r.offset + spf::SPF_RECORD_SIZE].copy_from_slice(&rec);
         }
+        let ctrl = 0x100 + records.len() * spf::SPF_RECORD_SIZE;
+        body[ctrl..ctrl + 2].copy_from_slice(&5u16.to_le_bytes());
+        body[ctrl + 4..ctrl + 6].copy_from_slice(&0u16.to_le_bytes());
+        body[ctrl + 10..ctrl + 12].copy_from_slice(&78u16.to_le_bytes());
+        body[ctrl + 0x14..ctrl + 0x18].copy_from_slice(&57u32.to_le_bytes());
         body
     }
 
@@ -648,7 +714,7 @@ mod tests {
 
     fn lzma_guided_file_bytes(guid: &Guid, children: &[u8]) -> (Vec<u8>, usize) {
         let mut stream = crate::compress::compress_lzma(children).unwrap();
-        stream.resize(stream.len().max(64), 0x00);
+        stream.resize(stream.len().max(64) + 32, 0x00);
         let mut body = crate::ffs::lzma_guid().to_bytes().to_vec();
         body.extend_from_slice(&0x18u16.to_le_bytes());
         body.extend_from_slice(&1u16.to_le_bytes());
@@ -965,6 +1031,103 @@ mod tests {
             build_image(&img).unwrap(),
             before,
             "no mutation on precheck failure"
+        );
+    }
+
+    #[test]
+    fn hijack_rewrites_help_control() {
+        let (flash, _, spf_before) = hijack_flash_image();
+        let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+        let res = hijack_form(&mut img, ITEM, &hijack_schema(), None).unwrap();
+        assert_eq!(res.help_controls.len(), 1);
+        assert_eq!(res.help_controls[0].question_id, 17);
+        assert_eq!(res.help_controls[0].old_string_id, 0);
+        let new_help = *res.string_ids.get("PH").unwrap();
+        assert_eq!(res.help_controls[0].new_string_id, new_help);
+
+        let built = build_image(&img).unwrap();
+        let re = parse_image(&built, ImageMode::Read, "i2", "s2").unwrap();
+        let sd_file = re
+            .root
+            .children
+            .iter()
+            .find_map(|v| {
+                v.children
+                    .iter()
+                    .find(|f| f.guid == Some(Guid::from_str(SETUPDATA_GUID_STR).unwrap()))
+            })
+            .unwrap();
+        let pfs_leaf = sd_file
+            .children
+            .iter()
+            .find(|c| c.body.windows(4).any(|w| w == b"$SPF"))
+            .unwrap();
+        assert_eq!(
+            pfs_leaf.body.len(),
+            spf_before.len(),
+            "$SPF length invariant"
+        );
+        let ctrls = spf::scan_string_controls(&pfs_leaf.body);
+        assert_eq!(ctrls.len(), 1);
+        assert_eq!(ctrls[0].string_id, new_help);
+        assert_eq!(ctrls[0].offset, res.help_controls[0].offset);
+    }
+
+    #[test]
+    fn hijack_fails_when_help_control_missing_or_ambiguous() {
+        for dup in [false, true] {
+            let (flash, _, _) = hijack_flash_image();
+            let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+            let sd_guid = Guid::from_str(SETUPDATA_GUID_STR).unwrap();
+            let vol = img
+                .root
+                .children
+                .iter_mut()
+                .find(|v| v.children.iter().any(|f| f.guid == Some(sd_guid)))
+                .unwrap();
+            let file = vol
+                .children
+                .iter_mut()
+                .find(|f| f.guid == Some(sd_guid))
+                .unwrap();
+            let leaf = file
+                .children
+                .iter_mut()
+                .find(|c| c.body.windows(4).any(|w| w == b"$SPF"))
+                .unwrap();
+            let first = spf::scan_string_controls(&leaf.body)[0].offset;
+            if dup {
+                let second = 0x300;
+                leaf.body[second..second + 2].copy_from_slice(&5u16.to_le_bytes());
+                leaf.body[second + 4..second + 6].copy_from_slice(&0u16.to_le_bytes());
+                leaf.body[second + 10..second + 12].copy_from_slice(&78u16.to_le_bytes());
+            } else {
+                leaf.body[first - 2..first].copy_from_slice(&7u16.to_le_bytes());
+            }
+            let before = build_image(&img).unwrap();
+            assert!(
+                hijack_form(&mut img, ITEM, &hijack_schema(), None).is_err(),
+                "dup={dup}"
+            );
+            assert_eq!(
+                build_image(&img).unwrap(),
+                before,
+                "atomic: no mutation beyond fixture corruption"
+            );
+        }
+    }
+
+    #[test]
+    fn hijack_idempotent_rerun() {
+        let (flash, _, _) = hijack_flash_image();
+        let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+        let res1 = hijack_form(&mut img, ITEM, &hijack_schema(), None).unwrap();
+        let res2 = hijack_form(&mut img, ITEM, &hijack_schema(), None).unwrap();
+        assert!(res2.unlock_flips.is_empty(), "gates already unlocked");
+        assert_eq!(res2.help_controls.len(), 1);
+        assert_eq!(
+            res2.help_controls[0].old_string_id,
+            res1.help_controls[0].new_string_id
         );
     }
 }
