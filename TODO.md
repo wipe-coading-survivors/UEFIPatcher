@@ -1963,3 +1963,31 @@ $SPF — сигнатурный скан контролов). Попутная �
 * [ ] **compress: `lzma_props_byte` молча усекает out-of-range lc/lp/pb**
   (`as u8`); `encode_raw_lzma1` без post-loop ассерта
   `total_in() == input.len()`. Контекст: `crates/uefi-engine/src/compress.rs`.
+
+### Находки живого образа hijack-v2 Task 7 (2026-09-05)
+
+> Прогон unlock/hijack на `HNX99TF_200525_original_E5C88C6F.bin`, форма
+> 10029 «PCI Subsystem Settings» (Setup 899407D7, PE32-канал .rsrc).
+
+* [ ] **form-level unlock НЕ каскадирует на гейты вопросов** —
+  `unlock("…#10029")` применяет ровно **1** флип (хаб-REF EqConst
+  `1==1`→`1==2`, pkg+0x67a / PE32+0x8fae), а не 10, как ожидал план по
+  образцу E25: `find_gates` с формой-таргетом (`question_id: None`)
+  матчит только обёртки FORM-стейтмента и REF'ы на форму. 9× EqIdVal-гейтов
+  E25 — это построчные grayout/suppress вопросов q54–q61, движок вскрывает
+  их только построчными `unlock("…#10029:{qid}")` (по 1 флипу
+  `01 00 -> ff ff` каждый). Полная страница = form-unlock + 7 вопросных
+  unlock'ов; «≈10 флипов за один form-unlock» в движке недостижимо.
+* [ ] **q61 не вскрывается движком** — у вопроса 61 (form 10029) два гейта:
+  EqIdVal(0x9A,1) (flippable) И suppress с составным выражением
+  `EQ(u64 1, u64 0) AND DUP EQ_ID_VAL(0x9A,1)` → `plan_gates`/`unlock`
+  возвращают `GateExpressionUnsupported` (не hardware-validated класс).
+  Итог: полная страница «все 8 вопросов вскрыты» недостижима текущим op
+  unlock; q61 остаётся со locked EqIdVal-гейтом (его suppress с EQ(1,0)
+  всегда false, т.е. вопрос скрыт независимо).
+* [ ] **список qid сценария B скорректирован** — план исключал 59 из
+  построчных unlock'ов при ожидании пустых `unlock_flips` у hijack; но
+  hijack планирует гейты [form, q59], и без предварительного
+  `unlock("…:59")` планировщик выдал бы 1 флип. Сценарий B: qid =
+  [54,55,56,57,58,59,60] (по 1 флипу), q61 — ожидаемый Err, hijack → 0
+  флипов (идемпотентность на живых данных доказана).
