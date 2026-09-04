@@ -842,9 +842,19 @@ impl EngineService for EngineServer {
                 .iter()
                 .map(|(k, v)| (k.clone(), u32::from(*v)))
                 .collect(),
-            records: Vec::new(),
             form_ifr_start: result.form_ifr_start,
             form_ifr_end: result.form_ifr_end,
+            unlock_flips: result.unlock_flips.clone(),
+            help_controls: result
+                .help_controls
+                .iter()
+                .map(|c| HiiHelpControlEdit {
+                    question_id: u32::from(c.question_id),
+                    offset: c.offset as u32,
+                    old_string_id: u32::from(c.old_string_id),
+                    new_string_id: u32::from(c.new_string_id),
+                })
+                .collect(),
         }))
     }
 

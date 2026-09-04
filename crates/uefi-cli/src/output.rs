@@ -360,45 +360,40 @@ pub fn print_form_hijack(resp: &HiiFormHijackResponse, format: OutputFormat) {
     match format {
         OutputFormat::Json => {
             let sids = serde_json::to_string(&resp.string_ids).unwrap_or_else(|_| "{}".into());
-            let recs = resp
-                .records
+            let flips = serde_json::to_string(&resp.unlock_flips).unwrap_or_else(|_| "[]".into());
+            let ctrls = resp
+                .help_controls
                 .iter()
-                .map(|r| {
+                .map(|c| {
                     format!(
-                        "{{\"question_id\":{},\"record_offset\":{},\"old_failsafe\":{},\"old_optimal\":{},\"new_failsafe\":{},\"new_optimal\":{}}}",
-                        r.question_id,
-                        r.record_offset,
-                        r.old_failsafe,
-                        r.old_optimal,
-                        r.new_failsafe,
-                        r.new_optimal
+                        "{{\"question_id\":{},\"offset\":{},\"old_string_id\":{},\"new_string_id\":{}}}",
+                        c.question_id, c.offset, c.old_string_id, c.new_string_id
                     )
                 })
                 .collect::<Vec<_>>()
                 .join(",");
             println!(
-                "{{\"string_ids\":{sids},\"records\":[{recs}],\"form_ifr_start\":{},\"form_ifr_end\":{}}}",
+                "{{\"string_ids\":{sids},\"unlock_flips\":{flips},\"help_controls\":[{ctrls}],\"form_ifr_start\":{},\"form_ifr_end\":{}}}",
                 resp.form_ifr_start, resp.form_ifr_end
             );
         }
         _ => {
             println!(
-                "hijack\tstring_ids\t{}\trecords\t{}",
+                "hijack\tstring_ids\t{}\tunlock_flips\t{}\thelp_controls\t{}",
                 resp.string_ids.len(),
-                resp.records.len()
+                resp.unlock_flips.len(),
+                resp.help_controls.len()
             );
             for (name, sid) in &resp.string_ids {
                 println!("string_id\t{name}\t{sid}");
             }
-            for r in &resp.records {
+            for f in &resp.unlock_flips {
+                println!("unlock\t{f}");
+            }
+            for c in &resp.help_controls {
                 println!(
-                    "qid=0x{:X} rec@0x{:X} fs {}→{} opt {}→{}",
-                    r.question_id,
-                    r.record_offset,
-                    r.old_failsafe,
-                    r.new_failsafe,
-                    r.old_optimal,
-                    r.new_optimal
+                    "help_control\tqid=0x{:X}\tstr@0x{:X}\t{:X}→{:X}",
+                    c.question_id, c.offset, c.old_string_id, c.new_string_id
                 );
             }
             println!(
@@ -424,7 +419,7 @@ pub fn print_ok(format: OutputFormat) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use uefi_proto::HiiFormHijackRecord;
+    use uefi_proto::HiiHelpControlEdit;
 
     #[test]
     fn session_created_json() {
@@ -455,13 +450,12 @@ mod tests {
         string_ids.insert("HijackTitle".to_string(), 7u32);
         let resp = HiiFormHijackResponse {
             string_ids,
-            records: vec![HiiFormHijackRecord {
+            unlock_flips: vec!["pkg+0x10: 01→02".into()],
+            help_controls: vec![HiiHelpControlEdit {
                 question_id: 0x3B,
-                record_offset: 0x40,
-                old_failsafe: 0,
-                old_optimal: 1,
-                new_failsafe: 1,
-                new_optimal: 1,
+                offset: 0x40,
+                old_string_id: 0x2A,
+                new_string_id: 7,
             }],
             form_ifr_start: 0x5A,
             form_ifr_end: 0x8C,

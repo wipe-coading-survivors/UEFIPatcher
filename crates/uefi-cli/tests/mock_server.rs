@@ -226,13 +226,12 @@ impl EngineService for MockEngine {
     ) -> Result<Response<HiiFormHijackResponse>, Status> {
         Ok(Response::new(HiiFormHijackResponse {
             string_ids: std::collections::HashMap::from([("mock".into(), 3u32)]),
-            records: vec![HiiFormHijackRecord {
+            unlock_flips: vec!["pkg+0x67a: 01 -> 02".into()],
+            help_controls: vec![HiiHelpControlEdit {
                 question_id: 0x3B,
-                record_offset: 0x40,
-                old_failsafe: 0,
-                old_optimal: 1,
-                new_failsafe: 1,
-                new_optimal: 1,
+                offset: 0x40,
+                old_string_id: 0x2A,
+                new_string_id: 3,
             }],
             form_ifr_start: 0x5A,
             form_ifr_end: 0x8C,

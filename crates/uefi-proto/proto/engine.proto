@@ -192,13 +192,11 @@ message HiiFormAddResponse {
   map<string, uint32> string_ids = 2;
 }
 
-message HiiFormHijackRecord {
+message HiiHelpControlEdit {
   uint32 question_id = 1;
-  uint32 record_offset = 2;
-  uint32 old_failsafe = 3;
-  uint32 old_optimal = 4;
-  uint32 new_failsafe = 5;
-  uint32 new_optimal = 6;
+  uint32 offset = 2;
+  uint32 old_string_id = 3;
+  uint32 new_string_id = 4;
 }
 message HiiFormHijackRequest {
   string image_id = 1;
@@ -208,9 +206,11 @@ message HiiFormHijackRequest {
 }
 message HiiFormHijackResponse {
   map<string, uint32> string_ids = 1;
-  repeated HiiFormHijackRecord records = 2;
+  reserved 2;
   uint32 form_ifr_start = 3;
   uint32 form_ifr_end = 4;
+  repeated string unlock_flips = 5;
+  repeated HiiHelpControlEdit help_controls = 6;
 }
 
 message GateInfo {
