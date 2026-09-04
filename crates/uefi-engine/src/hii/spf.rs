@@ -48,6 +48,37 @@ pub fn write_record_defaults(body: &mut [u8], offset: usize, failsafe: u8, optim
     body[offset + SPF_RECORD_OPTIMAL] = optimal;
 }
 
+pub const SPF_STRING_CONTROL_STR_ID: usize = 2;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SpfStringControl {
+    pub offset: usize,
+    pub string_id: u16,
+}
+
+pub fn scan_string_controls(body: &[u8]) -> Vec<SpfStringControl> {
+    let mut out = Vec::new();
+    if body.len() < 0xC {
+        return out;
+    }
+    for p in 0..=body.len() - 0xC {
+        if u16::from_le_bytes([body[p], body[p + 1]]) == 5
+            && u16::from_le_bytes([body[p + 4], body[p + 5]]) == 0
+            && u16::from_le_bytes([body[p + 0xA], body[p + 0xB]]) == 78
+        {
+            out.push(SpfStringControl {
+                offset: p + SPF_STRING_CONTROL_STR_ID,
+                string_id: u16::from_le_bytes([body[p + 2], body[p + 3]]),
+            });
+        }
+    }
+    out
+}
+
+pub fn write_string_control(body: &mut [u8], offset: usize, string_id: u16) {
+    body[offset..offset + 2].copy_from_slice(&string_id.to_le_bytes());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -112,6 +143,58 @@ mod tests {
         assert_eq!(body[53], 2);
         for i in 0..body.len() {
             if i != 52 && i != 53 {
+                assert_eq!(body[i], before[i]);
+            }
+        }
+    }
+
+    fn string_control(str_id: u16, idx_a: u16, idx_b: u16) -> Vec<u8> {
+        let mut c = vec![0u8; 0x108];
+        c[0..2].copy_from_slice(&5u16.to_le_bytes());
+        c[2..4].copy_from_slice(&str_id.to_le_bytes());
+        c[6..8].copy_from_slice(&idx_a.to_le_bytes());
+        c[8..10].copy_from_slice(&idx_b.to_le_bytes());
+        c[10..12].copy_from_slice(&78u16.to_le_bytes());
+        c[0x14..0x18].copy_from_slice(&57u32.to_le_bytes());
+        c
+    }
+
+    #[test]
+    fn scan_string_controls_finds_ladder() {
+        let mut body = vec![0u8; 0x500];
+        let rec = question_record(9, 0x10, 0, 0);
+        body[0x40..0x40 + SPF_RECORD_SIZE].copy_from_slice(&rec);
+        let ctrl_a = string_control(10, 1199, 120);
+        let ctrl_b = string_control(11, 1200, 121);
+        let ctrl_c = string_control(12, 1201, 122);
+        body[0x100..0x100 + 0x108].copy_from_slice(&ctrl_a);
+        body[0x208..0x208 + 0x108].copy_from_slice(&ctrl_b);
+        body[0x310..0x310 + 0x108].copy_from_slice(&ctrl_c);
+
+        let found = scan_string_controls(&body);
+        assert_eq!(
+            found.len(),
+            3,
+            "question record must not match control signature"
+        );
+        assert_eq!(found[0].string_id, 10);
+        assert_eq!(found[0].offset, 0x100 + SPF_STRING_CONTROL_STR_ID);
+        assert_eq!(found[2].string_id, 12);
+
+        assert!(scan_string_controls(&question_record(9, 0x10, 0, 0)).is_empty());
+    }
+
+    #[test]
+    fn write_string_control_same_length() {
+        let mut body = vec![0u8; 0x200];
+        let ctrl = string_control(420, 1208, 129);
+        body[0x80..0x80 + 0x108].copy_from_slice(&ctrl);
+        let before = body.clone();
+        let off = 0x80 + SPF_STRING_CONTROL_STR_ID;
+        write_string_control(&mut body, off, 751);
+        assert_eq!(&body[off..off + 2], &[0xEF, 0x02]);
+        for i in 0..body.len() {
+            if i != off && i != off + 1 {
                 assert_eq!(body[i], before[i]);
             }
         }
