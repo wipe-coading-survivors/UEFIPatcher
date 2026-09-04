@@ -332,6 +332,41 @@ pub fn plan_gates(body: &[u8], gates: &[Gate]) -> Result<Vec<PlannedFlip>, Strin
     Ok(flips)
 }
 
+fn is_unlocked_expr(expr: &GateExpr) -> bool {
+    match expr {
+        GateExpr::EqConst { a, b } => a != b,
+        GateExpr::EqIdVal { value, .. } => *value == 0xFFFF,
+        _ => false,
+    }
+}
+
+pub fn plan_gates_skip_unlocked(body: &[u8], gates: &[Gate]) -> Result<Vec<PlannedFlip>, String> {
+    let mut flips = Vec::new();
+    for gate in gates {
+        if is_unlocked_expr(&gate.expr) {
+            continue;
+        }
+        match plan_flip(body, gate) {
+            Some(flip) => flips.push(flip),
+            None => {
+                let region = &body[gate.expr_offset..gate.expr_end.min(body.len())];
+                return Err(format!(
+                    "{} gate at pkg+{:#x} wrapping {:?}: expression [{}] is not a hardware-validated flip class",
+                    gate.kind.as_str(),
+                    gate.scope_offset,
+                    gate.wraps,
+                    region
+                        .iter()
+                        .map(|b| format!("{b:02x}"))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                ));
+            }
+        }
+    }
+    Ok(flips)
+}
+
 pub fn apply_flips(body: &mut [u8], flips: &[PlannedFlip]) -> Result<(), String> {
     for flip in flips {
         if flip.offset + flip.from.len() > body.len()
@@ -953,5 +988,81 @@ mod tests {
         let mut region = concat(&[uint64(1), uint64(1), equal()]);
         region.truncate(region.len() - 3);
         assert_eq!(decode_expr(&region), GateExpr::Other);
+    }
+
+    #[test]
+    fn plan_gates_skip_unlocked_passes_already_unlocked() {
+        let mut ifr = form_set(7);
+        ifr.extend(form(10002, 20));
+        ifr.extend(opcode(IFR_SUPPRESS_IF_OP, true, &[]));
+        ifr.extend(uint64(1));
+        ifr.extend(uint64(2));
+        ifr.extend(equal());
+        ifr.extend(ref_op(10029, 0x003A));
+        ifr.extend(end());
+        ifr.extend(end());
+        ifr.extend(form(10029, 21));
+        ifr.extend(opcode(IFR_GRAY_OUT_IF_OP, true, &[]));
+        ifr.extend(eq_id_val(0x009A, 0xFFFF));
+        ifr.extend(one_of_op(0x003B));
+        ifr.extend(end());
+        ifr.extend(end());
+        ifr.extend(end());
+        ifr.extend(end());
+        let pkg = package(&ifr);
+
+        let form_gates = find_gates(&pkg, &FORM_GATE_TARGET);
+        assert!(!form_gates.is_empty());
+        assert!(
+            plan_gates_skip_unlocked(&pkg, &form_gates)
+                .unwrap()
+                .is_empty()
+        );
+
+        let q_gates = find_gates(&pkg, &QUESTION_GATE_TARGET);
+        assert!(!q_gates.is_empty());
+        assert!(plan_gates_skip_unlocked(&pkg, &q_gates).unwrap().is_empty());
+    }
+
+    #[test]
+    fn plan_gates_skip_unlocked_plans_only_locked() {
+        let mut ifr = form_set(7);
+        ifr.extend(form(10029, 21));
+        ifr.extend(opcode(IFR_GRAY_OUT_IF_OP, true, &[]));
+        ifr.extend(eq_id_val(0x009A, 1));
+        ifr.extend(one_of_op(0x003B));
+        ifr.extend(opcode(IFR_GRAY_OUT_IF_OP, true, &[]));
+        ifr.extend(eq_id_val(0x009B, 0xFFFF));
+        ifr.extend(one_of_op(0x003C));
+        ifr.extend(end());
+        ifr.extend(end());
+        ifr.extend(end());
+        let pkg = package(&ifr);
+        let gates = find_gates(
+            &pkg,
+            &GateTarget {
+                form_id: 10029,
+                question_id: Some(0x003B),
+            },
+        );
+        let flips = plan_gates_skip_unlocked(&pkg, &gates).unwrap();
+        assert_eq!(flips.len(), 1);
+        assert_eq!(flips[0].to, 0xFFFFu16.to_le_bytes().to_vec());
+    }
+
+    #[test]
+    fn plan_gates_skip_unlocked_errors_on_wide_storage() {
+        let mut ifr = form_set(7);
+        ifr.extend(form(10029, 21));
+        ifr.extend(numeric_op(0x009A, 0x01));
+        ifr.extend(opcode(IFR_GRAY_OUT_IF_OP, true, &[]));
+        ifr.extend(eq_id_val(0x009A, 1));
+        ifr.extend(one_of_op(0x003B));
+        ifr.extend(end());
+        ifr.extend(end());
+        ifr.extend(end());
+        let pkg = package(&ifr);
+        let gates = find_gates(&pkg, &QUESTION_GATE_TARGET);
+        assert!(plan_gates_skip_unlocked(&pkg, &gates).is_err());
     }
 }
