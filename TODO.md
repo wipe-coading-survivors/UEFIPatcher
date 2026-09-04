@@ -1815,6 +1815,48 @@ E27 (7 вопросов, сток-шапка). **E28 прошит — SUCCESS (2
 задача → gate → движковый E29).
 v2.1: стадия записи s14 возвращается в op (rule-11 docs + задача +
 gate), финальный образ собирает движок.
+
+**E29 собран движком (2026-09-05, Task 10 hijack-v2.1)** — первый
+полностью движковый артефакт полного аппаратно-валидированного
+рецепта (unlock + строки + IFR + пул-контрол + запись s14, всё одной
+op `hijack`). Артефакт `refs/amibcp/e29-hijack-v2_1-engine.bin`
+(НЕ коммитить, refs/ — данные), sha256
+`e1da17c7c98fe939f8f81c809e272b5935fddb8613bb7671c9ec1df39f8bcb0a`.
+Сборка чисто engine+CLI (сокет `/tmp/uefipatcher-e29.sock`):
+`session init --name e29 --force` → `image open … --mode write` →
+`hii form unlock 899407d7…:0x10:0#10029` (1 флип: хаб-REF
+`1==1`→`1==2` @pkg+0x8fae) → 7× `hii question unlock …#10029:{54..60}`
+(по 1 флипу `01 00 -> ff ff` на EqIdVal(0x9A,1)-grayout'ах, q61 не
+трогали — составной гейт) → `hii form hijack --file
+/tmp/e29-schema.json --setupdata-guid FE612B72-203C-47B1-8560-A66D946EB371`
+→ `image save`. Контракт hijack: **string_ids=2** (prompt=749
+«UEFIPatcher E29: engine hijack-v2.1», help=750 «UEFIPatcher E29:
+engine-built full help channel»), **unlock_flips=0** (идемпотентность:
+всё вскрыто шагами unlock), **help_controls=1** ($SPF str@0x5116:
+1A4→2EE) И **help_records=1** (запись s14 rec@0x99E8: 1A4→2EE) —
+обе копии хелп-id записаны движком. Верификация (throwaway-скрипт,
+не в git): длина 16MiB; декомпрессия $SPF guided-секции (заголовок
+@0xa9c720, LZMA_ALONE @+0x18) = 487836 байт, не изменилась;
+контейнер vs оригинал = **ровно 4 байта** — [0x5106, 0x99ec], оба
+u16 420→750 (= аппенднутый help id 750, форма E26/E28); побайтовый
+дифф образа confined в два слота — Setup 899407D7
+[0x8D16D0..0x8D7BF1) и SetupData FE612B72 [0xA9C708..0xAA89E4), вне
+слотов 0 изменённых байт. Примечание к методу: батч-
+`lzma.decompress` движковых потоков требует +1 байт после EOS (то же
+на эталонном e27) — корректный декод — стриминговый с
+`max_length=487836` (eof=True, хвост секции = 841 байт нулевого
+паддинга, поток короче оригинального).
+
+* [ ] **флеш-чеклист E29** (ожидание = наблюдаемое состояние E28,
+  собрано движком): (1) страница «PCI Subsystem Settings» видна в
+  Advanced, заголовок страницы и пункт меню — сток; (2) на странице
+  7 из 8 вопросов, q61 скрыт составным гейтом (не вскрывался);
+  (3) наш q59 «UEFIPatcher E29: engine hijack-v2.1» с опциями
+  [Disabled]/[Enabled]; (4) выделение q59 показывает хелп
+  «UEFIPatcher E29: engine-built full help channel»; (5) смена
+  значения q59 сохраняется после Save&Exit + reboot (NVRAM). После
+  флеша — отчёт `docs/reports/2026-09-05-hijack-v2-e29.md`, закрытие
+  цикла.
 \n* [ ] **`plan_gates` неидемпотентен** — повторный `unlock` на уже
   вскрытых гейтах падает с `GateExpressionUnsupported` (`plan_flip`
   не матчит `EqConst` с `a≠b` / `EqIdVal` с `value==0xFFFF`, а
