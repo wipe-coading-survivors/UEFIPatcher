@@ -1916,3 +1916,343 @@ fn real_image_hii_form_hijack_built_bytes() {
         res.string_ids.len()
     );
 }
+
+#[test]
+#[ignore = "needs real image at ../../../refs/fw/HNX99TF_200525_original_E5C88C6F.bin"]
+fn real_image_hijack_v2_scenario_a_unlocks_victim_only() {
+    use uefi_engine::builder::build_image;
+    use uefi_engine::hii::form_hijack;
+    use uefi_engine::hii::forms::collect_forms;
+    use uefi_engine::hii::gates::{self, GateTarget};
+    use uefi_engine::hii::schema;
+    use uefi_engine::hii::spf;
+
+    const ITEM: &str = "899407D7-99FE-43D8-9A21-79EC328CAC21:0x10:0#10029";
+    const SETUPDATA_GUID: &str = "FE612B72-203C-47B1-8560-A66D946EB371";
+
+    let data = load_fw();
+    let mut img = parse_image(&data, ImageMode::Write, "hij-a", "s").unwrap();
+
+    let title_before = collect_forms(&img)
+        .iter()
+        .find(|f| f.form_id_ifr == 10029)
+        .map(|f| f.title.clone())
+        .expect("form 10029 before hijack");
+    let pe_path = module_pe32_node_path(&img, PCI_SETUP_MODULE_GUID);
+    let pkg_before = module_form_package(&img, &pe_path);
+    let span_before = form_hijack::locate_form(&pkg_before, 10029).expect("form 10029 span");
+    let title_ifr_before = pkg_before[span_before.form_op + 4..span_before.form_op + 6].to_vec();
+    let q59_off = form_hijack::locate_questions(&pkg_before, 10029)
+        .into_iter()
+        .find(|&(_, qid)| qid == 59)
+        .map(|(off, _)| off)
+        .expect("q59 statement offset");
+
+    let sc = schema::parse_hijack_schema(
+        r#"{"questions": [
+            {"question_id": 59, "prompt": "UEFIPatcher E27 A", "help": "UEFIPatcher E27 A help"}]}"#,
+    )
+    .unwrap();
+    let sd_guid = Guid::try_parse(SETUPDATA_GUID).unwrap();
+    let res = form_hijack::hijack_form(&mut img, ITEM, &sc, Some(&sd_guid)).unwrap();
+    assert_eq!(
+        res.unlock_flips,
+        vec![
+            "pkg+0x67a: 01 -> 02".to_string(),
+            "pkg+0xdd1: 01 00 -> ff ff".to_string(),
+        ],
+        "hijack alone must unlock exactly the victim gates: hub REF suppress + q59 grayout"
+    );
+    assert_eq!(res.help_controls.len(), 1);
+    assert_eq!(res.help_controls[0].question_id, 59);
+    assert_eq!(res.help_controls[0].old_string_id, 420);
+    let new_help_id = *res.string_ids.get("UEFIPatcher E27 A help").unwrap();
+    assert_eq!(res.help_controls[0].new_string_id, new_help_id);
+
+    let built = build_image(&img).unwrap();
+    assert_eq!(built.len(), data.len(), "total flash length preserved");
+
+    let re = parse_image(&built, ImageMode::Read, "re-a", "s").unwrap();
+    let forms = collect_forms(&re);
+    let f10029 = forms
+        .iter()
+        .find(|f| f.form_id_ifr == 10029)
+        .expect("form 10029 after build");
+    assert_eq!(f10029.title, title_before, "form title must stay untouched");
+
+    let new_pe_path = module_pe32_node_path(&re, PCI_SETUP_MODULE_GUID);
+    let pkg_after = module_form_package(&re, &new_pe_path);
+    assert_eq!(
+        pkg_after.len(),
+        pkg_before.len(),
+        "hijack + auto-unlock is length-preserving"
+    );
+    let span_after = form_hijack::locate_form(&pkg_after, 10029).expect("form 10029 span after");
+    assert_eq!(
+        &pkg_after[span_after.form_op + 4..span_after.form_op + 6],
+        title_ifr_before.as_slice(),
+        "form title IFR bytes must stay untouched"
+    );
+    let prompt_id = u16::from_le_bytes([pkg_after[q59_off + 2], pkg_after[q59_off + 3]]);
+    let help_id = u16::from_le_bytes([pkg_after[q59_off + 4], pkg_after[q59_off + 5]]);
+    assert_eq!(prompt_id, *res.string_ids.get("UEFIPatcher E27 A").unwrap());
+    assert_eq!(help_id, new_help_id);
+
+    let mut allowed: Vec<usize> = vec![0x67A, 0xDD1, 0xDD2];
+    allowed.extend(q59_off + 2..q59_off + 6);
+    let diff: Vec<usize> = (0..pkg_before.len())
+        .filter(|&i| pkg_before[i] != pkg_after[i])
+        .collect();
+    assert!(
+        diff.iter().all(|&i| allowed.contains(&i)),
+        "pkg diff {diff:#x?} must confine to the two victim flips and the q59 id slot"
+    );
+    for off in [0x67A, 0xDD1, 0xDD2] {
+        assert!(
+            diff.contains(&off),
+            "E12 victim flip at pkg+{off:#x} must be present"
+        );
+    }
+
+    for target in [
+        GateTarget {
+            form_id: 10029,
+            question_id: None,
+        },
+        GateTarget {
+            form_id: 10029,
+            question_id: Some(59),
+        },
+    ] {
+        let found = gates::find_gates(&pkg_after, &target);
+        let flips = gates::plan_gates_skip_unlocked(&pkg_after, &found).unwrap();
+        assert!(
+            flips.is_empty(),
+            "no further flips must be plannable for {target:?}"
+        );
+    }
+
+    let spf_body = find_spf_leaf_body(&re, SETUPDATA_GUID);
+    let controls_after = spf::scan_string_controls(&spf_body);
+    assert!(
+        controls_after.iter().all(|c| c.string_id != 420),
+        "the $SPF control that carried help-id 420 must be repointed"
+    );
+    let patched: Vec<_> = controls_after
+        .iter()
+        .filter(|c| c.offset == res.help_controls[0].offset)
+        .collect();
+    assert_eq!(patched.len(), 1);
+    assert_eq!(patched[0].string_id, new_help_id);
+
+    let (setup_slot, sd_slot) = (
+        find_file_range(&data, PCI_SETUP_MODULE_GUID),
+        find_file_range(&data, SETUPDATA_GUID),
+    );
+    for (i, (a, b)) in data.iter().zip(built.iter()).enumerate() {
+        if a != b {
+            assert!(
+                setup_slot.contains(&i) || sd_slot.contains(&i),
+                "byte {i:#x} changed outside the two AMI-adjacent slots"
+            );
+        }
+    }
+
+    eprintln!(
+        "scenario A: flips=2 q59_ifr={q59_off:#x} help {}/{} -> {new_help_id}",
+        res.string_ids.len(),
+        res.string_ids.len()
+    );
+}
+
+#[test]
+#[ignore = "needs real image at ../../../refs/fw/HNX99TF_200525_original_E5C88C6F.bin"]
+fn real_image_hijack_v2_scenario_b_full_page_matches_e26_content() {
+    use uefi_engine::builder::build_image;
+    use uefi_engine::hii::HiiError;
+    use uefi_engine::hii::form_hijack;
+    use uefi_engine::hii::forms::collect_forms;
+    use uefi_engine::hii::gates::{self, GateTarget};
+    use uefi_engine::hii::schema;
+    use uefi_engine::hii::spf;
+
+    const ITEM: &str = "899407D7-99FE-43D8-9A21-79EC328CAC21:0x10:0#10029";
+    const SETUPDATA_GUID: &str = "FE612B72-203C-47B1-8560-A66D946EB371";
+
+    let data = load_fw();
+    let mut img = parse_image(&data, ImageMode::Write, "hij-b", "s").unwrap();
+
+    let title_before = collect_forms(&img)
+        .iter()
+        .find(|f| f.form_id_ifr == 10029)
+        .map(|f| f.title.clone())
+        .expect("form 10029 before unlock");
+    let pe_path = module_pe32_node_path(&img, PCI_SETUP_MODULE_GUID);
+    let pkg_before = module_form_package(&img, &pe_path);
+    let q59_off = form_hijack::locate_questions(&pkg_before, 10029)
+        .into_iter()
+        .find(|&(_, qid)| qid == 59)
+        .map(|(off, _)| off)
+        .expect("q59 statement offset");
+
+    let form_out = uefi_engine::hii::unlock(&mut img, ITEM).unwrap();
+    assert_eq!(
+        form_out.applied,
+        vec!["pkg+0x8fae: 01 -> 02".to_string()],
+        "form-level unlock flips only the hub REF EqConst, no cascade to question gates (TODO.md:1972)"
+    );
+
+    let mut question_flips = Vec::new();
+    for qid in [54u16, 55, 56, 57, 58, 59, 60] {
+        let out = uefi_engine::hii::unlock(&mut img, &format!("{ITEM}:{qid}")).unwrap();
+        assert_eq!(
+            out.applied.len(),
+            1,
+            "question {qid} must flip exactly its own EqIdVal gate"
+        );
+        question_flips.push(out.applied[0].clone());
+    }
+    assert_eq!(
+        question_flips,
+        vec![
+            "pkg+0x95da: 01 00 -> ff ff".to_string(),
+            "pkg+0x962f: 01 00 -> ff ff".to_string(),
+            "pkg+0x9684: 01 00 -> ff ff".to_string(),
+            "pkg+0x96af: 01 00 -> ff ff".to_string(),
+            "pkg+0x96da: 01 00 -> ff ff".to_string(),
+            "pkg+0x9705: 01 00 -> ff ff".to_string(),
+            "pkg+0x9730: 01 00 -> ff ff".to_string(),
+        ],
+        "every unlockable question flips its EQ(0x9A,1) gate to FFFF (E25 class); q59 must be pre-unlocked for the idempotence proof (TODO.md:1988)"
+    );
+
+    let q61_err = uefi_engine::hii::unlock(&mut img, &format!("{ITEM}:61"))
+        .expect_err("q61 unlock must refuse its compound suppress gate (TODO.md:1981)");
+    assert!(matches!(q61_err, HiiError::GateExpressionUnsupported(_)));
+
+    let sc = schema::parse_hijack_schema(
+        r#"{"questions": [
+            {"question_id": 59, "prompt": "UEFIPatcher E27 B", "help": "UEFIPatcher E27 B help"}]}"#,
+    )
+    .unwrap();
+    let sd_guid = Guid::try_parse(SETUPDATA_GUID).unwrap();
+    let res = form_hijack::hijack_form(&mut img, ITEM, &sc, Some(&sd_guid)).unwrap();
+    assert!(
+        res.unlock_flips.is_empty(),
+        "hijack's own unlock planning must yield zero flips on the already-unlocked page"
+    );
+    assert_eq!(res.help_controls.len(), 1);
+    assert_eq!(res.help_controls[0].question_id, 59);
+    assert_eq!(res.help_controls[0].old_string_id, 420);
+    let new_help_id = *res.string_ids.get("UEFIPatcher E27 B help").unwrap();
+    assert_eq!(res.help_controls[0].new_string_id, new_help_id);
+
+    let built = build_image(&img).unwrap();
+    assert_eq!(built.len(), data.len(), "total flash length preserved");
+
+    let re = parse_image(&built, ImageMode::Read, "re-b", "s").unwrap();
+    let forms = collect_forms(&re);
+    let f10029 = forms
+        .iter()
+        .find(|f| f.form_id_ifr == 10029)
+        .expect("form 10029 after build");
+    assert_eq!(f10029.title, title_before, "form title must stay untouched");
+
+    let new_pe_path = module_pe32_node_path(&re, PCI_SETUP_MODULE_GUID);
+    let pkg_after = module_form_package(&re, &new_pe_path);
+    assert_eq!(
+        pkg_after.len(),
+        pkg_before.len(),
+        "unlock + hijack is length-preserving"
+    );
+
+    let eq_id_val_bases = [0xCA6usize, 0xCFB, 0xD50, 0xD7B, 0xDA6, 0xDD1, 0xDFC];
+    let mut allowed: Vec<usize> = vec![0x67A];
+    let mut expected: Vec<usize> = vec![0x67A];
+    for base in eq_id_val_bases {
+        allowed.extend(base..base + 2);
+        expected.extend(base..base + 2);
+    }
+    allowed.extend(q59_off + 2..q59_off + 6);
+    let diff: Vec<usize> = (0..pkg_before.len())
+        .filter(|&i| pkg_before[i] != pkg_after[i])
+        .collect();
+    assert!(
+        diff.iter().all(|&i| allowed.contains(&i)),
+        "pkg diff {diff:#x?} must confine to the 8 unlock gates and the q59 id slot"
+    );
+    for off in &expected {
+        assert!(
+            diff.contains(off),
+            "unlock byte pkg+{off:#x} must be present"
+        );
+    }
+
+    let prompt_id = u16::from_le_bytes([pkg_after[q59_off + 2], pkg_after[q59_off + 3]]);
+    let help_id = u16::from_le_bytes([pkg_after[q59_off + 4], pkg_after[q59_off + 5]]);
+    assert_eq!(prompt_id, *res.string_ids.get("UEFIPatcher E27 B").unwrap());
+    assert_eq!(help_id, new_help_id);
+
+    let mut targets = vec![GateTarget {
+        form_id: 10029,
+        question_id: None,
+    }];
+    targets.extend((54u16..=60).map(|qid| GateTarget {
+        form_id: 10029,
+        question_id: Some(qid),
+    }));
+    for target in &targets {
+        let found = gates::find_gates(&pkg_after, target);
+        let flips = gates::plan_gates_skip_unlocked(&pkg_after, &found).unwrap();
+        assert!(
+            flips.is_empty(),
+            "the page must be fully unlocked for {target:?}"
+        );
+    }
+    let q61_gates = gates::find_gates(
+        &pkg_after,
+        &GateTarget {
+            form_id: 10029,
+            question_id: Some(61),
+        },
+    );
+    assert_eq!(
+        q61_gates.len(),
+        2,
+        "q61 keeps its EqIdVal gate plus the non-flippable compound suppress (TODO.md:1981)"
+    );
+    assert!(
+        gates::plan_gates_skip_unlocked(&pkg_after, &q61_gates).is_err(),
+        "q61's compound suppress stays a non-plannable gate (TODO.md:1981)"
+    );
+
+    let spf_body = find_spf_leaf_body(&re, SETUPDATA_GUID);
+    let controls_after = spf::scan_string_controls(&spf_body);
+    assert!(
+        controls_after.iter().all(|c| c.string_id != 420),
+        "the $SPF control that carried help-id 420 must be repointed"
+    );
+    let patched: Vec<_> = controls_after
+        .iter()
+        .filter(|c| c.offset == res.help_controls[0].offset)
+        .collect();
+    assert_eq!(patched.len(), 1);
+    assert_eq!(patched[0].string_id, new_help_id);
+
+    let (setup_slot, sd_slot) = (
+        find_file_range(&data, PCI_SETUP_MODULE_GUID),
+        find_file_range(&data, SETUPDATA_GUID),
+    );
+    for (i, (a, b)) in data.iter().zip(built.iter()).enumerate() {
+        if a != b {
+            assert!(
+                setup_slot.contains(&i) || sd_slot.contains(&i),
+                "byte {i:#x} changed outside the two AMI-adjacent slots"
+            );
+        }
+    }
+
+    eprintln!(
+        "scenario B: form=1 flips, 7 question flips, q61 refused, hijack=0 flips, q59 ids {prompt_id}/{help_id}"
+    );
+}
