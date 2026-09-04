@@ -1779,20 +1779,23 @@ fn real_image_hii_form_hijack_built_bytes() {
     let mut img = parse_image(&data, ImageMode::Write, "hijack", "s").unwrap();
 
     let sc = schema::parse_hijack_schema(
-        r#"{"title": "UEFIPATCHER E18 REALIMAGE", "questions": [
-            {"question_id": 59, "prompt": "PATCHER 4G QUESTION", "help": "PATCHER 4G HELP",
-             "failsafe": 1, "optimal": 1}]}"#,
+        r#"{"questions": [
+            {"question_id": 59, "prompt": "PATCHER 4G QUESTION", "help": "PATCHER 4G HELP"}]}"#,
     )
     .unwrap();
 
     let amitse_before = find_file_bytes(&img, AMITSE_GUID);
     let sd_before = find_file_bytes(&img, SETUPDATA_GUID);
     let sd_guid = Guid::try_parse(SETUPDATA_GUID).unwrap();
+    let title_before = collect_forms(&img)
+        .iter()
+        .find(|f| f.form_id_ifr == 10029)
+        .map(|f| f.title.clone())
+        .expect("form 10029 before hijack");
 
     let res = form_hijack::hijack_form(&mut img, ITEM, &sc, Some(&sd_guid)).unwrap();
-    assert_eq!(res.records.len(), 1);
-    assert_eq!(res.records[0].question_id, 59);
-    assert_eq!(res.records[0].new_failsafe, 1);
+    assert!(res.unlock_flips.is_empty());
+    assert!(res.help_controls.is_empty());
     assert!(res.form_ifr_end > res.form_ifr_start);
 
     let built = build_image(&img).unwrap();
@@ -1804,22 +1807,18 @@ fn real_image_hii_form_hijack_built_bytes() {
         amitse_before,
         "AMITSE file must stay byte-identical"
     );
-    let sd_after = find_file_bytes(&re, SETUPDATA_GUID);
     assert_eq!(
-        sd_after.len(),
-        sd_before.len(),
-        "$SPF file length invariant"
+        find_file_bytes(&re, SETUPDATA_GUID),
+        sd_before,
+        "$SPF file must stay byte-identical"
     );
-    assert_ne!(sd_after, sd_before, "$SPF content must change (fs/opt)");
 
     let pfs_body = find_spf_leaf_body(&re, SETUPDATA_GUID);
     let recs = spf::scan_question_records(&pfs_body);
-    let q4g = recs
-        .iter()
-        .find(|r| r.question_id == 59)
-        .expect("4G record in built $SPF");
-    assert_eq!(q4g.failsafe, 1);
-    assert_eq!(q4g.optimal, 1);
+    assert!(
+        recs.iter().any(|r| r.question_id == 59),
+        "4G record stays registered in built $SPF"
+    );
     assert!(recs.len() >= 380, "record array must stay intact");
 
     let forms = collect_forms(&re);
@@ -1827,7 +1826,7 @@ fn real_image_hii_form_hijack_built_bytes() {
         .iter()
         .find(|f| f.form_id_ifr == 10029)
         .expect("hijacked form");
-    assert_eq!(f.title, "UEFIPATCHER E18 REALIMAGE");
+    assert_eq!(f.title, title_before, "form title must stay untouched");
 
     let (setup_slot, sd_slot) = (
         find_file_range(&data, "899407D7-99FE-43D8-9A21-79EC328CAC21"),
@@ -1843,8 +1842,7 @@ fn real_image_hii_form_hijack_built_bytes() {
     }
 
     eprintln!(
-        "real_image hijack: form=10029 q=0x3B rec@{:#x} ifr[{:#x}..{:#x}) strings={} setup_slot={setup_slot:?} sd_slot={sd_slot:?}",
-        res.records[0].record_offset,
+        "real_image hijack: form=10029 q=0x3B ifr[{:#x}..{:#x}) strings={} setup_slot={setup_slot:?} sd_slot={sd_slot:?}",
         res.form_ifr_start,
         res.form_ifr_end,
         res.string_ids.len()

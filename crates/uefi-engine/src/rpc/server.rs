@@ -842,18 +842,7 @@ impl EngineService for EngineServer {
                 .iter()
                 .map(|(k, v)| (k.clone(), u32::from(*v)))
                 .collect(),
-            records: result
-                .records
-                .iter()
-                .map(|e| HiiFormHijackRecord {
-                    question_id: u32::from(e.question_id),
-                    record_offset: e.record_offset as u32,
-                    old_failsafe: u32::from(e.old_failsafe),
-                    old_optimal: u32::from(e.old_optimal),
-                    new_failsafe: u32::from(e.new_failsafe),
-                    new_optimal: u32::from(e.new_optimal),
-                })
-                .collect(),
+            records: Vec::new(),
             form_ifr_start: result.form_ifr_start,
             form_ifr_end: result.form_ifr_end,
         }))
@@ -1511,8 +1500,8 @@ mod tests {
             .unwrap_err()
     }
 
-    const FORM_HIJACK_SCHEMA_JSON: &str = r#"{"title": "UEFIPATCHER", "questions": [
-        {"question_id": 17, "prompt": "PQ", "help": "PH", "failsafe": 1, "optimal": 1}]}"#;
+    const FORM_HIJACK_SCHEMA_JSON: &str = r#"{"questions": [
+        {"question_id": 17, "prompt": "PQ", "help": "PH"}]}"#;
 
     #[tokio::test]
     async fn hii_form_hijack_maps_bad_schema_to_invalid_argument() {

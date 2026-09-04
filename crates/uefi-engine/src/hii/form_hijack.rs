@@ -43,28 +43,22 @@ pub fn locate_questions(pkg: &[u8], form_id: u16) -> Vec<(usize, u16)> {
     qs
 }
 
-pub fn rewrite_form_title(pkg: &mut [u8], form_op: usize, title_id: u16) {
-    pkg[form_op + 4..form_op + 6].copy_from_slice(&title_id.to_le_bytes());
-}
-
 pub fn rewrite_question_strings(pkg: &mut [u8], q_off: usize, prompt_id: u16, help_id: u16) {
     pkg[q_off + 2..q_off + 4].copy_from_slice(&prompt_id.to_le_bytes());
     pkg[q_off + 4..q_off + 6].copy_from_slice(&help_id.to_le_bytes());
 }
 
-#[derive(Debug)]
-pub struct HijackRecordEdit {
+pub struct HelpControlEdit {
     pub question_id: u16,
-    pub record_offset: usize,
-    pub old_failsafe: u8,
-    pub old_optimal: u8,
-    pub new_failsafe: u8,
-    pub new_optimal: u8,
+    pub offset: usize,
+    pub old_string_id: u16,
+    pub new_string_id: u16,
 }
 
 pub struct HijackResult {
     pub string_ids: HashMap<String, u16>,
-    pub records: Vec<HijackRecordEdit>,
+    pub unlock_flips: Vec<String>,
+    pub help_controls: Vec<HelpControlEdit>,
     pub form_ifr_start: u32,
     pub form_ifr_end: u32,
 }
@@ -139,7 +133,6 @@ pub fn hijack_form(
         let node = node_at(&image.root, &sd_path);
         node.body.clone()
     };
-    let mut edits = Vec::with_capacity(hijack.questions.len());
     for q in &hijack.questions {
         let matched: Vec<_> = spf::scan_question_records(&spf_records)
             .into_iter()
@@ -152,18 +145,9 @@ pub fn hijack_form(
         if matched.len() != 1 {
             return Err(HiiError::NotFound);
         }
-        let r = matched[0];
-        edits.push(HijackRecordEdit {
-            question_id: q.question_id,
-            record_offset: r.offset,
-            old_failsafe: r.failsafe,
-            old_optimal: r.optimal,
-            new_failsafe: q.failsafe,
-            new_optimal: q.optimal,
-        });
     }
 
-    let mut strings: Vec<String> = vec![hijack.title.clone()];
+    let mut strings: Vec<String> = Vec::with_capacity(hijack.questions.len() * 2);
     for q in &hijack.questions {
         strings.push(q.prompt.clone());
         strings.push(q.help.clone());
@@ -193,23 +177,11 @@ pub fn hijack_form(
     }
     ops::mark_rebuild_to_root_by_path(&mut image.root, &path);
 
-    {
-        let node = node_at_mut(&mut image.root, &sd_path);
-        for e in &edits {
-            spf::write_record_defaults(
-                &mut node.body,
-                e.record_offset,
-                e.new_failsafe,
-                e.new_optimal,
-            );
-        }
-    }
-    ops::mark_rebuild_to_root_by_path(&mut image.root, &sd_path);
-
-    tracing::debug!(?edits, "hijack_form done");
+    tracing::debug!(questions = hijack.questions.len(), "hijack_form done");
     Ok(HijackResult {
         string_ids,
-        records: edits,
+        unlock_flips: Vec::new(),
+        help_controls: Vec::new(),
         form_ifr_start,
         form_ifr_end,
     })
@@ -248,9 +220,6 @@ fn apply_hijack_ifr(
     hijack: &schema::HijackSchema,
     string_ids: &HashMap<String, u16>,
 ) -> Result<(), HiiError> {
-    let span = locate_form(pkg, form_id).ok_or(HiiError::NotFound)?;
-    let title_id = *string_ids.get(&hijack.title).ok_or(HiiError::InvalidIfr)?;
-    rewrite_form_title(pkg, span.form_op, title_id);
     let qs = locate_questions(pkg, form_id);
     for q in &hijack.questions {
         let prompt_id = *string_ids.get(&q.prompt).ok_or(HiiError::InvalidIfr)?;
@@ -269,14 +238,6 @@ fn node_at<'a>(root: &'a FfsNode, path: &[usize]) -> &'a FfsNode {
     let mut node = root;
     for &i in path {
         node = &node.children[i];
-    }
-    node
-}
-
-fn node_at_mut<'a>(root: &'a mut FfsNode, path: &[usize]) -> &'a mut FfsNode {
-    let mut node = root;
-    for &i in path {
-        node = &mut node.children[i];
     }
     node
 }
@@ -471,20 +432,16 @@ mod tests {
     }
 
     #[test]
-    fn rewrite_title_and_strings_same_length() {
+    fn rewrite_question_strings_same_length() {
         let mut pkg = package_with_form();
-        let span = locate_form(&pkg, 7).unwrap();
         let q = locate_questions(&pkg, 7)[0].0;
         let before = pkg.clone();
-        rewrite_form_title(&mut pkg, span.form_op, 0xBEEF);
         rewrite_question_strings(&mut pkg, q, 0x1111, 0x2222);
         assert_eq!(pkg.len(), before.len());
-        assert_eq!(&pkg[span.form_op + 4..span.form_op + 6], &[0xEF, 0xBE]);
         assert_eq!(&pkg[q + 2..q + 4], &[0x11, 0x11]);
         assert_eq!(&pkg[q + 4..q + 6], &[0x22, 0x22]);
         for i in 0..pkg.len() {
-            let touched =
-                (i >= span.form_op + 4 && i < span.form_op + 6) || (i >= q + 2 && i < q + 6);
+            let touched = i >= q + 2 && i < q + 6;
             if !touched {
                 assert_eq!(pkg[i], before[i]);
             }
@@ -493,9 +450,7 @@ mod tests {
 
     fn hijack_schema() -> crate::hii::schema::HijackSchema {
         crate::hii::schema::parse_hijack_schema(
-            r#"{"title": "UEFIPATCHER", "questions": [
-                {"question_id": 17, "prompt": "PQ", "help": "PH", "failsafe": 1, "optimal": 1}
-            ]}"#,
+            r#"{"questions": [{"question_id": 17, "prompt": "PQ", "help": "PH"}]}"#,
         )
         .unwrap()
     }
@@ -503,16 +458,13 @@ mod tests {
     const ITEM: &str = "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:0#7";
 
     #[test]
-    fn hijack_form_rewrites_ifr_and_spf_records() {
+    fn hijack_form_rewrites_ifr_and_leaves_spf_defaults_untouched() {
         let (flash, pkg_before, spf_before) = hijack_flash_image();
         let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
         let res = hijack_form(&mut img, ITEM, &hijack_schema(), None).unwrap();
-        assert_eq!(res.string_ids.len(), 3);
-        assert!(res.string_ids.contains_key("UEFIPATCHER"));
-        assert_eq!(res.records.len(), 1);
-        assert_eq!(res.records[0].question_id, 17);
-        assert_eq!(res.records[0].old_failsafe, 0);
-        assert_eq!(res.records[0].new_failsafe, 1);
+        assert_eq!(res.string_ids.len(), 2);
+        assert!(res.string_ids.contains_key("PH"));
+        assert!(res.unlock_flips.is_empty());
         let built = build_image(&img).unwrap();
 
         let reparsed = parse_image(&built, ImageMode::Read, "i2", "s2").unwrap();
@@ -539,29 +491,31 @@ mod tests {
         let recs = spf::scan_question_records(&pfs_leaf.body);
         assert_eq!(recs.len(), 1);
         assert_eq!(recs[0].question_id, 17);
-        assert_eq!(recs[0].failsafe, 1);
-        assert_eq!(recs[0].optimal, 1);
+        assert_eq!(recs[0].failsafe, 0, "fs must not be written");
+        assert_eq!(recs[0].optimal, 0, "opt must not be written");
 
-        let forms = crate::hii::forms::collect_forms(&reparsed);
-        let form = forms
-            .iter()
-            .find(|f| f.form_id_ifr == 7)
-            .expect("hijacked form");
-        assert_eq!(form.title, "UEFIPATCHER");
+        let pkg_after = form_pkg_bytes(&reparsed);
+        let span_before = locate_form(&pkg_before, 7).unwrap();
+        let span_after = locate_form(&pkg_after, 7).unwrap();
+        assert_eq!(
+            pkg_after[span_after.form_op + 4..span_after.form_op + 6],
+            pkg_before[span_before.form_op + 4..span_before.form_op + 6],
+            "IFR form title bytes must stay untouched"
+        );
         assert_eq!(
             pkg_before.len(),
-            form_pkg_len(&reparsed),
+            pkg_after.len(),
             "form package length invariant"
         );
     }
 
-    fn form_pkg_len(img: &Image) -> usize {
+    fn form_pkg_bytes(img: &Image) -> Vec<u8> {
         let node = crate::parser::target::find_item(
             &img.root,
             &crate::parser::target::parse_target(&format!("{FILE_GUID}:0x19:0")).unwrap(),
         )
         .unwrap();
-        node.body.len()
+        node.body.clone()
     }
 
     fn hii_list_blob(guid: &Guid, pkgs: &[&[u8]]) -> Vec<u8> {
@@ -613,24 +567,18 @@ mod tests {
         let item = format!("{FILE_GUID}:0x10:0#7");
         let res =
             hijack_form(&mut img, &item, &hijack_schema(), None).expect("PE32 resource hijack");
-        assert_eq!(res.records.len(), 1);
-        assert_eq!(res.string_ids.len(), 3);
-        assert!(res.string_ids.contains_key("UEFIPATCHER"));
+        assert_eq!(res.string_ids.len(), 2);
+        assert!(res.string_ids.contains_key("PH"));
 
         let built = build_image(&img).unwrap();
         assert_eq!(built.len(), data.len());
 
         let re = parse_image(&built, ImageMode::Read, "i2", "s2").unwrap();
-        let pe_node = crate::parser::target::find_item(
-            &re.root,
-            &crate::parser::target::parse_target(&format!("{FILE_GUID}:0x10:0")).unwrap(),
-        )
-        .unwrap();
+        let pe_target = crate::parser::target::parse_target(&format!("{FILE_GUID}:0x10:0"))
+            .expect("pe32 target");
+        let pe_node = crate::parser::target::find_item(&re.root, &pe_target).unwrap();
         assert!(
-            pe_node
-                .body
-                .windows("UEFIPATCHER".len())
-                .any(|w| w == b"UEFIPATCHER"),
+            pe_node.body.windows(2).any(|w| w == b"PH"),
             "appended strings must land inside the PE resource"
         );
 
@@ -648,15 +596,17 @@ mod tests {
         let recs = spf::scan_question_records(&pfs_leaf.body);
         assert_eq!(recs.len(), 1);
         assert_eq!(recs[0].question_id, 17);
-        assert_eq!(recs[0].failsafe, 1);
-        assert_eq!(recs[0].optimal, 1);
+        assert_eq!(recs[0].failsafe, 0, "fs must not be written");
+        assert_eq!(recs[0].optimal, 0, "opt must not be written");
 
-        let forms = crate::hii::forms::collect_forms(&re);
-        let form = forms
-            .iter()
-            .find(|f| f.form_id_ifr == 7)
-            .expect("hijacked form");
-        assert_eq!(form.title, "UEFIPATCHER");
+        let pkg_after = package_of(&re.root, &pe_target).expect("forms package in PE resource");
+        let span_before = locate_form(&pkg, 7).unwrap();
+        let span_after = locate_form(pkg_after, 7).unwrap();
+        assert_eq!(
+            pkg_after[span_after.form_op + 4..span_after.form_op + 6],
+            pkg[span_before.form_op + 4..span_before.form_op + 6],
+            "IFR form title bytes must stay untouched"
+        );
     }
 
     fn lzma_guided_file_bytes(guid: &Guid, children: &[u8]) -> (Vec<u8>, usize) {
@@ -694,14 +644,13 @@ mod tests {
         let setup_start = (sd_slot.1 + 7) & !7;
 
         let mut img = parse_image(&data, ImageMode::Write, "i", "s").unwrap();
-        let res = hijack_form(
+        hijack_form(
             &mut img,
             ITEM,
             &hijack_schema(),
             Some(&Guid::from_str(SETUPDATA_GUID_STR).unwrap()),
         )
         .unwrap();
-        assert_eq!(res.records.len(), 1);
         let built = build_image(&img).unwrap();
         assert_eq!(
             built.len(),
@@ -736,8 +685,8 @@ mod tests {
             .unwrap();
         let pfs_leaf = find_spf_leaf(sd_file).unwrap();
         let recs = spf::scan_question_records(&pfs_leaf.body);
-        assert_eq!(recs[0].failsafe, 1, "fs edit must survive rebuild");
-        assert_eq!(recs[0].optimal, 1);
+        assert_eq!(recs[0].failsafe, 0, "fs must stay untouched");
+        assert_eq!(recs[0].optimal, 0);
     }
 
     fn sd_guid_bytes() -> [u8; 16] {
