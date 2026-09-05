@@ -568,7 +568,8 @@ AMI-serial-семьи.
   MNX байт-идентичен KOT-root `MAshinist_DXE_driver_TerminalSrc`
   (`51e40c30…`). «Кривые» корневые `TerminalSrc.ffs` (13 483 Б) и
   `SerialIo.ffs` (7 690 Б) не совпадают ни с одним донорским блобом
-  (+80/+15 Б к ближайшим — переобёрнутые FFS; детальный дифф — Task 6).
+  (+80/+15 Б к ближайшим — другие билды PE32: штамп имени в PE+0x40,
+  +N Б FFS = LZMA-перепаковка иного кода, R26; детальный дифф — Task 6).
 - **Terminal 226**: один код в 3.30/3.50 (дифф = TimeDateStamp +
   file-checksum, §4.2).
 
@@ -939,7 +940,12 @@ PCD-конфиге §5.2 (все дефолты годны, кроме PcdDefaul
 | TermSrc | GetVariable(L"SioSerialPortsLocationVar", **560BF58A**) | 0x1FB6, 0x1FFE, 0x3B7E | (в)/(д): размещение портов |
 | TermSrc | GetVariable(L"DebuggerSerialPortsEnabledVar", **97CA1A5B**) | 0x203F, 0x3AC0, 0x3AE7 | (в) |
 | TermSrc | GetVariable(L"Setup", **EC87D643**): `movq $0x94` — ожидаемый размер, поля **+0x31/+0x33/+0x35/+0x37/+0x39/+0x3D** | 0x22BE (раскладка: r9=&size=0x94, data-буфер @0x8DE0), 0x3712 | (д): 0x94 = varstore rd450x id 0x2 (§3.3); оффсеты = CR-поля rd450x 0x31–0x45 |
-| SerialIo | **ничего**: ни переменных, ни PCD — аффинность контроллеров **AmiSio / PciIo / AmiSerial** через probe-and-close: OpenProtocol `*0x118` → CloseProtocol `*0x120`, с device-path-фильтром (ACPI-HID **PNP0501** `cmpl $0x050141D0` @0xE23; MESSAGING `cmpb $0x03` @0xE35 + UART-DP `cmpb $0x0E` @0xE3F); отказ → EFI_UNSUPPORTED | пробы: 0xD7D/0xDA4 (AmiSerial), 0xE71/0xE95 (AmiSio); CloseProtocol-тройка AmiSio→PciIo→AmiSerial @0x1A2F..0x1A8A (функция @0x19FC профиля Stop(): успех → 0x1A99, все fail → EFI_UNSUPPORTED @0x1A8A) | конфиг = протоколы SIO-стека |
+| SerialIo | **ничего**: ни переменных, ни PCD — аффинность контроллеров **AmiSio / PciIo / AmiSerial** через probe-and-close: OpenProtocol `*0x118` → CloseProtocol `*0x120`, с device-path-фильтром (ACPI-HID **PNP0501** `cmpl $0x050141D0` @0xE23; MESSAGING `cmpb $0x03` @0xE35 + UART-DP `cmpb $0x0E` @0xE3F); отказ → EFI_UNSUPPORTED | пробы: 0xD7D/0xDA4 (AmiSerial), 0xE71/0xE98 (AmiSio); CloseProtocol-тройка AmiSio→PciIo→AmiSerial @0x1A2F..0x1A8A (функция @0x19FC профиля Stop(): успех → 0x1A99, все fail → EFI_DEVICE_ERROR @0x1A8A) | конфиг = протоколы SIO-стека |
+
+Сноска (упаковка PNP0501 в этой семье): AMI-билды сравнивают ACPI-HID
+в упаковке |0x41D0 — immediate `0x050141D0` (SerialIo @0xE23 выше;
+LEGACYREDIR @0x17E0, §7.2); спековая edk2-упаковка 0x0501D041 в этой
+семье не встречается.
 
 gEfiPcdProtocolGuid 13A3F0F6 в PE-телах ОБОИХ модулей отсутствует —
 единственное вхождение пары это DEPEX-секция SerialIo (гейт диспетчера;
@@ -1004,7 +1010,7 @@ LIVE нет (см. 6.4). Эмпирическое подтверждение р�
   gBS+0x148, call @0x2DB3) ставит на дочерний хендл тройку **AmiSio
   51E9B4F9 @0x8F0 + EfiSioProtocolGuid 215FDD18 @0x2C0** (стандартный
   EFI Super I/O) **+ DevicePath** @0x910 — varargs-хвост собирается на
-  стеке @0x2D6A..0x2D92 (GUID 0x910 / интерфейс / NULL); зеркальный
+  стеке @0x2D6A..0x2D9C (GUID 0x910 / интерфейс / NULL); зеркальный
   UninstallMultiple @0x3634 — AmiSio+EfiSio. PciIo 4CF5B200
   импортирован (@0x920), но НЕ инсталлируется (потребляется пробами —
   lea→0x920 @0x1BF4/0x1C26/0x2DE6 и др.); второй вызов `*0x148`
@@ -1088,8 +1094,8 @@ LIVE нет (см. 6.4). Эмпирическое подтверждение р�
 
 - `pe_scan.py` (§9) по блобам Task 4 всех доноров: LEGACYREDIR ×6
   (rd450x/MNX/x99run PE32; 226D30/226D50 PE32 из `.pe32` — pe_scan не
-  рекурсирует EFI-COMPRESSION type 2, см. §7.6; C275 — только FFS/DEPEX,
-  тело в Tiano), SerialMiuxControl ×5, SerialRcovery C275 (FFS). DEPEX
+  рекурсирует EFI_SECTION_COMPRESSION, см. §7.6; C275 — только FFS/DEPEX,
+  тело в Tiano), SerialMiuxControl ×4, SerialRcovery C275 (FFS). DEPEX
   пересчитан независимо от Task 4 (сырые секции 0x13/0x1B, опкоды, имена
   GUID из guids.csv) — совпало с §4.3 дословно, включая payload-размеры
   (90/144/36/54 Б).
@@ -1279,9 +1285,11 @@ LegacyRegion 0FC9013A — 0.
   LEGACYREDIR (4 Б ts @0xC0) и Terminal (§4.2), но НЕ для
   SerialMiuxControl — 1 кодовый байт @0x556 (размер ServerSetup 0xCC vs
   0xCE) + ts; т.е. 226 Miux — два билда одной ветки.
-- **R31 (инструмент)**: pe_scan.py не рекурсирует EFI-COMPRESSION type 2
-  — 226-FFS дают только DEPEX; PE32 анализировались из `.pe32`-блобов
-  Task 4. Для S2-движка это уже учтено (R15), для скриптов — нет.
+- **R31 (инструмент)**: pe_scan.py не рекурсирует EFI_SECTION_COMPRESSION
+  любого типа (не только type 2) — 226-FFS дают только DEPEX; PE32
+  анализировались из `.pe32`-блобов Task 4 (у них PE32-секции уже
+  plain, ctype=0). Для S2-движка это уже учтено (R15), для скриптов —
+  нет.
 - Негативы: AmiSerial-ветка LEGACYREDIR в LIVE мертва (0 вхождений,
   §6.4) — как и у донорского SerialIo; "$SBC"/"$SBF" в guids.csv
   отсутствуют (AMI-внутренние теги CSM-колбэков, определены по
