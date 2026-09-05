@@ -49,7 +49,7 @@ Assumption: в S2 файлы вставляются в FV1 в порядке Ser
 
 | Файл | Ответственность |
 |---|---|
-| `docker/edk2-builder.containerfile` | Образ сборки: runtime-base + gcc/make/python3/libuuid-devel + маркер ENV |
+| `docker/edk2-builder.containerfile` | Образ сборки: runtime-base + gcc/make/python3/libuuid-devel/git + маркер ENV |
 | `docker/edk2/UefiPatcherSerialPkg/UefiPatcherSerial.dsc` | Платформа: библиотечные инстансы, [PcdsFixedAtBuild] всей §5.2, [Components] |
 | `docker/edk2/UefiPatcherSerialPkg/UefiPatcherSerial.fdf` | FV SERIAL_CONSOLE_FV (3 INF) + [Rule] PE32+UI |
 | `docker/edk2/UefiPatcherSerialPkg/SerialConsoleGlue/SerialConsoleGlue.inf` | Модуль-описание glue (DXE_DRIVER, DEPEX SerialIo) |
@@ -89,10 +89,12 @@ Expected: строка `localhost/uefipatcher-runtime-base   latest   …`. Ес
 
 ```dockerfile
 FROM uefipatcher-runtime-base
-RUN dnf install -y gcc make python3 libuuid-devel && dnf clean all
+RUN dnf install -y git gcc make python3 libuuid-devel && dnf clean all
 ENV EDK2_BUILDER_CONTAINER=1
 WORKDIR /work
 ```
+
+Примечание (rule-11, обнаружено при выполнении Task 2 Step 4): без `git` в образе контейнерный режим `build_serial.sh` падает на `git -C /src/edk2 archive …` (`git: command not found`); git нужен именно внутри контейнера, т.к. archive-копия делается в container-mode ветке скрипта.
 
 - [ ] **Step 3: Собрать образ**
 
@@ -103,9 +105,9 @@ Expected: `Writing manifest to image destination` (или COMMIT + ID), exit 0. 
 
 Run:
 ```bash
-podman-remote run --rm uefipatcher-edk2-builder:latest bash -c 'gcc --version | head -1; make --version | head -1; python3 --version; echo EDK2_BUILDER_CONTAINER=$EDK2_BUILDER_CONTAINER'
+podman-remote run --rm uefipatcher-edk2-builder:latest bash -c 'git --version | head -1; gcc --version | head -1; make --version | head -1; python3 --version; echo EDK2_BUILDER_CONTAINER=$EDK2_BUILDER_CONTAINER'
 ```
-Expected: строки версий gcc/make/python3 и `EDK2_BUILDER_CONTAINER=1`, exit 0.
+Expected: строки версий git/gcc/make/python3 и `EDK2_BUILDER_CONTAINER=1`, exit 0.
 
 - [ ] **Step 5: Commit**
 
@@ -999,7 +1001,7 @@ Expected: три строки — записать в отчёт.
 .ffs-артефакты закоммичены как тест-данные.
 
 ## 1. Стенд
-- docker/edk2-builder.containerfile (fedora:44/runtime-base + gcc/make/python3/libuuid-devel)
+- docker/edk2-builder.containerfile (fedora:44/runtime-base + gcc/make/python3/libuuid-devel/git)
 - docker/edk2/build_serial.sh: эпизодичная сборка, git-archive копия refs/edk2@bcd1687 в /work
   (чекаут не трогается), BaseTools APPLICATIONS='GenFfs GenFv GenSec GenFw', GCC5 X64 RELEASE
 - PACKAGES_PATH=<edk2>:/<docker/edk2> — свой пакет UefiPatcherSerialPkg вне дерева edk2
