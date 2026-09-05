@@ -1083,6 +1083,210 @@ LIVE нет (см. 6.4). Эмпирическое подтверждение р�
   «$SIOINIT3»/«$SIOINITI9» (SioDxeInit).
 
 ## 7. Легаси-слой: LEGACYREDIR, SerialMiuxControl (S0.5)
+
+### 7.1 Метод
+
+- `pe_scan.py` (§9) по блобам Task 4 всех доноров: LEGACYREDIR ×6
+  (rd450x/MNX/x99run PE32; 226D30/226D50 PE32 из `.pe32` — pe_scan не
+  рекурсирует EFI-COMPRESSION type 2, см. §7.6; C275 — только FFS/DEPEX,
+  тело в Tiano), SerialMiuxControl ×5, SerialRcovery C275 (FFS). DEPEX
+  пересчитан независимо от Task 4 (сырые секции 0x13/0x1B, опкоды, имена
+  GUID из guids.csv) — совпало с §4.3 дословно, включая payload-размеры
+  (90/144/36/54 Б).
+- `guid_dump.py` (§9): полный дамп GUID-таблиц (регион шаг 16 Б + lookup
+  guids.csv) — словарь pe_scan не знает Legacy-протоколы.
+- `legacy_scan.py` (§9): LIVE raw + 207 LZMA-декомпрессатов на словарь
+  {IPMI 4A1D0E66/6BB945E8, ServerMgmt 01239999, Legacy-протоколы
+  31CE593D/38321DBA/DB9A1E3D/8E008510/0FC9013A/A9A9, OpromStartEnd,
+  BdsAllDriversConnected, файловые GUID 4A3602BC/129F6AA7/12F75401};
+  атрибуция raw-хитов по спанам `nodes_live.txt` движка.
+- `objdump -D -b binary -m i386:x86-64` (по урокам §6.1: gBS-офсеты 0x80
+  Install / 0x98 HandleProtocol / 0xA8 RegisterProtocolNotify / 0x110
+  Disconnect / 0x138 LocateHandleBuffer / 0x140 LocateProtocol / 0x170
+  CreateEventEx; gRT+0x48 GetVariable; статус по movabs: 3 =
+  UNSUPPORTED, 0x15 = IPMI-таймаут): конструкторы и GetVariable-сайты
+  всех модулей; для LIVE — декомпрессат CsmDxe (LZMA @0x8E8168, dec
+  0xBAA6 Б, выгружен `csmdxe_dec.bin`).
+- Ключевые числа продублированы: inline-GUID ищутся и байт-сканом, и
+  dword-сканом immediates (урок §7.6-R29); TSE-зеркало AMITSESetupData —
+  повторная декомпрессия LZMA-секции @0xA9C724 (поток @sec-4+DataOffset,
+  фикс c78921b) + строковый дамп.
+
+### 7.2 LEGACYREDIR `4A3602BC` — роль: CSM-драйвер легаси-serial-редирекции
+
+**DEPEX решает роль сам** (второй способ — §7.1, имена guids.csv):
+
+| группа сборок | DEPEX (все PUSH…END) | диспетчеризация |
+|---|---|---|
+| rd450x + MNX + x99run + C275 (payload 90 Б ×4) | LegacyInterrupt `31CE593D`, Legacy8259 `38321DBA`, LegacyBios `DB9A1E3D`, LegacyBiosExt `8E008510`, PCD `13A3F0F6`; AND×4 | только после полного LegacyBios*-набора, т.е. **при активном CSM** |
+| 226D30 + 226D50 (payload 144 Б ×2) | LegacyInterrupt AND LegacyRegion `0FC9013A` AND (Legacy8259 AND FV2 `220E73B6` AND LegacyBios) AND CpuArch `26BACCB1` AND SmmBase `1390954D` AND SmmSwDispatch `E541B773`; PUSH×8 AND×7 | то же + SMM-обвязка; PCD нет |
+
+**Механика (rd450x, disasm; MNX/x99run — та же архитектура, см. §7.1):**
+
+- Конструктор @0x910: `LocateProtocol(LegacyBiosExt)` @0x95C — при
+  неудаче модуль инертен; `InstallProtocolInterface(LegacySredir
+  A062CF1F-…-600BC4FFA9A9, iface @0x8A0 = {0xD54, 0xF88})` @0x9BD —
+  модуль **продюсер EfiLegacySredirProtocol** (двухфункционная vtable);
+  `RegisterProtocolNotify(OpromStartEnd F2A128FF)` и
+  `(BdsAllDriversConnected DBC9FD21)` (хелпер @0x1AA4 = CreateEvent+RPN);
+  `CreateEventEx(EVT_NOTIFY_SIGNAL, TPL_CALLBACK, cb @0x104C, группа =
+  gEfiEventLegacyBootGuid 2A571201 @0x838)` @0xA5B.
+- Активация: событие LegacyBoot → `iface->fn[0]`; OpromStartEnd-нотифи
+  @0x1098 (фильтр поля @0x10 протокола) → fn[0]/fn[1] — перехват вывода
+  option-ROM; BdsAllDriversConnected @0x1154 → однократный init @0x1350
+  + CloseEvent (gBS+0x70). fn[0]/fn[1] работают через LegacyBiosExt
+  (вызовы *0x28/*0x30/*0x38) с тегами "$SBC"/"$SBF" (@0x8B4/0x8BC) —
+  AMI-сигнатуры CSM-колбэков (в guids.csv/UEFITool не описаны).
+- Конфиг-каналы (обе переменные — во всех 4 разобранных сборках):
+  **GetVariable(L"Setup", EC87D643)** @0x1489 — GUID собирается inline
+  (movl $0xEC87D643 @0x137A + байты A1 E5 3F 3E 36 B2 0D A9);
+  **GetVariable(L"SioSerialPortsLocationVar", 560BF58A)** @0x1764
+  (GUID @0x868, имя @0x8D8); у 226 — те же две (@0xE19: L"Setup" в
+  .rdata @0x1B68 — 5 симв.; @0x1049: имя @0x1B30, GUID @0x1D80).
+- **Setup-оффсеты (класс (д), как TermSrc §6.3):** ожидаемый размер —
+  imm32 в `movq`: rd450x **0x94** @0x13E4, MNX **0x7D** @0x1573, x99run
+  **0x7F**, 226 **0x4C1** @0xD34 (два способа: disasm + дифф MNX↔x99run:
+  15 одиночных байт @0x157A–0x1BD5 = imm32 0x7D→0x7F @VA 0x5498 + 13×
+  imm8 полей, все −1: селектор 0x156→0x155 и серия 0x42–0x56→−1);
+  поля per-port rd450x: чтения `movzbl/mov 0x1XX(%rsp,%rbp,1)` для
+  +0x137/0x139/0x13B/0x13D/0x13F/0x141/0x143/0x145/0x147/0x14B/0x14D/
+  0x14F @0x197C–0x19F6 + селектор режима `cmp 0x159(%rsp)` @0x14A6
+  (≥2 → ветка SioSerialPortsLocationVar). Т.е. каждый билд прибит к
+  лэйауту Setup своей платы; **LIVE 0x72 не совпадает ни с одним**.
+- Порт ищут 3 ветки (та же семантика, что TermSrc/SerialIo §6.2):
+  AmiSerial `50DC5C90` (LocateHandleBuffer @0x14D1), PciIo-скан класса
+  07 (subclass 00/80: `cmpb $0x7,0x53(%rsp)` @0x15D9), DevicePath
+  ACPI-HID **PNP0501** `cmpl $0x050141D0` @0x17E0 (AMI-упаковка; у 226 —
+  тот же immediate @0x10DC). UART программируется **напрямую** (не через
+  SerialIo-протокол): init @0x117C (IER/LSR/MCR/DLAB, Stall 0x7D0/
+  0xC350 мкс, MMIO-shadow-режим), scratch-тест `out 0xAA/in/cmp 0xAA`
+  @0x192D; таблица бодов {9600,19200,38400,57600,115200} @0x884,
+  сентинел 0xFFFFFFFF @0x898/0x89C.
+- Импорты (guid_dump, rd450x): AmiSerial, PciIo, DevicePath,
+  LegacyBiosExt, **LegacySredir**, LegacyBios, AmiSio 51E9B4F9,
+  OpromStartEnd, BdsAllDriversConnected (+MNX добавляет
+  SmmCommunication C68ED8E2). 226-поколение (9824 Б, ts-датировано,
+  ImageBase 0x180000000): LoadedImage, FV2, SmmCpu EB346B97,
+  **SioVariable 560BF58A**, HobList, AmiGlobalVariable 01368881,
+  StatusCodeRuntime D2B2B828, SmmStatusCode 6AFD2B77, SmmBase + события
+  ReadyToBoot/LegacyBoot — гибрид «CSM-редирект + SMM/status-code-рог»;
+  ASCII-строка "AS913.ROM" (имя ROM-файла в .rdata) — серийник сборки.
+- 226D30↔226D50: один код (PE32 дифф = 4 Б TimeDateStamp @0xC0; второй
+  способ — побайтовое сравнение).
+
+### 7.3 SerialMiuxControl `129F6AA7` и SerialRcovery `12F75401` — BMC/PEI-ветка, не консоль
+
+- **SerialMiuxControl = переключатель «UART хост ↔ BMC» (IPMI/SOL)**, к
+  CSM и к UEFI-консоли отношения не имеет. rd450x (PE32 2048, разобран
+  целиком): GetVariable(**L"ServerSetup"**, ServerMgmtSetupVariable
+  `01239999`, ожидаемый размер imm **0x1DF** @0x312) @0x31B; гейт — поле
+  **ServerSetup+0x13** (`cmpb $0x0` @0x327): 0 → return EFI_UNSUPPORTED;
+  `LocateProtocol(DxeIpmiTransport 4A1D0E66)` @0x349 обязателен; IPMI-
+  опрос (ExecuteIpmiCmd = iface+0x10 @0x3BE, ≤16 попыток, completion
+  code ==5) → нибл ответа в глобал [0x728] @0x3EC; переключение мукса
+  @0x410–0x4E4 (NetFn 0x0C Cmd 0x12, байт режима, ≤5 повторов);
+  `CreateEventEx(ReadyToBoot 7CE88FB3)` @0x695 — cb @0x57C (ещё IPMI
+  Cmd 0x41). DEPEX: DxeIpmiTransport + PCD (rd450x/C275, payload 36 Б) /
+  IpmiTransport `6BB945E8` + VariableWriteArch `6441F818` (226). 226-
+  билд (1952 Б): события LegacyBoot/ExitBootServices/VirtualAddress-
+  Change/MemoryMapChange/ReadyToBoot — runtime-переключение во всех
+  фазах; поля: гейт `0xF5(%rsp)` @0x562, размер ServerSetup imm 0xCC
+  (D30) / 0xCE (D50). **226D30↔226D50 НЕ один код: 5 Б = TimeDateStamp
+  @0xC8 + imm8 размера 0xCC→0xCE @0x556** (§4.4 «один код» верен только
+  для LEGACYREDIR). SerialIo `BB25CF6F`/Setup/AMITSESetup не читает
+  (0 вхождений байт+dword).
+- **SerialRcovery = PEI-клиент recovery-загрузки по serial** (только
+  C275): PEI-DEPEX payload 54 Б = MemoryDiscovered PPI `F894643D` +
+  **BootInRecoveryMode PPI `17EE496A`** + PcdPpi `01F34D25` —
+  диспетчеризуется только в recovery-режиме; тело в Tiano-секции
+  (COMPRESSION type 1, 2099 Б, UncompressedLength 0x0D96 — разбор
+  невозможен python-методом, §4.1). Не консольный модуль; в 6 остальных
+  донорах отсутствует (§4.5).
+
+### 7.4 LIVE: платформа НЕ UEFI-only — CSM-стек присутствует
+
+`legacy_scan.py` + атрибуция спанами движка (второй способ —
+console_route dec-хиты §5.4):
+
+| модуль LIVE | GUID файла | позиция | связь с Legacy/Serial |
+|---|---|---|---|
+| **CsmDxe** | A062CF1F-…-C4FF**E9A8** | @0x8E80C8, 23 916 Б | DEPEX содержит Legacy8259+LegacyInterrupt (raw-хиты @файл+0x2E/+0x3F); в dec-теле импортирует **SerialIoProto BB25CF6F** @0x394 + SimpleTextOut @0x364 + DevicePath @0x484 |
+| CsmVideo | 29CF55F8 | @0x9913F0 | LegacyBios @файл+0x1D (DEPEX) |
+| CsmBlockIo | 25ACF158 | @0x98FB68 | LegacyBios @+0x1D |
+| NvmeInt13 | C9A6DE36 | @0x93F938 | LegacyBios @+0x1D |
+| UsbInt13 | 4C006CD9 | @0x95B688 | LegacyBios @+0x1D |
+| SmartTimer | 90CB75DB | @0x8CEF58 | Legacy8259 @+0x2E |
+| SmmControl2Dxe | BA31025C | @0x966568 | LegacyInterrupt @+0x1D |
+
+**Дисасм CsmDxe (csmdxe_dec.bin) — точная механика «потребителя
+легаси-редирекции» §5.4:** @0x43AC `LocateHandleBuffer(ByProtocol,
+SerialIo BB25CF6F)` @0x43DA → по каждому хендлу `HandleProtocol(
+DevicePath)` @0x440E → **`DisconnectController(handle, NULL, NULL)`**
+@0x4430 (gBS+0x110). Т.е. при подготовке CSM-загрузки CSM **отключает
+UEFI-драйверы от UART** и забирает порт под INT10/INT14. Отрицательные
+факты LIVE (raw + 207 LZMA): файлы 4A3602BC/129F6AA7/12F75401 — 0;
+протокол LegacySredir A9A9 — 0; **IPMI 4A1D0E66/6BB945E8/01239999 — 0**;
+LegacyRegion 0FC9013A — 0.
+
+### 7.5 Вывод для S5 (Task 8 гейт)
+
+1. **LEGACYREDIR не нужен для цели S5 (UEFI-консоль на COM):** (а) его
+   роль — редирект легаси-вывода (option-ROM/legacy-ОС через CSM) в
+   serial, UEFI-ConOut идёт через ConSplitter/Terminal и его не касается;
+   (б) DEPEX = полный LegacyBios*-набор — без активного CSM не
+   диспетчеризуется вовсе; (в) он программирует UART напрямую и
+   **конкурировал бы с парой TermSrc+SerialIo за порт**; (г) Setup-
+   привязка per-build (0x94/0x7D/0x7F/0x4C1 + поля) — LIVE 0x72 мимо
+   всех, патчи того же класса (д), что у TermSrc, но без выгоды для
+   UEFI-консоли. Ограничение: HNX99TF не UEFI-only (CSM-стек в образе,
+   §7.4) — если S5-заказчик захочет легаси-консоль при CSM-буте,
+   LEGACYREDIR — единственный известный механизм, но это отдельная
+   дуга (плюс конфликт с CsmDxe DisconnectController за порт); в scope
+   S-цикла не включать.
+2. **SerialMiuxControl не нужен:** DEPEX (IPMI) в LIVE неудовлетворим
+   (0 вхождений), функция (mux хост↔BMC) требует BMC, которого нет.
+   Это не «CSM-эпоха», а серверная IPMI-ветка AMI.
+3. **SerialRcovery не нужен:** recovery-only PEIM, один донор, вне
+   консольного маршрута.
+4. **AMITSE-переменные: включать нечего и не где.** Ни один модуль
+   легаси-слоя не читает AMITSESetup C811FA38 (0 вхождений байт+dword
+   во всех разобранных билдах LEGACYREDIR/Miux; дефолт LIVE = 81×00,
+   §5.5). TSE-канал serial — 6 переменных под vendor **560BF58A**
+   (PNP0510_0_NV, PNP0501_0_VV/NV, PNP0501_1_VV/NV), объявленные и в
+   Setup-IFR (§5.4), и в TSE-данных AMITSESetupData FE612B72 (dec
+   0x7719C: имена @+0x75F70…+0x76160, 560BF58A ×6 @+0x75EE4…+0x76150,
+   stride 0x7C — воспроизведено повторной декомпрессией), с фабричным
+   дефолтом PNP0501_0_NV = `01 00 00` (§5.5) — семья уже «включена»,
+   ничего дописывать не требуется. Подтверждение §5.4: дефицит LIVE —
+   не переменные, а терминальный консьюмер; легаси-слой этот пробел не
+   закрывает.
+
+### 7.6 Расхождения/негативы (правило-11; здесь зафиксировано, правки — за Task 8)
+
+- **R28**: бриф Step 1 ожидал строки `Legacy`/`INT10`/`CSM` или хуки
+  `C811FA38` у LEGACYREDIR — их нет (0 во всех билдах; строки модуля =
+  EFI-статусы + L"Setup" + L"SioSerialPortsLocationVar"). Роль
+  установлена DEPEX+импортами+disasm. «AMITSE-каналом» фактически
+  является семья 560BF58A (§7.5-4), не AMITSESetup. Аналогично бриф
+  Step 2 ждал у SerialMiuxControl импорт SerialIo `BB25CF6F` — его нет
+  (0 вхождений; порт переключается на стороне BMC, не из UEFI).
+- **R29 (метод-каверза)**: байт-словарь pe_scan даёт ложно-отрицательный
+  ответ по EC87D643 — компилятор собирает GUID inline-immediate'ами
+  (`movl $0xEC87D643` + 12 байт); то же для «Setup»-имени (5 симв. <
+  порога ≥6). Для будущих сканов (S2+) нужен dword-immediate-проход —
+  применён здесь как второй способ.
+- **R30**: уточнение §4.4: «226D30↔226D50 один код» верно для
+  LEGACYREDIR (4 Б ts @0xC0) и Terminal (§4.2), но НЕ для
+  SerialMiuxControl — 1 кодовый байт @0x556 (размер ServerSetup 0xCC vs
+  0xCE) + ts; т.е. 226 Miux — два билда одной ветки.
+- **R31 (инструмент)**: pe_scan.py не рекурсирует EFI-COMPRESSION type 2
+  — 226-FFS дают только DEPEX; PE32 анализировались из `.pe32`-блобов
+  Task 4. Для S2-движка это уже учтено (R15), для скриптов — нет.
+- Негативы: AmiSerial-ветка LEGACYREDIR в LIVE мертва (0 вхождений,
+  §6.4) — как и у донорского SerialIo; "$SBC"/"$SBF" в guids.csv
+  отсутствуют (AMI-внутренние теги CSM-колбэков, определены по
+  контексту вызовов LegacyBiosExt).
+
 ## 8. Решения S0 (целевой FV, конфиг edk2-пары, unknowns S3/S4/S5)
 ## 9. Артефакты разведки (воспроизводимость)
 
@@ -1174,3 +1378,14 @@ LIVE нет (см. 6.4). Эмпирическое подтверждение р�
   `refs/UEFITool-ai-fork/common/guids.csv`, короткие UTF16 4–5, скан
   имён переменных пары, disasm-верификация `_ts.asm`/`_si.asm`/
   `_gs.asm`): инлайн-сниппеты task-6-report.md.
+- **S0.5**: `legacy_scan.py` —
+  `python3 /tmp/serial-s0/legacy_scan.py $LIVE | tee /tmp/serial-s0/legacy_scan_live.txt`
+  (raw+207 LZMA; IPMI/Legacy-протоколы/файлы легаси-слоя; §7.4);
+  `guid_dump.py` —
+  `python3 /tmp/serial-s0/guid_dump.py <блобы> | tee /tmp/serial-s0/guid_dump_legacy.log`
+  (полные GUID-таблицы с lookup guids.csv, §7.2-7.3). Извлечённые тела:
+  `/tmp/serial-s0/blobs/rd450x/SerialMiuxControl.pe32` (2048),
+  `/tmp/serial-s0/csmdxe_dec.bin` (dec CsmDxe LIVE, 0xBAA6). Разовая
+  диагностика §7 (disasm `_lr.asm`/`_lr226.asm`/`_mux.asm`/`_csm.asm`,
+  повторная декомпрессия TSE-данных, побайтовые диффы 226-пар,
+  DEPEX-recount): инлайн-сниппеты task-7-report.md.
