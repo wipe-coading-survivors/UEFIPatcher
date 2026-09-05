@@ -6,7 +6,7 @@
 
 **Architecture:** Свой мини-пакет `UefiPatcherSerialPkg` (DSC+FDF) собирается против немодифицированного чекаута `refs/edk2` (голова `bcd1687`) через `PACKAGES_PATH`; сборка полностью эпизодична — контейнер копирует edk2 через `git archive` в `/work`, чекаут не загрязняется. Glue-драйвер реализует вариант (а) из §5.3-4 отчёта S0: append devpath в `ConOut/ConIn/ErrOut` + ConnectController + два COM-маркера для атрибуции E30. Артефакты проверяются python-скриптом (FFS/PE-инварианты + двойная сборка на побайтовую воспроизводимость) и интеграционным тестом движка.
 
-**Tech Stack:** podman-remote (fedora:44, существующий `uefipatcher-runtime-base`), edk2 basetools + GCC5 (нативный gcc X64), python3, Rust-крейт uefi-engine (существующие хелперы `ffs.rs`/`parser/file.rs`).
+**Tech Stack:** podman-remote (fedora:44, существующий `uefipatcher-runtime-base`), edk2 basetools + GCC (нативный gcc X64; tools_def 3.06 удалил GCC5), python3, Rust-крейт uefi-engine (существующие хелперы `ffs.rs`/`parser/file.rs`).
 
 **Spec:** `docs/superpowers/specs/2026-09-05-serial-console-ladder-design.md` (§3 ступень S1, §7 аддендум) + вход S0-разведки: `docs/reports/2026-09-05-serial-s0-recon.md` §5.2 (PCD-таблица), §5.3–5.4 (маршрут ConOut, ландшафт LIVE), §5.6 (список модулей), §8.2 (конфиг пары).
 
@@ -250,13 +250,15 @@ export PACKAGES_PATH="$PWD:/pkg"
 set +u
 . ./edksetup.sh BaseTools
 set -u
-build -p UefiPatcherSerialPkg/UefiPatcherSerial.dsc -a X64 -t GCC5 -b RELEASE -n "$(nproc)"
-BUILD_ROOT="$WORKSPACE/Build/UefiPatcherSerial/RELEASE_GCC5/X64"
+build -p UefiPatcherSerialPkg/UefiPatcherSerial.dsc -a X64 -t GCC -b RELEASE -n "$(nproc)"
+BUILD_ROOT="$WORKSPACE/Build/UefiPatcherSerial/RELEASE_GCC/X64"
 cp "$BUILD_ROOT/MdeModulePkg/Universal/SerialDxe/SerialDxe/OUTPUT/SerialDxe.ffs" "$OUT_DIR/"
 cp "$BUILD_ROOT/MdeModulePkg/Universal/Console/TerminalDxe/TerminalDxe/OUTPUT/TerminalDxe.ffs" "$OUT_DIR/"
-cp "$WORKSPACE/Build/UefiPatcherSerial/RELEASE_GCC5/FV/SERIAL_CONSOLE_FV.Fv" "$OUT_DIR/"
+cp "$WORKSPACE/Build/UefiPatcherSerial/RELEASE_GCC/FV/SERIAL_CONSOLE_FV.Fv" "$OUT_DIR/"
 ls -la "$OUT_DIR"
 ```
+
+Примечание к `-t GCC` / `RELEASE_GCC` (rule-11, обнаружено при выполнении Step 4): tools_def.txt 3.06 в edk2@bcd1687 УДАЛИЛ тулчейн `GCC5` (заголовок шаблона: «3.06 - Remove GCC48, GCC49 and GCC5»; доступны `GCC`, `GCCNOLTO`, `CLANGDWARF`, `CLANGPDB`). `-t GCC5` даёт `error 4000: Not available [GCC5] not defined`, поэтому тег — `GCC`, а каталог сборки — `Build/UefiPatcherSerial/RELEASE_GCC/`.
 
 `chmod +x docker/edk2/build_serial.sh`.
 
@@ -1011,7 +1013,7 @@ Expected: три строки — записать в отчёт.
 ## 1. Стенд
 - docker/edk2-builder.containerfile (fedora:44/runtime-base + gcc/make/python3/libuuid-devel/git)
 - docker/edk2/build_serial.sh: эпизодичная сборка, git-archive копия refs/edk2@bcd1687 в /work
-  (чекаут не трогается), BaseTools APPLICATIONS='GenFfs GenFv GenSec GenFw', GCC5 X64 RELEASE
+  (чекаут не трогается), BaseTools APPLICATIONS='GenFfs GenFv GenSec GenFw', GCC X64 RELEASE
 - PACKAGES_PATH=<edk2>:/<docker/edk2> — свой пакет UefiPatcherSerialPkg вне дерева edk2
 
 ## 2. PCD (факт; §5.2 S0)
