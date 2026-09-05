@@ -888,8 +888,10 @@ PCD-конфиге §5.2 (все дефолты годны, кроме PcdDefaul
 - `objdump -D -b binary -m i386:x86-64` (хост-binutils, точечно при
   неоднозначности): пары «имя переменной ↔ vendor-GUID» у TermSrc
   (lea rdx=GUID / lea rcx=имя → `call *0x48(%rax)` = gRT->GetVariable),
-  OR-цепочка Supported() SerialIo (`*0x118(%rax)` = OpenProtocol),
-  Install/Uninstall в GenericSio (`*0x148/%0x150` =
+  probe-and-close Supported() SerialIo (`*0x118` = OpenProtocol /
+  `*0x120` = CloseProtocol; глобал [0x36B8]=gBS доказан конструктором
+  @0x2BF4: gST+0x60 → [0x36B8], gST+0x58 → [0x36C0]), Install/Uninstall
+  в GenericSio (`*0x148`/`*0x150` =
   (Un)InstallMultipleProtocolInterfaces).
 
 ### 6.2 Пара изнутри (эталон rd450x; якорь §2.2 воспроизведён)
@@ -937,11 +939,15 @@ PCD-конфиге §5.2 (все дефолты годны, кроме PcdDefaul
 | TermSrc | GetVariable(L"SioSerialPortsLocationVar", **560BF58A**) | 0x1FB6, 0x1FFE, 0x3B7E | (в)/(д): размещение портов |
 | TermSrc | GetVariable(L"DebuggerSerialPortsEnabledVar", **97CA1A5B**) | 0x203F, 0x3AC0, 0x3AE7 | (в) |
 | TermSrc | GetVariable(L"Setup", **EC87D643**): `movq $0x94` — ожидаемый размер, поля **+0x31/+0x33/+0x35/+0x37/+0x39/+0x3D** | 0x22BE (раскладка: r9=&size=0x94, data-буфер @0x8DE0), 0x3712 | (д): 0x94 = varstore rd450x id 0x2 (§3.3); оффсеты = CR-поля rd450x 0x31–0x45 |
-| SerialIo | **ничего**: ни переменных, ни PCD — Supported() = OpenProtocol OR-цепочка **AmiSio → PciIo → AmiSerial**, при отказе всех EFI_UNSUPPORTED | 0x1A2F..0x1A8A | конфиг = протоколы SIO-стека |
+| SerialIo | **ничего**: ни переменных, ни PCD — аффинность контроллеров **AmiSio / PciIo / AmiSerial** через probe-and-close: OpenProtocol `*0x118` → CloseProtocol `*0x120`, с device-path-фильтром (ACPI-HID **PNP0501** `cmpl $0x050141D0` @0xE23; MESSAGING `cmpb $0x03` @0xE35 + UART-DP `cmpb $0x0E` @0xE3F); отказ → EFI_UNSUPPORTED | пробы: 0xD7D/0xDA4 (AmiSerial), 0xE71/0xE95 (AmiSio); CloseProtocol-тройка AmiSio→PciIo→AmiSerial @0x1A2F..0x1A8A (функция @0x19FC профиля Stop(): успех → 0x1A99, все fail → EFI_UNSUPPORTED @0x1A8A) | конфиг = протоколы SIO-стека |
 
 gEfiPcdProtocolGuid 13A3F0F6 в PE-телах ОБОИХ модулей отсутствует —
 единственное вхождение пары это DEPEX-секция SerialIo (гейт диспетчера;
-в LIVE удовлетворён: PcdDxe 80CF7257 — продюсер, §5.4). Итог Step 3:
+в LIVE удовлетворён: PcdDxe 80CF7257 — продюсер, §5.4). Ещё негативы
+тел (все 6 разобранных файлов, счёт байт-вхождений): **PNP0501_0_NV —
+0** (UTF16-строкой), **C811FA38 (AMITSESetup) — 0** — пара не читает
+ни PNP-переменные, ни TSE-настройки напрямую (NVRAM-канал TermSrc
+исчерпывается таблицей выше). Итог Step 3:
 **конфигурация донорской пары = NVRAM-переменные (TermSrc) +
 SIO-протоколы (SerialIo), НЕ PCD-токены.** Гипотеза (б) в сильной форме
 («читают PCD-токены чужой PCD-базы») закрыта; прямые улики за (в)/(д):
@@ -993,15 +999,23 @@ LIVE нет (см. 6.4). Эмпирическое подтверждение р�
   `SioDxeInit` 4E82091E @0x8DD990 («Generic SIO Driver», «$SIOINIT3»,
   «$SIOINITI9», «Standard Serial Port Mode») + DXE **`GenericSio`
   8EEF9AD2 @0x97D438** («$SIOINIT», «$SIOINITH», L"SIO_DEV_STATUS_VAR")
-  → SMM `NCT5532DSmiInit`. **GenericSio — продюсер AmiSio**:
-  InstallMultipleProtocolInterfaces (AmiSio 51E9B4F9 + PciIo) на
-  дочерние хендлы (disasm @0x2DAF, gBS+0x148; зеркальный Uninstall
-  @0x3634), т.е. драйвер создаёт AmiSio-детей — ровно то, к чему
-  привязывается Supported() донорского SerialIo. Импорты GenericSio:
-  AmiSio, DriverBinding, DevicePath, PciIo, DxeServicesTable 05AD34BA,
-  VariableWriteArch 6441F818, AmiIrqDmaMaskVariable FC8BE767,
-  **SioDevStatusVar 5820DE98**, F26DEC72 (в guids.csv отсутствует,
-  AMI-внутренний).
+  → SMM `NCT5532DSmiInit`. **GenericSio — продюсер AmiSio + EfiSio**:
+  единственный child-install (InstallMultipleProtocolInterfaces,
+  gBS+0x148, call @0x2DB3) ставит на дочерний хендл тройку **AmiSio
+  51E9B4F9 @0x8F0 + EfiSioProtocolGuid 215FDD18 @0x2C0** (стандартный
+  EFI Super I/O) **+ DevicePath** @0x910 — varargs-хвост собирается на
+  стеке @0x2D6A..0x2D92 (GUID 0x910 / интерфейс / NULL); зеркальный
+  UninstallMultiple @0x3634 — AmiSio+EfiSio. PciIo 4CF5B200
+  импортирован (@0x920), но НЕ инсталлируется (потребляется пробами —
+  lea→0x920 @0x1BF4/0x1C26/0x2DE6 и др.); второй вызов `*0x148`
+  (@0x1754, rdx=0x900) — собственная регистрация DriverBinding
+  GenericSio. Т.е. GenericSio создаёт AmiSio/EfiSio-детей — ровно то,
+  к чему привязывается донорский SerialIo (и стандартные EFI-SIO-
+  консюмеры). Импорты GenericSio (кластер @0x280..0x2F0 +
+  @0x8C0..0x920): EfiSio 215FDD18, AmiSio, DriverBinding, DevicePath,
+  PciIo, DxeServicesTable 05AD34BA, VariableWriteArch 6441F818,
+  AmiIrqDmaMaskVariable FC8BE767, **SioDevStatusVar 5820DE98**,
+  F26DEC72 (в guids.csv отсутствует, AMI-внутренний).
 - **L"SIO_DEV_STATUS_VAR" (vendor 5820DE98)** — SIO-статус-канал нашего
   стека, в 6 модулях: Bds 8F4B8F82, ACPI 16D0A23E, CsmDxe A062CF1F,
   HardwareSignatureEntry B7EE4835, GenericSio, PS2Main 5FECEF6B. Наш
