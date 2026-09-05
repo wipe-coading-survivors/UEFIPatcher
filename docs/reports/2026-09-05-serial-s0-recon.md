@@ -841,10 +841,11 @@ PCD-конфиге §5.2 (все дефолты годны, кроме PcdDefaul
   PcAtChipsetPkg/SerialIoLib PCD не использует вовсе (хардкод
   SerialPortLib.c:46-51). Итоговая таблица §5.2 учитывает оба слоя.
 - **R20**: бриф Step 1 ждал у TerminalDxe «`PcdTerminalTypeGuid*` и
-  прочие» — таких PCD в современном TerminalDxe нет; фактически
+  прочие» — таких PCD у TerminalDxe нет; фактически
   `PcdDefaultTerminalType` (UINT8-enum) + `PcdErrorCodeSetVariable`
-  (TerminalDxe.inf:87-89). `PcdTerminalTypeGuidBuffer` — артефакт старых
-  edk2 (<2016), в этом чекауте не существует.
+  (TerminalDxe.inf:87-89). `PcdTerminalTypeGuidBuffer` существует, но в
+  OvmfPkg (OvmfPkg.dec:473, потребитель — PlatformBootManagerLib(Light)),
+  не в MdePkg/TerminalDxe.
 - **R21**: бриф Step 4 (и §2.2 отчёта) даёт начало файла CEF5B9A3
   @0x800040 и позицию хита 0x19BF — фактически FFS-заголовок файла
   @**0x800048** (FV0 HeaderLength 0x48; движок off=8388680; fv_audit
@@ -855,13 +856,13 @@ PCD-конфиге §5.2 (все дефолты годны, кроме PcdDefaul
   PcdSerialLineControl: по битовой карте DEC (dec:1398-1406) 0x07 =
   8 бит + бит2 (2 стоп-бита) = 8N2; 8N1 = 0x03 (он и есть дефолт).
   0x07 корректен только как FIFOControl (enable+clear).
-- **R23 (кросс-чек против §3)**: §3.3/§3.6 утверждают varstore Setup
+- **R23 (кросс-чек против §3)**: §3.3/§3.6 утверждали varstore Setup
   LIVE size 0x7D («MNX/LIVE: id 0x1, 0x7D», «size 0x7D как у LIVE») —
   фактически LIVE IFR объявляет `Setup` id 1 **size 0x72** (узел op 0x24
   в декомпрессате Setup-секции; NVRAM-дефолт тоже 114 Б = 0x72, §5.5;
-  спецификация hii-value-op — та же). 0x7D — размер MNX-донора. По
-  мандату Task 5 правит только §5/§9 — §3 не трогал, коррекция за
-  Task 8/координатора.
+  спецификация hii-value-op — та же). 0x7D — размер MNX-донора. Коррекция
+  §3.3/§3.6 внесена пост-таск коммитом `cd19cad` (нашёл Task 5, правка
+  вне исходного мандата §5/§9).
 ## 6. Донорские TermSrc/SerialIo изнутри; SuperIO HNX99TF (S0.4)
 ## 7. Легаси-слой: LEGACYREDIR, SerialMiuxControl (S0.5)
 ## 8. Решения S0 (целевой FV, конфиг edk2-пары, unknowns S3/S4/S5)
