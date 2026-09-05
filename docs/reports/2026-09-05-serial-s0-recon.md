@@ -864,6 +864,210 @@ PCD-конфиге §5.2 (все дефолты годны, кроме PcdDefaul
   §3.3/§3.6 внесена пост-таск коммитом `cd19cad` (нашёл Task 5, правка
   вне исходного мандата §5/§9).
 ## 6. Донорские TermSrc/SerialIo изнутри; SuperIO HNX99TF (S0.4)
+
+### 6.1 Метод
+
+- `pe_scan.py` (§9): FFS → секции (DEPEX 0x13 / PE32 0x10 / UI 0x15;
+  u24-size+u8-type; GUIDed-LZMA EE4E5898 рекурсивно, FORMAT_ALONE);
+  PE32: DOS→PE→таблица секций (name/vaddr/vsize/raw), entry
+  (AddressOfEntryPoint; ImageBase=0 у всех — VA в §6 = RVA), subsystem;
+  скан тела PE32: словарь GUID Global Constraints + консольный словарь
+  Task 5 **плюс полный дамп GUID-таблиц** (регион импортов шагом 16 Б;
+  имена — UEFITool `common/guids.csv`), UTF16 ≥6 (+отдельный проход
+  4–5 симв.: L"Setup" — ровно 5), ASCII ≥8. Дифф-режим `--diff A B`:
+  побайтовые интервалы расхождений с маппингом файла→VA/секция.
+- Кросс-чек экстрактора: PE32, извлечённые `pe_scan.py`, байт-идентичны
+  блобам Task 4 (SerialIo rd450x, TermSrc MNX и x99run — побайтовое
+  сравнение «SAME» ×3). Ключевые числа диффов посчитаны дважды
+  (дифф-режим + агрегатор интервалов по секциям) — совпали дословно
+  (8 975/301; 18 406/574; 19/19; 18 524/584).
+- `sio_scan.py` (§9): LIVE raw + 207 LZMA-декомпрессатов (фикс-версия
+  §3.1) на ASCII/UTF16 маркеры SuperIO-семейств и GUID {2634D36A
+  NCT5532D_SMF, 51E9B4F9 AmiSio, 50DC5C90 AmiSerial}; атрибуция хитов —
+  спаны FFS движкового `node list` (сокет Task 2).
+- `objdump -D -b binary -m i386:x86-64` (хост-binutils, точечно при
+  неоднозначности): пары «имя переменной ↔ vendor-GUID» у TermSrc
+  (lea rdx=GUID / lea rcx=имя → `call *0x48(%rax)` = gRT->GetVariable),
+  OR-цепочка Supported() SerialIo (`*0x118(%rax)` = OpenProtocol),
+  Install/Uninstall в GenericSio (`*0x148/%0x150` =
+  (Un)InstallMultipleProtocolInterfaces).
+
+### 6.2 Пара изнутри (эталон rd450x; якорь §2.2 воспроизведён)
+
+| модуль | FFS | DEPEX | UI | PE32 | arch | entry RVA | subsystem | секции vaddr+vsize |
+|---|---|---|---|---|---|---|---|---|
+| SerialIo `97C81E5D` | 7 675 | **`PUSH 13A3F0F6-264A-3EF0-F2E0-DEC512342F34, END`** — якорь спеки §2.2 дословно (секция 22 Б @0x18: `02 <guid> 08`) | `SerialIo` | 14 816 | AMD64, PE32+ (0x20B) | 0xBA0 | 11 = EFI_RUNTIME_DRIVER | .text 0x280+0x3450; data 0x36E0+0x12C (имя пусто); .xdata 0x3820+0x164; .reloc 0x39A0+0x2C |
+| TermSrc `54891A9E` | 13 361 | нет (DEPEX-секции нет — как в §4.3) | `TerminalSrc` | 37 824 | AMD64, PE32+ | 0x1E30 | 11 | .text 0x280+0x8C10; data 0x8EA0+0x24C; .xdata 0x9100+0x240; .reloc 0x9340+0x64 |
+
+У обоих TimeDateStamp=0 (репродуцируемая сборка), Characteristics
+0x2022, ImageBase=0 (адрес загрузки назначает DXE-диспетчер по .reloc).
+Все 6 разобранных файлов (rd450x/MNX/x99run/2×KOT-root) имеют одну
+геометрию: 4 секции, entry одни и те же (0xBA0 / 0x1E30) — VA==offset
+внутри .text (rawptr==vaddr==0x280).
+
+**Полные импорт-таблицы** (регион @0x280…, шаг 16 Б; имена guids.csv):
+
+- SerialIo (7): **AmiSio 51E9B4F9** @0x280, ComponentName 107A772C,
+  **SerialIoProto BB25CF6F** @0x2A0, DriverBinding 18A031AB,
+  **PciIo 4CF5B200**, **AmiSerial 50DC5C90** @0x2D0, DevicePath
+  09576E91 @0x2E0 — всё в .text.
+- TermSrc (16): терминальные GUID PcAnsi E0C14753, VT100 DFA66065,
+  VT100+ 7BAEC70B, VT-UTF8 AD15A0D6 (@0x280..0x2B0); AmiSio 51E9B4F9,
+  SimpleTextIn 387477C1, TextInputEx DD9E7534, ComponentName 107A772C,
+  **SimpleTextOut 387477C2** @0x300, **SerialIoProto BB25CF6F** @0x310
+  (потребление обязательно по брифу — подтверждено), AmiKeycode
+  0ADFB62D, DriverBinding 18A031AB, AcpiSupport DBFF9D55, PciIo
+  4CF5B200, AmiSerial 50DC5C90, DevicePath @0x370; varstore-кластер
+  @0x1B78/0x1B88/0x1B98 (шаг 0x10): **560BF58A, EC87D643, 97CA1A5B**.
+- Строки (UTF16, .text): SerialIo — «AMI Serial I/O Driver» @0xA68,
+  таблица имён **COM10…COM1** @0x9C8..0xA58 (шаг 0x10), «COM (Pci
+  Dev%X, Func%X, Port%X)» @0xAA0 / «COM (Pci Dev%X, Func%X)» @0xAE0 —
+  PCI-ветка биндинга; TermSrc — «AMI Terminal Driver» @0x9F8,
+  **L"SerialPortsEnabledVar" @0x1C98, L"SioSerialPortsLocationVar"
+  @0x1CC8, L"DebuggerSerialPortsEnabledVar" @0x1D00, L"Setup" @0x1D40**,
+  ANSI-эскейпы `%c[%dm`/`%c[%d;%d;%dm`/`%c[%d;%dH` (полноценный
+  терминальный рендер) — конфигурация НЕ строками, строк-настроек нет
+  (подтверждение §2.2).
+
+**«Что читает донорская пара» (Step 3; disasm-верификация):**
+
+| потребитель | чтение | VA call-сайтов | улика |
+|---|---|---|---|
+| TermSrc | GetVariable(L"SerialPortsEnabledVar", **560BF58A**) | 0x1F89, 0x3B35 | (в): serial-семья |
+| TermSrc | GetVariable(L"SioSerialPortsLocationVar", **560BF58A**) | 0x1FB6, 0x1FFE, 0x3B7E | (в)/(д): размещение портов |
+| TermSrc | GetVariable(L"DebuggerSerialPortsEnabledVar", **97CA1A5B**) | 0x203F, 0x3AC0, 0x3AE7 | (в) |
+| TermSrc | GetVariable(L"Setup", **EC87D643**): `movq $0x94` — ожидаемый размер, поля **+0x31/+0x33/+0x35/+0x37/+0x39/+0x3D** | 0x22BE (раскладка: r9=&size=0x94, data-буфер @0x8DE0), 0x3712 | (д): 0x94 = varstore rd450x id 0x2 (§3.3); оффсеты = CR-поля rd450x 0x31–0x45 |
+| SerialIo | **ничего**: ни переменных, ни PCD — Supported() = OpenProtocol OR-цепочка **AmiSio → PciIo → AmiSerial**, при отказе всех EFI_UNSUPPORTED | 0x1A2F..0x1A8A | конфиг = протоколы SIO-стека |
+
+gEfiPcdProtocolGuid 13A3F0F6 в PE-телах ОБОИХ модулей отсутствует —
+единственное вхождение пары это DEPEX-секция SerialIo (гейт диспетчера;
+в LIVE удовлетворён: PcdDxe 80CF7257 — продюсер, §5.4). Итог Step 3:
+**конфигурация донорской пары = NVRAM-переменные (TermSrc) +
+SIO-протоколы (SerialIo), НЕ PCD-токены.** Гипотеза (б) в сильной форме
+(«читают PCD-токены чужой PCD-базы») закрыта; прямые улики за (в)/(д):
+TermSrc читает Setup по чужому лэйауту и serial-переменные, которых в
+LIVE нет (см. 6.4). Эмпирическое подтверждение работоспособности самой
+пары — исход волны 1: v011+пара дала мусорный COM-вывод (§1.2), т.е.
+модули диспетчеризовались и порт программировали.
+
+### 6.3 Сборки: побайтовые диффы PE32 (двумя способами, §6.1)
+
+| пара A vs B | длины PE32 | дифф | регионов | где |
+|---|---|---|---|---|
+| SerialIo донор(rd450x) vs **KOT-root `SerialIo.ffs`** | 14 816 = 14 816 | **8 975 Б** | 301 | 300 рег. в .text [VA 0x8C8..0x34F9] + 8 Б DOS-заголовок [0x40..0x48) |
+| TermSrc rd450x vs MNX | 37 824 / 37 920 (+96 хвост) | 18 406 Б | 574 | .text [0xA20..0x6860] 554 рег., .reloc 7 рег., PE-заголовок 13 рег. [0xDC..0x255] |
+| TermSrc MNX vs x99run | 37 920 = 37 920 | **19 Б** | 19 одиночных | .text [0x22BC..0x3DDA] |
+| TermSrc MNX vs **KOT-root `TerminalSrc.ffs`** | 37 920 / 38 240 (+320 хвост) | 18 524 Б | 584 | .text [0xA20..0x6900] 564 рег., .reloc 5 рег., заголовок 15 рег. [0x40..0x256] |
+
+- SerialIo — по-прежнему один билд доноров (rd450x=MNX=x99run=
+  Mashinist, §4.4); **KOT-root — другой билд той же длины**: «~9 КБ»
+  спеки §2.2 воспроизводится (8 975 Б ≈ 8,8 КБ), но дифф НЕ хвостовой —
+  размазан по всему .text при равной длине; импорт-таблицы и строки
+  идентичны VA-в-VA (семантика та же, кодогенерация другая — с 0x1061
+  идут структурно разные последовательности).
+- **MNX ↔ x99run = 19 одиночных байтов, все — платформенные
+  константы**: 3×imm32 ожидаемого размера Setup `0x7D→0x7F` (MNX 0x7D
+  = его varstore §3.3; x99run 0x7F — свой), 11×imm8 оффсетов/индексных
+  баз полей (0x31..0x3C → на единицу меньше), 5×RIP-смещений на
+  глобальные данные (−1). Каждый билд TermSrc прибит к лэйауту Setup
+  своей платы — механика гипотезы (д) доказана побайтно.
+- KOT-root TerminalSrc — 4-я компиляция (+320 Б к MNX, +416 к rd450x):
+  18,5 КБ кодовых различий при идентичных импортах/строках.
+- Маркер переупаковки KOT-root: ASCII-штамп имени модуля в PE+0x40
+  («TerminalSrc» 11 Б / «SerialIo» 8 Б; у доноров нули); прочие
+  заголовочные диффы — SizeOfCode/SizeOfInitializedData/SizeOfImage
+  (0xDC/0xE0/0x110) и поля таблицы секций (0x220..0x255) — размерные
+  следы иного билда, checksum=0 у всех.
+
+### 6.4 SuperIO HNX99TF (LIVE)
+
+- **Семейство чипа совпадает с донором (Nuvoton NCT55xx)**: UI-имена
+  `NCT5532DPeiInit` (PEIM 9029F23E, FV2 @0xDCEA78) и `NCT5532DSmiInit`
+  (SMM 388195E1 @0x9A4A98) — движковый node list + независимо raw-хит
+  UTF16-имени @0xDCF350 (второй способ); в строковых пакетах Setup
+  (декомпрессат 899407D7) есть строка «NCT5567D» @+0xC789. Точная
+  модель по образу двусмысленна: код драйверов — 5532D, строка Setup —
+  5567D (одна серия Nuvoton, AMI-нативный стек); донорский varstore
+  NCT5532D_SMF не участвует (ниже).
+- **Наш SIO-стек (носители маркеров)**: PEI `NCT5532DPeiInit` → DXE
+  `SioDxeInit` 4E82091E @0x8DD990 («Generic SIO Driver», «$SIOINIT3»,
+  «$SIOINITI9», «Standard Serial Port Mode») + DXE **`GenericSio`
+  8EEF9AD2 @0x97D438** («$SIOINIT», «$SIOINITH», L"SIO_DEV_STATUS_VAR")
+  → SMM `NCT5532DSmiInit`. **GenericSio — продюсер AmiSio**:
+  InstallMultipleProtocolInterfaces (AmiSio 51E9B4F9 + PciIo) на
+  дочерние хендлы (disasm @0x2DAF, gBS+0x148; зеркальный Uninstall
+  @0x3634), т.е. драйвер создаёт AmiSio-детей — ровно то, к чему
+  привязывается Supported() донорского SerialIo. Импорты GenericSio:
+  AmiSio, DriverBinding, DevicePath, PciIo, DxeServicesTable 05AD34BA,
+  VariableWriteArch 6441F818, AmiIrqDmaMaskVariable FC8BE767,
+  **SioDevStatusVar 5820DE98**, F26DEC72 (в guids.csv отсутствует,
+  AMI-внутренний).
+- **L"SIO_DEV_STATUS_VAR" (vendor 5820DE98)** — SIO-статус-канал нашего
+  стека, в 6 модулях: Bds 8F4B8F82, ACPI 16D0A23E, CsmDxe A062CF1F,
+  HardwareSignatureEntry B7EE4835, GenericSio, PS2Main 5FECEF6B. Наш
+  стек общается своей переменной, не донорской 560BF58A-семьёй.
+- **Отрицательные факты** (raw + 207 декомпрессатов): **2634D36A
+  (NCT5532D_SMF) — 0 вхождений** (донорского SIO-varstore нет; паре он
+  и не нужен — §6.2); **AmiSerial 50DC5C90 — 0 вхождений** (одна из
+  трёх веток Supported() донорского SerialIo в LIVE мертва, остаются
+  AmiSio и PciIo); **SerialPortsEnabledVar / SioSerialPortsLocationVar
+  / DebuggerSerialPortsEnabledVar — 0 вхождений** (TermSrc получит
+  EFI_NOT_FOUND по всем трём → ветка дефолтов); PNP0501_0_NV — только
+  TSE-зеркало AMITSESetupData (dec 0xA9C724+0x76068) и NVRAM-дефолт
+  §5.5. Сверка с §2.4 спеки: донорская varstore-карта (560BF58A-семья,
+  97CA1A5B, NCT5532D_SMF) в LIVE не представлена, кроме PNP0501_0_NV.
+
+### 6.5 Предварительный вердикт S4-пути (спека §3 S4; финал — §8)
+
+- **(а) бинарный патч донора** — перечень правок TermSrc (по любой
+  сборке свой): (1) ожидаемый размер Setup — imm32 в `movq` @0x22CC
+  (rd450x 0x94 / MNX 0x7D / x99run 0x7F → под LIVE **0x72**, фикс R23);
+  (2) Setup-оффсеты CR-полей — серия imm8 `cmp/mov [base+imm]`
+  (+0x31..+0x3D rd450x; +0x31..+0x3C MNX; и 5 RIP-ссылок на глобалы)
+  → под лэйаут LIVE (карту оффсетов нашего Setup снять с IFR — вход
+  Task 8); (3) NVRAM-инициализация SerialPortsEnabledVar+
+  SioSerialPortsLocationVar (560BF58A) и DebuggerSerialPortsEnabledVar
+  (97CA1A5B) — в дефолтах §5.5 их нет; (4) риск: AmiSerial-ветка
+  Supported() мертва (не блокер — AmiSio есть). SerialIo патчей НЕ
+  требует: бесконфигурационный, привязывается к детям GenericSio
+  (SIO-семейство совпало). Итого ~6–10 Б констант + 2–3 NVRAM-записи,
+  но патч-карта индивидуальна per-билд (хрупкость класса (д)).
+- **(б) своя сборка** (рекомендуемый основной путь): edk2-пара §5.6
+  (SerialDxe+TerminalDxe+glue; fixed-PCD — все дефолты годны кроме
+  PcdDefaultTerminalType=3): не зависит ни от Setup-лэйаута, ни от
+  560BF58A-семьи, ни от AmiSio (0x3F8 программируется напрямую);
+  лестница S2–S3 уже стоит на этой паре.
+- **(в) гибрид**: жизнеспособен в форме «донорский SerialIo (без
+  патчей) + наш TerminalDxe»: SerialIo произведёт стандартный
+  SerialIo-протокол на NCT55xx-портах через AmiSio, TerminalDxe
+  потребит его без Setup-зависимостей (тип терминала — PCD). Обратный
+  гибрид (донорский TermSrc поверх нашего продюсера) наследует все
+  патчи пути (а) и теряет смысл; в LIVE сегодня нет ни одного
+  LPC-SerialIo-продюсера (§5.4; PciSerial — только PCI-карты).
+- Влияние SIO-совпадения: **совпадение семейства (NCT55xx +
+  AmiSio-продюсер GenericSio в образе) — главный аргумент
+  жизнеспособности донорского SerialIo в любом из путей**;
+  NCT5532D_SMF-отсутствие не блокер (паре не нужна).
+
+### 6.6 Расхождения с брифом/спекой (правило-11; здесь только зафиксировано, правка — за Task 8)
+
+- **R24**: спека §2.2 «SerialIo-пара различается на ~9 КБ в хвосте» —
+  величина подтверждена (8 975 Б), но дифф не хвостовой: 301 регион по
+  всему .text [0x8C8..0x34F9] при равной длине PE32 (14 816 = 14 816).
+- **R25**: «38 244 vs 37 924 Б PE32» (спека §2.2, бриф Task 6 Step 2) —
+  UEFITool-конвенция (размер секции PE32 = тело + 4 Б заголовка
+  секции): фактические тела 38 240 (KOT-root) и 37 920 (MNX/x99run),
+  дельта 320 Б точна; против rd450x дифф длины 416 Б (не 320) — числа
+  брифа относились к MNX-ветке.
+- **R26**: формулировка §4.4 «переобёрнутые FFS» для KOT-root неточна:
+  это другие билды PE32 (18,5 КБ / 9 КБ кодовых различий, штамп имени
+  в PE+0x40), а +80/+15 Б FFS — лишь LZMA-перепаковка иного кода.
+- **R27**: маркер «SLD» брифа (Step 4) SIO-детект-строкой AMI не
+  является: SLD-хиты LIVE — шум сжатых данных (raw @0xE42E1, 0x11670B)
+  и «SLD WA Revision» (модуль ABBCE13D, вне SIO-семьи). Реальные
+  AMI SIO-маркеры: «$SIOINIT»/«$SIOINITH» (GenericSio),
+  «$SIOINIT3»/«$SIOINITI9» (SioDxeInit).
+
 ## 7. Легаси-слой: LEGACYREDIR, SerialMiuxControl (S0.5)
 ## 8. Решения S0 (целевой FV, конфиг edk2-пары, unknowns S3/S4/S5)
 ## 9. Артефакты разведки (воспроизводимость)
@@ -942,3 +1146,17 @@ PCD-конфиге §5.2 (все дефолты годны, кроме PcdDefaul
   97CA1A5B-B760-4D1F-A54B-D19092032C90, EC87D643-EBA4-4BB5-A1E5-
   3F3E36B20DA9, C811FA38-42C8-4579-A9BB-60E94EDDFB34 (UEFITool
   guids.csv:9860), 80E1202E-2697-4264-9CC9-80762C3E5863.
+- **S0.4**: `pe_scan.py` — PE-разбор и скан блобов Task 4 + KOT-root:
+  `python3 /tmp/serial-s0/pe_scan.py /tmp/serial-s0/blobs/rd450x/SerialIo.ffs /tmp/serial-s0/blobs/rd450x/TermSrc.ffs /tmp/serial-s0/blobs/mnx/TermSrc.ffs /tmp/serial-s0/blobs/x99run/TermSrc.ffs $KOT/TerminalSrc.ffs $KOT/SerialIo.ffs | tee /tmp/serial-s0/pe_scan_pair.log`
+  (552 строки: геометрия/DEPEX/строки/GUID-хиты всех 6 модулей);
+  дифф-режим `python3 /tmp/serial-s0/pe_scan.py --diff A B` (PE32
+  извлекаются из FFS автоматически). `sio_scan.py` —
+  `python3 /tmp/serial-s0/sio_scan.py $LIVE /tmp/serial-s0/nodes_live.txt | tee /tmp/serial-s0/sio_scan_live.txt`
+  (raw+207 LZMA; маркеры SuperIO + GUID 2634D36A/51E9B4F9/50DC5C90;
+  атрибуция по спанам File из nodes_live.txt). Извлечённые PE32
+  LIVE-модулей: `/tmp/serial-s0/{GenericSio,SioDxeInit,PciSerial}.pe32`
+  (§6.4). Разовая диагностика §6 (агрегатор дифф-регионов по секциям,
+  дамп GUID-таблиц шагом 16 Б с lookup в
+  `refs/UEFITool-ai-fork/common/guids.csv`, короткие UTF16 4–5, скан
+  имён переменных пары, disasm-верификация `_ts.asm`/`_si.asm`/
+  `_gs.asm`): инлайн-сниппеты task-6-report.md.
