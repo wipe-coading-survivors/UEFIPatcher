@@ -1075,12 +1075,12 @@ mod tests {
         );
     }
 
-    fn two_question_pkg() -> Vec<u8> {
+    fn two_question_pkg(second_help: u16) -> Vec<u8> {
         let mut b = crate::hii::ifr_builder::IfrBuilder::new();
         b.emit_form_set(&Guid::from_str(FORMSET_GUID).unwrap(), 1, 1, &[]);
         b.emit_form(7, 1);
         b.emit_one_of(2, 0, 0x11, 1, 0, 0, 1);
-        b.emit_one_of(3, 0, 0x12, 1, 0, 0, 1);
+        b.emit_one_of(3, second_help, 0x12, 1, 0, 0, 1);
         b.emit_end();
         b.emit_end();
         let ifr = b.build();
@@ -1143,7 +1143,7 @@ mod tests {
         pkg
     }
 
-    fn flash_from_pkg(pkg: &[u8]) -> Vec<u8> {
+    fn flash_from_pkg(pkg: &[u8], extra_ctrl_str_id: Option<u16>) -> Vec<u8> {
         let qs = locate_questions(pkg, 7);
         let records: Vec<spf::SpfQuestionRecord> = qs
             .iter()
@@ -1156,7 +1156,15 @@ mod tests {
                 optimal: 0,
             })
             .collect();
-        let spf_body = spf_container(&records, 0x400);
+        let mut spf_body = spf_container(&records, 0x400);
+        if let Some(sid) = extra_ctrl_str_id {
+            let second = 0x300;
+            spf_body[second..second + 2].copy_from_slice(&5u16.to_le_bytes());
+            spf_body[second + 2..second + 4].copy_from_slice(&sid.to_le_bytes());
+            spf_body[second + 4..second + 6].copy_from_slice(&0u16.to_le_bytes());
+            spf_body[second + 10..second + 12].copy_from_slice(&78u16.to_le_bytes());
+            spf_body[second + 0x14..second + 0x18].copy_from_slice(&57u32.to_le_bytes());
+        }
         let setup = ffs_file_bytes(
             &Guid::from_str(FILE_GUID).unwrap(),
             &file_sections(&[
@@ -1176,7 +1184,7 @@ mod tests {
 
     #[test]
     fn hijack_keeps_atomicity_on_unlock_refusal() {
-        let flash = flash_from_pkg(&composite_gate_pkg());
+        let flash = flash_from_pkg(&composite_gate_pkg(), None);
         let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
         let before = build_image(&img).unwrap();
         let err = match hijack_form(&mut img, ITEM, &hijack_schema(), None) {
@@ -1196,7 +1204,7 @@ mod tests {
 
     #[test]
     fn hijack_rejects_questions_sharing_help_id() {
-        let flash = flash_from_pkg(&two_question_pkg());
+        let flash = flash_from_pkg(&two_question_pkg(0), None);
         let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
         let before = build_image(&img).unwrap();
         let sc = crate::hii::schema::parse_hijack_schema(
@@ -1215,6 +1223,65 @@ mod tests {
             before,
             "no mutation on shared help id refusal"
         );
+    }
+
+    #[test]
+    fn hijack_two_questions_with_distinct_help_ids() {
+        let flash = flash_from_pkg(&two_question_pkg(5), Some(5));
+        let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+        let sc = crate::hii::schema::parse_hijack_schema(
+            r#"{"questions": [
+                {"question_id": 17, "prompt": "PA", "help": "HA"},
+                {"question_id": 18, "prompt": "PB", "help": "HB"}]}"#,
+        )
+        .unwrap();
+        let res = hijack_form(&mut img, ITEM, &sc, None).unwrap();
+        assert_eq!(res.help_controls.len(), 2);
+        assert_eq!(res.help_records.len(), 2);
+        assert_ne!(
+            res.help_controls[0].offset, res.help_controls[1].offset,
+            "each question must own its $SPF control"
+        );
+        assert_eq!(res.help_controls[0].old_string_id, 0);
+        assert_eq!(res.help_controls[1].old_string_id, 5);
+        let ha = *res.string_ids.get("HA").unwrap();
+        let hb = *res.string_ids.get("HB").unwrap();
+        assert_eq!(res.help_controls[0].new_string_id, ha);
+        assert_eq!(res.help_controls[1].new_string_id, hb);
+        assert_eq!(res.help_records[0].new_string_id, ha);
+        assert_eq!(res.help_records[1].new_string_id, hb);
+
+        let built = build_image(&img).unwrap();
+        let re = parse_image(&built, ImageMode::Read, "i2", "s2").unwrap();
+        let sd_file = re
+            .root
+            .children
+            .iter()
+            .find_map(|v| {
+                v.children
+                    .iter()
+                    .find(|f| f.guid == Some(Guid::from_str(SETUPDATA_GUID_STR).unwrap()))
+            })
+            .unwrap();
+        let pfs_leaf = sd_file
+            .children
+            .iter()
+            .find(|c| c.body.windows(4).any(|w| w == b"$SPF"))
+            .unwrap();
+        let ctrls = spf::scan_string_controls(&pfs_leaf.body);
+        assert_eq!(ctrls.len(), 2);
+        assert_eq!(ctrls[0].string_id, ha);
+        assert_eq!(ctrls[0].offset, res.help_controls[0].offset);
+        assert_eq!(ctrls[1].string_id, hb);
+        assert_eq!(ctrls[1].offset, res.help_controls[1].offset);
+        for rec in spf::scan_question_records(&pfs_leaf.body) {
+            let s14 = u16::from_le_bytes([
+                pfs_leaf.body[rec.offset + spf::SPF_RECORD_HELP_ID],
+                pfs_leaf.body[rec.offset + spf::SPF_RECORD_HELP_ID + 1],
+            ]);
+            let expected = if rec.question_id == 17 { ha } else { hb };
+            assert_eq!(s14, expected, "record s14 for q{}", rec.question_id);
+        }
     }
 
     #[test]
