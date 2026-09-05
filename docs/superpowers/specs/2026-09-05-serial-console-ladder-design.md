@@ -78,10 +78,22 @@ PCD-токены чужой PCD-базы (DEPEX = PCD-протокол) и не 
 форма 0x272C «Serial Port Console Redirection» + дочерние 0x272D (EMS),
 0x272E (Legacy Redirection Settings), 0x272F (Console Redirection
 Settings: Terminal Type q0x59, Bits per second q0x5A, Stop Bits …).
-Вопросы пишут в основной varstore 0x1 (оффсеты 0x31–0x46) и в
-именованные `SerialPortsEnabledVar` (560BF58A-1E0D-4D7E-953F-2980A261E031)
-и `DebuggerSerialPortsEnabledVar` (97CA1A5B-…). Порт вопросов «как есть»
-невозможен: лэйаут varstore 0x1 у HNX99TF другой.
+Карта varstore донора (полная, из заголовка IFR-дампа):
+
+- основной `Setup` (0x1, GUID EC87D643, 0x7D Б) — display-настройки
+  редиректа (оффсеты 0x31–0x46); лэйаут у HNX99TF другой — порт
+  вопросов «как есть» невозможен;
+- VarStoreId 0x14 = **`PNP0501_0_NV`** (3 Б) — PNP0501 = ACPI PnP-ID
+  16550 UART: сюда пишет CheckBox «Serial Port (COM)» (COMA enable);
+- вся serial-семья под одним GUID **560BF58A-1E0D-4D7E-953F-2980A261E031**:
+  PNP0501_0_VV/NV и PNP0501_1_VV/NV (COM1/COM2 volatile/non-volatile,
+  0x13–0x16), PNP0510_0_VV/NV (0x11/0x12), `SerialPortsEnabledVar`
+  (0x18); отдельно `DebuggerSerialPortsEnabledVar` (0x19, 97CA1A5B-…);
+- `NCT5532D_SMF` (0x17, 2634D36A-…) — SuperIO донора Nuvoton NCT5532D;
+  SIO чип HNX99TF — выяснить в S0 (если совпадает/совместим — шансы
+  донорского SerialIo резко выше);
+- `AMITSESetup` (0x6, C811FA38-…) — настройки самого TSE: кандидат на
+  канал включения redirect для S5.
 
 ### 2.5 edk2-референсы
 
@@ -118,8 +130,11 @@ PCD — самодостаточны (не зависят от чужой PCD-б
   glue-драйвер.
 - S0.4: донорский SerialIo/TermSrc изнутри: entry-точки, импорты,
   объекты (что реально читает: PCD-токены? SerialPortsEnabledVar?
-  Setup-оффсеты) — вердикт о чинимости в S4 (бинарный патч PCD-токенов
-  vs переменные vs отказ в пользу edk2-пары).
+  PNP0501_0_NV? Setup-оффсеты) — вердикт о чинимости в S4 (бинарный
+  патч PCD-токенов vs переменные vs отказ в пользу edk2-пары). Сюда
+  же: идентификация SuperIO чипа HNX99TF (донор — NCT5532D) и его
+  SIO-драйвера в нашем образе — от этого зависит, чей SerialIo
+  заведёт UART.
 - S0.5: легаси-слой: роль LEGACYREDIR и SerialMiuxControl (в каких
   FV, DEPEX, что читают).
 - Выход: `docs/reports/2026-09-05-serial-s0-recon.md` + решения:
