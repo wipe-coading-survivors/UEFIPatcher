@@ -321,8 +321,10 @@ Redirection» (агрегат: пары портов q0x31–0x34 + CR-CheckBox 
 0x31, q0x37 off 0x32, q0x3A off 0x41), 0x2734 «Console Redirection
 Settings» (q0x3C off 0x42, q0x3D Terminal Type 0x43, q0x3E Bps 0x44,
 q0x3F Flow 0x45), 0x2735 «Legacy…» (q0x40 off 0x49), 0x2736 «COM0(SOL)»,
-0x2737 «COM1». Setup-varstore донора — id **0x2**, размер 0x94 (MNX/LIVE:
-id 0x1, 0x7D); 4 COM-порта (PNP0501_0..3).
+0x2737 «COM1». Setup-varstore донора — id **0x2**, размер 0x94 (MNX: id
+0x1, 0x7D; LIVE: id 0x1, **0x72** — фикс R23: тройное подтверждение
+IFR-узел varstore size=0x72 + NVRAM-дефолт Setup dlen=114=0x72 (§5.5) +
+донорский дамп 0x7D=MNX); 4 COM-порта (PNP0501_0..3).
 
 Поля страниц: `marker@+8 = 1` у всех 12 serial-страниц; `seq` = номер
 слота; `u18@+0x18` — плато-константа: 0x3A у MNX и LIVE, 0x37 у rd450x;
@@ -423,7 +425,7 @@ hijack-операций нашей платы это работало — её �
   appends в хвост контейнера — адресация абсолютная (tse-bridge §4).
 - **Эталонный донор геометрии — MNX99MR9A**: тот же билд Setup-формсета,
   что IFR_MASH (якоря q0x35/0x59/0x5A совпали дословно), varstore Setup
-  id 0x1 size 0x7D как у LIVE, u18=0x3A как у LIVE. rd450x — контрастный
+  id 0x1 size 0x7D (LIVE — 0x72, фикс R23), u18=0x3A как у LIVE. rd450x — контрастный
   образец (varstore id 0x2, 4 порта, своя нумерация форм) — полезен для
   проверки плато-независимости полей.
 
@@ -728,7 +730,7 @@ bit2 = 2 стоп-бита) — правильное значение 8N1 = `0x0
 | ConPlatform `51CCF399` | **0** | **0** |
 | SerialIoProto `BB25CF6F` | **0** | **3** (3 модуля, см. ниже) |
 | SimpleTextOut `387477C2` | 1 @0x934f36 | 7 |
-| DevicePath `09576E91` | 1 @0xad21e4 | ~30 |
+| DevicePath `09576E91` | 1 @0xad21e4 | 43 |
 | PcdProto `13A3F0F6` | **169** | 1 (PcdDxe) |
 | SerialDxe `9A5163E7` | **0** | **0** |
 | TerminalDxe `9E863906` | **0** | **0** |
