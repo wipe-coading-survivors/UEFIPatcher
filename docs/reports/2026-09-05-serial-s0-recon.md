@@ -504,8 +504,9 @@ hijack-операций нашей платы это работало — её �
 DEPEX-секции нет. edk2-происхождение имени подтверждено отрицанием:
 edk2 `TerminalDxe 9E863906` не найден нигде (§4.5). Сборки 3.30 и 3.50 —
 один код: PE32 различается ровно 4 байтами TimeDateStamp (@0xC8:
-0x557003AC = 2015-06-04 против 0x5AD02515 = 2018-04-13), FFS — байтом
-file-checksum@0x11 (второй способ — побайтовый дифф блобов).
+0x557003AC = 2015-06-04 против 0x5AD02515 = 2018-04-13), FFS — 5 байт:
+file-checksum@0x11 + те же 4 байта TimeDateStamp (PE внутри FFS:
+ts@PE+0xC8 → FFS+0xED; второй способ — побайтовый дифф блобов).
 
 ### 4.3 Таблица serial-семейства (7 доноров)
 
@@ -527,7 +528,7 @@ COMPRESSION-type2. «н/д» — PE32/UI внутри Tiano-секции (C275),
 | LEGACYREDIR | MNX | raw@0x8E6D18 | 07 | 4 416 | LegacySredir | 8 320 | тот же |
 | LEGACYREDIR | x99run | raw@0x8E7450 | 07 | 4 416 | LegacySredir | 8 320 | тот же |
 | LEGACYREDIR | C275 | raw@0x2AAA48 | 07 | 4 097 | н/д | н/д | тот же |
-| LEGACYREDIR | 226D30 | compr@0x57AB98→+0x3698FC | 07 | 20 465 | LEGACYSREDIR | 9 824 | PUSH×9 AND×8 END (31CE593D, 0FC9013A, 38321DBA, 220E73B6, DB9A1E3D, 26BACCB1, 1390954D, E541B773 — без PCD) |
+| LEGACYREDIR | 226D30 | compr@0x57AB98→+0x3698FC | 07 | 20 465 | LEGACYSREDIR | 9 824 | PUSH×8 AND×7 END (31CE593D, 0FC9013A, 38321DBA, 220E73B6, DB9A1E3D, 26BACCB1, 1390954D, E541B773 — без PCD; payload 144 Б = 8×17+7+1) |
 | LEGACYREDIR | 226D50 | compr@0x57AB98→+0x36C444 | 07 | 20 465 | LEGACYSREDIR | 9 824 | тот же |
 | SerialMiuxControl `129F6AA7` | rd450x | raw@0x8E7BD8 | 07 | 1 099 | SerialMuxControl | 2 048 | PUSH(4A1D0E66); PUSH PCD; AND; END |
 | SerialMiuxControl | C275 | raw@0x298730 | 07 | 1 119 | н/д | н/д | тот же |
@@ -557,8 +558,9 @@ AMI-serial-семьи.
   компиляция с точечными правками; (2) rd450x — другой билд (4 202 Б,
   PE32 7 872); (3) C275 — третий (4 097 Б, PE32 н/д); (4) 226D30↔226D50
   — четвёртый, между собой один код (PE32 = только TimeDateStamp,
-  FFS = байт file-checksum), но это другое поколение модуля: 20 465 Б,
-  UI `LEGACYSREDIR`, DEPEX из 9 PUSH без PCD. Общий DEPEX-набор
+  FFS = file-checksum@0x11 + 4 байта ts @0x179–0x17C), но это другое
+  поколение модуля: 20 465 Б,
+  UI `LEGACYSREDIR`, DEPEX из 8 PUSH без PCD. Общий DEPEX-набор
   31CE593D+38321DBA+DB9A1E3D объединяет все 6.
 - **TermSrc — 4 разных билда** (13 361 / 13 403 / 13 410 / 19 202 Б);
   MNX байт-идентичен KOT-root `MAshinist_DXE_driver_TerminalSrc`
