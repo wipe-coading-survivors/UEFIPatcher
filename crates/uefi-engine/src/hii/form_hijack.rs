@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use r_efi::hii::IFR_FORM_OP;
 
@@ -214,6 +214,14 @@ pub fn hijack_form(
         }
         out
     };
+    let mut seen_help_ids: HashSet<u16> = HashSet::new();
+    for &(_, sid) in &help_ids {
+        if !seen_help_ids.insert(sid) {
+            return Err(HiiError::InvalidSchema(format!(
+                "questions share help string id {sid:#x}: one $SPF control cannot be repointed for two questions"
+            )));
+        }
+    }
     let control_edits: Vec<(u16, usize, u16)> = {
         let controls = spf::scan_string_controls(&spf_records);
         let mut out = Vec::new();
@@ -829,7 +837,7 @@ mod tests {
         Guid::from_str(SETUPDATA_GUID_STR).unwrap().to_bytes()
     }
 
-    fn find_spf_leaf<'a>(node: &'a FfsNode) -> Option<&'a FfsNode> {
+    fn find_spf_leaf(node: &FfsNode) -> Option<&FfsNode> {
         if node.children.is_empty() && node.body.windows(4).any(|w| w == b"$SPF") {
             return Some(node);
         }
@@ -1064,6 +1072,148 @@ mod tests {
             build_image(&img).unwrap(),
             before,
             "no mutation on precheck failure"
+        );
+    }
+
+    fn two_question_pkg() -> Vec<u8> {
+        let mut b = crate::hii::ifr_builder::IfrBuilder::new();
+        b.emit_form_set(&Guid::from_str(FORMSET_GUID).unwrap(), 1, 1, &[]);
+        b.emit_form(7, 1);
+        b.emit_one_of(2, 0, 0x11, 1, 0, 0, 1);
+        b.emit_one_of(3, 0, 0x12, 1, 0, 0, 1);
+        b.emit_end();
+        b.emit_end();
+        let ifr = b.build();
+        let mut pkg = vec![0u8; 4];
+        let len = 4 + ifr.len() as u32;
+        pkg[0] = (len & 0xFF) as u8;
+        pkg[1] = ((len >> 8) & 0xFF) as u8;
+        pkg[2] = ((len >> 16) & 0xFF) as u8;
+        pkg[3] = r_efi::hii::PACKAGE_FORMS;
+        pkg.extend_from_slice(&ifr);
+        pkg
+    }
+
+    fn composite_gate_pkg() -> Vec<u8> {
+        use r_efi::hii::{
+            IFR_AND_OP, IFR_EQ_ID_VAL_OP, IFR_FORM_OP, IFR_FORM_SET_OP, IFR_GRAY_OUT_IF_OP,
+            IFR_ONE_OF_OP, PACKAGE_FORMS,
+        };
+        let form_set = {
+            let mut p = Vec::new();
+            p.extend_from_slice(&Guid::from_str(FORMSET_GUID).unwrap().to_bytes());
+            p.extend_from_slice(&7u16.to_le_bytes());
+            p.extend_from_slice(&0u16.to_le_bytes());
+            p.push(0u8);
+            opcode(IFR_FORM_SET_OP, true, &p)
+        };
+        let eq_id_val = |qid: u16, val: u16| {
+            let mut b = vec![IFR_EQ_ID_VAL_OP, 0x06];
+            b.extend_from_slice(&qid.to_le_bytes());
+            b.extend_from_slice(&val.to_le_bytes());
+            b
+        };
+        let mut ifr = form_set;
+        ifr.extend(opcode(
+            IFR_FORM_OP,
+            true,
+            &[7u16.to_le_bytes(), 1u16.to_le_bytes()].concat(),
+        ));
+        ifr.extend(opcode(IFR_GRAY_OUT_IF_OP, true, &[]));
+        ifr.extend(eq_id_val(0x9A, 1));
+        ifr.extend(eq_id_val(0x9B, 1));
+        ifr.extend(vec![IFR_AND_OP, 0x02]);
+        ifr.extend(opcode(IFR_ONE_OF_OP, true, &{
+            let mut p = vec![0u8; 11];
+            p[4..6].copy_from_slice(&0x11u16.to_le_bytes());
+            p
+        }));
+        ifr.extend(vec![r_efi::hii::IFR_END_OP, 0x02]);
+        ifr.extend(vec![r_efi::hii::IFR_END_OP, 0x02]);
+        ifr.extend(vec![r_efi::hii::IFR_END_OP, 0x02]);
+        ifr.extend(vec![r_efi::hii::IFR_END_OP, 0x02]);
+        let total = 4 + ifr.len();
+        let mut pkg = vec![
+            (total & 0xFF) as u8,
+            ((total >> 8) & 0xFF) as u8,
+            ((total >> 16) & 0xFF) as u8,
+            PACKAGE_FORMS,
+        ];
+        pkg.extend_from_slice(&ifr);
+        pkg
+    }
+
+    fn flash_from_pkg(pkg: &[u8]) -> Vec<u8> {
+        let qs = locate_questions(pkg, 7);
+        let records: Vec<spf::SpfQuestionRecord> = qs
+            .iter()
+            .enumerate()
+            .map(|(i, &(off, qid))| spf::SpfQuestionRecord {
+                offset: 0x100 + i * spf::SPF_RECORD_SIZE,
+                question_id: qid,
+                ifr_offset: off as u32,
+                failsafe: 0,
+                optimal: 0,
+            })
+            .collect();
+        let spf_body = spf_container(&records, 0x400);
+        let setup = ffs_file_bytes(
+            &Guid::from_str(FILE_GUID).unwrap(),
+            &file_sections(&[
+                section_bytes(EFI_SECTION_RAW, pkg),
+                section_bytes(EFI_SECTION_RAW, &string_package_bytes()),
+            ]),
+        );
+        let sd = ffs_file_bytes(
+            &Guid::from_str(SETUPDATA_GUID_STR).unwrap(),
+            &file_sections(&[
+                section_bytes(EFI_SECTION_UI, &ui_name("AMITSESetupData")),
+                section_bytes(EFI_SECTION_FREEFORM_SUBTYPE_GUID, &spf_body),
+            ]),
+        );
+        flash_with_files(vec![setup, sd])
+    }
+
+    #[test]
+    fn hijack_keeps_atomicity_on_unlock_refusal() {
+        let flash = flash_from_pkg(&composite_gate_pkg());
+        let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+        let before = build_image(&img).unwrap();
+        let err = match hijack_form(&mut img, ITEM, &hijack_schema(), None) {
+            Err(e) => e,
+            Ok(_) => panic!("composite gate must be refused"),
+        };
+        assert!(
+            matches!(err, HiiError::GateExpressionUnsupported(_)),
+            "got {err:?}"
+        );
+        assert_eq!(
+            build_image(&img).unwrap(),
+            before,
+            "no mutation on unlock refusal"
+        );
+    }
+
+    #[test]
+    fn hijack_rejects_questions_sharing_help_id() {
+        let flash = flash_from_pkg(&two_question_pkg());
+        let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+        let before = build_image(&img).unwrap();
+        let sc = crate::hii::schema::parse_hijack_schema(
+            r#"{"questions": [
+                {"question_id": 17, "prompt": "PA", "help": "HA"},
+                {"question_id": 18, "prompt": "PB", "help": "HB"}]}"#,
+        )
+        .unwrap();
+        let err = match hijack_form(&mut img, ITEM, &sc, None) {
+            Err(e) => e,
+            Ok(_) => panic!("shared help id must be refused"),
+        };
+        assert!(matches!(err, HiiError::InvalidSchema(_)), "got {err:?}");
+        assert_eq!(
+            build_image(&img).unwrap(),
+            before,
+            "no mutation on shared help id refusal"
         );
     }
 

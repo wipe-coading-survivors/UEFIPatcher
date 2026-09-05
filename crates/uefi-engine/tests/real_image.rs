@@ -2113,9 +2113,9 @@ fn real_image_hijack_v2_scenario_a_unlocks_victim_only() {
     }
 
     eprintln!(
-        "scenario A: flips=2 q59_ifr={q59_off:#x} help {}/{} -> {new_help_id}",
-        res.string_ids.len(),
-        res.string_ids.len()
+        "scenario A: flips={} q59_ifr={q59_off:#x} help {} -> {new_help_id}",
+        res.unlock_flips.len(),
+        res.help_controls[0].old_string_id
     );
 }
 
