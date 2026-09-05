@@ -606,6 +606,260 @@ AMI-serial-семьи.
   билды), но PE32-сравнение C275 невозможно (Tiano) — зафиксировано как
   ограничение метода, не расхождение данных.
 ## 5. edk2-конфигурация и маршрут консоли живого образа (S0.3)
+
+### 5.1 Метод
+
+- PCD-инвентаризация: `[Pcd]`-секции INF + все `PcdGet*/FixedPcdGet*` в коде
+  SerialDxe/TerminalDxe и обоих SerialPortLib-инстансов чекаута
+  `refs/edk2` (голова `bcd1687`, 2026-07-21); дефолты — MdePkg.dec /
+  MdeModulePkg.dec.
+- Маршрут ConOut — чтение Terminal.c/ConPlatform.c/ConSplitter.c/
+  BmConsole.c/BdsEntry.c/OVMF BdsPlatform.c с file:line.
+- Ландшафт LIVE: `console_route.py` (§9) — raw + все 207 LZMA-декомпрессатов
+  (`lzma_sections()` фикс-версии, §3.1) на словарь {ConSplitter `408EDCEC`,
+  ConPlatform `51CCF399`, SerialIoProto `BB25CF6F`, SimpleTextOut `387477C2`,
+  DevicePath `09576E91`, PcdProto `13A3F0F6`} + контрольные `9A5163E7`
+  (SerialDxe), `9E863906` (TerminalDxe), `560BF58A` (serial varstore);
+  атрибуция хитов — по owning-FFS через `node list` движка (живой кросс-чек,
+  сокет Task 2).
+- Носитель 560BF58A: `nvar_dissect.py` (§9) — разбор File(Raw) CEF5B9A3 по
+  NVAR-формату UEFITool (`nvram.h:39-47` NVAR_ENTRY_HEADER + MSB-биты
+  атрибутов; `ksy/ami_nvar.ksy`; рекурсия вложенных сторов —
+  `nvramparser.cpp:288-291`).
+
+### 5.2 PCD-таблица (Step 1; гейт S1, решение значений — Task 8)
+
+**SerialDxe** (`9A5163E7`, DXE_DRIVER, DEPEX `TRUE` — SerialDxe.inf:45-46;
+PRODUCES SerialIo+DevicePath, inf:34-36). Единственные PCD модуля —
+`[Pcd]` inf:38-43, читаются в `SerialDxeInitialize` (SerialIo.c:539-547):
+
+| PCD | тип | default (DEC) | значение под плату |
+|---|---|---|---|
+| PcdUartDefaultBaudRate | UINT64 | 115200 (MdePkg.dec:2588) | годен (115200) |
+| PcdUartDefaultDataBits | UINT8 | 8 (:2593) | годен |
+| PcdUartDefaultParity | UINT8 | 1 = NoParity (:2604) | годен (8N1) |
+| PcdUartDefaultStopBits | UINT8 | 1 = OneStopBit (:2613) | годен |
+| PcdUartDefaultReceiveFifoDepth | UINT16 | 1 (:2627) | годен |
+
+**SerialPortLib** — инстанс выбирается платформой; SerialDxe сам адресов
+порта не знает (весь I/O в библиотеке):
+
+| инстанс | PCD | комментарий |
+|---|---|---|
+| BaseSerialPortLib16550 (MdeModulePkg, inf:34-46) | PcdSerialRegisterBase `0x3F8`/UINT64 (dec:1854), PcdSerialUseMmio `FALSE` (dec:1370), PcdSerialBaudRate `115200` (dec:1395), **PcdSerialLineControl `0x03` = 8N1** (dec:1406), PcdSerialFifoControl `0x07` (dec:1419), PcdSerialClockRate `1843200` (dec:1858), PcdSerialRegisterStride `1` (dec:1617), PcdSerialRegisterAccessWidth `8` (dec:1377), PcdSerialUseHardwareFlowControl `FALSE` (dec:1383), PcdSerialDetectCable `FALSE` (dec:1390), PcdSerialExtendedTxFifoSize `64` (dec:1602), PcdSerialPciDeviceInfo `{0xFF}` (dec:1566) | все дефолты = COM1 0x3F8/115200/8N1 — годны без правок |
+| PcAtChipsetPkg SerialIoLib (бриф Step 1) | **нет ни одного PCD** (inf:18-27 без PcdLib) | хардкод-глобалы `gUartBase=0x3F8, gBps=115200, gData=8, gStop=1, gParity=0` (SerialPortLib.c:46-51) — уже COM1/8N1 |
+
+Правило-11: бриф ожидал семейство `PcdSerialUseMmio|RegisterBase|…` «у
+SerialDxe» — фактически (R19) семейство принадлежит
+BaseSerialPortLib16550, а SerialDxe потребляет только `PcdUartDefault*`;
+«LineControl 0x07» брифа = 8N2 по LCR-разложению DEC (dec:1398-1406:
+bit2 = 2 стоп-бита) — правильное значение 8N1 = `0x03` (дефолт, R22);
+`0x07` возник из конвенции старого PcAt-либа, где `gStop=1` задаёт бит2
+(SerialPortLib.c:87/99) — там это означает те же «1 стоп-бит» по его
+внутренней кодировке, но в PcdSerialLineControl-кодировке 16550-LCR
+писать нужно 0x03.
+
+**TerminalDxe** (`9E863906`, UEFI_DRIVER, driver binding):
+
+| PCD | тип | default | значение под плату |
+|---|---|---|---|
+| PcdDefaultTerminalType | UINT8 | 0 = PCANSI (MdePkg.dec:2623; enum Terminal.h:78-89: 0 PCANSI/1 VT100/2 VT100+/3 VT-UTF8/4 TtyTerm…) | **3 (VT-UTF8)** — дефолт IFR «Terminal Type» обоих доноров (§3.4: MNX q0x59, rd450x q0x3D) |
+| PcdErrorCodeSetVariable | UINT32 | 0x03058002 (MdeModulePkg.dec:1064) | дефолт (только REPORT_STATUS_CODE при отказе SetVariable, Terminal.c:1157) |
+
+### 5.3 Маршрут ConOut по edk2-кодексу (Step 2)
+
+1. **Кто создаёт Terminal на SerialIo**: TerminalDxe — UEFI_DRIVER с
+   driver binding. `TerminalDriverBindingSupported` (Terminal.c:165)
+   требует на контроллере gEfiSerialIoProtocolGuid (Terminal.c:215-229) и
+   DevicePath (:244-258); тип терминала — из vendor-узла RemainingDevicePath
+   через `TerminalTypeFromGuid` (:203). `TerminalDriverBindingStart`
+   (Terminal.c:474) открывает SerialIo BY_DRIVER (:515-526), создаёт
+   дочерний хендл и ставит на него SimpleTextIn + TextInputEx +
+   **SimpleTextOut** + DevicePath (:785-796), SerialIo переоткрывается
+   BY_CHILD_CONTROLLER (:798-805). Тип при RemainingDevicePath==NULL —
+   `PcdGet8(PcdDefaultTerminalType)` (:635).
+2. **Кто аппендит terminal в ConOut**: НЕ TerminalDxe и НЕ ConPlatformDxe.
+   TerminalDxe пишет только в `ConInDev/ConOutDev/ErrOutDev` — все типы
+   терминалов сразу (`TerminalUpdateConsoleDevVariable`, Terminal.c:533-535,
+   1084-1141: append + SetVariable gEfiGlobalVariableGuid, :1135-1141).
+   ConPlatformDxe (`51CCF399`) читает `ConOut`/`ErrOut` (Check,
+   ConPlatform.c:375-392), аппендит `ConOutDev/ErrOutDev` (:398-412) и
+   вешает gEfiConsoleOutDeviceGuid на устройства, чей DevicePath уже есть
+   в `ConOut` (:418-425). Саму переменную `ConOut` в reference-edk2
+   наполняет платформенный BDS: OVMF `PlatformInitializeConsole`
+   (OvmfPkg/Library/PlatformBootManagerLib/BdsPlatform.c:1113) строит
+   DevPath PNP0501+UART+terminal-vendor и зовёт
+   `EfiBootManagerUpdateConsoleVariable (ConOut, …)` (:572-574 COM1,
+   :610-612 COM2) — публичный API UefiBootManagerLib (BmConsole.c:418,
+   SetVariable с NON_VOLATILE для ConIn/ConOut/ErrOut, :482-489).
+3. **Роль ConSplitter** (`408EDCEC`): создаёт виртуальные хендлы ConIn/
+   ConOut/StdErr, всегда существующие (ConSplitter.c:471-473), ставит
+   SimpleTextOut сплиттера и **переназначает gST->ConOut = &mConOut.TextOut**
+   (ConSplitter.c:505-519). Его ConOut-binding цепляет устройства с
+   gEfiConsoleOutDeviceGuid (Supported, ConSplitter.c:972-983) и агрегирует
+   их вывод (`ConSplitterTextOutAddDevice`, :1335). Т.е. связка
+   «ConOut-переменная → ConPlatform-тег → сплиттер-агрегация».
+4. **Минимальный состав «говорящей консоли» без ConPlatform/ConSplitter**:
+   TerminalDxe ставит SimpleTextOut на терминальном хендле, но в системный
+   ConOut он попадает только через (ConPlatform+ConSplitter) либо
+   BDS-переназначение: `EfiBootManagerConnectAllDefaultConsoles`
+   (BdsEntry.c:925-935 → BmConsole.c:712) финально вызывает
+   `BmUpdateSystemTableConsole(L"ConOut", …)` (BmConsole.c:751 → :289),
+   который меняет gST->ConOut на первый резолвящийся инстанс ConOut-
+   переменной, НО только если текущий gST->ConsoleOutHandle не валиден
+   (guard BmConsole.c:313-323: валидный сплиттер не трогается).
+   Вариантность glue для S1 (решение — за S1-планом): (а) мини-DXE,
+   вызывающий `EfiBootManagerUpdateConsoleVariable(ConOut, …)` до BDS
+   (library-class UefiBootManagerLib; с AMI-TSE — риск, что свой BDS
+   перепишет); (б) прямое `gST->ConOut`-переназначение + ConsoleOutHandle
+   на терминальном хендле в событии ReadyToBoot (не проходит через
+   переменную — переживёт любой BDS); (в) полный комплект
+   ConPlatform+ConSplitter (тяжёлый, конфликтует с AMI-стеком §5.4).
+   Отрицательный контроль: в исторических вставках пары (§1.2) gluer-а не
+   было — и COM молчал на E5C88C6F.
+
+### 5.4 Фактический консольный ландшафт LIVE (Step 3; гипотеза (г))
+
+Счётчики (raw | decompressed, `console_route.py`, лог §9):
+
+| GUID | raw | decompressed (207 LZMA-секций) |
+|---|---|---|
+| ConSplitter `408EDCEC` | **0** | **0** |
+| ConPlatform `51CCF399` | **0** | **0** |
+| SerialIoProto `BB25CF6F` | **0** | **3** (3 модуля, см. ниже) |
+| SimpleTextOut `387477C2` | 1 @0x934f36 | 7 |
+| DevicePath `09576E91` | 1 @0xad21e4 | ~30 |
+| PcdProto `13A3F0F6` | **169** | 1 (PcdDxe) |
+| SerialDxe `9A5163E7` | **0** | **0** |
+| TerminalDxe `9E863906` | **0** | **0** |
+| SerialVarStore `560BF58A` | **1 @0x8019ff** | 13 (Setup 6 + AMITSESetupData 6 + 9221315B 1) |
+
+Стартовые raw-факты воспроизведены скриптом дословно (второй способ).
+Декомпрессатные хиты с атрибуцией по FFS (движок `node list`, UI-имена):
+
+| модуль | FFS GUID | что ссылает (dec-офсеты) |
+|---|---|---|
+| **CsmDxe** @0x8e80c8 | A062CF1F | SerialIoProto @0x394 + SimpleTextOut @0x364 + DevicePath @0x484 (GUID-таблица PE) |
+| **AcpiPlatform** @0x8ef000 | 87AB821C | SerialIoProto @0x3a4 |
+| **PciSerial** @0x91e4e0 | FB142B99 | SerialIoProto @0x284 (edk2-аналог PciSioSerialDxe — кандидат-продюсер SerialIo для PCI-карт) |
+| ConSplitter (AMI!) @0x971158 | 628A497D | SimpleTextOut @0x2c4 (+SimplePointer/DevicePath рядом — GUID-таблица сплиттера) |
+| GraphicsConsole (AMI) @0x973b30 | 43E7ABDD | SimpleTextOut @0x284 |
+| Mebx @0x921910 / MebxSetupBrowser @0x92ba30 / CsmVideo @0x9913f0 / AMITSE @0xa780a8 | 9CFD802C / B62EFBBB / 29CF55F8 / B1DA0ADF | SimpleTextOut (по 1) |
+| PcdDxe @0x9fa198 | 80CF7257 | PcdProto @0x2a4 (продюсер; 169 raw = импортёры токенов PCD) |
+| Setup @0x8d16d0 | 899407D7 | 560BF58A ×6 @0x8bdb..0x8c8a — IFR_VARSTORE_EFI узлы (stride 0x23): PNP0510_0_VV/NV (id 0x12/0x13, size 9/3), PNP0501_0_VV/NV (0x14/0x15), PNP0501_1_VV/NV (0x16/0x17) |
+| AMITSESetupData @0xa9c708 | FE612B72 | 560BF58A ×6 @0x75ee4.. (stride 0x7C) — TSE-зеркало тех же 6 переменных (UTF-16 имена, size 9/3) |
+| File(Freeform) @0xa77d28 | 9221315B | 560BF58A ×1 @0x19a3 — внешние NVRAM-дефолты (§5.5) |
+
+Ответ на гипотезу (г) «кто в живом образе строит ConOut»: консольный стек
+LIVE — целиком AMI Aptio (ConSplitter 628A497D, GraphicsConsole 43E7ABDD,
+CsmVideo, AMITSE B1DA0ADF, Mebx/MebxSetupBrowser), edk2-reference модулей
+консоли НЕТ (0/0 по всем четырём GUID — raw и декомпрессатно; второй способ:
+§4.5 для доноров). SerialIo-протокол referenced тройкой CsmDxe/
+AcpiPlatform/PciSerial — но ни один модуль LIVE не строит Terminal на
+SerialIo (нет пары «SerialIo + SimpleTextOut на дочернем хендле»; CsmDxe —
+потребитель легаси-редирекции). Т.е. даже при наличии SerialIo-хендла
+терминального консьюмера в образе нет — историческая вставка пары
+TermSrc+SerialIo (§1) добавляла ровно это недостающее звено. AMITSE-
+совместимость glue — открытый вопрос S1 (вариантность — §5.3 п.4).
+
+### 5.5 Носитель 560BF58A @0x8019ff: File(Raw) CEF5B9A3 = NVRAM-стор (Step 4)
+
+Геометрия (двумя способами — движок и python-разбор FFS): File(Raw)
+CEF5B9A3-476D-497F-9FDC-E98143E0422C @**0x800048** (движок off=8388680;
+FV0 HeaderLength 0x48, fv_audit `hdr=0x48`; бриф/§2.2 писали 0x800040 —
+см. R21), type=01 RAW, size24=0x3FFB8, state=0xF8; тело @0x800060.
+
+Структура (NVAR-формат AMI, `nvram.h:39-47`): тело = **AMI NVAR store**:
+единственная запись **`StdDefaults`** (size 0x19DF, next=0xFFFFFF, attrs
+0x82 = VALID|ASCII_NAME, vendor-GUID по индексу 0 хвостового GUID-стора =
+`4599D26F-1A11-49B8-B91F-858745CFF824`), затем **0x3E5C1 свободного
+хвоста (99% 0xFF — область runtime-дописи переменных)** и 16-байтный
+GUID-стор в конце файла. Данные StdDefaults сами начинаются с `NVAR` —
+вложенный стор дефолтов (рекурсия как `nvramparser.cpp:288-291`), 8
+переменных:
+
+| переменная | vendor (idx вложенного GUID-стора) | данные |
+|---|---|---|
+| `Setup` | idx0 = EC87D643 (varstore Setup) | 114 Б = 0x72 — сходится с IFR-узлом varstore Setup (op 0x24, id 1, size 0x72, декомпрессат Setup-секции) и со спецификацией hii-value-op; ср. R23 |
+| `PlatformLang` | idx1 = 8BE4DF61 (gEfiGlobalVariableGuid) | `en-US` (ASCII) |
+| `Timeout` | idx1 | `00 00` |
+| `AMITSESetup` | idx2 = C811FA38 | 81 × `00` |
+| **`PNP0501_0_NV`** | **idx3 = 560BF58A** | **`01 00 00`** |
+| `UsbSupport` | idx0 | 33 Б |
+| `Setup` | idx4 = 80E1202E | 6 Б |
+| `IntelSetup` | idx0 | 6091 Б |
+
+Вложенный GUID-стор (5×16, нумерация с конца — `nvramparser.cpp:207`
+«begins at the end and goes backwards»): idx0 EC87D643 @0x801a2f, idx1
+8BE4DF61 @0x801a1f, idx2 C811FA38 @0x801a0f, **idx3 560BF58A @0x8019ff —
+ровно позиция хита** (0x8019ff−0x800048 = 0x19B7 от заголовка файла,
+0x199F от тела), idx4 80E1202E @0x8019ef. Другие varstore-GUID брифа:
+EC87D643/C811FA38 — в том же сторе (idx0/idx2); **2634D36A (NCT5532D_SMF)
+и 97CA1A5B (DebuggerSerialPortsEnabledVar) — 0 вхождений** (т.е. семья
+донорского NCT-драйвера в LIVE не представлена).
+
+**Вердикт**: CEF5B9A3 — рабочий NVRAM-регион (NVAR) платы в
+фабрично-свежем состоянии: одна переменная StdDefaults (дефолты) + 250 КБ
+пустого места под runtime-записи; не VSS и не FTW (скан тела: `$VSS`/
+`$SVS`/`FTW`/`_FFT` — 0 вхождений; только NVAR-сигнатуры записей);
+не отдельно-вынесенные дефолты (внешние дефолты — отдельный файл, ниже). Зеркало тех же
+дефолтов — File(Freeform) `9221315B-…` @0xa77d28 FV1 (UEFITool
+`NVRAM_NVAR_EXTERNAL_DEFAULTS_FILE_GUID`, nvram.h:30), LZMA-секция
+@0xa77d44: 4-байт префикс + та же запись StdDefaults 0x19DF — вложенные
+данные **байт-идентичны** FV0-копии (0x19C8 Б, побайтовое сравнение),
+GUID-стор шире на 4599D26F@конец.
+
+**Гипотеза (д) — «кастомные адреса / семья уже проинициализирована»**:
+закрыта в сильной части: заводские NVRAM-дефолты LIVE содержат переменную
+serial-семьи `PNP0501_0_NV` = `01 00 00` (байт 0 = 1; в семантике
+донорского IFR — «Serial Port COM0: Enabled», §3.3-3.4), т.е.
+**хит 560BF58A @0x8019ff — не совпадение байтов: это GUID-слот вложенного
+GUID-стора дефолтов, и семья фабрично инициализирована значением
+включено** (в двух копиях: FV0 + 9221315B). Но: дефолт есть только у
+`PNP0501_0_NV` (COM0; VV-зеркала и COM1 не дефолтированы), и NVRAM-стор
+фабрично чист — runtime-значений нет. Для S2 это значит: varstore-часть
+семьи трогать не нужно (Setup IFR уже декларирует все 6 переменных,
+дефолт включён), недостающее — терминальный консьюмер (§5.4).
+
+### 5.6 Список модулей S1 (гейт Task 8)
+
+Минимум: SerialDxe + TerminalDxe + glue-вариант (§5.3-4) — при
+PCD-конфиге §5.2 (все дефолты годны, кроме PcdDefaultTerminalType=3);
+альтернатива — донорская AMI-пара TermSrc+SerialIo (Task 6). Колодец
+вставки — FV1-хвост (§2.4).
+
+### 5.7 Расхождения с брифом (правило-11)
+
+- **R19**: бриф Step 1 ждал семейство `PcdSerialUseMmio|RegisterBase|
+  BaudRate|LineControl|FifoControl|UseHardwareFlowControl|PatchPcdSerial
+  BaudRate…` «у SerialDxe» — в чекауте edk2 `bcd1687` SerialDxe
+  потребляет только `PcdUartDefault*` (SerialDxe.inf:38-43); семейство
+  `PcdSerial*` живёт в SerialPortLib-инстансе BaseSerialPortLib16550
+  (выбор инстанса — платформенный DSC, не INF драйвера). Указанный брифом
+  PcAtChipsetPkg/SerialIoLib PCD не использует вовсе (хардкод
+  SerialPortLib.c:46-51). Итоговая таблица §5.2 учитывает оба слоя.
+- **R20**: бриф Step 1 ждал у TerminalDxe «`PcdTerminalTypeGuid*` и
+  прочие» — таких PCD в современном TerminalDxe нет; фактически
+  `PcdDefaultTerminalType` (UINT8-enum) + `PcdErrorCodeSetVariable`
+  (TerminalDxe.inf:87-89). `PcdTerminalTypeGuidBuffer` — артефакт старых
+  edk2 (<2016), в этом чекауте не существует.
+- **R21**: бриф Step 4 (и §2.2 отчёта) даёт начало файла CEF5B9A3
+  @0x800040 и позицию хита 0x19BF — фактически FFS-заголовок файла
+  @**0x800048** (FV0 HeaderLength 0x48; движок off=8388680; fv_audit
+  `hdr=0x48`), хит = 0x19B7 от заголовка / 0x199F от тела @0x800060.
+  §2.2 корректировать не стал (число 0x800040 там — позиция первого
+  контента после заголовка FV в широком смысле); зафиксировано здесь.
+- **R22**: «8N1 = LineControl 0x07» брифа неверно для
+  PcdSerialLineControl: по битовой карте DEC (dec:1398-1406) 0x07 =
+  8 бит + бит2 (2 стоп-бита) = 8N2; 8N1 = 0x03 (он и есть дефолт).
+  0x07 корректен только как FIFOControl (enable+clear).
+- **R23 (кросс-чек против §3)**: §3.3/§3.6 утверждают varstore Setup
+  LIVE size 0x7D («MNX/LIVE: id 0x1, 0x7D», «size 0x7D как у LIVE») —
+  фактически LIVE IFR объявляет `Setup` id 1 **size 0x72** (узел op 0x24
+  в декомпрессате Setup-секции; NVRAM-дефолт тоже 114 Б = 0x72, §5.5;
+  спецификация hii-value-op — та же). 0x7D — размер MNX-донора. По
+  мандату Task 5 правит только §5/§9 — §3 не трогал, коррекция за
+  Task 8/координатора.
 ## 6. Донорские TermSrc/SerialIo изнутри; SuperIO HNX99TF (S0.4)
 ## 7. Легаси-слой: LEGACYREDIR, SerialMiuxControl (S0.5)
 ## 8. Решения S0 (целевой FV, конфиг edk2-пары, unknowns S3/S4/S5)
@@ -666,3 +920,22 @@ AMI-serial-семьи.
   SerialRcovery вне C275 отсутствуют, §4.5). Разовая диагностика §4
   (структура 226-компрессии, разрывы FFS-цепочек, побайтовые диффы
   пар, PE-таймстемпы): инлайн-сниппеты task-4-report.md.
+- **S0.3**: `console_route.py` — raw+декомпрессатный скан LIVE по
+  словарю GUID консоли (6 брифовых + SerialDxe/TerminalDxe/560BF58A),
+  `lzma_sections()` фикс-версии:
+  `python3 /tmp/serial-s0/console_route.py $LIVE | tee /tmp/serial-s0/console_route_live.txt`
+  (207 LZMA-секций; таблица §5.4 — агрегация ненулевых dec-строк лога +
+  атрибуция по `nodes_live.txt` движка). `nvar_dissect.py` — разбор
+  NVAR-стора CEF5B9A3 (+ зеркало 9221315B) по формату UEFITool
+  (nvram.h:39-47, ksy/ami_nvar.ksy; рекурсия вложенных сторов):
+  `python3 /tmp/serial-s0/nvar_dissect.py $LIVE | tee /tmp/serial-s0/nvar_dissect_live.txt`.
+  Живой кросс-чек движком (сокет Task 2): `session init` → `image open
+  $LIVE` → `node list | grep CEF5B9A3` (off=8388680/size=262072 — §5.5).
+  Разовая диагностика §5 (hex-дампы GUID-таблиц PE-модулей, регионов
+  IFR/TSE-зеркала, значений дефолтов, побайтовый дифф FV0↔9221315B,
+  скан $VSS/FTW): инлайн-сниппеты task-5-report.md. Полные varstore-GUID
+  (байтовые формы из IFR донора, `spf_mnx_serial.txt`): 560BF58A-1E0D-
+  4D7E-953F-2980A261E031, 2634D36A-335D-4312-B210-77E3134A61A6,
+  97CA1A5B-B760-4D1F-A54B-D19092032C90, EC87D643-EBA4-4BB5-A1E5-
+  3F3E36B20DA9, C811FA38-42C8-4579-A9BB-60E94EDDFB34 (UEFITool
+  guids.csv:9860), 80E1202E-2697-4264-9CC9-80762C3E5863.
