@@ -247,7 +247,9 @@ cd /work/edk2
 make -C BaseTools -j"$(nproc)" APPLICATIONS='GenFfs GenFv GenSec GenFw'
 export WORKSPACE="$PWD"
 export PACKAGES_PATH="$PWD:/pkg"
+set +u
 . ./edksetup.sh BaseTools
+set -u
 build -p UefiPatcherSerialPkg/UefiPatcherSerial.dsc -a X64 -t GCC5 -b RELEASE -n "$(nproc)"
 BUILD_ROOT="$WORKSPACE/Build/UefiPatcherSerial/RELEASE_GCC5/X64"
 cp "$BUILD_ROOT/MdeModulePkg/Universal/SerialDxe/SerialDxe/OUTPUT/SerialDxe.ffs" "$OUT_DIR/"
@@ -259,6 +261,8 @@ ls -la "$OUT_DIR"
 `chmod +x docker/edk2/build_serial.sh`.
 
 Примечание к `. ./edksetup.sh BaseTools` (rule-11, обнаружено при выполнении Step 4): sourced-скрипт наследует позиционные параметры вызова, т.е. внутри edksetup.sh `$1` = `/out` (аргумент container-mode) — не совпадает ни с `BaseTools`, ни с `--reconfig` → edksetup печатает Usage и `return 1` → скрипт умирает под `set -e`. Явный аргумент `BaseTools` (edksetup принимает его как no-op для обратной совместимости) изолирует позиционные параметры (bash ≥5 восстанавливает `$@` после source).
+
+Примечание к `set +u … set -u` вокруг source (rule-11, обнаружено при выполнении Step 4): опции шелла действуют и на sourced-код, а edksetup.sh/BaseEnv не рассчитаны на `set -u` — падают на unbound variable (`edksetup.sh:110: PYTHON_COMMAND: unbound variable`; следующим был бы `EDK_TOOLS_PATH`); BuildEnv вдобавок source-ит Conf-файлы с непредсказуемым содержимым. Гард `set +u`/`set -u` вокруг source закрывает всё сразу; после source строгий режим возвращается.
 
 Примечание к `APPLICATIONS='GenFfs GenFv GenSec GenFw'`: чекаут edk2 БЕЗ submodules (brotli не инициализирован), полный `make -C BaseTools` падает на BrotliCompress; нашему сетапу нужны только эти четыре генератора (+ общая либа Common). Если `build` пожалуется на отсутствие ещё какого-то C-инструмента (сообщение вида `command not found: …/BaseTools/Source/C/bin/…`) — добавить его в список APPLICATIONS (rule-11, зафиксировать какой и почему).
 
