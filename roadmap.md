@@ -95,14 +95,19 @@ COM + redirect Setup-экрана, настройка из Setup) — флагм
 артефактом).
 
 - **Spec (живой документ)**: `docs/superpowers/specs/2026-09-05-serial-console-ladder-design.md`
-- **S0** — диагностика и разведка (прошлые попытки, донорские $SPF,
-  edk2-референсы, вердикт о донорских модулях). **Текущая ступень.**
-- **S1** — сборочная инфраструктура edk2 (SerialDxe+TerminalDxe, fixed
-  PCD, edk2-builder.containerfile).
-- **S2** — флеш-гейт E30: говорящий UART (insert в живой образ).
-- **S3** — настройки serial в Setup (hijack/append + varstore).
-- **S4** — AMI-стек TermSrc+SerialIo с починенной PCD-привязкой.
-- **S5** — redirect Setup-экрана (LEGACYREDIR + политика AMITSE).
+- **S0** — закрыта 2026-09-05: отчёт
+  `docs/reports/2026-09-05-serial-s0-recon.md` (решения §8; гипотезы
+  молчания (а)–(д) закрыты; целевой FV = FV1 DXE @0x890000; конфиг
+  edk2-пары и развилка glue — вход S1). Аддендум спеки — §7.
+- **S1** — сборочная инфраструктура edk2 (SerialDxe+TerminalDxe+glue,
+  fixed PCD, `edk2-builder.containerfile`). **Текущая ступень.**
+- **S2** — флеш-гейт E30: говорящий UART (insert в живой образ, FV1).
+- **S3** — настройки serial в Setup (hijack/append + varstore; эталон
+  геометрии $SPF — MNX99MR9A).
+- **S4** — AMI-стек TermSrc+SerialIo с починенной привязкой (основной
+  путь — своя сборка (б); патч донора (а) — резерв).
+- **S5** — redirect Setup-экрана (политика AMITSE; легаси-трое не
+  нужны, риск — CsmDxe отбор UART при CSM-буте).
 
 Зависимости: построена на циклах 1–6 (движок, CLI, hijack-механика).
 Ступени строго последовательны; каждая может уточняться аддендумом к
