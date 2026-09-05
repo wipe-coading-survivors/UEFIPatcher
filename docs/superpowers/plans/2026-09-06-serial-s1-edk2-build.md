@@ -173,21 +173,23 @@ git commit -m "feat(s1): edk2-builder container image"
   gEfiMdePkgTokenSpaceGuid.PcdUartDefaultParity|1
   gEfiMdePkgTokenSpaceGuid.PcdUartDefaultStopBits|1
   gEfiMdePkgTokenSpaceGuid.PcdUartDefaultReceiveFifoDepth|1
-  gEfiMdeModulePkgTokenSpaceGuid.PcdDefaultTerminalType|3
+  gEfiMdePkgTokenSpaceGuid.PcdDefaultTerminalType|3
   gEfiMdeModulePkgTokenSpaceGuid.PcdErrorCodeSetVariable|0x03058002
-  gEfiMdePkgTokenSpaceGuid.PcdSerialRegisterBase|0x3F8
-  gEfiMdePkgTokenSpaceGuid.PcdSerialUseMmio|FALSE
-  gEfiMdePkgTokenSpaceGuid.PcdSerialBaudRate|115200
-  gEfiMdePkgTokenSpaceGuid.PcdSerialLineControl|0x03
-  gEfiMdePkgTokenSpaceGuid.PcdSerialFifoControl|0x07
-  gEfiMdePkgTokenSpaceGuid.PcdSerialClockRate|1843200
-  gEfiMdePkgTokenSpaceGuid.PcdSerialRegisterStride|1
-  gEfiMdePkgTokenSpaceGuid.PcdSerialRegisterAccessWidth|8
-  gEfiMdePkgTokenSpaceGuid.PcdSerialUseHardwareFlowControl|FALSE
-  gEfiMdePkgTokenSpaceGuid.PcdSerialDetectCable|FALSE
-  gEfiMdePkgTokenSpaceGuid.PcdSerialExtendedTxFifoSize|64
-  gEfiMdePkgTokenSpaceGuid.PcdSerialPciDeviceInfo|{0xFF}
+  gEfiMdeModulePkgTokenSpaceGuid.PcdSerialRegisterBase|0x3F8
+  gEfiMdeModulePkgTokenSpaceGuid.PcdSerialUseMmio|FALSE
+  gEfiMdeModulePkgTokenSpaceGuid.PcdSerialBaudRate|115200
+  gEfiMdeModulePkgTokenSpaceGuid.PcdSerialLineControl|0x03
+  gEfiMdeModulePkgTokenSpaceGuid.PcdSerialFifoControl|0x07
+  gEfiMdeModulePkgTokenSpaceGuid.PcdSerialClockRate|1843200
+  gEfiMdeModulePkgTokenSpaceGuid.PcdSerialRegisterStride|1
+  gEfiMdeModulePkgTokenSpaceGuid.PcdSerialRegisterAccessWidth|8
+  gEfiMdeModulePkgTokenSpaceGuid.PcdSerialUseHardwareFlowControl|FALSE
+  gEfiMdeModulePkgTokenSpaceGuid.PcdSerialDetectCable|FALSE
+  gEfiMdeModulePkgTokenSpaceGuid.PcdSerialExtendedTxFifoSize|64
+  gEfiMdeModulePkgTokenSpaceGuid.PcdSerialPciDeviceInfo|{0xFF}
 ```
+
+Примечание (rule-11, проверено по .dec чекаута refs/edk2@bcd1687): все `PcdSerial*` объявлены в `MdeModulePkg.dec` под `gEfiMdeModulePkgTokenSpaceGuid` (в т.ч. `PcdSerialRegisterBase/UseMmio/BaudRate/LineControl/FifoControl/ClockRate/RegisterStride/RegisterAccessWidth/UseHardwareFlowControl/DetectCable/ExtendedTxFifoSize/PciDeviceInfo`), а `PcdDefaultTerminalType` — в `MdePkg.dec` под `gEfiMdePkgTokenSpaceGuid`. Исходные префиксы плана не соответствовали декларациям (build упал бы с PCD not found); исправлены только префиксы token space, значения — по-прежнему дословно §5.2 отчёта S0.
 
 Пояснение для исполнителя (не в файл): все PCD fixed-at-build — обращения `PcdGet*` в SerialDxe/TerminalDxe/16550 резолвятся в compile-time константы, gEfiPcdProtocolGuid в рантайме не трогается (важно для чужого PCD-пространства LIVE).
 
@@ -245,7 +247,7 @@ cd /work/edk2
 make -C BaseTools -j"$(nproc)" APPLICATIONS='GenFfs GenFv GenSec GenFw'
 export WORKSPACE="$PWD"
 export PACKAGES_PATH="$PWD:/pkg"
-. ./edksetup.sh
+. ./edksetup.sh BaseTools
 build -p UefiPatcherSerialPkg/UefiPatcherSerial.dsc -a X64 -t GCC5 -b RELEASE -n "$(nproc)"
 BUILD_ROOT="$WORKSPACE/Build/UefiPatcherSerial/RELEASE_GCC5/X64"
 cp "$BUILD_ROOT/MdeModulePkg/Universal/SerialDxe/SerialDxe/OUTPUT/SerialDxe.ffs" "$OUT_DIR/"
@@ -255,6 +257,8 @@ ls -la "$OUT_DIR"
 ```
 
 `chmod +x docker/edk2/build_serial.sh`.
+
+Примечание к `. ./edksetup.sh BaseTools` (rule-11, обнаружено при выполнении Step 4): sourced-скрипт наследует позиционные параметры вызова, т.е. внутри edksetup.sh `$1` = `/out` (аргумент container-mode) — не совпадает ни с `BaseTools`, ни с `--reconfig` → edksetup печатает Usage и `return 1` → скрипт умирает под `set -e`. Явный аргумент `BaseTools` (edksetup принимает его как no-op для обратной совместимости) изолирует позиционные параметры (bash ≥5 восстанавливает `$@` после source).
 
 Примечание к `APPLICATIONS='GenFfs GenFv GenSec GenFw'`: чекаут edk2 БЕЗ submodules (brotli не инициализирован), полный `make -C BaseTools` падает на BrotliCompress; нашему сетапу нужны только эти четыре генератора (+ общая либа Common). Если `build` пожалуется на отсутствие ещё какого-то C-инструмента (сообщение вида `command not found: …/BaseTools/Source/C/bin/…`) — добавить его в список APPLICATIONS (rule-11, зафиксировать какой и почему).
 
