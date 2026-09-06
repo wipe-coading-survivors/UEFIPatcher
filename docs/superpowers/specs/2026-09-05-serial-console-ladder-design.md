@@ -315,6 +315,22 @@ S0 закрыта 2026-09-05: отчёт `docs/reports/2026-09-05-serial-s0-reco
   идентичны (`reproducible (identical)`), итог REPRODUCIBLE; FvForceReproducible в
   этом edk2 отсутствует — доказательство двойной сборкой.
   Гейт S1 выполнен.
+- **S2 готова к E30 (2026-09-06)**: кандидат собран движком —
+  `/tmp/serial-s2/E30-candidate.bin`, 16 МиБ, sha256
+  `09f5e897e04817c9c409ba7991b5903a370b600a15e3f6bfa9a0eed4c53647f3`
+  (база E5C88C6F). Вставка тройки SerialDxe → TerminalDxe →
+  SerialConsoleGlue в хвост FV1 @0xB63B18 (старты 0xB63B18 / 0xB6BB68 /
+  0xB7BBA8, 4-Б пад после TerminalDxe, суммарный span 123 136 Б,
+  цепочка 216→219 файлов; окно изменений [0xB63B18, 0xB81C18), вне —
+  0 байт). Инварианты: движковый гейт `real_image_ops_insert_serial_s2`
+  (5dc2ef7) + независимый `hack/fv_audit.py` (files +3, used/free_tail
+  ±123 140 = вставка + выравнивание) + state-адаптация `e88691a`
+  (`ops::insert` приводит state-байт вставляемых 0x07→0xF8 при
+  erase polarity 1 тома — первая сборка с GenFfs-формой 0x07 была бы
+  HEADER_INVALID/DELETED для DXE-core; прошивать только
+  `09f5e897…`, не `a0ff90f3…`). Вердикт E30 — за владельцем
+  (протокол приёмки — `docs/reports/2026-09-06-serial-s2-e30-pack.md`
+  §4–5); закрытие ступени — отдельным аддендумом по вердикту.
 
 ## 8. Мини-pre-check S2 (аддендум, 2026-09-06)
 

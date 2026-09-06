@@ -105,8 +105,12 @@ COM + redirect Setup-экрана, настройка из Setup) — флагм
   TerminalDxe + SerialConsoleGlue воспроизводимы (identical) и
   закоммичены как тест-данные; glue — развилка (а) с маркерами SC-S1,
   вход S2). Аддендум спеки — §7.
-- **S2** — флеш-гейт E30: говорящий UART (insert в живой образ, FV1).
-  **Текущая ступень.**
+- **S2** — в ожидании E30 (кандидат собран 2026-09-06): отчёт
+  `docs/reports/2026-09-06-serial-s2-e30-pack.md` (E30-candidate.bin
+  sha256 `09f5e897…`, вставка тройки SerialDxe/TerminalDxe/Glue
+  @0xB63B18 в хвост FV1, span 123 136 Б; инварианты — движковый
+  гейт-тест + fv_audit, state-адаптация `e88691a`; протокол приёмки —
+  отчёт §4–5). Вердикт E30 — за владельцем. **Текущая ступень.**
 - **S3** — настройки serial в Setup (hijack/append + varstore; эталон
   геометрии $SPF — MNX99MR9A).
 - **S4** — AMI-стек TermSrc+SerialIo с починенной привязкой (основной
