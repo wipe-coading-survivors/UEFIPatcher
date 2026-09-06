@@ -211,6 +211,18 @@ one_of, varstores []), `tests/data/serial/np_ref.json`
   `message HiiPageAddResponse { uint32 form_id=1; uint32 slot=2; uint32 page_offset=3; uint32 title_string_id=4; }`.
 - RPC-сервер: parse → write-lock → `hii::add_page` (статус-маппинг по
   образцу `hii_question_add`, server.rs:944).
+- refs-wiring (закрывает пробел, найден pre-flight сканом): RPC
+  `HiiQuestionAdd` обязан обрабатывать и `.refs` — иначе сборка
+  кандидата E36 командой `uefi-cli hii question add --file np_ref.json`
+  (прецедент E31) молча no-op'ает (handler итерирует только
+  `schema.questions`, server.rs:952-960). После
+  `check_question_add` — `check_ref_add(img, target, &schema.refs,
+  &question_qids)` (qid всех вопросов того же запроса), затем `add_ref`
+  на каждый ref; `HiiQuestionAddResponse` расширяется полем
+  `repeated HiiQuestionAddOutcome refs = 2` (у ref нет
+  spf_record_offset — отдельное поле вместо семантики «0 = нет»);
+  CLI-команда `hii question add` не меняется (JSON уже идёт насквозь),
+  output.rs печатает refs-outcomes тем же принтером.
 - CLI: `uefi-cli hii page add <target> --file <schema.json> [--sock …] [--format …]`
   (парсинг/регистрация по образцу `question_add`, main.rs:442);
   `print_page_add` в output.rs (text + json smoke-тест).
@@ -223,7 +235,9 @@ one_of, varstores []), `tests/data/serial/np_ref.json`
   повторный add_page того же form_id → ошибка (страница уже
   зарегистрирована в таблице $SPF → InvalidSchema; сам round-trip
   доказывает, что страница пережила rebuild); (3) пустой title → InvalidSchema. RPC: статус-тест по
-  образцу `question_add_status` (server.rs:1630). CLI: parse-тест
+  образцу `question_add_status` (server.rs:1630) + тест refs-обработки
+  в `hii_question_add` (refs-only schema → outcome в `refs`, вопросы
+  не задеты). CLI: parse-тест
   `parse_hii_page_add_args` + print-smoke.
 - [ ] **Step 2:** Тесты падают (proto-поля ещё не сгенерированы —
   proto-правка в этом же шаге после записи failing-тестов, генерация
