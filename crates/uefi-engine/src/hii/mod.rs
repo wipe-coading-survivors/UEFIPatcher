@@ -1477,6 +1477,122 @@ pub fn check_ref_add(
     Ok(())
 }
 
+fn spf_page_registration_slot(body: &[u8], form_id: u16) -> Result<u16, HiiError> {
+    let base = spf::container_start(body).ok_or(HiiError::NotFound)?;
+    let count_at = base + spf::SPF_PAGE_COUNT_OFFSET;
+    let count_bytes = body.get(count_at..count_at + 4).ok_or(HiiError::NotFound)?;
+    let count = u32::from_le_bytes(count_bytes.try_into().unwrap());
+    for slot in 0..count as usize {
+        let at = base + spf::SPF_PAGE_TABLE_OFFSET + 4 * slot;
+        let Some(slot_bytes) = body.get(at..at + 4) else {
+            break;
+        };
+        let off = u32::from_le_bytes(slot_bytes.try_into().unwrap()) as usize;
+        if off == 0 {
+            continue;
+        }
+        let fid_at = base + off + spf::SPF_PAGE_FORM_ID_OFFSET;
+        if let Some(fb) = body.get(fid_at..fid_at + 2)
+            && u16::from_le_bytes(fb.try_into().unwrap()) == form_id
+        {
+            return Err(HiiError::InvalidSchema(format!(
+                "page {form_id} is already registered in the $SPF page table"
+            )));
+        }
+    }
+    let gap_at = base + spf::SPF_PAGE_TABLE_OFFSET + 4 * count as usize;
+    let gap = body.get(gap_at..gap_at + 4).ok_or(HiiError::NotFound)?;
+    if u32::from_le_bytes(gap.try_into().unwrap()) != 0 {
+        return Err(HiiError::InvalidSchema("page table gap occupied".into()));
+    }
+    Ok(count as u16)
+}
+
+#[derive(Debug)]
+pub struct AddPageResult {
+    pub form_id: u16,
+    pub slot: usize,
+    pub page_offset: usize,
+    pub title_string_id: u16,
+}
+
+#[tracing::instrument(level = "debug", skip(image, schema), fields(item_id = %item_id), err)]
+pub fn add_page(
+    image: &mut Image,
+    item_id: &str,
+    schema: &schema::PageAddSchema,
+) -> Result<AddPageResult, HiiError> {
+    if image.mode != ImageMode::Write {
+        return Err(HiiError::NotWritable);
+    }
+    if schema.title.is_empty() {
+        return Err(HiiError::InvalidSchema("title must not be empty".into()));
+    }
+    let qt = resolve_question_target(image, item_id)?;
+    let path = resolve_writable_path(image, &qt.target)?;
+    let sd_path = ami_patcher::discover_pfs_payload_path(image)?;
+    let spf_plan = {
+        let body = node_at(&image.root, &sd_path).body.clone();
+        plan_spf_append(
+            &body,
+            &qt.pkg,
+            qt.span.form_op as u32,
+            qt.span.next_form_op as u32,
+            qt.form_id,
+        )?
+    };
+    let seq = {
+        let node = node_at(&image.root, &sd_path);
+        spf_page_registration_slot(&node.body, schema.form_id)?
+    };
+
+    let strings = vec![schema.title.clone()];
+    let string_ids = if qt.bare_channel {
+        let owner = form_add::owner_guid_by_path(&image.root, &path);
+        string_pack::add_strings(image, owner.as_ref(), &strings)?
+    } else {
+        let node = crate::parser::target::find_item_mut(&mut image.root, &qt.target)
+            .map_err(|_| HiiError::NotFound)?;
+        match string_pack::add_strings_to_resource(&mut node.body, &strings) {
+            Ok(ids) => ids,
+            Err(string_pack::AddStringsToResourceError::NotFound) => {
+                return Err(HiiError::StringPackageNotFound);
+            }
+            Err(string_pack::AddStringsToResourceError::GrowthUnsupported) => {
+                return Err(HiiError::PeGrowthUnsupported);
+            }
+        }
+    };
+    let title_id = *string_ids.get(&schema.title).ok_or(HiiError::InvalidIfr)?;
+    ops::mark_rebuild_to_root_by_path(&mut image.root, &path);
+
+    let (slot, page_offset) = {
+        let node = node_at_mut(&mut image.root, &sd_path);
+        let skeleton = spf::append_page_skeleton(
+            &mut node.body,
+            spf_plan.page_offset,
+            schema.form_id,
+            title_id,
+            seq,
+            spf_plan.page_slot as u16,
+        );
+        let slot = spf::register_page_slot(&mut node.body, skeleton)
+            .ok_or_else(|| HiiError::InvalidSchema("page table gap occupied".into()))?;
+        let base = spf::container_start(&node.body).expect("$SPF survives appends");
+        let new_len = node.body.len() - base;
+        spf::bump_container_length(&mut node.body, new_len);
+        (slot, skeleton)
+    };
+    ops::mark_rebuild_to_root_by_path(&mut image.root, &sd_path);
+    tracing::debug!(form_id = schema.form_id, slot, "add_page done");
+    Ok(AddPageResult {
+        form_id: schema.form_id,
+        slot,
+        page_offset,
+        title_string_id: title_id,
+    })
+}
+
 #[cfg(test)]
 pub(crate) mod question_add_fixtures {
     use crate::ffs::{
@@ -3671,6 +3787,150 @@ mod tests {
                 assert!(
                     crate::hii::form_hijack::locate_form(&pkg_after, 10099).is_none(),
                     "fixture must not contain the dangling destination"
+                );
+            }
+        }
+
+        mod page_add_tests {
+            use super::*;
+
+            fn page_add_schema(form_id: u16) -> schema::PageAddSchema {
+                schema::PageAddSchema {
+                    form_id,
+                    title: "New Page".into(),
+                }
+            }
+
+            #[test]
+            fn add_page_registers_skeleton_from_parent_clone() {
+                let (flash, _, spf_before) = question_add_flash_image();
+                let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+                let res = add_page(&mut img, ITEM_FORM, &page_add_schema(10021)).expect("add page");
+                assert_eq!(res.form_id, 10021);
+                assert_eq!(res.slot, 1, "seq = page count read before the bump");
+                let spf_after = spf_leaf_of(&img).to_vec();
+                let base = spf::container_start(&spf_after).unwrap();
+                assert_eq!(
+                    rec_u32(&spf_after, base, spf::SPF_PAGE_COUNT_OFFSET),
+                    rec_u32(&spf_before, base, spf::SPF_PAGE_COUNT_OFFSET) + 1,
+                    "page count must grow by exactly one"
+                );
+                assert_eq!(
+                    rec_u32(&spf_after, base, spf::SPF_PAGE_TABLE_OFFSET + 4 * res.slot) as usize,
+                    res.page_offset,
+                    "the new slot must contain the skeleton offset"
+                );
+                assert_eq!(res.page_offset, spf_before.len() - base);
+                let page = base + res.page_offset;
+                assert_eq!(
+                    rec_u16(&spf_after, page, spf::SPF_PAGE_FORM_ID_OFFSET),
+                    10021
+                );
+                assert_eq!(
+                    rec_u16(&spf_after, page, spf::SPF_PAGE_TITLE_ID_OFFSET),
+                    res.title_string_id
+                );
+                assert_eq!(rec_u16(&spf_after, page, spf::SPF_PAGE_SEQ_OFFSET), 1);
+                assert_eq!(
+                    rec_u16(&spf_after, page, spf::SPF_PAGE_PARENT_OFFSET),
+                    0,
+                    "B = parent page slot"
+                );
+                assert_eq!(rec_u32(&spf_after, page, spf::SPF_PAGE_CNT_OFFSET), 0);
+                let parent_abs =
+                    base + rec_u32(&spf_before, base, spf::SPF_PAGE_TABLE_OFFSET) as usize;
+                assert_eq!(
+                    spf_after[page + spf::SPF_PAGE_MARKER_OFFSET],
+                    spf_before[parent_abs + spf::SPF_PAGE_MARKER_OFFSET],
+                    "marker must be cloned from the parent page"
+                );
+                assert_eq!(
+                    rec_u32(&spf_after, page, spf::SPF_PAGE_IMAGE_OFFSET),
+                    rec_u32(&spf_before, parent_abs, spf::SPF_PAGE_IMAGE_OFFSET),
+                    "image offset must be cloned from the parent page"
+                );
+                let patched = |i: usize| {
+                    (spf::SPF_PAGE_FORM_ID_OFFSET..spf::SPF_PAGE_FORM_ID_OFFSET + 2).contains(&i)
+                        || (spf::SPF_PAGE_TITLE_ID_OFFSET..spf::SPF_PAGE_PARENT_OFFSET + 2)
+                            .contains(&i)
+                        || (spf::SPF_PAGE_CNT_OFFSET..spf::SPF_PAGE_HEADER_SIZE).contains(&i)
+                };
+                for i in 0..spf::SPF_PAGE_HEADER_SIZE {
+                    if !patched(i) {
+                        assert_eq!(
+                            spf_after[page + i],
+                            spf_before[parent_abs + i],
+                            "skeleton byte {i:#x} must be cloned from the parent header"
+                        );
+                    }
+                }
+                assert_eq!(
+                    rec_u32(&spf_after, parent_abs, 0) as usize,
+                    res.page_offset,
+                    "the zero prefix of the parent page doubles as table slot 1 in this fixture geometry"
+                );
+                assert_eq!(
+                    &spf_after[parent_abs + 4..parent_abs + spf::SPF_PAGE_HEADER_SIZE + 4],
+                    &spf_before[parent_abs + 4..parent_abs + spf::SPF_PAGE_HEADER_SIZE + 4],
+                    "the parent page past the table-slot prefix must stay byte-identical"
+                );
+                assert_eq!(spf_after.len(), spf_before.len() + 0x20);
+                assert_eq!(
+                    rec_u32(&spf_after, base, 0x5C),
+                    (spf_after.len() - base) as u32,
+                    "the header-region last length must track the grown container"
+                );
+            }
+
+            #[test]
+            fn add_page_survives_rebuild_and_duplicate_is_rejected() {
+                let (flash, _, _) = question_add_flash_image();
+                let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+                let res = add_page(&mut img, ITEM_FORM, &page_add_schema(10021)).expect("add page");
+                let built = build_image(&img).unwrap();
+                let mut re = parse_image(&built, ImageMode::Write, "i2", "s2").unwrap();
+                let spf_re = spf_leaf_of(&re).to_vec();
+                let base = spf::container_start(&spf_re).unwrap();
+                assert_eq!(
+                    rec_u32(&spf_re, base, spf::SPF_PAGE_COUNT_OFFSET),
+                    2,
+                    "the registration must survive the rebuild"
+                );
+                let slot1 = rec_u32(&spf_re, base, spf::SPF_PAGE_TABLE_OFFSET + 4) as usize;
+                assert_eq!(slot1, res.page_offset);
+                assert_eq!(
+                    rec_u16(&spf_re, base + slot1, spf::SPF_PAGE_FORM_ID_OFFSET),
+                    10021
+                );
+                let strings = crate::hii::strings::collect_strings(&re);
+                assert!(
+                    strings
+                        .iter()
+                        .any(|s| s.string_id == u32::from(res.title_string_id)
+                            && s.text == "New Page"),
+                    "the page title string must resolve after the rebuild"
+                );
+                let err = add_page(&mut re, ITEM_FORM, &page_add_schema(10021)).unwrap_err();
+                assert!(
+                    matches!(err, HiiError::InvalidSchema(_)),
+                    "duplicate registration must be rejected, got {err:?}"
+                );
+            }
+
+            #[test]
+            fn add_page_rejects_empty_title_without_mutation() {
+                let (flash, _, _) = question_add_flash_image();
+                let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+                let schema = schema::PageAddSchema {
+                    form_id: 10021,
+                    title: String::new(),
+                };
+                let err = add_page(&mut img, ITEM_FORM, &schema).unwrap_err();
+                assert!(matches!(err, HiiError::InvalidSchema(_)), "got {err:?}");
+                assert_eq!(
+                    build_image(&img).unwrap(),
+                    flash,
+                    "rejection must not mutate the image"
                 );
             }
         }

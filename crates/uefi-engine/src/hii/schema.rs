@@ -270,6 +270,24 @@ pub fn parse_question_add_schema(json: &str) -> Result<QuestionAddList, HiiError
     Ok(s)
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PageAddSchema {
+    pub form_id: u16,
+    pub title: String,
+}
+
+pub fn parse_page_add_schema(json: &str) -> Result<PageAddSchema, HiiError> {
+    let s: PageAddSchema =
+        serde_json::from_str(json).map_err(|e| HiiError::InvalidSchema(e.to_string()))?;
+    if s.title.is_empty() {
+        return Err(HiiError::InvalidSchema(
+            "title must not be empty".to_string(),
+        ));
+    }
+    Ok(s)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -488,5 +506,25 @@ mod tests {
         assert_eq!(s.questions.len(), 1);
         assert_eq!(s.questions[0].question_id, 512);
         assert!(s.refs.is_empty());
+    }
+
+    #[test]
+    fn parse_page_add_schema_minimal() {
+        let s = parse_page_add_schema(r#"{"form_id": 10021, "title": "New Page"}"#).unwrap();
+        assert_eq!(s.form_id, 10021);
+        assert_eq!(s.title, "New Page");
+    }
+
+    #[test]
+    fn parse_page_add_schema_rejects_empty_title() {
+        let e = parse_page_add_schema(r#"{"form_id": 10021, "title": ""}"#).unwrap_err();
+        assert!(matches!(e, HiiError::InvalidSchema(_)));
+    }
+
+    #[test]
+    fn parse_page_add_schema_rejects_unknown_fields() {
+        let e = parse_page_add_schema(r#"{"form_id": 10021, "title": "T", "prompt": "P"}"#)
+            .unwrap_err();
+        assert!(format!("{e:?}").contains("unknown field"));
     }
 }

@@ -996,6 +996,30 @@ impl EngineService for EngineServer {
             refs: ref_outcomes,
         }))
     }
+
+    #[tracing::instrument(skip(self, req), err)]
+    async fn hii_page_add(&self, req: Request<HiiPageAddRequest>) -> RpcResult<HiiPageAddResponse> {
+        let r = req.into_inner();
+        let schema = crate::hii::schema::parse_page_add_schema(&r.schema_json)
+            .map_err(|e| Status::invalid_argument(e.to_string()))?;
+        let img = self.get_or_load_image(&r.image_id).await?;
+        let result = {
+            let mut images = self.images.lock().await;
+            let img_slot = images
+                .get_mut(&r.image_id)
+                .ok_or_else(|| Status::not_found("image not found"))?;
+            crate::hii::add_page(img_slot, &r.target, &schema).map_err(hii_error_status)?
+        };
+        self.flush_image(&r.image_id).await?;
+        let _ = self.sm.touch(&img.session_id);
+        tracing::info!(image_id = %r.image_id, target = %r.target, form_id = result.form_id, slot = result.slot, "hii page added");
+        Ok(Response::new(HiiPageAddResponse {
+            form_id: u32::from(result.form_id),
+            slot: result.slot as u32,
+            page_offset: result.page_offset as u32,
+            title_string_id: u32::from(result.title_string_id),
+        }))
+    }
 }
 
 #[cfg(unix)]
@@ -1829,6 +1853,110 @@ mod tests {
             resp.refs[0].spf_record_offset, 0,
             "a goto ref has no $SPF record"
         );
+    }
+
+    const PAGE_ADD_SCHEMA_JSON: &str = r#"{"form_id": 10021, "title": "New Page"}"#;
+
+    async fn page_add_status(img: Image, target: &str, schema_json: &str) -> Status {
+        let td = TempDir::new().unwrap();
+        let db = crate::storage::open_db(&td.path().join("db.sqlite")).unwrap();
+        let sm = Arc::new(SessionManager::new(
+            db,
+            td.path().to_path_buf(),
+            Duration::from_secs(864000),
+            Duration::from_secs(3600),
+            false,
+        ));
+        let server = EngineServer {
+            sm,
+            images: Arc::new(Mutex::new(HashMap::from([("i".to_string(), img)]))),
+            data_dir: td.path().to_path_buf(),
+        };
+        server
+            .hii_page_add(Request::new(HiiPageAddRequest {
+                image_id: "i".into(),
+                target: target.into(),
+                schema_json: schema_json.into(),
+            }))
+            .await
+            .unwrap_err()
+    }
+
+    #[tokio::test]
+    async fn hii_page_add_maps_bad_schema_to_invalid_argument() {
+        let img = parse_image(
+            &crate::hii::form_hijack::test_fixtures::hijack_test_flash(),
+            ImageMode::Write,
+            "i",
+            "s",
+        )
+        .unwrap();
+        let st = page_add_status(img, "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:0#7", "{").await;
+        assert_eq!(st.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[tokio::test]
+    async fn hii_page_add_maps_unknown_parent_form_to_not_found() {
+        let img = parse_image(
+            &crate::hii::form_hijack::test_fixtures::hijack_test_flash(),
+            ImageMode::Write,
+            "i",
+            "s",
+        )
+        .unwrap();
+        let st = page_add_status(
+            img,
+            "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:0#99",
+            PAGE_ADD_SCHEMA_JSON,
+        )
+        .await;
+        assert_eq!(st.code(), tonic::Code::NotFound);
+    }
+
+    #[tokio::test]
+    async fn hii_page_add_maps_duplicate_page_to_invalid_argument() {
+        let (flash, _, _) = crate::hii::question_add_fixtures::question_add_bare_flash_image();
+        let img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+        let td = TempDir::new().unwrap();
+        let db = crate::storage::open_db(&td.path().join("db.sqlite")).unwrap();
+        let sm = Arc::new(SessionManager::new(
+            db,
+            td.path().to_path_buf(),
+            Duration::from_secs(864000),
+            Duration::from_secs(3600),
+            false,
+        ));
+        let server = EngineServer {
+            sm,
+            images: Arc::new(Mutex::new(HashMap::from([("i".to_string(), img)]))),
+            data_dir: td.path().to_path_buf(),
+        };
+        const TARGET: &str = "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:0#10019";
+        let ok = server
+            .hii_page_add(Request::new(HiiPageAddRequest {
+                image_id: "i".into(),
+                target: TARGET.into(),
+                schema_json: PAGE_ADD_SCHEMA_JSON.into(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(ok.form_id, 10021);
+        assert_eq!(ok.slot, 1);
+        assert!(ok.page_offset > 0);
+        assert!(
+            ok.title_string_id >= 1,
+            "a title string id must be allocated"
+        );
+        let st = server
+            .hii_page_add(Request::new(HiiPageAddRequest {
+                image_id: "i".into(),
+                target: TARGET.into(),
+                schema_json: PAGE_ADD_SCHEMA_JSON.into(),
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(st.code(), tonic::Code::InvalidArgument);
     }
 
     #[tokio::test]

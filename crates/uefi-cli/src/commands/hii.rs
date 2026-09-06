@@ -199,6 +199,22 @@ pub async fn question_add(
     Ok(())
 }
 
+pub async fn page_add(
+    target: &str,
+    file: &str,
+    cli_sock: Option<&str>,
+    format: OutputFormat,
+) -> Result<(), AppError> {
+    let schema_json = std::fs::read_to_string(file)
+        .map_err(|e| AppError::new(ErrKind::IoError, format!("{file}: {e}")))?;
+    let st = state::require_state()?;
+    let mut client = Client::connect(cli_sock, st).await?;
+    let image_id = client.active_image()?;
+    let resp = client.hii_page_add(&image_id, target, &schema_json).await?;
+    crate::output::print_page_add(&resp, format);
+    Ok(())
+}
+
 pub fn parse_u64_loose(s: &str) -> Result<u64, AppError> {
     if let Some(hex) = s.strip_prefix("0x") {
         u64::from_str_radix(hex, 16)

@@ -1,6 +1,6 @@
 use uefi_proto::{
-    FormInfo, GateInfo, HiiFormHijackResponse, HiiQuestionAddOutcome, ImageInfo, Node,
-    QuestionInfo, SessionInfo, StringInfo,
+    FormInfo, GateInfo, HiiFormHijackResponse, HiiPageAddResponse, HiiQuestionAddOutcome,
+    ImageInfo, Node, QuestionInfo, SessionInfo, StringInfo,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -455,6 +455,22 @@ pub fn print_question_add(outcomes: &[HiiQuestionAddOutcome], format: OutputForm
     }
 }
 
+pub fn print_page_add(resp: &HiiPageAddResponse, format: OutputFormat) {
+    match format {
+        OutputFormat::Json => println!(
+            "{{\"form_id\":{},\"slot\":{},\"page_offset\":{},\"title_string_id\":{}}}",
+            resp.form_id, resp.slot, resp.page_offset, resp.title_string_id
+        ),
+        _ => {
+            println!("form_id\tslot\tpage_offset\ttitle_string_id");
+            println!(
+                "{}\t{}\t{}\t{}",
+                resp.form_id, resp.slot, resp.page_offset, resp.title_string_id
+            );
+        }
+    }
+}
+
 #[allow(dead_code)]
 pub fn print_text(text: &str) {
     print!("{text}");
@@ -534,6 +550,19 @@ mod tests {
         print_question_add(&outcomes, OutputFormat::Json);
         print_question_add(&outcomes, OutputFormat::Text);
         print_question_add(&[], OutputFormat::Tsv);
+    }
+
+    #[test]
+    fn page_add_print_smoke() {
+        let resp = HiiPageAddResponse {
+            form_id: 10021,
+            slot: 1,
+            page_offset: 0x178,
+            title_string_id: 0x1A7,
+        };
+        print_page_add(&resp, OutputFormat::Json);
+        print_page_add(&resp, OutputFormat::Text);
+        print_page_add(&resp, OutputFormat::Tsv);
     }
 
     fn mock_question() -> QuestionInfo {
