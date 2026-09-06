@@ -116,7 +116,7 @@ pub fn append_question_record(
     failsafe: u8,
     optimal: u8,
 ) -> usize {
-    let base = container_start(body).unwrap_or(SPF_CONTAINER_BASE);
+    let base = container_start(body).expect("$SPF signature not found");
     let src = base + template;
     let mut rec = body[src..src + SPF_RECORD_SIZE].to_vec();
     rec[0..4].copy_from_slice(&(qid as u32).to_le_bytes());
@@ -135,7 +135,7 @@ pub fn append_question_record(
 }
 
 pub fn append_string_control(body: &mut Vec<u8>, template: usize, string_id: u16) -> usize {
-    let base = container_start(body).unwrap_or(SPF_CONTAINER_BASE);
+    let base = container_start(body).expect("$SPF signature not found");
     let src = base + template - SPF_STRING_CONTROL_STR_ID;
     let mut ctrl = body[src..src + SPF_STRING_CONTROL_SIZE].to_vec();
     ctrl[SPF_STRING_CONTROL_STR_ID..SPF_STRING_CONTROL_STR_ID + 2]
@@ -150,7 +150,7 @@ pub fn clone_page_with_controls(
     page_offset: usize,
     extra_ctrls: &[u32],
 ) -> usize {
-    let base = container_start(body).unwrap_or(SPF_CONTAINER_BASE);
+    let base = container_start(body).expect("$SPF signature not found");
     let page = base + page_offset;
     let cnt = u32::from_le_bytes(
         body[page + SPF_PAGE_CNT_OFFSET..page + SPF_PAGE_CNT_OFFSET + 4]
@@ -181,27 +181,31 @@ pub fn clone_page_with_controls(
 }
 
 pub fn repoint_page_slot(body: &mut [u8], slot: usize, new_offset: u32) {
-    let base = container_start(body).unwrap_or(SPF_CONTAINER_BASE);
+    let base = container_start(body).expect("$SPF signature not found");
     let at = base + SPF_PAGE_TABLE_OFFSET + 4 * slot;
     body[at..at + 4].copy_from_slice(&new_offset.to_le_bytes());
 }
 
 pub fn bump_container_length(body: &mut [u8], new_len: usize) {
-    let base = container_start(body).unwrap_or(SPF_CONTAINER_BASE);
-    let current = (body.len() - base) as u32;
+    let base = container_start(body).expect("$SPF signature not found");
+    let mut at = base + SPF_HEADER_REGION_OFFSETS;
+    let mut max = u32::from_le_bytes(body[at..at + 4].try_into().unwrap());
     for p in (SPF_HEADER_REGION_OFFSETS..SPF_PAGE_COUNT_OFFSET)
         .step_by(4)
-        .rev()
+        .skip(1)
     {
-        let at = base + p;
-        if u32::from_le_bytes(body[at..at + 4].try_into().unwrap()) == current {
-            body[at..at + 4].copy_from_slice(&(new_len as u32).to_le_bytes());
-            return;
+        let field = base + p;
+        let v = u32::from_le_bytes(body[field..field + 4].try_into().unwrap());
+        if v >= max {
+            max = v;
+            at = field;
         }
     }
+    body[at..at + 4].copy_from_slice(&(new_len as u32).to_le_bytes());
 }
 
 pub fn fixup_record_ifr_offsets(body: &mut [u8], threshold: u32, delta: u32) -> usize {
+    container_start(body).expect("$SPF signature not found");
     let mut patched = 0;
     for rec in scan_question_records(body) {
         if rec.ifr_offset >= threshold {
@@ -657,13 +661,24 @@ mod tests {
     #[test]
     fn fixup_record_ifr_offsets_patches_only_above_threshold() {
         let mut body = synth_container();
+        let boundary_off = body.len();
+        body.extend_from_slice(&question_record(0x37, 0x0D00, 0, 0));
         let before = body.clone();
         let n = fixup_record_ifr_offsets(&mut body, 0x0D00, 4);
-        assert_eq!(n, 1);
-        let patched = TEMPLATE_Q35 + SPF_RECORD_IFR_OFFSET;
+        assert_eq!(n, 2);
+        let patched_a = TEMPLATE_Q35 + SPF_RECORD_IFR_OFFSET;
         assert_eq!(
-            u32::from_le_bytes(body[patched..patched + 4].try_into().unwrap()),
+            u32::from_le_bytes(body[patched_a..patched_a + 4].try_into().unwrap()),
             0x0DD7
+        );
+        let patched_boundary = boundary_off + SPF_RECORD_IFR_OFFSET;
+        assert_eq!(
+            u32::from_le_bytes(
+                body[patched_boundary..patched_boundary + 4]
+                    .try_into()
+                    .unwrap()
+            ),
+            0x0D04
         );
         let kept = SYNTH_REC_B + SPF_RECORD_IFR_OFFSET;
         assert_eq!(
@@ -671,7 +686,9 @@ mod tests {
             0x0500
         );
         for i in 0..body.len() {
-            if !(patched..patched + 4).contains(&i) {
+            if !(patched_a..patched_a + 4).contains(&i)
+                && !(patched_boundary..patched_boundary + 4).contains(&i)
+            {
                 assert_eq!(body[i], before[i]);
             }
         }
@@ -696,5 +713,105 @@ mod tests {
                 assert_eq!(body[i], before[i]);
             }
         }
+    }
+
+    #[test]
+    fn bump_container_length_finds_stale_length_after_appends() {
+        let mut body = synth_container();
+        let base_len = body.len();
+        append_question_record(
+            &mut body,
+            TEMPLATE_Q35,
+            0x202,
+            904,
+            905,
+            0x995,
+            0x1_0097,
+            0,
+            0,
+        );
+        let grown = body.len();
+        assert_eq!(grown, base_len + SPF_RECORD_SIZE);
+        let at = 0x5C;
+        assert_eq!(
+            u32::from_le_bytes(body[at..at + 4].try_into().unwrap()),
+            SYNTH_CONTAINER_LEN as u32
+        );
+        let after_append = body.clone();
+        bump_container_length(&mut body, grown);
+        assert_eq!(
+            u32::from_le_bytes(body[at..at + 4].try_into().unwrap()),
+            grown as u32
+        );
+        for i in 0..body.len() {
+            if !(at..at + 4).contains(&i) {
+                assert_eq!(body[i], after_append[i]);
+            }
+        }
+        let after_bump = body.clone();
+        bump_container_length(&mut body, grown);
+        assert_eq!(body, after_bump);
+    }
+
+    #[test]
+    fn append_string_control_template_is_container_relative_from_scan() {
+        let mut body = vec![0x11u8; SPF_CONTAINER_BASE];
+        body.extend_from_slice(&synth_container());
+        let pristine = body.clone();
+        let scanned = scan_string_controls(&body);
+        assert_eq!(scanned.len(), 1);
+        assert_eq!(
+            scanned[0].offset,
+            SPF_CONTAINER_BASE + SYNTH_STRING_CTRL_FIELD
+        );
+        let base = container_start(&body).expect("synth container");
+        let off = append_string_control(&mut body, scanned[0].offset - base, 0x300);
+        assert_eq!(&body[..pristine.len()], &pristine[..]);
+        assert_eq!(
+            u16::from_le_bytes(body[base + off..base + off + 2].try_into().unwrap()),
+            0x300
+        );
+        let block = base + off - SPF_STRING_CONTROL_STR_ID;
+        let tpl_block = SPF_CONTAINER_BASE + SYNTH_STRING_CTRL_FIELD - SPF_STRING_CONTROL_STR_ID;
+        assert_eq!(
+            u16::from_le_bytes(body[block..block + 2].try_into().unwrap()),
+            5
+        );
+        assert_eq!(
+            &body[block + 4..block + 0x0C],
+            &pristine[tpl_block + 4..tpl_block + 0x0C]
+        );
+        assert_eq!(
+            u16::from_le_bytes(body[block + 0xA..block + 0xC].try_into().unwrap()),
+            78
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "$SPF")]
+    fn append_question_record_panics_without_spf_container() {
+        let mut body = vec![0u8; 0x200];
+        append_question_record(&mut body, 0, 1, 2, 3, 4, 5, 0, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "$SPF")]
+    fn repoint_page_slot_panics_without_spf_container() {
+        let mut body = vec![0u8; 0x200];
+        repoint_page_slot(&mut body, 0, 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "$SPF")]
+    fn bump_container_length_panics_without_spf_container() {
+        let mut body = vec![0u8; 0x200];
+        bump_container_length(&mut body, 0x200);
+    }
+
+    #[test]
+    #[should_panic(expected = "$SPF")]
+    fn fixup_record_ifr_offsets_panics_without_spf_container() {
+        let mut body = vec![0u8; 0x200];
+        fixup_record_ifr_offsets(&mut body, 0, 0);
     }
 }
