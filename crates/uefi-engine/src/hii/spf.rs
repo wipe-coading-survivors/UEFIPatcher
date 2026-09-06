@@ -11,6 +11,12 @@ pub const SPF_HEADER_REGION_OFFSETS: usize = 0x30;
 pub const SPF_PAGE_COUNT_OFFSET: usize = 0x60;
 pub const SPF_PAGE_TABLE_OFFSET: usize = 0x64;
 pub const SPF_PAGE_HEADER_SIZE: usize = 0x20;
+pub const SPF_PAGE_MARKER_OFFSET: usize = 0x08;
+pub const SPF_PAGE_FORM_ID_OFFSET: usize = 0x0A;
+pub const SPF_PAGE_TITLE_ID_OFFSET: usize = 0x0E;
+pub const SPF_PAGE_SEQ_OFFSET: usize = 0x10;
+pub const SPF_PAGE_PARENT_OFFSET: usize = 0x12;
+pub const SPF_PAGE_IMAGE_OFFSET: usize = 0x18;
 pub const SPF_PAGE_CNT_OFFSET: usize = 0x1C;
 pub const SPF_PAGE_LIST_OFFSET: usize = 0x20;
 pub const SPF_STRING_CONTROL_SIZE: usize = 0x0C;
@@ -180,10 +186,47 @@ pub fn clone_page_with_controls(
     offset
 }
 
+pub fn append_page_skeleton(
+    body: &mut Vec<u8>,
+    template: usize,
+    form_id: u16,
+    title_id: u16,
+    seq: u16,
+    parent_slot: u16,
+) -> usize {
+    let base = container_start(body).expect("$SPF signature not found");
+    let src = base + template;
+    let mut page = body[src..src + SPF_PAGE_HEADER_SIZE].to_vec();
+    page[SPF_PAGE_FORM_ID_OFFSET..SPF_PAGE_FORM_ID_OFFSET + 2]
+        .copy_from_slice(&form_id.to_le_bytes());
+    page[SPF_PAGE_TITLE_ID_OFFSET..SPF_PAGE_TITLE_ID_OFFSET + 2]
+        .copy_from_slice(&title_id.to_le_bytes());
+    page[SPF_PAGE_SEQ_OFFSET..SPF_PAGE_SEQ_OFFSET + 2].copy_from_slice(&seq.to_le_bytes());
+    page[SPF_PAGE_PARENT_OFFSET..SPF_PAGE_PARENT_OFFSET + 2]
+        .copy_from_slice(&parent_slot.to_le_bytes());
+    page[SPF_PAGE_CNT_OFFSET..SPF_PAGE_CNT_OFFSET + 4].copy_from_slice(&0u32.to_le_bytes());
+    let offset = body.len() - base;
+    body.extend_from_slice(&page);
+    offset
+}
+
 pub fn repoint_page_slot(body: &mut [u8], slot: usize, new_offset: u32) {
     let base = container_start(body).expect("$SPF signature not found");
     let at = base + SPF_PAGE_TABLE_OFFSET + 4 * slot;
     body[at..at + 4].copy_from_slice(&new_offset.to_le_bytes());
+}
+
+pub fn register_page_slot(body: &mut [u8], skeleton_offset: usize) -> Option<usize> {
+    let base = container_start(body).expect("$SPF signature not found");
+    let count_at = base + SPF_PAGE_COUNT_OFFSET;
+    let count = u32::from_le_bytes(body[count_at..count_at + 4].try_into().unwrap());
+    let slot_at = base + SPF_PAGE_TABLE_OFFSET + 4 * count as usize;
+    if u32::from_le_bytes(body[slot_at..slot_at + 4].try_into().unwrap()) != 0 {
+        return None;
+    }
+    body[slot_at..slot_at + 4].copy_from_slice(&(skeleton_offset as u32).to_le_bytes());
+    body[count_at..count_at + 4].copy_from_slice(&(count + 1).to_le_bytes());
+    Some(count as usize)
 }
 
 pub fn bump_container_length(body: &mut [u8], new_len: usize) {
@@ -658,6 +701,148 @@ mod tests {
             ),
             0x208
         );
+    }
+
+    fn synth_container_no_gap() -> Vec<u8> {
+        let mut c = synth_container();
+        let gap = SPF_PAGE_TABLE_OFFSET + 4 * 2;
+        c[gap..gap + 4].copy_from_slice(&0x1A5u32.to_le_bytes());
+        c
+    }
+
+    #[test]
+    fn append_page_skeleton_appends_exact_header_and_patches_fields() {
+        let mut body = synth_container();
+        let pristine = synth_container();
+        let base_len = body.len();
+        let off = append_page_skeleton(&mut body, SYNTH_PAGE_WITH_TAIL, 0x2D55, 0x321, 9, 1);
+        assert_eq!(off, base_len);
+        assert_eq!(body.len(), base_len + SPF_PAGE_HEADER_SIZE);
+        assert_eq!(&body[..base_len], &pristine[..]);
+        let patched = |i: usize| {
+            (SPF_PAGE_FORM_ID_OFFSET..SPF_PAGE_FORM_ID_OFFSET + 2).contains(&i)
+                || (SPF_PAGE_TITLE_ID_OFFSET..SPF_PAGE_PARENT_OFFSET + 2).contains(&i)
+                || (SPF_PAGE_CNT_OFFSET..SPF_PAGE_HEADER_SIZE).contains(&i)
+        };
+        for i in 0..SPF_PAGE_HEADER_SIZE {
+            if !patched(i) {
+                assert_eq!(body[off + i], pristine[SYNTH_PAGE_WITH_TAIL + i]);
+            }
+        }
+        assert_eq!(
+            u16::from_le_bytes(
+                body[off + SPF_PAGE_FORM_ID_OFFSET..off + SPF_PAGE_FORM_ID_OFFSET + 2]
+                    .try_into()
+                    .unwrap()
+            ),
+            0x2D55
+        );
+        assert_eq!(
+            u16::from_le_bytes(
+                body[off + SPF_PAGE_TITLE_ID_OFFSET..off + SPF_PAGE_TITLE_ID_OFFSET + 2]
+                    .try_into()
+                    .unwrap()
+            ),
+            0x321
+        );
+        assert_eq!(
+            u16::from_le_bytes(
+                body[off + SPF_PAGE_SEQ_OFFSET..off + SPF_PAGE_SEQ_OFFSET + 2]
+                    .try_into()
+                    .unwrap()
+            ),
+            9
+        );
+        assert_eq!(
+            u16::from_le_bytes(
+                body[off + SPF_PAGE_PARENT_OFFSET..off + SPF_PAGE_PARENT_OFFSET + 2]
+                    .try_into()
+                    .unwrap()
+            ),
+            1
+        );
+        assert_eq!(
+            u32::from_le_bytes(
+                body[off + SPF_PAGE_CNT_OFFSET..off + SPF_PAGE_CNT_OFFSET + 4]
+                    .try_into()
+                    .unwrap()
+            ),
+            0
+        );
+        assert_eq!(body[off + SPF_PAGE_MARKER_OFFSET], 2);
+        assert_eq!(
+            u32::from_le_bytes(
+                body[off + SPF_PAGE_IMAGE_OFFSET..off + SPF_PAGE_IMAGE_OFFSET + 4]
+                    .try_into()
+                    .unwrap()
+            ),
+            0x1234
+        );
+    }
+
+    #[test]
+    fn register_page_slot_writes_gap_and_bumps_count() {
+        let mut body = synth_container();
+        let before = body.clone();
+        let slot = register_page_slot(&mut body, 0x170).expect("zero gap after page table");
+        assert_eq!(slot, 2);
+        let gap = SPF_PAGE_TABLE_OFFSET + 4 * 2;
+        assert_eq!(
+            u32::from_le_bytes(body[gap..gap + 4].try_into().unwrap()),
+            0x170
+        );
+        assert_eq!(
+            u32::from_le_bytes(
+                body[SPF_PAGE_COUNT_OFFSET..SPF_PAGE_COUNT_OFFSET + 4]
+                    .try_into()
+                    .unwrap()
+            ),
+            3
+        );
+        for i in 0..body.len() {
+            if !(gap..gap + 4).contains(&i)
+                && !(SPF_PAGE_COUNT_OFFSET..SPF_PAGE_COUNT_OFFSET + 4).contains(&i)
+            {
+                assert_eq!(body[i], before[i]);
+            }
+        }
+    }
+
+    #[test]
+    fn register_page_slot_rejects_occupied_gap() {
+        let mut body = synth_container_no_gap();
+        let before = body.clone();
+        assert_eq!(register_page_slot(&mut body, 0x170), None);
+        assert_eq!(body, before);
+    }
+
+    #[test]
+    fn round_trip_register_scans_new_page_as_valid() {
+        let mut body = vec![0x11u8; SPF_CONTAINER_BASE];
+        body.extend_from_slice(&synth_container());
+        let base = container_start(&body).expect("synth container");
+        let off = append_page_skeleton(&mut body, SYNTH_PAGE_WITH_TAIL, 0x2D55, 0x321, 9, 0);
+        assert_eq!(off, body.len() - SPF_PAGE_HEADER_SIZE - base);
+        let slot = register_page_slot(&mut body, off).expect("zero gap after page table");
+        assert_eq!(slot, 2);
+        let count = u32::from_le_bytes(
+            body[base + SPF_PAGE_COUNT_OFFSET..base + SPF_PAGE_COUNT_OFFSET + 4]
+                .try_into()
+                .unwrap(),
+        );
+        assert_eq!(count, 3);
+        let mut form_ids = Vec::new();
+        for i in 0..count as usize {
+            let at = base + SPF_PAGE_TABLE_OFFSET + 4 * i;
+            let page = base + u32::from_le_bytes(body[at..at + 4].try_into().unwrap()) as usize;
+            assert_eq!(&body[page..page + 8], &[0u8; 8], "8-zero prefix");
+            form_ids.push(u16::from_le_bytes(
+                body[page + SPF_PAGE_FORM_ID_OFFSET..page + SPF_PAGE_FORM_ID_OFFSET + 2]
+                    .try_into()
+                    .unwrap(),
+            ));
+        }
+        assert_eq!(form_ids, vec![10019, 10020, 0x2D55]);
     }
 
     #[test]
