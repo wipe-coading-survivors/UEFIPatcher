@@ -196,8 +196,10 @@ one_of, varstores []), `tests/data/serial/np_ref.json`
 - `pub fn add_page(image: &mut Image, item_id: &str, schema: &schema::PageAddSchema) -> Result<AddPageResult, HiiError>` —
   item_id = target форм-пакета + `#<parent_form_id>` (дискриминатор как у
   question add): `resolve_question_target` (родитель) → `plan_spf_append`
-  (даёт page_offset/page_slot родителя) → проверка, что формы
-  `schema.form_id` ещё нет в пакете (`locate_form` → NotFound-ожидание) →
+  (даёт page_offset/page_slot родителя) → проверка, что страница
+  `schema.form_id` ещё не зарегистрирована в таблице $SPF (скан слотов
+  по fid@+0xA → повторная регистрация = InvalidSchema; IFR-форма к
+  этому моменту уже есть — порядок сборки: form add → page add) →
   строковый аппенд `[title]` (оба канала) → `append_page_skeleton(body,
   plan.page_offset, form_id, title_id, seq=count, parent_slot=plan.page_slot)` →
   `register_page_slot` (None → `HiiError::InvalidIfr`… нет — новый вариант
@@ -218,9 +220,9 @@ one_of, varstores []), `tests/data/serial/np_ref.json`
   fid/title/seq/B/marker/u18/cnt=0, родительская страница байт-в-байт
   нетронута, длина контейнера выросла на 0x20, header-регион-офсет
   последней длины обновлён; (2) round-trip `build_image` → re-parse →
-  повторный add_page того же form_id → ошибка (форма/страница уже
-  есть — повторная регистрация слота с занятым зазором → None →
-  InvalidSchema); (3) пустой title → InvalidSchema. RPC: статус-тест по
+  повторный add_page того же form_id → ошибка (страница уже
+  зарегистрирована в таблице $SPF → InvalidSchema; сам round-trip
+  доказывает, что страница пережила rebuild); (3) пустой title → InvalidSchema. RPC: статус-тест по
   образцу `question_add_status` (server.rs:1630). CLI: parse-тест
   `parse_hii_page_add_args` + print-smoke.
 - [ ] **Step 2:** Тесты падают (proto-поля ещё не сгенерированы —
@@ -258,9 +260,11 @@ one_of, varstores []), `tests/data/serial/np_ref.json`
   8 нулей; слоты 0..187 и тела всех существующих страниц байт-в-байт;
   длина контейнера выросла ровно на 0x20 (+ bump-поле);
 - вопрос add (S3-механика) на форме 0x2775 теперь находит страницу
-  (план по form_id) — smoke: повторный `plan_spf_append(0x2775)`
-  резолвится (без самой вставки — вопросы уже в IFR через form add;
-  запись = E38-косметика);
+  (план по form_id) — smoke через публичный `check_question_add` с
+  throwaway-вопросом (qid 0x25A, vs 1 @0x74, one_of 2 опции): Ok(())
+  после page add (`plan_spf_append` вызывается внутри — резолв
+  доказан), в np1 без страницы тот же вызов → NotFound; мутаций нет
+  (вопросы уже в IFR через form add; $SPF-запись = E38-косметика);
 - дифф-зоны и round-trip — как np1.
 
 - [ ] **Step 1:** фикстуры np_form.json/np_ref.json (данные §«Схема
