@@ -268,12 +268,14 @@ set +u
 . ./edksetup.sh BaseTools
 set -u
 build -p UefiPatcherSerialPkg/UefiPatcherSerial.dsc -a X64 -t GCC -b RELEASE -n "$(nproc)"
-BUILD_ROOT="$WORKSPACE/Build/UefiPatcherSerial/RELEASE_GCC/X64"
-cp "$BUILD_ROOT/MdeModulePkg/Universal/SerialDxe/SerialDxe/OUTPUT/SerialDxe.ffs" "$OUT_DIR/"
-cp "$BUILD_ROOT/MdeModulePkg/Universal/Console/TerminalDxe/TerminalDxe/OUTPUT/TerminalDxe.ffs" "$OUT_DIR/"
-cp "$WORKSPACE/Build/UefiPatcherSerial/RELEASE_GCC/FV/SERIAL_CONSOLE_FV.Fv" "$OUT_DIR/"
+BUILD_ROOT="$WORKSPACE/Build/UefiPatcherSerial/RELEASE_GCC"
+cp "$BUILD_ROOT/FV/Ffs/9A5163E7-5C29-453F-825C-837A46A81E15SerialDxe/9A5163E7-5C29-453F-825C-837A46A81E15.ffs" "$OUT_DIR/SerialDxe.ffs"
+cp "$BUILD_ROOT/FV/Ffs/9E863906-A40F-4875-977F-5B93FF237FC6TerminalDxe/9E863906-A40F-4875-977F-5B93FF237FC6.ffs" "$OUT_DIR/TerminalDxe.ffs"
+cp "$BUILD_ROOT/FV/SERIAL_CONSOLE_FV.Fv" "$OUT_DIR/"
 ls -la "$OUT_DIR"
 ```
+
+Примечание к путям артефактов (rule-11, обнаружено при выполнении Step 4): per-module `.ffs` в edk2@bcd1687 кладётся GenFds не в `<модуль>/OUTPUT/`, а в `Build/<Plat>/<TARGET_TOOLCHAIN>/FV/Ffs/<FILE_GUID><BASE_NAME>/<FILE_GUID>.ffs` (см. лог GenFfs); `.efi` остаётся в `…/X64/<модуль>/OUTPUT/`. Копирование переименовывает в `SerialDxe.ffs`/`TerminalDxe.ffs` (Task 3 добавит аналогичную строку для glue с его FILE_GUID+BASE_NAME).
 
 Примечание к `-t GCC` / `RELEASE_GCC` (rule-11, обнаружено при выполнении Step 4): tools_def.txt 3.06 в edk2@bcd1687 УДАЛИЛ тулчейн `GCC5` (заголовок шаблона: «3.06 - Remove GCC48, GCC49 and GCC5»; доступны `GCC`, `GCCNOLTO`, `CLANGDWARF`, `CLANGPDB`). `-t GCC5` даёт `error 4000: Not available [GCC5] not defined`, поэтому тег — `GCC`, а каталог сборки — `Build/UefiPatcherSerial/RELEASE_GCC/`.
 
