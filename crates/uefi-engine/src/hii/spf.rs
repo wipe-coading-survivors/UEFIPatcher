@@ -3,9 +3,28 @@ pub const SPF_RECORD_IFR_OFFSET: usize = 28;
 pub const SPF_RECORD_FAILSAFE: usize = 52;
 pub const SPF_RECORD_OPTIMAL: usize = 53;
 pub const SPF_RECORD_HELP_ID: usize = 0x14;
+pub const SPF_RECORD_COUNTER_OFFSET: usize = 0x18;
+pub const SPF_RECORD_PROMPT_ID_OFFSET: usize = 0x30;
+
+pub const SPF_CONTAINER_BASE: usize = 0x10;
+pub const SPF_HEADER_REGION_OFFSETS: usize = 0x30;
+pub const SPF_PAGE_COUNT_OFFSET: usize = 0x60;
+pub const SPF_PAGE_TABLE_OFFSET: usize = 0x64;
+pub const SPF_PAGE_HEADER_SIZE: usize = 0x20;
+pub const SPF_PAGE_CNT_OFFSET: usize = 0x1C;
+pub const SPF_PAGE_LIST_OFFSET: usize = 0x20;
+pub const SPF_STRING_CONTROL_SIZE: usize = 0x0C;
 
 const SPF_SIGNATURE: [u8; 8] = [0xF8, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF];
 const SPF_TAIL: [u8; 4] = [0x01, 0x00, 0x01, 0x00];
+const SPF_CONTAINER_SIG: [u8; 4] = *b"$SPF";
+
+pub fn container_start(body: &[u8]) -> Option<usize> {
+    if body.len() < SPF_CONTAINER_SIG.len() {
+        return None;
+    }
+    (0..=body.len() - SPF_CONTAINER_SIG.len()).find(|&p| body[p..p + 4] == SPF_CONTAINER_SIG)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SpfQuestionRecord {
@@ -83,6 +102,115 @@ pub fn scan_string_controls(body: &[u8]) -> Vec<SpfStringControl> {
 
 pub fn write_string_control(body: &mut [u8], offset: usize, string_id: u16) {
     body[offset..offset + 2].copy_from_slice(&string_id.to_le_bytes());
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn append_question_record(
+    body: &mut Vec<u8>,
+    template: usize,
+    qid: u16,
+    help_id: u16,
+    prompt_id: u16,
+    ifr_offset: u32,
+    counter: u32,
+    failsafe: u8,
+    optimal: u8,
+) -> usize {
+    let base = container_start(body).unwrap_or(SPF_CONTAINER_BASE);
+    let src = base + template;
+    let mut rec = body[src..src + SPF_RECORD_SIZE].to_vec();
+    rec[0..4].copy_from_slice(&(qid as u32).to_le_bytes());
+    rec[SPF_RECORD_HELP_ID..SPF_RECORD_HELP_ID + 2].copy_from_slice(&help_id.to_le_bytes());
+    rec[SPF_RECORD_PROMPT_ID_OFFSET..SPF_RECORD_PROMPT_ID_OFFSET + 2]
+        .copy_from_slice(&prompt_id.to_le_bytes());
+    rec[SPF_RECORD_IFR_OFFSET..SPF_RECORD_IFR_OFFSET + 4]
+        .copy_from_slice(&ifr_offset.to_le_bytes());
+    rec[SPF_RECORD_COUNTER_OFFSET..SPF_RECORD_COUNTER_OFFSET + 4]
+        .copy_from_slice(&counter.to_le_bytes());
+    rec[SPF_RECORD_FAILSAFE] = failsafe;
+    rec[SPF_RECORD_OPTIMAL] = optimal;
+    let offset = body.len() - base;
+    body.extend_from_slice(&rec);
+    offset
+}
+
+pub fn append_string_control(body: &mut Vec<u8>, template: usize, string_id: u16) -> usize {
+    let base = container_start(body).unwrap_or(SPF_CONTAINER_BASE);
+    let src = base + template - SPF_STRING_CONTROL_STR_ID;
+    let mut ctrl = body[src..src + SPF_STRING_CONTROL_SIZE].to_vec();
+    ctrl[SPF_STRING_CONTROL_STR_ID..SPF_STRING_CONTROL_STR_ID + 2]
+        .copy_from_slice(&string_id.to_le_bytes());
+    let offset = body.len() - base + SPF_STRING_CONTROL_STR_ID;
+    body.extend_from_slice(&ctrl);
+    offset
+}
+
+pub fn clone_page_with_controls(
+    body: &mut Vec<u8>,
+    page_offset: usize,
+    extra_ctrls: &[u32],
+) -> usize {
+    let base = container_start(body).unwrap_or(SPF_CONTAINER_BASE);
+    let page = base + page_offset;
+    let cnt = u32::from_le_bytes(
+        body[page + SPF_PAGE_CNT_OFFSET..page + SPF_PAGE_CNT_OFFSET + 4]
+            .try_into()
+            .unwrap(),
+    );
+    let list = page + SPF_PAGE_LIST_OFFSET;
+    let tail = list + 4 * cnt as usize;
+    let trailing = if tail + 4 <= body.len() {
+        let t = u32::from_le_bytes(body[tail..tail + 4].try_into().unwrap());
+        (t != 0).then_some(t)
+    } else {
+        None
+    };
+    let mut clone = body[page..page + SPF_PAGE_HEADER_SIZE].to_vec();
+    clone.extend_from_slice(&body[list..tail]);
+    for &ctrl in extra_ctrls {
+        clone.extend_from_slice(&ctrl.to_le_bytes());
+    }
+    if let Some(t) = trailing {
+        clone.extend_from_slice(&t.to_le_bytes());
+    }
+    let new_cnt = cnt + extra_ctrls.len() as u32;
+    clone[SPF_PAGE_CNT_OFFSET..SPF_PAGE_CNT_OFFSET + 4].copy_from_slice(&new_cnt.to_le_bytes());
+    let offset = body.len() - base;
+    body.extend_from_slice(&clone);
+    offset
+}
+
+pub fn repoint_page_slot(body: &mut [u8], slot: usize, new_offset: u32) {
+    let base = container_start(body).unwrap_or(SPF_CONTAINER_BASE);
+    let at = base + SPF_PAGE_TABLE_OFFSET + 4 * slot;
+    body[at..at + 4].copy_from_slice(&new_offset.to_le_bytes());
+}
+
+pub fn bump_container_length(body: &mut [u8], new_len: usize) {
+    let base = container_start(body).unwrap_or(SPF_CONTAINER_BASE);
+    let current = (body.len() - base) as u32;
+    for p in (SPF_HEADER_REGION_OFFSETS..SPF_PAGE_COUNT_OFFSET)
+        .step_by(4)
+        .rev()
+    {
+        let at = base + p;
+        if u32::from_le_bytes(body[at..at + 4].try_into().unwrap()) == current {
+            body[at..at + 4].copy_from_slice(&(new_len as u32).to_le_bytes());
+            return;
+        }
+    }
+}
+
+pub fn fixup_record_ifr_offsets(body: &mut [u8], threshold: u32, delta: u32) -> usize {
+    let mut patched = 0;
+    for rec in scan_question_records(body) {
+        if rec.ifr_offset >= threshold {
+            let at = rec.offset + SPF_RECORD_IFR_OFFSET;
+            body[at..at + 4].copy_from_slice(&(rec.ifr_offset + delta).to_le_bytes());
+            patched += 1;
+        }
+    }
+    patched
 }
 
 #[cfg(test)]
@@ -219,6 +347,352 @@ mod tests {
         assert_eq!(&body[off..off + 2], &[0xEF, 0x02]);
         for i in 0..body.len() {
             if i != off && i != off + 1 {
+                assert_eq!(body[i], before[i]);
+            }
+        }
+    }
+
+    const SYNTH_CONTAINER_LEN: usize = 0x170;
+    const TEMPLATE_Q35: usize = 0x0CC;
+    const SYNTH_REC_B: usize = 0x114;
+    const SYNTH_PAGE_WITH_TAIL: usize = 0x070;
+    const SYNTH_PAGE_NO_TAIL: usize = 0x09C;
+    const SYNTH_STRING_CTRL_FIELD: usize = 0x15E;
+
+    fn synth_container() -> Vec<u8> {
+        let mut c = vec![0u8; SYNTH_CONTAINER_LEN];
+        c[0..4].copy_from_slice(b"$SPF");
+        c[4..8].copy_from_slice(&0x200u32.to_le_bytes());
+        c[8..12].copy_from_slice(&0x210u32.to_le_bytes());
+        c[0x0C..0x1C]
+            .copy_from_slice(&[0x43, 0xD6, 0x87, 0xEC, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        c[0x1C..0x20].copy_from_slice(&0x48u32.to_le_bytes());
+        c[0x30..0x34].copy_from_slice(&(TEMPLATE_Q35 as u32).to_le_bytes());
+        c[0x50..0x54].copy_from_slice(&(TEMPLATE_Q35 as u32).to_le_bytes());
+        c[0x54..0x58].copy_from_slice(&(SYNTH_REC_B as u32).to_le_bytes());
+        c[0x58..0x5C].copy_from_slice(&0x168u32.to_le_bytes());
+        c[0x5C..0x60].copy_from_slice(&(SYNTH_CONTAINER_LEN as u32).to_le_bytes());
+        c[0x60..0x64].copy_from_slice(&2u32.to_le_bytes());
+        c[0x64..0x68].copy_from_slice(&(SYNTH_PAGE_WITH_TAIL as u32).to_le_bytes());
+        c[0x68..0x6C].copy_from_slice(&(SYNTH_PAGE_NO_TAIL as u32).to_le_bytes());
+        c[0x78] = 2;
+        c[0x7A..0x7C].copy_from_slice(&10019u16.to_le_bytes());
+        c[0x7E..0x80].copy_from_slice(&0x100u16.to_le_bytes());
+        c[0x80..0x82].copy_from_slice(&7u16.to_le_bytes());
+        c[0x82] = 1;
+        c[0x88..0x8C].copy_from_slice(&0x1234u32.to_le_bytes());
+        c[0x8C..0x90].copy_from_slice(&2u32.to_le_bytes());
+        c[0x90..0x94].copy_from_slice(&(TEMPLATE_Q35 as u32).to_le_bytes());
+        c[0x94..0x98].copy_from_slice(&(SYNTH_REC_B as u32).to_le_bytes());
+        c[0x98..0x9C].copy_from_slice(&0x55u32.to_le_bytes());
+        c[0xA4] = 3;
+        c[0xA6..0xA8].copy_from_slice(&10020u16.to_le_bytes());
+        c[0xAA..0xAC].copy_from_slice(&0x101u16.to_le_bytes());
+        c[0xAC..0xAE].copy_from_slice(&8u16.to_le_bytes());
+        c[0xB4..0xB8].copy_from_slice(&0xBEEFu32.to_le_bytes());
+        c[0xB8..0xBC].copy_from_slice(&2u32.to_le_bytes());
+        c[0xBC..0xC0].copy_from_slice(&(TEMPLATE_Q35 as u32).to_le_bytes());
+        c[0xC0..0xC4].copy_from_slice(&(SYNTH_REC_B as u32).to_le_bytes());
+        let qa = question_record(0x35, 0x0DD3, 0, 0);
+        c[TEMPLATE_Q35..TEMPLATE_Q35 + SPF_RECORD_SIZE].copy_from_slice(&qa);
+        let qb = question_record(0x36, 0x0500, 2, 3);
+        c[SYNTH_REC_B..SYNTH_REC_B + SPF_RECORD_SIZE].copy_from_slice(&qb);
+        c[0x15C..0x15E].copy_from_slice(&5u16.to_le_bytes());
+        c[0x15E..0x160].copy_from_slice(&748u16.to_le_bytes());
+        c[0x160..0x162].copy_from_slice(&0u16.to_le_bytes());
+        c[0x162..0x164].copy_from_slice(&0x77u16.to_le_bytes());
+        c[0x164..0x166].copy_from_slice(&0x88u16.to_le_bytes());
+        c[0x166..0x168].copy_from_slice(&78u16.to_le_bytes());
+        c[0x168..0x170].fill(0xEE);
+        c
+    }
+
+    #[test]
+    fn container_start_finds_spf_signature() {
+        let c = synth_container();
+        assert_eq!(container_start(&c), Some(0));
+        let mut prefixed = vec![0x11u8; SPF_CONTAINER_BASE];
+        prefixed.extend_from_slice(&c);
+        assert_eq!(container_start(&prefixed), Some(SPF_CONTAINER_BASE));
+        assert_eq!(container_start(&[0u8; 8]), None);
+    }
+
+    #[test]
+    fn append_question_record_clones_template_and_patches_fields() {
+        let mut body = synth_container();
+        let base_len = body.len();
+        let off = append_question_record(
+            &mut body,
+            TEMPLATE_Q35,
+            0x200,
+            900,
+            901,
+            0x993,
+            0x1_0095,
+            0,
+            0,
+        );
+        assert_eq!(body.len(), base_len + SPF_RECORD_SIZE);
+        assert_eq!(&body[..base_len], &synth_container()[..]);
+        assert_eq!(
+            u32::from_le_bytes(body[off..off + 4].try_into().unwrap()),
+            0x200
+        );
+        assert_eq!(
+            u16::from_le_bytes(
+                body[off + SPF_RECORD_HELP_ID..off + SPF_RECORD_HELP_ID + 2]
+                    .try_into()
+                    .unwrap()
+            ),
+            900
+        );
+        assert_eq!(
+            u32::from_le_bytes(
+                body[off + SPF_RECORD_IFR_OFFSET..off + SPF_RECORD_IFR_OFFSET + 4]
+                    .try_into()
+                    .unwrap()
+            ),
+            0x993
+        );
+    }
+
+    #[test]
+    fn append_question_record_patches_all_fields_and_uses_container_offsets() {
+        let mut pristine = vec![0x11u8; SPF_CONTAINER_BASE];
+        pristine.extend_from_slice(&synth_container());
+        let mut body = pristine.clone();
+        let base_len = body.len();
+        let off = append_question_record(
+            &mut body,
+            TEMPLATE_Q35,
+            0x201,
+            902,
+            903,
+            0x994,
+            0x1_0096,
+            1,
+            2,
+        );
+        assert_eq!(off, base_len - SPF_CONTAINER_BASE);
+        assert_eq!(body.len(), base_len + SPF_RECORD_SIZE);
+        assert_eq!(&body[..base_len], &pristine[..]);
+        let rec = SPF_CONTAINER_BASE + off;
+        assert_eq!(
+            u32::from_le_bytes(body[rec..rec + 4].try_into().unwrap()),
+            0x201
+        );
+        assert_eq!(
+            u16::from_le_bytes(
+                body[rec + SPF_RECORD_HELP_ID..rec + SPF_RECORD_HELP_ID + 2]
+                    .try_into()
+                    .unwrap()
+            ),
+            902
+        );
+        assert_eq!(
+            u16::from_le_bytes(
+                body[rec + SPF_RECORD_PROMPT_ID_OFFSET..rec + SPF_RECORD_PROMPT_ID_OFFSET + 2]
+                    .try_into()
+                    .unwrap()
+            ),
+            903
+        );
+        assert_eq!(
+            u32::from_le_bytes(
+                body[rec + SPF_RECORD_IFR_OFFSET..rec + SPF_RECORD_IFR_OFFSET + 4]
+                    .try_into()
+                    .unwrap()
+            ),
+            0x994
+        );
+        assert_eq!(
+            u32::from_le_bytes(
+                body[rec + SPF_RECORD_COUNTER_OFFSET..rec + SPF_RECORD_COUNTER_OFFSET + 4]
+                    .try_into()
+                    .unwrap()
+            ),
+            0x1_0096
+        );
+        assert_eq!(body[rec + SPF_RECORD_FAILSAFE], 1);
+        assert_eq!(body[rec + SPF_RECORD_OPTIMAL], 2);
+        assert_eq!(body[rec + 36..rec + 44], SPF_SIGNATURE);
+    }
+
+    #[test]
+    fn append_string_control_clones_template_and_patches_str_id() {
+        let mut body = synth_container();
+        let base_len = body.len();
+        let off = append_string_control(&mut body, SYNTH_STRING_CTRL_FIELD, 999);
+        assert_eq!(body.len(), base_len + 0x0C);
+        assert_eq!(&body[..base_len], &synth_container()[..]);
+        assert_eq!(
+            u16::from_le_bytes(body[off..off + 2].try_into().unwrap()),
+            999
+        );
+        let block = off - SPF_STRING_CONTROL_STR_ID;
+        let tpl_block = SYNTH_STRING_CTRL_FIELD - SPF_STRING_CONTROL_STR_ID;
+        assert_eq!(
+            u16::from_le_bytes(body[block..block + 2].try_into().unwrap()),
+            5
+        );
+        assert_eq!(
+            &body[block + 4..block + 0x0C],
+            &synth_container()[tpl_block + 4..tpl_block + 0x0C]
+        );
+        let found = scan_string_controls(&body);
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[1].offset, off);
+        assert_eq!(found[1].string_id, 999);
+    }
+
+    #[test]
+    fn clone_page_with_controls_keeps_trailing_slot_terminal() {
+        let mut body = synth_container();
+        let base_len = body.len();
+        let clone = clone_page_with_controls(&mut body, SYNTH_PAGE_WITH_TAIL, &[0x200, 0x204]);
+        assert_eq!(clone, base_len);
+        assert_eq!(body.len(), base_len + SPF_PAGE_HEADER_SIZE + 4 * 4 + 4);
+        assert_eq!(&body[..base_len], &synth_container()[..]);
+        assert_eq!(
+            &body[clone..clone + 0x1C],
+            &synth_container()[SYNTH_PAGE_WITH_TAIL..SYNTH_PAGE_WITH_TAIL + 0x1C]
+        );
+        assert_eq!(
+            u32::from_le_bytes(
+                body[clone + SPF_PAGE_CNT_OFFSET..clone + SPF_PAGE_CNT_OFFSET + 4]
+                    .try_into()
+                    .unwrap()
+            ),
+            4
+        );
+        let src_list = SYNTH_PAGE_WITH_TAIL + SPF_PAGE_LIST_OFFSET;
+        for i in 0..2 {
+            assert_eq!(
+                body[clone + SPF_PAGE_LIST_OFFSET + 4 * i
+                    ..clone + SPF_PAGE_LIST_OFFSET + 4 * i + 4],
+                synth_container()[src_list + 4 * i..src_list + 4 * i + 4]
+            );
+        }
+        assert_eq!(
+            u32::from_le_bytes(
+                body[clone + SPF_PAGE_LIST_OFFSET + 8..clone + SPF_PAGE_LIST_OFFSET + 12]
+                    .try_into()
+                    .unwrap()
+            ),
+            0x200
+        );
+        assert_eq!(
+            u32::from_le_bytes(
+                body[clone + SPF_PAGE_LIST_OFFSET + 12..clone + SPF_PAGE_LIST_OFFSET + 16]
+                    .try_into()
+                    .unwrap()
+            ),
+            0x204
+        );
+        assert_eq!(
+            u32::from_le_bytes(
+                body[clone + SPF_PAGE_LIST_OFFSET + 16..clone + SPF_PAGE_LIST_OFFSET + 20]
+                    .try_into()
+                    .unwrap()
+            ),
+            0x55
+        );
+    }
+
+    #[test]
+    fn clone_page_without_trailing_slot_appends_controls() {
+        let mut body = synth_container();
+        let base_len = body.len();
+        let clone = clone_page_with_controls(&mut body, SYNTH_PAGE_NO_TAIL, &[0x208]);
+        assert_eq!(clone, base_len);
+        assert_eq!(body.len(), base_len + SPF_PAGE_HEADER_SIZE + 4 * 3);
+        assert_eq!(&body[..base_len], &synth_container()[..]);
+        assert_eq!(
+            &body[clone..clone + 0x1C],
+            &synth_container()[SYNTH_PAGE_NO_TAIL..SYNTH_PAGE_NO_TAIL + 0x1C]
+        );
+        assert_eq!(
+            u32::from_le_bytes(
+                body[clone + SPF_PAGE_CNT_OFFSET..clone + SPF_PAGE_CNT_OFFSET + 4]
+                    .try_into()
+                    .unwrap()
+            ),
+            3
+        );
+        let src_list = SYNTH_PAGE_NO_TAIL + SPF_PAGE_LIST_OFFSET;
+        for i in 0..2 {
+            assert_eq!(
+                body[clone + SPF_PAGE_LIST_OFFSET + 4 * i
+                    ..clone + SPF_PAGE_LIST_OFFSET + 4 * i + 4],
+                synth_container()[src_list + 4 * i..src_list + 4 * i + 4]
+            );
+        }
+        assert_eq!(
+            u32::from_le_bytes(
+                body[clone + SPF_PAGE_LIST_OFFSET + 8..clone + SPF_PAGE_LIST_OFFSET + 12]
+                    .try_into()
+                    .unwrap()
+            ),
+            0x208
+        );
+    }
+
+    #[test]
+    fn repoint_page_slot_writes_table_entry() {
+        let mut body = synth_container();
+        let before = body.clone();
+        repoint_page_slot(&mut body, 2, 0x1A4);
+        let at = SPF_PAGE_TABLE_OFFSET + 4 * 2;
+        assert_eq!(
+            u32::from_le_bytes(body[at..at + 4].try_into().unwrap()),
+            0x1A4
+        );
+        for i in 0..body.len() {
+            if !(at..at + 4).contains(&i) {
+                assert_eq!(body[i], before[i]);
+            }
+        }
+    }
+
+    #[test]
+    fn fixup_record_ifr_offsets_patches_only_above_threshold() {
+        let mut body = synth_container();
+        let before = body.clone();
+        let n = fixup_record_ifr_offsets(&mut body, 0x0D00, 4);
+        assert_eq!(n, 1);
+        let patched = TEMPLATE_Q35 + SPF_RECORD_IFR_OFFSET;
+        assert_eq!(
+            u32::from_le_bytes(body[patched..patched + 4].try_into().unwrap()),
+            0x0DD7
+        );
+        let kept = SYNTH_REC_B + SPF_RECORD_IFR_OFFSET;
+        assert_eq!(
+            u32::from_le_bytes(body[kept..kept + 4].try_into().unwrap()),
+            0x0500
+        );
+        for i in 0..body.len() {
+            if !(patched..patched + 4).contains(&i) {
+                assert_eq!(body[i], before[i]);
+            }
+        }
+    }
+
+    #[test]
+    fn bump_container_length_patches_last_header_offset() {
+        let mut body = synth_container();
+        let before = body.clone();
+        let at = 0x5C;
+        assert_eq!(
+            u32::from_le_bytes(body[at..at + 4].try_into().unwrap()),
+            SYNTH_CONTAINER_LEN as u32
+        );
+        bump_container_length(&mut body, 0x374);
+        assert_eq!(
+            u32::from_le_bytes(body[at..at + 4].try_into().unwrap()),
+            0x374
+        );
+        for i in 0..body.len() {
+            if !(at..at + 4).contains(&i) {
                 assert_eq!(body[i], before[i]);
             }
         }
