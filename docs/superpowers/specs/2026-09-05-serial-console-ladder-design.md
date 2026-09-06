@@ -303,3 +303,15 @@ S0 закрыта 2026-09-05: отчёт `docs/reports/2026-09-05-serial-s0-reco
 - **Риск-уточнение §2.3 о дефиците места**: append в хвост FV1
   дефицитом не ограничен; исторический дефицит — класс правок роста
   Setup-слотов (отчёт §2.4).
+- **S1 закрыта 2026-09-06**: отчёт `docs/reports/2026-09-06-serial-s1-build.md`.
+  Стенд: `docker/edk2-builder.containerfile` + пакет `UefiPatcherSerialPkg` (DSC/FDF) +
+  `docker/edk2/build_serial.sh` (эпизодичная сборка в контейнере, git-archive копия
+  `refs/edk2`@`bcd1687`, чекаут не загрязняется). Артефакты SerialDxe + TerminalDxe +
+  SerialConsoleGlue (glue = развилка (а): append ConOut/ConIn/ErrOut + маркеры SC-S1;
+  (б) — контингенси E30) закоммичены в `crates/uefi-engine/tests/data/serial/` и
+  валидируются `hack/edk2_build_check.py` + `tests/serial_ffs.rs`. PCD — все fixed-at-build
+  по §5.2 (единственная правка PcdDefaultTerminalType=3). Воспроизводимость: двойная
+  сборка (каждая — свежий контейнер + свежий git-archive) — все три .ffs побайтово
+  идентичны (`reproducible (identical)`), итог REPRODUCIBLE; FvForceReproducible в
+  этом edk2 отсутствует — доказательство двойной сборкой.
+  Гейт S1 выполнен.

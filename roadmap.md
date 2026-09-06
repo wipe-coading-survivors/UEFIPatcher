@@ -99,9 +99,14 @@ COM + redirect Setup-экрана, настройка из Setup) — флагм
   `docs/reports/2026-09-05-serial-s0-recon.md` (решения §8; гипотезы
   молчания (а)–(д) закрыты; целевой FV = FV1 DXE @0x890000; конфиг
   edk2-пары и развилка glue — вход S1). Аддендум спеки — §7.
-- **S1** — сборочная инфраструктура edk2 (SerialDxe+TerminalDxe+glue,
-  fixed PCD, `edk2-builder.containerfile`). **Текущая ступень.**
+- **S1** — закрыта 2026-09-06: отчёт
+  `docs/reports/2026-09-06-serial-s1-build.md` (стенд
+  `edk2-builder.containerfile` + `UefiPatcherSerialPkg`; SerialDxe +
+  TerminalDxe + SerialConsoleGlue воспроизводимы (identical) и
+  закоммичены как тест-данные; glue — развилка (а) с маркерами SC-S1,
+  вход S2). Аддендум спеки — §7.
 - **S2** — флеш-гейт E30: говорящий UART (insert в живой образ, FV1).
+  **Текущая ступень.**
 - **S3** — настройки serial в Setup (hijack/append + varstore; эталон
   геометрии $SPF — MNX99MR9A).
 - **S4** — AMI-стек TermSrc+SerialIo с починенной привязкой (основной
