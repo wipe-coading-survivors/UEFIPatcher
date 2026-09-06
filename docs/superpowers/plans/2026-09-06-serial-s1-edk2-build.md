@@ -782,17 +782,17 @@ def u24(b, o):
     return b[o] | (b[o + 1] << 8) | (b[o + 2] << 16)
 
 def walk_sections(d):
-    off, end, pe32, ui = 24, len(d), None, None
+    off, end, pe32s, ui = 24, len(d), [], None
     while off + 4 <= end:
         size, stype = u24(d, off), d[off + 3]
         if size < 4:
             break
         if stype == SECTION_PE32:
-            pe32 = d[off + 4:off + size]
+            pe32s.append((off + 4, d[off + 4:off + size]))
         elif stype == SECTION_UI:
             ui = d[off + 4:off + size].decode("utf-16-le", "ignore").rstrip("\x00")
         off += (size + 3) & ~3
-    return pe32, ui
+    return pe32s, ui
 
 def pe_fields(pe):
     assert pe[:2] == b"MZ", "no MZ"
@@ -802,25 +802,31 @@ def pe_fields(pe):
     subsystem = struct.unpack_from("<H", pe, lfa + 92)[0]
     return machine, subsystem, lfa + 8
 
+def zero_coff_tds(b):
+    pe32s, _ = walk_sections(b)
+    for pe_off, pe32 in pe32s:
+        machine, subsystem, tds_off = pe_fields(pe32)
+        struct.pack_into("<I", b, pe_off + tds_off, 0)
+
 def check_ffs(path, expect_guid, expect_subsys):
     d = open(path, "rb").read()
     guid = str(uuid.UUID(bytes_le=d[:16])).upper()
     assert guid == expect_guid, f"{path}: guid {guid}"
     assert d[0x12] == FFS_TYPE_DRIVER, f"{path}: type {d[0x12]:#04x}"
     hdr = bytearray(d[:24])
-    hdr[16] = hdr[17] = hdr[23] = 0
+    hdr[17] = hdr[23] = 0
     assert sum(hdr) & 0xFF == 0, f"{path}: header checksum"
     if not (d[0x13] & 0x40):
         assert d[17] == 0xAA, f"{path}: file checksum fixed value"
     size = u24(d, 0x14)
     assert size == len(d), f"{path}: size24 {size} != {len(d)}"
-    pe32, ui = walk_sections(d)
-    assert pe32 is not None, f"{path}: no PE32 section"
-    machine, subsystem, tds_off = pe_fields(pe32)
+    pe32s, ui = walk_sections(d)
+    assert pe32s, f"{path}: no PE32 section"
+    machine, subsystem, tds_off = pe_fields(pe32s[-1][1])
     assert machine == PE_MACHINE_AMD64, f"{path}: machine {machine:#06x}"
     assert subsystem == expect_subsys, f"{path}: subsystem {subsystem}"
     assert len(d) > 1024, f"{path}: implausibly small"
-    return len(d), ui, pe32, tds_off
+    return len(d), ui, pe32s, tds_off
 
 def main():
     if len(sys.argv) not in (2, 3):
@@ -828,8 +834,8 @@ def main():
     dir1 = sys.argv[1].rstrip("/")
     results = {}
     for name, (guid, subsys) in EXPECTED.items():
-        size, ui, pe32, tds_off = check_ffs(f"{dir1}/{name}", guid, subsys)
-        results[name] = (pe32, tds_off)
+        size, ui, pe32s, tds_off = check_ffs(f"{dir1}/{name}", guid, subsys)
+        results[name] = (pe32s, tds_off)
         print(f"{name}: {size} B  ui={ui!r}  machine=AMD64 subsystem={subsys}")
     fv = open(f"{dir1}/SERIAL_CONSOLE_FV.Fv", "rb").read(0x30)
     assert fv[0x28:0x2C] == b"_FVH", "FV signature"
@@ -837,15 +843,13 @@ def main():
     if len(sys.argv) == 3:
         dir2 = sys.argv[2].rstrip("/")
         for name, (guid, subsys) in EXPECTED.items():
-            b1 = open(f"{dir1}/{name}", "rb").read()
-            b2 = open(f"{dir2}/{name}", "rb").read()
+            b1 = bytearray(open(f"{dir1}/{name}", "rb").read())
+            b2 = bytearray(open(f"{dir2}/{name}", "rb").read())
             if b1 == b2:
                 print(f"{name}: reproducible (identical)")
                 continue
-            for b in (b1, b2):
-                pe32, _ = walk_sections(b)
-                machine, subsystem, tds_off = pe_fields(pe32)
-                struct.pack_into("<I", b, tds_off, 0)
+            zero_coff_tds(b1)
+            zero_coff_tds(b2)
             if b1 == b2:
                 print(f"{name}: reproducible (COFF TimeDateStamp only)")
             else:
@@ -924,7 +928,6 @@ fn parse_ffs(bytes: &[u8]) -> ParsedFfs {
     assert!(bytes.len() >= 24);
     let guid = guid_from_bytes(&bytes[..16]).unwrap();
     let mut hdr = bytes[..24].to_vec();
-    hdr[16] = 0;
     hdr[17] = 0;
     hdr[23] = 0;
     let mut off = 24usize;
