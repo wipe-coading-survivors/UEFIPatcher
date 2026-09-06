@@ -950,12 +950,16 @@ impl EngineService for EngineServer {
             .map_err(|e| Status::invalid_argument(e.to_string()))?;
         let img = self.get_or_load_image(&r.image_id).await?;
         let mut outcomes = Vec::with_capacity(schema.questions.len());
+        let mut ref_outcomes = Vec::with_capacity(schema.refs.len());
         {
             let mut images = self.images.lock().await;
             let img_slot = images
                 .get_mut(&r.image_id)
                 .ok_or_else(|| Status::not_found("image not found"))?;
             crate::hii::check_question_add(img_slot, &r.target, &schema.questions)
+                .map_err(hii_error_status)?;
+            let question_qids: Vec<u16> = schema.questions.iter().map(|q| q.question_id).collect();
+            crate::hii::check_ref_add(img_slot, &r.target, &schema.refs, &question_qids)
                 .map_err(hii_error_status)?;
             for q in &schema.questions {
                 let result =
@@ -970,12 +974,26 @@ impl EngineService for EngineServer {
                     spf_record_offset: result.spf_record_offset as u32,
                 });
             }
+            for rf in &schema.refs {
+                let result =
+                    crate::hii::add_ref(img_slot, &r.target, rf).map_err(hii_error_status)?;
+                ref_outcomes.push(HiiQuestionAddOutcome {
+                    question_id: u32::from(result.question_id),
+                    string_ids: result
+                        .string_ids
+                        .into_iter()
+                        .map(|(k, v)| (k, u32::from(v)))
+                        .collect(),
+                    spf_record_offset: 0,
+                });
+            }
         }
         self.flush_image(&r.image_id).await?;
         let _ = self.sm.touch(&img.session_id);
-        tracing::info!(image_id = %r.image_id, target = %r.target, count = outcomes.len(), "hii questions added");
+        tracing::info!(image_id = %r.image_id, target = %r.target, count = outcomes.len(), refs = ref_outcomes.len(), "hii questions added");
         Ok(Response::new(HiiQuestionAddResponse {
             questions: outcomes,
+            refs: ref_outcomes,
         }))
     }
 }
@@ -1766,6 +1784,50 @@ mod tests {
             crate::builder::build_image(img_ref).unwrap(),
             flash,
             "a failing question list must leave the image exactly as it was"
+        );
+    }
+
+    #[tokio::test]
+    async fn hii_question_add_processes_refs_only_schema() {
+        let (flash, _, _) = crate::hii::question_add_fixtures::question_add_bare_flash_image();
+        let img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+        let td = TempDir::new().unwrap();
+        let db = crate::storage::open_db(&td.path().join("db.sqlite")).unwrap();
+        let sm = Arc::new(SessionManager::new(
+            db,
+            td.path().to_path_buf(),
+            Duration::from_secs(864000),
+            Duration::from_secs(3600),
+            false,
+        ));
+        let server = EngineServer {
+            sm,
+            images: Arc::new(Mutex::new(HashMap::from([("i".to_string(), img)]))),
+            data_dir: td.path().to_path_buf(),
+        };
+        const TARGET: &str = "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:0#10019";
+        const REFS_ONLY: &str = r#"{"refs": [
+            {"form_id": 10020, "prompt": "Goto Page", "help": "Goto Page help", "question_id": 768}
+        ]}"#;
+        let resp = server
+            .hii_question_add(Request::new(HiiQuestionAddRequest {
+                image_id: "i".into(),
+                target: TARGET.into(),
+                schema_json: REFS_ONLY.into(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(
+            resp.questions.is_empty(),
+            "refs-only schema must not touch questions"
+        );
+        assert_eq!(resp.refs.len(), 1);
+        assert_eq!(resp.refs[0].question_id, 768);
+        assert!(resp.refs[0].string_ids.contains_key("Goto Page"));
+        assert_eq!(
+            resp.refs[0].spf_record_offset, 0,
+            "a goto ref has no $SPF record"
         );
     }
 

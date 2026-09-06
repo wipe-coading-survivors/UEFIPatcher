@@ -370,6 +370,7 @@ impl EngineService for MockEngine {
                 string_ids,
                 spf_record_offset: 0x13C,
             }],
+            refs: vec![],
         }))
     }
 }

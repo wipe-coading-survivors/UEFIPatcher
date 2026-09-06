@@ -272,6 +272,9 @@ message HiiQuestionAddOutcome {
   map<string, uint32> string_ids = 2;
   uint32 spf_record_offset = 3;
 }
-message HiiQuestionAddResponse { repeated HiiQuestionAddOutcome questions = 1; }
+message HiiQuestionAddResponse {
+  repeated HiiQuestionAddOutcome questions = 1;
+  repeated HiiQuestionAddOutcome refs = 2;
+}
 
 message Empty {}

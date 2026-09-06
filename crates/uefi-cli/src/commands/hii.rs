@@ -187,10 +187,15 @@ pub async fn question_add(
     let st = state::require_state()?;
     let mut client = Client::connect(cli_sock, st).await?;
     let image_id = client.active_image()?;
-    let outcomes = client
+    let resp = client
         .hii_question_add(&image_id, item_id, &schema_json)
         .await?;
-    crate::output::print_question_add(&outcomes, format);
+    if !resp.questions.is_empty() || resp.refs.is_empty() {
+        crate::output::print_question_add(&resp.questions, format);
+    }
+    if !resp.refs.is_empty() {
+        crate::output::print_question_add(&resp.refs, format);
+    }
     Ok(())
 }
 
