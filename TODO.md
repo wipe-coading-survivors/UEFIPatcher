@@ -2098,3 +2098,55 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   `unlock("…:59")` планировщик выдал бы 1 флип. Сценарий B: qid =
   [54,55,56,57,58,59,60] (по 1 флипу), q61 — ожидаемый Err, hijack → 0
   флипов (идемпотентность на живых данных доказана).
+
+### Находки финального ревью S1 serial-console (2026-09-06)
+
+> Отложенные minors из whole-branch ревью ступени S1 (ветка
+> `fix/cycle6-reimplent`, план `docs/superpowers/plans/
+> 2026-09-06-serial-s1-edk2-build.md`, отчёт
+> `docs/reports/2026-09-06-serial-s1-build.md`). Единственный Important
+> ревью (ложный маркер 1 при неудаче ConOut-append) закрыт в цикле
+> (`cdfe527`); ниже — parking-lot.
+
+* [ ] **build_serial.sh: пиновать исходник edk2 на bcd1687, а не HEAD**
+  — скрипт архивирует `refs/edk2` через `git archive HEAD`; обновление
+  чекаута молча сменит выходные артефакты при следующей пересборке.
+  Контекст: `docker/edk2/build_serial.sh` (строка `git -C /src/edk2
+  archive --format=tar HEAD`); закрепить ревизию `bcd1687` в скрипте
+  или ассертовать её перед архивацией.
+* [ ] **edk2-builder containerfile: dnf install без пинов** — пакеты
+  (gcc/make/nasm и пр.) ставятся из текущего репо fedora:44, образ
+  дрейфует со временем; байт-воспроизводимость сборки держится только
+  на уже закоммиченных .ffs. Контекст:
+  `docker/edk2-builder.containerfile`; пиновать версии пакетов или
+  зафиксировать базовый образ digest'ом.
+* [ ] **BaseTools: unit-test noise TianoCompress ×2 за сборку** — в
+  логе каждой эпизодичной сборки (свежий /work + make BaseTools) по
+  две не-фатальных строки провалившихся unit-тестов TianoCompress.
+  Контекст: на артефакты не влияет; отфильтровать при следующем касании
+  `build_serial.sh`.
+* [ ] **hack/edk2_build_check.py: edge-кейсы** — (1) TDS-only
+  false-FAIL под FFS_ATTRIB_CHECKSUM: file-checksum байт 0x11 покрывает
+  данные, `zero_coff_tds` обнуляет только TDS внутри PE32-секций →
+  легитимная «reproducible (COFF TimeDateStamp only)» пара помечается
+  NOT reproducible (латентно: наши .ffs не ставят 0x40); (2)
+  `walk_sections` не проверяет `off + size <= end` — секция с
+  объявленным размером за пределами файла молча обрезается срезом;
+  (3) UI-имя извлекается, но не ассертуется (`assert ui == …`);
+  (4) словарь `results` в `main()` мёртв (заполняется, не читается);
+  (5) FFS2/LARGE_FILE расширенный заголовок не поддержан (size24==len
+  падает на >16MB файлах — для S1 недостижимо).
+* [ ] **SerialConsoleGlue.inf: declares unused MdeModulePkg.dec** —
+  [Packages] содержит MdeModulePkg/MdeModulePkg.dec, но модуль не
+  потребляет из него ничего (все GUID/библиотеки — MdePkg). Контекст:
+  `docker/edk2/UefiPatcherSerialPkg/SerialConsoleGlue/
+  SerialConsoleGlue.inf`; убрать при следующем касании (на артефакты
+  не влияет, build-time только).
+* [ ] **PE32 дублируется в .ffs по FDF-правилу — root cause неизвестен**
+  — правило формы `PE32 PE32 |.efi` кладёт PE-образ каждого модуля
+  дважды (SerialDxe 16 388 Б ×2, TerminalDxe 32 772 ×2, glue 12 292 ×2
+  — избыточно 61 452 Б), при этом та же форма правила в OvmfPkgX64.fdf
+  не удваивает. Контекст: §6 отчёта S1; установить механику GenFds
+  (почему материализуется вторая секция) до любых S2-решений про
+  «FDF cleanup» (~61,7 КБ экономии) — иначе чистка может сломать
+  неочевидную зависимость.
