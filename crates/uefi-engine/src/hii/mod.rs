@@ -21,6 +21,7 @@ use crate::ffs::{
 };
 use crate::ops;
 use crate::types::*;
+use std::collections::HashMap;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -699,6 +700,430 @@ pub fn set_value(image: &mut Image, item_id: &str, value: u64) -> Result<ValueOu
         question: info,
         applied,
         stores: hits.iter().map(|h| h.desc.clone()).collect(),
+    })
+}
+
+#[derive(Debug)]
+pub struct AddQuestionResult {
+    pub question_id: u16,
+    pub string_ids: HashMap<String, u16>,
+    pub spf_record_offset: usize,
+}
+
+fn validate_question_add(
+    schema: &schema::QuestionAddSchema,
+) -> Result<(Option<u64>, Option<u64>), HiiError> {
+    if schema.size > 1 {
+        return Err(HiiError::InvalidSchema(format!(
+            "size {} exceeds one_of u8 semantics",
+            schema.size
+        )));
+    }
+    if schema.options.is_empty() {
+        return Err(HiiError::InvalidSchema("options must not be empty".into()));
+    }
+    for o in &schema.options {
+        if o.value > u8::MAX as u64 {
+            return Err(HiiError::InvalidSchema(format!(
+                "option value {:#x} does not fit one_of u8 semantics",
+                o.value
+            )));
+        }
+    }
+    let marked = |class: schema::DefaultClass| {
+        schema
+            .options
+            .iter()
+            .filter(|o| o.default == Some(class))
+            .count()
+    };
+    if marked(schema::DefaultClass::Optimized) > 1 {
+        return Err(HiiError::InvalidSchema(
+            "only one option may carry default \"optimized\"".into(),
+        ));
+    }
+    if marked(schema::DefaultClass::Failsafe) > 1 {
+        return Err(HiiError::InvalidSchema(
+            "only one option may carry default \"failsafe\"".into(),
+        ));
+    }
+    let optimized_opt = schema
+        .options
+        .iter()
+        .find(|o| o.default == Some(schema::DefaultClass::Optimized));
+    let optimized = match (optimized_opt, schema.defaults) {
+        (Some(o), Some(d)) if o.value != d.optimized => {
+            return Err(HiiError::InvalidSchema(format!(
+                "defaults.optimized {} disagrees with the option marked optimized ({})",
+                d.optimized, o.value
+            )));
+        }
+        (Some(o), _) => Some(o.value),
+        (None, Some(d)) => Some(d.optimized),
+        (None, None) => None,
+    };
+    if let Some(v) = optimized
+        && !schema.options.iter().any(|o| o.value == v)
+    {
+        return Err(HiiError::InvalidSchema(format!(
+            "optimized default {v} is not among option values"
+        )));
+    }
+    let failsafe = schema
+        .options
+        .iter()
+        .find(|o| o.default == Some(schema::DefaultClass::Failsafe))
+        .map(|o| o.value);
+    Ok((optimized, failsafe))
+}
+
+fn question_forms_package<'a>(
+    root: &'a FfsNode,
+    target: &crate::types::Target,
+    bare_channel: bool,
+) -> Result<&'a [u8], HiiError> {
+    let node = crate::parser::target::find_item(root, target).map_err(|_| HiiError::NotFound)?;
+    if bare_channel {
+        Ok(&node.body)
+    } else {
+        let (off, len) =
+            form_add::resource_forms_package(&node.body).ok_or(HiiError::NotASetupItem)?;
+        node.body.get(off..off + len).ok_or(HiiError::InvalidIfr)
+    }
+}
+
+fn splice_question_ops_into_resource(
+    pe: &mut Vec<u8>,
+    form_id: u16,
+    ops: &[u8],
+) -> Result<(usize, usize), HiiError> {
+    let (pkg_off, old_len) = form_add::resource_forms_package(pe).ok_or(HiiError::NotASetupItem)?;
+    let mut pkg = pe[pkg_off..pkg_off + old_len].to_vec();
+    let res = ifr::splice_question_ops(&mut pkg, 0, form_id, ops)?;
+    let delta = pkg.len() - old_len;
+    let (_, blob_off, blob_len) = pe_resource::hii_entry_locations(pe)
+        .first()
+        .copied()
+        .ok_or(HiiError::InvalidIfr)?;
+    let blob_end = blob_off.checked_add(blob_len).ok_or(HiiError::InvalidIfr)?;
+    let blob = pe.get(blob_off..blob_end).ok_or(HiiError::InvalidIfr)?;
+    let list = package_list::parse_package_list(blob).ok_or(HiiError::InvalidIfr)?;
+    let sum: usize = list.packages.iter().map(|p| p.bytes.len()).sum();
+    let new_blob_len = blob_len
+        .checked_add(delta)
+        .ok_or(HiiError::PeGrowthUnsupported)?;
+    let new_total = 20u64 + sum as u64 + delta as u64 + 4;
+    if new_total > u32::MAX as u64 || new_blob_len > u32::MAX as usize {
+        return Err(HiiError::PeGrowthUnsupported);
+    }
+    let plan =
+        pe_resource::plan_rsrc_blob_growth(pe, delta).ok_or(HiiError::PeGrowthUnsupported)?;
+    if plan.grow > 0 && !pe_resource::try_grow_rsrc_tail(pe, plan.grow) {
+        return Err(HiiError::PeGrowthUnsupported);
+    }
+    pe.copy_within(pkg_off + old_len..blob_end, pkg_off + pkg.len());
+    pe[pkg_off..pkg_off + pkg.len()].copy_from_slice(&pkg);
+    pe_resource::write_length_chain(
+        pe,
+        plan.entry_off,
+        plan.blob_off,
+        new_blob_len as u32,
+        new_total as u32,
+    );
+    Ok(res)
+}
+
+struct SpfAppendPlan {
+    page_slot: usize,
+    page_offset: usize,
+    record_template: usize,
+    ctrl_template: usize,
+    counter: u32,
+}
+
+fn record_counter(body: &[u8], offset: usize) -> u32 {
+    u32::from_le_bytes(
+        body[offset + spf::SPF_RECORD_COUNTER_OFFSET..offset + spf::SPF_RECORD_COUNTER_OFFSET + 4]
+            .try_into()
+            .unwrap(),
+    )
+}
+
+fn plan_spf_append(
+    body: &[u8],
+    form_start: u32,
+    form_end: u32,
+    form_id: u16,
+) -> Result<SpfAppendPlan, HiiError> {
+    let base = spf::container_start(body).ok_or(HiiError::NotFound)?;
+    let records = spf::scan_question_records(body);
+    let first = records.first().ok_or(HiiError::NotFound)?;
+    let template = records
+        .iter()
+        .find(|r| r.ifr_offset >= form_start && r.ifr_offset < form_end)
+        .unwrap_or(first);
+    let max_low = records
+        .iter()
+        .map(|r| record_counter(body, r.offset) & 0xFFFF)
+        .max()
+        .unwrap_or(0);
+    let counter = (0x0001u32 << 16) | (1 + max_low);
+    let count_at = base + spf::SPF_PAGE_COUNT_OFFSET;
+    let count_bytes = body.get(count_at..count_at + 4).ok_or(HiiError::NotFound)?;
+    let page_count = u32::from_le_bytes(count_bytes.try_into().unwrap()) as usize;
+    let mut page_slot = None;
+    let mut page_offset = 0usize;
+    for slot in 0..page_count {
+        let at = base + spf::SPF_PAGE_TABLE_OFFSET + 4 * slot;
+        let Some(slot_bytes) = body.get(at..at + 4) else {
+            break;
+        };
+        let off = u32::from_le_bytes(slot_bytes.try_into().unwrap()) as usize;
+        if off == 0 {
+            continue;
+        }
+        let fid_at = base + off + 0xA;
+        if let Some(fb) = body.get(fid_at..fid_at + 2)
+            && u16::from_le_bytes(fb.try_into().unwrap()) == form_id
+        {
+            page_slot = Some(slot);
+            page_offset = off;
+            break;
+        }
+    }
+    let page_slot = page_slot.ok_or(HiiError::NotFound)?;
+    let controls = spf::scan_string_controls(body);
+    let ctrl_template = controls
+        .iter()
+        .find(|c| c.offset >= base + page_offset)
+        .unwrap_or(controls.first().ok_or(HiiError::NotFound)?)
+        .offset
+        - base;
+    Ok(SpfAppendPlan {
+        page_slot,
+        page_offset,
+        record_template: template.offset - base,
+        ctrl_template,
+        counter,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_spf_question(
+    node: &mut FfsNode,
+    plan: &SpfAppendPlan,
+    schema: &schema::QuestionAddSchema,
+    prompt_id: u16,
+    help_id: u16,
+    insert_at: u32,
+    delta: u32,
+    optimized: Option<u64>,
+    failsafe: Option<u64>,
+) -> Result<usize, HiiError> {
+    let body = &mut node.body;
+    spf::fixup_record_ifr_offsets(body, insert_at, delta);
+    let optimal = optimized.map_or(0, |v| v as u8);
+    let failsafe_v = failsafe.map_or(0, |v| v as u8);
+    let rec_off = spf::append_question_record(
+        body,
+        plan.record_template,
+        schema.question_id,
+        help_id,
+        prompt_id,
+        insert_at,
+        plan.counter,
+        failsafe_v,
+        optimal,
+    );
+    spf::append_string_control(body, plan.ctrl_template, help_id);
+    let clone_off = spf::clone_page_with_controls(body, plan.page_offset, &[rec_off as u32]);
+    spf::repoint_page_slot(body, plan.page_slot, clone_off as u32);
+    let base = spf::container_start(body).expect("$SPF survives appends");
+    let new_len = body.len() - base;
+    spf::bump_container_length(body, new_len);
+    Ok(rec_off)
+}
+
+#[tracing::instrument(level = "debug", skip(image, schema), fields(item_id = %item_id), err)]
+pub fn add_question(
+    image: &mut Image,
+    item_id: &str,
+    schema: &schema::QuestionAddSchema,
+) -> Result<AddQuestionResult, HiiError> {
+    if image.mode != ImageMode::Write {
+        return Err(HiiError::NotWritable);
+    }
+    let (target, form_id, question_id) = parse_item_id(item_id)?;
+    if question_id.is_some() {
+        return Err(HiiError::NotFound);
+    }
+    if schema.form_id != form_id {
+        return Err(HiiError::InvalidSchema(format!(
+            "schema form_id {} does not match target form {form_id}",
+            schema.form_id
+        )));
+    }
+    let (optimized, failsafe) = validate_question_add(schema)?;
+    let path = resolve_writable_path(image, &target)?;
+    let bare_channel = {
+        let node = crate::parser::target::find_item(&image.root, &target)
+            .map_err(|_| HiiError::NotFound)?;
+        if node.node_type != FfsType::Section {
+            return Err(HiiError::NotASetupItem);
+        }
+        if node.subtype == EFI_SECTION_RAW && ifr::is_form_package(&node.body) {
+            true
+        } else if node.subtype == EFI_SECTION_PE32
+            && form_add::resource_forms_package(&node.body).is_some()
+        {
+            false
+        } else {
+            return Err(HiiError::NotASetupItem);
+        }
+    };
+    let span = {
+        let pkg = question_forms_package(&image.root, &target, bare_channel)?;
+        form_hijack::locate_form(pkg, form_id).ok_or(HiiError::NotFound)?
+    };
+    let sd_path = ami_patcher::pfs_payload_path(image, None)?;
+    let spf_plan = {
+        let body = node_at(&image.root, &sd_path).body.clone();
+        plan_spf_append(
+            &body,
+            span.form_op as u32,
+            span.next_form_op as u32,
+            form_id,
+        )?
+    };
+    {
+        let pkg = question_forms_package(&image.root, &target, bare_channel)?;
+        let slots = values::scan_question_slots(pkg);
+        if slots.iter().any(|s| s.question_id == schema.question_id) {
+            return Err(HiiError::InvalidSchema(format!(
+                "question id {:#x} already exists in the formset",
+                schema.question_id
+            )));
+        }
+        for s in slots
+            .iter()
+            .filter(|s| s.var_store_id == schema.var_store_id)
+        {
+            let width = if s.width == 0 { 1 } else { u16::from(s.width) };
+            let s_start = u32::from(s.var_offset);
+            let s_end = s_start + u32::from(width);
+            let n_start = u32::from(schema.var_offset);
+            let n_end = n_start + u32::from(schema.size);
+            if n_start < s_end && s_start < n_end {
+                return Err(HiiError::InvalidSchema(format!(
+                    "var_offset {:#x} overlaps question {:#x} at var_offset {:#x} in var store {}",
+                    schema.var_offset, s.question_id, s.var_offset, schema.var_store_id
+                )));
+            }
+        }
+        let varstores = values::varstore_map(pkg);
+        let vs = varstores
+            .iter()
+            .find(|v| v.id == schema.var_store_id)
+            .ok_or_else(|| {
+                HiiError::InvalidSchema(format!(
+                    "var store {} is not declared in the formset",
+                    schema.var_store_id
+                ))
+            })?;
+        if u32::from(schema.var_offset) + u32::from(schema.size) > u32::from(vs.size) {
+            return Err(HiiError::InvalidSchema(format!(
+                "var_offset {:#x} + size {} exceeds var store size {:#x}",
+                schema.var_offset, schema.size, vs.size
+            )));
+        }
+    }
+
+    let mut strings: Vec<String> = vec![schema.prompt.clone(), schema.help.clone()];
+    strings.extend(schema.options.iter().map(|o| o.text.clone()));
+    strings.dedup();
+    let string_ids = if bare_channel {
+        let owner = form_add::owner_guid_by_path(&image.root, &path);
+        string_pack::add_strings(image, owner.as_ref(), &strings)?
+    } else {
+        let node = crate::parser::target::find_item_mut(&mut image.root, &target)
+            .map_err(|_| HiiError::NotFound)?;
+        match string_pack::add_strings_to_resource(&mut node.body, &strings) {
+            Ok(ids) => ids,
+            Err(string_pack::AddStringsToResourceError::NotFound) => {
+                return Err(HiiError::StringPackageNotFound);
+            }
+            Err(string_pack::AddStringsToResourceError::GrowthUnsupported) => {
+                return Err(HiiError::PeGrowthUnsupported);
+            }
+        }
+    };
+
+    let prompt_id = *string_ids.get(&schema.prompt).ok_or(HiiError::InvalidIfr)?;
+    let help_id = *string_ids.get(&schema.help).ok_or(HiiError::InvalidIfr)?;
+    let mut b = ifr_builder::IfrBuilder::new();
+    b.emit_one_of(
+        prompt_id,
+        help_id,
+        schema.question_id,
+        schema.var_store_id,
+        schema.var_offset,
+        0,
+        1,
+    );
+    for o in &schema.options {
+        let flags = match o.default {
+            Some(schema::DefaultClass::Optimized) => ifr_builder::IFR_OPTION_DEFAULT,
+            Some(schema::DefaultClass::Failsafe) => ifr_builder::IFR_OPTION_DEFAULT_MFG,
+            None => 0,
+        };
+        let text_id = *string_ids.get(&o.text).ok_or(HiiError::InvalidIfr)?;
+        b.emit_one_of_option(text_id, flags, ifr_builder::TYPE_NUM_SIZE_8, o.value, 1);
+    }
+    if let Some(v) = optimized {
+        b.emit_default(
+            ifr_builder::DEFAULT_ID_STANDARD,
+            ifr_builder::TYPE_NUM_SIZE_8,
+            v,
+            1,
+        );
+    }
+    b.emit_end();
+    let ops = b.build();
+    let (insert_at, delta) = {
+        let node = crate::parser::target::find_item_mut(&mut image.root, &target)
+            .map_err(|_| HiiError::NotFound)?;
+        if bare_channel {
+            ifr::splice_question_ops(&mut node.body, 0, form_id, &ops)?
+        } else {
+            splice_question_ops_into_resource(&mut node.body, form_id, &ops)?
+        }
+    };
+    ops::mark_rebuild_to_root_by_path(&mut image.root, &path);
+
+    let spf_record_offset = {
+        let node = node_at_mut(&mut image.root, &sd_path);
+        apply_spf_question(
+            node,
+            &spf_plan,
+            schema,
+            prompt_id,
+            help_id,
+            insert_at as u32,
+            delta as u32,
+            optimized,
+            failsafe,
+        )?
+    };
+    ops::mark_rebuild_to_root_by_path(&mut image.root, &sd_path);
+    tracing::debug!(
+        question_id = schema.question_id,
+        insert_at,
+        "add_question done"
+    );
+    Ok(AddQuestionResult {
+        question_id: schema.question_id,
+        string_ids,
+        spf_record_offset,
     })
 }
 
@@ -1923,5 +2348,495 @@ mod tests {
         assert_eq!(fv2_store_body(&image).len(), fv2_len);
         assert_eq!(fv0_store_body(&image)[SETUP_114_DATA_OFF + 0x3A], 1);
         assert_eq!(fv2_store_body(&image)[SETUP_114_DATA_OFF + 0x3A], 1);
+    }
+
+    mod question_add_tests {
+        use super::*;
+        use crate::builder::build_image;
+        use crate::ffs::{
+            EFI_SECTION_FREEFORM_SUBTYPE_GUID, EFI_SECTION_GUID_DEFINED, EFI_SECTION_PE32,
+            EFI_SECTION_RAW, EFI_SECTION_UI,
+        };
+        use crate::hii::form_hijack::test_fixtures::{
+            FILE_GUID, FORMSET_GUID, SETUPDATA_GUID_STR, ffs_file_bytes, file_sections,
+            flash_with_files, section_bytes, string_package_bytes, ui_name,
+        };
+        use crate::hii::ifr_builder::{IfrBuilder, TYPE_NUM_SIZE_8};
+        use crate::hii::spf;
+        use crate::parser::image::parse_image;
+
+        fn question_add_forms_pkg() -> Vec<u8> {
+            let mut b = IfrBuilder::new();
+            let g = Guid::from_str(FORMSET_GUID).unwrap();
+            b.emit_form_set(&g, 1, 1, &[]);
+            b.emit_var_store(1, &g, 0x100, "Setup");
+            b.emit_form(10019, 1);
+            b.emit_one_of(0x01A3, 0x01A4, 0x3B, 1, 0x3A, 0, 1);
+            b.emit_one_of_option(4, 0x30, TYPE_NUM_SIZE_8, 0, 1);
+            b.emit_one_of_option(3, 0x00, TYPE_NUM_SIZE_8, 1, 1);
+            b.emit_end();
+            b.emit_end();
+            b.emit_form(10020, 2);
+            b.emit_one_of(0x01A5, 0x01A6, 0x55, 1, 0x40, 0, 1);
+            b.emit_one_of_option(5, 0x00, TYPE_NUM_SIZE_8, 0, 1);
+            b.emit_end();
+            b.emit_end();
+            b.emit_end();
+            let ifr = b.build();
+            let mut pkg = vec![0u8; 4];
+            let len = 4 + ifr.len() as u32;
+            pkg[0] = (len & 0xFF) as u8;
+            pkg[1] = ((len >> 8) & 0xFF) as u8;
+            pkg[2] = ((len >> 16) & 0xFF) as u8;
+            pkg[3] = r_efi::hii::PACKAGE_FORMS;
+            pkg.extend_from_slice(&ifr);
+            pkg
+        }
+
+        fn spf_record(qid: u16, ifr: u32, counter: u32, help: u16, prompt: u16) -> Vec<u8> {
+            let mut r = vec![0u8; spf::SPF_RECORD_SIZE];
+            r[0..4].copy_from_slice(&(qid as u32).to_le_bytes());
+            r[8..10].copy_from_slice(&6u16.to_le_bytes());
+            r[12..14].copy_from_slice(&0xFFFFu16.to_le_bytes());
+            r[16] = 0x09;
+            r[20..22].copy_from_slice(&help.to_le_bytes());
+            r[24..28].copy_from_slice(&counter.to_le_bytes());
+            r[28..32].copy_from_slice(&ifr.to_le_bytes());
+            r[36..44].copy_from_slice(&[0xF8, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
+            r[44..48].copy_from_slice(&[0x01, 0x00, 0x01, 0x00]);
+            r[48..50].copy_from_slice(&prompt.to_le_bytes());
+            r
+        }
+
+        fn question_add_spf_body(rec0: &[u8], rec1: &[u8]) -> Vec<u8> {
+            let mut body = vec![0u8; 0x140];
+            body[0x10..0x14].copy_from_slice(b"$SPF");
+            body[0x14..0x18].copy_from_slice(&0x200u32.to_le_bytes());
+            body[0x18..0x1C].copy_from_slice(&0x210u32.to_le_bytes());
+            body[0x1C..0x2C]
+                .copy_from_slice(&[0x43, 0xD6, 0x87, 0xEC, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+            body[0x2C..0x30].copy_from_slice(&0x48u32.to_le_bytes());
+            body[0x40..0x44].copy_from_slice(&0x94u32.to_le_bytes());
+            body[0x6C..0x70].copy_from_slice(&0x130u32.to_le_bytes());
+            body[0x70..0x74].copy_from_slice(&1u32.to_le_bytes());
+            body[0x74..0x78].copy_from_slice(&0x68u32.to_le_bytes());
+            body[0x78..0x98].copy_from_slice(&[0u8; 0x20]);
+            body[0x82..0x84].copy_from_slice(&10019u16.to_le_bytes());
+            body[0x94..0x98].copy_from_slice(&1u32.to_le_bytes());
+            body[0x98..0x9C].copy_from_slice(&0x94u32.to_le_bytes());
+            body[0xA4..0xEC].copy_from_slice(rec0);
+            body[0xEC..0x134].copy_from_slice(rec1);
+            body[0x134..0x136].copy_from_slice(&5u16.to_le_bytes());
+            body[0x136..0x138].copy_from_slice(&0x01A4u16.to_le_bytes());
+            body[0x138..0x13A].copy_from_slice(&0u16.to_le_bytes());
+            body[0x13A..0x13C].copy_from_slice(&0x77u16.to_le_bytes());
+            body[0x13C..0x13E].copy_from_slice(&0x88u16.to_le_bytes());
+            body[0x13E..0x140].copy_from_slice(&78u16.to_le_bytes());
+            body
+        }
+
+        fn lzma_guided_section_bytes(children: &[u8]) -> Vec<u8> {
+            let mut stream = crate::compress::compress_lzma(children).unwrap();
+            stream.resize(stream.len().max(64) + 32, 0x00);
+            let mut body = crate::ffs::lzma_guid().to_bytes().to_vec();
+            body.extend_from_slice(&0x18u16.to_le_bytes());
+            body.extend_from_slice(&1u16.to_le_bytes());
+            body.extend_from_slice(&stream);
+            section_bytes(EFI_SECTION_GUID_DEFINED, &body)
+        }
+
+        fn hii_list_blob(pkgs: &[&[u8]]) -> Vec<u8> {
+            let guid = Guid::from_str(FORMSET_GUID).unwrap();
+            let total = 20 + 4 + pkgs.iter().map(|p| p.len()).sum::<usize>();
+            let mut b = guid.to_bytes().to_vec();
+            b.extend_from_slice(&(total as u32).to_le_bytes());
+            for p in pkgs {
+                b.extend_from_slice(p);
+            }
+            b.extend_from_slice(&[0x04, 0x00, 0x00, r_efi::hii::PACKAGE_END]);
+            b
+        }
+
+        fn question_add_flash_image() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+            let pkg = question_add_forms_pkg();
+            let q10019 = crate::hii::form_hijack::locate_questions(&pkg, 10019)[0].0;
+            let q10020 = crate::hii::form_hijack::locate_questions(&pkg, 10020)[0].0;
+            let rec0 = spf_record(0x3B, q10019 as u32, 0x0001_0066, 0x01A4, 0x01A3);
+            let rec1 = spf_record(0x55, q10020 as u32, 0x0001_0066, 0x01A6, 0x01A5);
+            let spf_body = question_add_spf_body(&rec0, &rec1);
+            let blob = hii_list_blob(&[&pkg, &string_package_bytes()]);
+            let pe = crate::hii::pe_resource::synth_hii_pe("HII", &blob);
+            let setup = ffs_file_bytes(
+                &Guid::from_str(FILE_GUID).unwrap(),
+                &section_bytes(EFI_SECTION_PE32, &pe),
+            );
+            let sd = ffs_file_bytes(
+                &Guid::from_str(SETUPDATA_GUID_STR).unwrap(),
+                &file_sections(&[
+                    section_bytes(EFI_SECTION_UI, &ui_name("AMITSESetupData")),
+                    lzma_guided_section_bytes(&section_bytes(
+                        EFI_SECTION_FREEFORM_SUBTYPE_GUID,
+                        &spf_body,
+                    )),
+                ]),
+            );
+            (flash_with_files(vec![setup, sd]), pkg, spf_body)
+        }
+
+        fn question_add_bare_flash_image() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+            let pkg = question_add_forms_pkg();
+            let q10019 = crate::hii::form_hijack::locate_questions(&pkg, 10019)[0].0;
+            let q10020 = crate::hii::form_hijack::locate_questions(&pkg, 10020)[0].0;
+            let rec0 = spf_record(0x3B, q10019 as u32, 0x0001_0066, 0x01A4, 0x01A3);
+            let rec1 = spf_record(0x55, q10020 as u32, 0x0001_0066, 0x01A6, 0x01A5);
+            let spf_body = question_add_spf_body(&rec0, &rec1);
+            let setup = ffs_file_bytes(
+                &Guid::from_str(FILE_GUID).unwrap(),
+                &file_sections(&[
+                    section_bytes(EFI_SECTION_RAW, &pkg),
+                    section_bytes(EFI_SECTION_RAW, &string_package_bytes()),
+                ]),
+            );
+            let sd = ffs_file_bytes(
+                &Guid::from_str(SETUPDATA_GUID_STR).unwrap(),
+                &file_sections(&[
+                    section_bytes(EFI_SECTION_UI, &ui_name("AMITSESetupData")),
+                    lzma_guided_section_bytes(&section_bytes(
+                        EFI_SECTION_FREEFORM_SUBTYPE_GUID,
+                        &spf_body,
+                    )),
+                ]),
+            );
+            (flash_with_files(vec![setup, sd]), pkg, spf_body)
+        }
+
+        fn question_add_schema(qid: u16, voff: u16) -> schema::QuestionAddSchema {
+            schema::QuestionAddSchema {
+                form_id: 10019,
+                prompt: "Serial Console".into(),
+                help: "Serial console help".into(),
+                question_id: qid,
+                var_store_id: 1,
+                var_offset: voff,
+                size: 1,
+                options: vec![
+                    schema::QuestionAddOption {
+                        text: "Disabled".into(),
+                        value: 0,
+                        default: None,
+                    },
+                    schema::QuestionAddOption {
+                        text: "Enabled".into(),
+                        value: 1,
+                        default: Some(schema::DefaultClass::Optimized),
+                    },
+                ],
+                defaults: None,
+            }
+        }
+
+        const ITEM_FORM: &str = "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x10:0#10019";
+        const ITEM_FORM_BARE: &str = "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:0#10019";
+
+        fn find_spf_leaf(node: &FfsNode) -> Option<&FfsNode> {
+            if node.children.is_empty() && node.body.windows(4).any(|w| w == b"$SPF") {
+                return Some(node);
+            }
+            node.children.iter().find_map(find_spf_leaf)
+        }
+
+        fn spf_leaf_of(img: &Image) -> &[u8] {
+            let sd_guid = Guid::from_str(SETUPDATA_GUID_STR).unwrap();
+            let sd_file = img
+                .root
+                .children
+                .iter()
+                .find_map(|v| v.children.iter().find(|f| f.guid == Some(sd_guid)))
+                .unwrap();
+            &find_spf_leaf(sd_file).unwrap().body
+        }
+
+        fn pkg_of(img: &Image, target: &str) -> Vec<u8> {
+            let t = crate::parser::target::parse_target(target).unwrap();
+            let node = crate::parser::target::find_item(&img.root, &t).unwrap();
+            let (off, len) =
+                crate::hii::form_add::resource_forms_package(&node.body).expect("forms package");
+            node.body[off..off + len].to_vec()
+        }
+
+        fn rec_u32(body: &[u8], rec_off: usize, field: usize) -> u32 {
+            u32::from_le_bytes(
+                body[rec_off + field..rec_off + field + 4]
+                    .try_into()
+                    .unwrap(),
+            )
+        }
+
+        fn rec_u16(body: &[u8], rec_off: usize, field: usize) -> u16 {
+            u16::from_le_bytes(
+                body[rec_off + field..rec_off + field + 2]
+                    .try_into()
+                    .unwrap(),
+            )
+        }
+
+        #[test]
+        fn add_question_inserts_one_of_into_live_form() {
+            let (flash, pkg_before, spf_before) = question_add_flash_image();
+            let rec1_before = spf::scan_question_records(&spf_before)
+                .into_iter()
+                .find(|r| r.question_id == 0x55)
+                .unwrap();
+            let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+            let res1 = add_question(&mut img, ITEM_FORM, &question_add_schema(0x200, 0x80))
+                .expect("add question");
+            assert_eq!(res1.question_id, 0x200);
+            let prompt_id = *res1.string_ids.get("Serial Console").unwrap();
+            let help_id = *res1.string_ids.get("Serial console help").unwrap();
+            let disabled_id = *res1.string_ids.get("Disabled").unwrap();
+            let enabled_id = *res1.string_ids.get("Enabled").unwrap();
+            assert_ne!(prompt_id, help_id);
+
+            let spf_after1 = spf_leaf_of(&img).to_vec();
+            let base1 = spf::container_start(&spf_after1).unwrap();
+            assert_eq!(
+                rec_u32(&spf_after1, base1, 0x5C),
+                (spf_after1.len() - base1) as u32,
+                "container length header must track body growth"
+            );
+            let recs1 = spf::scan_question_records(&spf_after1);
+            let new1 = recs1
+                .iter()
+                .find(|r| r.question_id == 0x200)
+                .expect("new $SPF record");
+            assert_eq!(new1.offset, base1 + res1.spf_record_offset);
+            assert_eq!(
+                rec_u16(&spf_after1, new1.offset, spf::SPF_RECORD_HELP_ID),
+                help_id
+            );
+            assert_eq!(
+                rec_u16(&spf_after1, new1.offset, spf::SPF_RECORD_PROMPT_ID_OFFSET),
+                prompt_id
+            );
+            assert_eq!(
+                rec_u32(&spf_after1, new1.offset, spf::SPF_RECORD_COUNTER_OFFSET),
+                0x0001_0067
+            );
+            assert_eq!(new1.optimal, 1, "optimized default carried into record");
+            let slot0 = rec_u32(&spf_after1, base1, spf::SPF_PAGE_TABLE_OFFSET);
+            let page = base1 + slot0 as usize;
+            assert_eq!(
+                u16::from_le_bytes([spf_after1[page + 0xA], spf_after1[page + 0xB]]),
+                10019,
+                "clone keeps the form id"
+            );
+            assert_eq!(
+                rec_u32(&spf_after1, page, spf::SPF_PAGE_CNT_OFFSET),
+                2,
+                "clone carries cnt+1"
+            );
+            assert_eq!(
+                rec_u32(&spf_after1, page, spf::SPF_PAGE_LIST_OFFSET),
+                0x94,
+                "original record stays in the clone list"
+            );
+            assert_eq!(
+                rec_u32(&spf_after1, page, spf::SPF_PAGE_LIST_OFFSET + 4),
+                res1.spf_record_offset as u32,
+                "new record appended to the clone list"
+            );
+            assert!(
+                spf::scan_string_controls(&spf_after1)
+                    .iter()
+                    .any(|c| c.string_id == help_id),
+                "string control with the new help id exists"
+            );
+            let rec1_after = recs1.iter().find(|r| r.question_id == 0x55).unwrap();
+            let delta1 = pkg_of(&img, "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x10:0").len()
+                - pkg_before.len();
+            assert_eq!(
+                rec1_after.ifr_offset,
+                rec1_before.ifr_offset + delta1 as u32,
+                "records above the splice point shift by the op delta"
+            );
+            let pkg_after1 = pkg_of(&img, "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x10:0");
+            let new_q_off = crate::hii::form_hijack::locate_questions(&pkg_after1, 10019)
+                .into_iter()
+                .find(|&(_, qid)| qid == 0x200)
+                .unwrap()
+                .0;
+            assert_eq!(
+                new1.ifr_offset as usize, new_q_off,
+                "record ifr must point at the new one_of opcode"
+            );
+
+            let built = build_image(&img).unwrap();
+            let re = parse_image(&built, ImageMode::Read, "i2", "s2").unwrap();
+            let q = crate::hii::question_info(
+                &re,
+                "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x10:0#10019:0x200",
+            )
+            .unwrap();
+            assert_eq!(q.kind, "one_of");
+            assert_eq!(q.question_id, 0x200);
+            assert_eq!(q.var_store_id, 1);
+            assert_eq!(q.var_offset, 0x80);
+            assert_eq!(q.width, 1);
+            let vs = q.varstore.as_ref().unwrap();
+            assert_eq!(vs.name, "Setup");
+            assert_eq!(vs.size, 0x100);
+            assert_eq!(
+                q.options.iter().map(|o| o.value).collect::<Vec<_>>(),
+                vec![0, 1]
+            );
+            assert_eq!(q.defaults.len(), 1);
+            assert_eq!(q.defaults[0].value, 1);
+            let strings = crate::hii::strings::collect_strings(&re);
+            for (sid, text) in [
+                (prompt_id, "Serial Console"),
+                (help_id, "Serial console help"),
+                (disabled_id, "Disabled"),
+                (enabled_id, "Enabled"),
+            ] {
+                assert!(
+                    strings
+                        .iter()
+                        .any(|s| s.string_id == sid as u32 && s.text == text),
+                    "string {sid} must resolve to {text:?}"
+                );
+            }
+            let spf_rebuilt = spf_leaf_of(&re).to_vec();
+            let base_r = spf::container_start(&spf_rebuilt).unwrap();
+            let recs_r = spf::scan_question_records(&spf_rebuilt);
+            assert_eq!(recs_r.len(), 3);
+            let new_r = recs_r.iter().find(|r| r.question_id == 0x200).unwrap();
+            assert_eq!(new_r.optimal, 1);
+            let slot_r = rec_u32(&spf_rebuilt, base_r, spf::SPF_PAGE_TABLE_OFFSET);
+            let page_r = base_r + slot_r as usize;
+            assert_eq!(rec_u32(&spf_rebuilt, page_r, spf::SPF_PAGE_CNT_OFFSET), 2);
+            assert!(
+                spf::scan_string_controls(&spf_rebuilt)
+                    .iter()
+                    .any(|c| c.string_id == help_id)
+            );
+
+            let mut img2 = parse_image(&built, ImageMode::Write, "i3", "s3").unwrap();
+            let res2 = add_question(&mut img2, ITEM_FORM, &question_add_schema(0x201, 0x81))
+                .expect("second question composes");
+            assert_eq!(res2.question_id, 0x201);
+            let spf_after2 = spf_leaf_of(&img2).to_vec();
+            let base2 = spf::container_start(&spf_after2).unwrap();
+            let recs2 = spf::scan_question_records(&spf_after2);
+            let new1_2 = recs2.iter().find(|r| r.question_id == 0x200).unwrap();
+            assert_eq!(
+                new1_2.ifr_offset, new1.ifr_offset,
+                "first new record must not shift on the second add"
+            );
+            let new2 = recs2.iter().find(|r| r.question_id == 0x201).unwrap();
+            assert_eq!(
+                rec_u32(&spf_after2, new2.offset, spf::SPF_RECORD_COUNTER_OFFSET),
+                0x0001_0068
+            );
+            let rec1_2 = recs2.iter().find(|r| r.question_id == 0x55).unwrap();
+            let delta2 = pkg_of(&img2, "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x10:0").len()
+                - pkg_of(&img, "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x10:0").len();
+            assert_eq!(
+                rec1_2.ifr_offset,
+                rec1_after.ifr_offset + delta2 as u32,
+                "older records above the new splice shift again"
+            );
+            let slot2 = rec_u32(&spf_after2, base2, spf::SPF_PAGE_TABLE_OFFSET);
+            let page2 = base2 + slot2 as usize;
+            assert_eq!(rec_u32(&spf_after2, page2, spf::SPF_PAGE_CNT_OFFSET), 3);
+            let built2 = build_image(&img2).unwrap();
+            let re2 = parse_image(&built2, ImageMode::Read, "i4", "s4").unwrap();
+            assert!(
+                crate::hii::question_info(
+                    &re2,
+                    "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x10:0#10019:0x201"
+                )
+                .is_ok()
+            );
+            assert!(
+                crate::hii::question_info(
+                    &re2,
+                    "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x10:0#10019:0x200"
+                )
+                .is_ok()
+            );
+
+            let mut img3 = parse_image(&built2, ImageMode::Write, "i5", "s5").unwrap();
+            let err =
+                add_question(&mut img3, ITEM_FORM, &question_add_schema(0x200, 0x82)).unwrap_err();
+            assert!(matches!(err, HiiError::InvalidSchema(_)), "got {err:?}");
+            assert_eq!(
+                build_image(&img3).unwrap(),
+                built2,
+                "failed repeat add must not mutate"
+            );
+        }
+
+        #[test]
+        fn add_question_bare_channel_inserts_question() {
+            let (flash, _, _) = question_add_bare_flash_image();
+            let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+            let res = add_question(&mut img, ITEM_FORM_BARE, &question_add_schema(0x200, 0x80))
+                .expect("bare channel add");
+            assert_eq!(res.question_id, 0x200);
+            assert!(res.string_ids.contains_key("Serial Console"));
+            let built = build_image(&img).unwrap();
+            let re = parse_image(&built, ImageMode::Read, "i2", "s2").unwrap();
+            let q = crate::hii::question_info(
+                &re,
+                "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:0#10019:0x200",
+            )
+            .unwrap();
+            assert_eq!(q.kind, "one_of");
+            assert_eq!(q.var_offset, 0x80);
+        }
+
+        #[test]
+        fn add_question_rejects_invalid_requests_without_mutation() {
+            let (flash, _, _) = question_add_flash_image();
+            let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+            let before = build_image(&img).unwrap();
+            let mut dup_qid = question_add_schema(0x200, 0x80);
+            dup_qid.question_id = 0x3B;
+            let err = add_question(&mut img, ITEM_FORM, &dup_qid).unwrap_err();
+            assert!(matches!(err, HiiError::InvalidSchema(_)), "got {err:?}");
+            let overlap = question_add_schema(0x200, 0x3A);
+            let err = add_question(&mut img, ITEM_FORM, &overlap).unwrap_err();
+            assert!(matches!(err, HiiError::InvalidSchema(_)), "got {err:?}");
+            let mut wide = question_add_schema(0x200, 0x80);
+            wide.size = 2;
+            let err = add_question(&mut img, ITEM_FORM, &wide).unwrap_err();
+            assert!(matches!(err, HiiError::InvalidSchema(_)), "got {err:?}");
+            let mut unknown_varstore = question_add_schema(0x200, 0x80);
+            unknown_varstore.var_store_id = 9;
+            let err = add_question(&mut img, ITEM_FORM, &unknown_varstore).unwrap_err();
+            assert!(matches!(err, HiiError::InvalidSchema(_)), "got {err:?}");
+            let mut defaults_mismatch = question_add_schema(0x200, 0x80);
+            defaults_mismatch.defaults = Some(schema::QuestionAddDefaults { optimized: 0 });
+            let err = add_question(&mut img, ITEM_FORM, &defaults_mismatch).unwrap_err();
+            assert!(matches!(err, HiiError::InvalidSchema(_)), "got {err:?}");
+            let mut form_mismatch = question_add_schema(0x200, 0x80);
+            form_mismatch.form_id = 10020;
+            let err = add_question(&mut img, ITEM_FORM, &form_mismatch).unwrap_err();
+            assert!(matches!(err, HiiError::InvalidSchema(_)), "got {err:?}");
+            let mut unknown_form = question_add_schema(0x200, 0x80);
+            unknown_form.form_id = 10099;
+            let err = add_question(
+                &mut img,
+                "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x10:0#10099",
+                &unknown_form,
+            )
+            .unwrap_err();
+            assert!(matches!(err, HiiError::NotFound), "got {err:?}");
+            assert_eq!(
+                build_image(&img).unwrap(),
+                before,
+                "rejections must not mutate the image"
+            );
+        }
     }
 }

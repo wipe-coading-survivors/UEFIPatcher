@@ -252,6 +252,12 @@ enum HiiQuestionCmd {
         item_id: String,
         value: String,
     },
+    #[command(about = "insert a OneOf question into a live form")]
+    Add {
+        item_id: String,
+        #[arg(long)]
+        file: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -432,6 +438,9 @@ async fn dispatch(cli: &Cli, format: output::OutputFormat) -> Result<(), error::
                     let v = commands::hii::parse_u64_loose(value)?;
                     commands::hii::question_set_value(item_id, v, sock, format).await
                 }
+                HiiQuestionCmd::Add { item_id, file } => {
+                    commands::hii::question_add(item_id, file, sock, format).await
+                }
             },
             HiiCmd::String { sub } => match sub {
                 HiiStringCmd::List => commands::hii::string_list(sock, format).await,
@@ -583,6 +592,32 @@ mod tests {
                 assert_eq!(file, "schema.json");
             }
             _ => panic!("expected hii form add"),
+        }
+    }
+
+    #[test]
+    fn parse_hii_question_add_args() {
+        let cli = Cli::try_parse_from([
+            "uefi-cli",
+            "hii",
+            "question",
+            "add",
+            "3/28/1/0#10019",
+            "--file",
+            "s3_questions.json",
+        ])
+        .unwrap();
+        match cli.cmd {
+            Cmd::Hii {
+                sub:
+                    HiiCmd::Question {
+                        sub: HiiQuestionCmd::Add { item_id, file },
+                    },
+            } => {
+                assert_eq!(item_id, "3/28/1/0#10019");
+                assert_eq!(file, "s3_questions.json");
+            }
+            _ => panic!("expected hii question add"),
         }
     }
 

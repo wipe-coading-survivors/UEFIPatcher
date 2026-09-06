@@ -390,6 +390,25 @@ impl Client {
         Ok((q, resp.applied_flips, resp.stores))
     }
 
+    pub async fn hii_question_add(
+        &mut self,
+        image_id: &str,
+        target: &str,
+        schema_json: &str,
+    ) -> Result<Vec<HiiQuestionAddOutcome>, AppError> {
+        let req = HiiQuestionAddRequest {
+            image_id: image_id.into(),
+            target: target.into(),
+            schema_json: schema_json.into(),
+        };
+        let resp = self
+            .inner
+            .hii_question_add(auth_req(&self.state, req))
+            .await?
+            .into_inner();
+        Ok(resp.questions)
+    }
+
     pub async fn hii_form_set_add(
         &mut self,
         image_id: &str,

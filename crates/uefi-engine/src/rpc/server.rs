@@ -939,6 +939,43 @@ impl EngineService for EngineServer {
             stores: outcome.stores,
         }))
     }
+
+    #[tracing::instrument(skip(self, req), err)]
+    async fn hii_question_add(
+        &self,
+        req: Request<HiiQuestionAddRequest>,
+    ) -> RpcResult<HiiQuestionAddResponse> {
+        let r = req.into_inner();
+        let schema = crate::hii::schema::parse_question_add_schema(&r.schema_json)
+            .map_err(|e| Status::invalid_argument(e.to_string()))?;
+        let img = self.get_or_load_image(&r.image_id).await?;
+        let mut outcomes = Vec::with_capacity(schema.questions.len());
+        {
+            let mut images = self.images.lock().await;
+            let img_slot = images
+                .get_mut(&r.image_id)
+                .ok_or_else(|| Status::not_found("image not found"))?;
+            for q in &schema.questions {
+                let result =
+                    crate::hii::add_question(img_slot, &r.target, q).map_err(hii_error_status)?;
+                outcomes.push(HiiQuestionAddOutcome {
+                    question_id: u32::from(result.question_id),
+                    string_ids: result
+                        .string_ids
+                        .into_iter()
+                        .map(|(k, v)| (k, u32::from(v)))
+                        .collect(),
+                    spf_record_offset: result.spf_record_offset as u32,
+                });
+            }
+        }
+        self.flush_image(&r.image_id).await?;
+        let _ = self.sm.touch(&img.session_id);
+        tracing::info!(image_id = %r.image_id, target = %r.target, count = outcomes.len(), "hii questions added");
+        Ok(Response::new(HiiQuestionAddResponse {
+            questions: outcomes,
+        }))
+    }
 }
 
 #[cfg(unix)]
@@ -1586,6 +1623,92 @@ mod tests {
         )
         .await;
         assert_eq!(st.code(), tonic::Code::NotFound);
+    }
+
+    async fn question_add_status(img: Image, target: &str, schema_json: &str) -> Status {
+        let td = TempDir::new().unwrap();
+        let db = crate::storage::open_db(&td.path().join("db.sqlite")).unwrap();
+        let sm = Arc::new(SessionManager::new(
+            db,
+            td.path().to_path_buf(),
+            Duration::from_secs(864000),
+            Duration::from_secs(3600),
+            false,
+        ));
+        let server = EngineServer {
+            sm,
+            images: Arc::new(Mutex::new(HashMap::from([("i".to_string(), img)]))),
+            data_dir: td.path().to_path_buf(),
+        };
+        server
+            .hii_question_add(Request::new(HiiQuestionAddRequest {
+                image_id: "i".into(),
+                target: target.into(),
+                schema_json: schema_json.into(),
+            }))
+            .await
+            .unwrap_err()
+    }
+
+    const QUESTION_ADD_SCHEMA_JSON: &str = r#"{"questions": [{
+        "form_id": 10019, "prompt": "Serial Console", "help": "H",
+        "question_id": 512, "var_store_id": 1, "var_offset": 128, "size": 1,
+        "options": [{"text": "Disabled", "value": 0}, {"text": "Enabled", "value": 1, "default": "optimized"}]}
+    ]}"#;
+
+    #[tokio::test]
+    async fn hii_question_add_maps_bad_schema_to_invalid_argument() {
+        let img = parse_image(
+            &crate::hii::form_hijack::test_fixtures::hijack_test_flash(),
+            ImageMode::Write,
+            "i",
+            "s",
+        )
+        .unwrap();
+        let st =
+            question_add_status(img, "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:0#7", "{").await;
+        assert_eq!(st.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[tokio::test]
+    async fn hii_question_add_maps_unknown_form_to_not_found() {
+        let img = parse_image(
+            &crate::hii::form_hijack::test_fixtures::hijack_test_flash(),
+            ImageMode::Write,
+            "i",
+            "s",
+        )
+        .unwrap();
+        let mut schema =
+            crate::hii::schema::parse_question_add_schema(QUESTION_ADD_SCHEMA_JSON).unwrap();
+        schema.questions[0].form_id = 99;
+        let st = question_add_status(
+            img,
+            "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:0#99",
+            &serde_json::to_string(&schema).unwrap(),
+        )
+        .await;
+        assert_eq!(st.code(), tonic::Code::NotFound);
+    }
+
+    #[tokio::test]
+    async fn hii_question_add_maps_form_mismatch_to_invalid_argument() {
+        let img = parse_image(
+            &crate::hii::form_hijack::test_fixtures::hijack_test_flash(),
+            ImageMode::Write,
+            "i",
+            "s",
+        )
+        .unwrap();
+        let schema =
+            crate::hii::schema::parse_question_add_schema(QUESTION_ADD_SCHEMA_JSON).unwrap();
+        let st = question_add_status(
+            img,
+            "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:0#7",
+            &serde_json::to_string(&schema).unwrap(),
+        )
+        .await;
+        assert_eq!(st.code(), tonic::Code::InvalidArgument);
     }
 
     #[tokio::test]

@@ -211,6 +211,53 @@ pub fn parse_hijack_schema(json: &str) -> Result<HijackSchema, HiiError> {
     Ok(s)
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QuestionAddSchema {
+    pub form_id: u16,
+    pub prompt: String,
+    pub help: String,
+    pub question_id: u16,
+    pub var_store_id: u16,
+    pub var_offset: u16,
+    pub size: u8,
+    pub options: Vec<QuestionAddOption>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub defaults: Option<QuestionAddDefaults>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QuestionAddOption {
+    pub text: String,
+    pub value: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<DefaultClass>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QuestionAddDefaults {
+    pub optimized: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QuestionAddList {
+    pub questions: Vec<QuestionAddSchema>,
+}
+
+pub fn parse_question_add_schema(json: &str) -> Result<QuestionAddList, HiiError> {
+    let s: QuestionAddList =
+        serde_json::from_str(json).map_err(|e| HiiError::InvalidSchema(e.to_string()))?;
+    if s.questions.is_empty() {
+        return Err(HiiError::InvalidSchema(
+            "questions must not be empty".to_string(),
+        ));
+    }
+    Ok(s)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -284,5 +331,79 @@ mod tests {
     #[test]
     fn parse_hijack_schema_requires_questions() {
         assert!(parse_hijack_schema(r#"{"questions": []}"#).is_err());
+    }
+
+    #[test]
+    fn parse_question_add_schema_list() {
+        let s = parse_question_add_schema(
+            r#"{"questions": [{
+                "form_id": 10019,
+                "prompt": "Serial Console",
+                "help": "Enable serial console output",
+                "question_id": 512,
+                "var_store_id": 1,
+                "var_offset": 128,
+                "size": 1,
+                "options": [
+                    {"text": "Disabled", "value": 0},
+                    {"text": "Enabled", "value": 1, "default": "optimized"}
+                ]
+            }]}"#,
+        )
+        .unwrap();
+        assert_eq!(s.questions.len(), 1);
+        let q = &s.questions[0];
+        assert_eq!(q.form_id, 10019);
+        assert_eq!(q.question_id, 512);
+        assert_eq!(q.var_store_id, 1);
+        assert_eq!(q.var_offset, 128);
+        assert_eq!(q.size, 1);
+        assert_eq!(q.options.len(), 2);
+        assert_eq!(q.options[0].text, "Disabled");
+        assert_eq!(q.options[0].value, 0);
+        assert_eq!(q.options[0].default, None);
+        assert_eq!(q.options[1].default, Some(DefaultClass::Optimized));
+        assert!(q.defaults.is_none());
+    }
+
+    #[test]
+    fn parse_question_add_schema_accepts_defaults_field() {
+        let s = parse_question_add_schema(
+            r#"{"questions": [{
+                "form_id": 7, "prompt": "P", "help": "H",
+                "question_id": 2, "var_store_id": 1, "var_offset": 3, "size": 1,
+                "options": [{"text": "A", "value": 1, "default": "optimized"}],
+                "defaults": {"optimized": 1}
+            }]}"#,
+        )
+        .unwrap();
+        assert_eq!(s.questions[0].defaults.map(|d| d.optimized), Some(1));
+    }
+
+    #[test]
+    fn parse_question_add_schema_rejects_unknown_fields() {
+        let e = parse_question_add_schema(
+            r#"{"questions": [{
+                "form_id": 7, "prompt": "P", "help": "H",
+                "question_id": 2, "var_store_id": 1, "var_offset": 3, "size": 1,
+                "options": [{"text": "A", "value": 1, "bogus": 9}]
+            }]}"#,
+        )
+        .unwrap_err();
+        assert!(format!("{e:?}").contains("unknown field"));
+        let e = parse_question_add_schema(
+            r#"{"questions": [{
+                "form_id": 7, "prompt": "P", "help": "H",
+                "question_id": 2, "var_store_id": 1, "var_offset": 3, "size": 1,
+                "options": [], "failsafe": 0
+            }]}"#,
+        )
+        .unwrap_err();
+        assert!(format!("{e:?}").contains("unknown field"));
+    }
+
+    #[test]
+    fn parse_question_add_schema_rejects_empty_list() {
+        assert!(parse_question_add_schema(r#"{"questions": []}"#).is_err());
     }
 }
