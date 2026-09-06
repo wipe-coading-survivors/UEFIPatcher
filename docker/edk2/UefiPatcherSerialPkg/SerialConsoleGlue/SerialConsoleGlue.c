@@ -215,6 +215,7 @@ SerialConsoleGlueEntry (
   )
 {
   EFI_STATUS                    Status;
+  EFI_STATUS                    ConOutStatus;
   EFI_HANDLE                    *Handles;
   EFI_HANDLE                    SerialHandle;
   EFI_HANDLE                    Child;
@@ -266,13 +267,13 @@ SerialConsoleGlueEntry (
     ConsolePath = Path;
   }
 
-  (VOID)AppendInstanceToVariable (L"ConOut", ConsolePath);
+  ConOutStatus = AppendInstanceToVariable (L"ConOut", ConsolePath);
   (VOID)AppendInstanceToVariable (L"ConIn", ConsolePath);
   (VOID)AppendInstanceToVariable (L"ErrOut", ConsolePath);
   FreePool (ConsolePath);
 
   Child = FindTerminalChild ();
-  if (Child != NULL) {
+  if ((Child != NULL) && (ConOutStatus == EFI_SUCCESS)) {
     TextOut = NULL;
     if (!EFI_ERROR (gBS->HandleProtocol (Child, &gEfiSimpleTextOutProtocolGuid, (VOID **)&TextOut)) &&
         (TextOut != NULL)) {
