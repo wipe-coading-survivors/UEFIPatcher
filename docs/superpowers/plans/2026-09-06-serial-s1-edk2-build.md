@@ -158,7 +158,7 @@ git commit -m "feat(s1): edk2-builder container image"
   UefiDriverEntryPoint|MdePkg/Library/UefiDriverEntryPoint/UefiDriverEntryPoint.inf
   UefiLib|MdePkg/Library/UefiLib/UefiLib.inf
   IoLib|MdePkg/Library/BaseIoLibIntrinsic/BaseIoLibIntrinsic.inf
-  PlatformHookLib|MdePkg/Library/BasePlatformHookLibNull/BasePlatformHookLibNull.inf
+  PlatformHookLib|MdeModulePkg/Library/BasePlatformHookLibNull/BasePlatformHookLibNull.inf
   PciLib|MdePkg/Library/BasePciLibCf8/BasePciLibCf8.inf
   ReportStatusCodeLib|MdePkg/Library/BaseReportStatusCodeLibNull/BaseReportStatusCodeLibNull.inf
   SerialPortLib|MdeModulePkg/Library/BaseSerialPortLib16550/BaseSerialPortLib16550.inf
@@ -190,6 +190,8 @@ git commit -m "feat(s1): edk2-builder container image"
 ```
 
 Примечание (rule-11, проверено по .dec чекаута refs/edk2@bcd1687): все `PcdSerial*` объявлены в `MdeModulePkg.dec` под `gEfiMdeModulePkgTokenSpaceGuid` (в т.ч. `PcdSerialRegisterBase/UseMmio/BaudRate/LineControl/FifoControl/ClockRate/RegisterStride/RegisterAccessWidth/UseHardwareFlowControl/DetectCable/ExtendedTxFifoSize/PciDeviceInfo`), а `PcdDefaultTerminalType` — в `MdePkg.dec` под `gEfiMdePkgTokenSpaceGuid`. Исходные префиксы плана не соответствовали декларациям (build упал бы с PCD not found); исправлены только префиксы token space, значения — по-прежнему дословно §5.2 отчёта S0.
+
+Примечание (rule-11, обнаружено при выполнении Step 4): `BasePlatformHookLibNull` лежит в `MdeModulePkg/Library/`, а не в `MdePkg/Library/` (build: `error 000E: … BasePlatformHookLibNull.inf is not found in packages path`). Остальные пути [LibraryClasses]/[Components] проверены по чекауту — существуют.
 
 Пояснение для исполнителя (не в файл): все PCD fixed-at-build — обращения `PcdGet*` в SerialDxe/TerminalDxe/16550 резолвятся в compile-time константы, gEfiPcdProtocolGuid в рантайме не трогается (важно для чужого PCD-пространства LIVE).
 
