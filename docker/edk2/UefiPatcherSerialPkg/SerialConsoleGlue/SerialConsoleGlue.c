@@ -19,22 +19,74 @@
 typedef struct {
   VENDOR_DEVICE_PATH       Vendor;
   EFI_DEVICE_PATH_PROTOCOL End;
-} VT_UTF8_DEVICE_PATH;
+} TERMINAL_DEVICE_PATH;
 
-STATIC VT_UTF8_DEVICE_PATH mVtUtf8Path = {
+STATIC EFI_GUID  mSetupVarGuid = { 0xEC87D643, 0xEBA4, 0x4BB5, { 0xA1, 0xE5, 0x3F, 0x3E, 0x36, 0xB2, 0x0D, 0xA9 } };
+STATIC EFI_GUID  mSioVarGuid  = { 0x560BF58A, 0x1E0D, 0x4D7E, { 0x95, 0x3F, 0x29, 0x80, 0xA2, 0x61, 0xE0, 0x31 } };
+
+STATIC CONST UINT64 kBaudMap[5] = { 115200, 57600, 38400, 19200, 9600 };
+
+STATIC CONST EFI_GUID *CONST kTerminalGuidMap[4] = {
+  &gEfiVTUTF8Guid,
+  &gEfiVT100PlusGuid,
+  &gEfiVT100Guid,
+  &gEfiPcAnsiGuid
+};
+
+STATIC TERMINAL_DEVICE_PATH mTerminalPath = {
   {
     { MESSAGING_DEVICE_PATH, MSG_VENDOR_DP, { sizeof (VENDOR_DEVICE_PATH), 0 } },
-    EFI_VT_UTF8_GUID
+    { 0, 0, 0, { 0, 0, 0, 0, 0, 0, 0, 0 } }
   },
   { END_DEVICE_PATH_TYPE, END_ENTIRE_DEVICE_PATH_SUBTYPE, { sizeof (EFI_DEVICE_PATH_PROTOCOL), 0 } }
 };
 
-STATIC EFI_EVENT mReadyToBootEvent = NULL;
+STATIC CONST EFI_GUID *mTerminalGuid    = NULL;
+STATIC EFI_EVENT       mReadyToBootEvent = NULL;
+
+STATIC
+VOID
+ReadConfigBytes (
+  OUT UINT8  *BaudIndex,
+  OUT UINT8  *TerminalIndex,
+  OUT UINT8  *Enable
+  )
+{
+  EFI_STATUS  Status;
+  UINT8       *Setup;
+  UINT8       Nv[16];
+  UINTN       Size;
+
+  *BaudIndex     = 0;
+  *TerminalIndex = 0;
+  *Enable        = 1;
+
+  Size = 0;
+  Status = gRT->GetVariable (L"Setup", &mSetupVarGuid, NULL, &Size, NULL);
+  if (Status == EFI_BUFFER_TOO_SMALL) {
+    Setup = AllocatePool (Size);
+    if (Setup != NULL) {
+      Status = gRT->GetVariable (L"Setup", &mSetupVarGuid, NULL, &Size, Setup);
+      if (!EFI_ERROR (Status) && (Size > 0x5E)) {
+        *BaudIndex     = Setup[0x5D];
+        *TerminalIndex = Setup[0x5E];
+      }
+      FreePool (Setup);
+    }
+  }
+
+  Size = sizeof (Nv);
+  Status = gRT->GetVariable (L"PNP0501_0_NV", &mSioVarGuid, NULL, &Size, Nv);
+  if (!EFI_ERROR (Status) && (Size >= 1)) {
+    *Enable = Nv[0];
+  }
+}
 
 STATIC
 BOOLEAN
-HasVtUtf8Node (
-  IN CONST EFI_DEVICE_PATH_PROTOCOL  *DevicePath
+HasTerminalNode (
+  IN CONST EFI_DEVICE_PATH_PROTOCOL  *DevicePath,
+  IN CONST EFI_GUID                  *TerminalGuid
   )
 {
   CONST EFI_DEVICE_PATH_PROTOCOL *Node;
@@ -45,7 +97,7 @@ HasVtUtf8Node (
   for (Node = DevicePath; !IsDevicePathEnd (Node); Node = NextDevicePathNode (Node)) {
     if ((DevicePathType (Node) == MESSAGING_DEVICE_PATH) &&
         (DevicePathSubType (Node) == MSG_VENDOR_DP) &&
-        CompareGuid (&((VENDOR_DEVICE_PATH *)Node)->Guid, &gEfiVTUTF8Guid)) {
+        CompareGuid (&((VENDOR_DEVICE_PATH *)Node)->Guid, TerminalGuid)) {
       return TRUE;
     }
   }
@@ -55,7 +107,7 @@ HasVtUtf8Node (
 STATIC
 EFI_HANDLE
 FindTerminalChild (
-  VOID
+  IN CONST EFI_GUID  *TerminalGuid
   )
 {
   EFI_STATUS                Status;
@@ -84,7 +136,7 @@ FindTerminalChild (
                     &gEfiDevicePathProtocolGuid,
                     (VOID **)&DevicePath
                     );
-    if (!EFI_ERROR (Status) && HasVtUtf8Node (DevicePath)) {
+    if (!EFI_ERROR (Status) && HasTerminalNode (DevicePath, TerminalGuid)) {
       Child = Handles[Index];
       break;
     }
@@ -196,7 +248,7 @@ OnReadyToBoot (
   EFI_HANDLE                    Child;
   EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL  *TextOut;
 
-  Child = FindTerminalChild ();
+  Child = FindTerminalChild (mTerminalGuid);
   if (Child == NULL) {
     return;
   }
@@ -214,16 +266,27 @@ SerialConsoleGlueEntry (
   IN EFI_SYSTEM_TABLE  *SystemTable
   )
 {
-  EFI_STATUS                    Status;
-  EFI_STATUS                    ConOutStatus;
-  EFI_HANDLE                    *Handles;
-  EFI_HANDLE                    SerialHandle;
-  EFI_HANDLE                    Child;
-  EFI_DEVICE_PATH_PROTOCOL      *Path;
-  EFI_DEVICE_PATH_PROTOCOL      *ConsolePath;
-  EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL  *TextOut;
-  UINTN                         Count;
-  UINTN                         Index;
+  EFI_STATUS                        Status;
+  EFI_STATUS                        ConOutStatus;
+  EFI_HANDLE                        *Handles;
+  EFI_HANDLE                        SerialHandle;
+  EFI_HANDLE                        Child;
+  EFI_DEVICE_PATH_PROTOCOL          *Path;
+  EFI_DEVICE_PATH_PROTOCOL          *ConsolePath;
+  EFI_SERIAL_IO_PROTOCOL            *SerialIo;
+  EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL   *TextOut;
+  UINTN                             Count;
+  UINTN                             Index;
+  UINT8                             BaudIndex;
+  UINT8                             TerminalIndex;
+  UINT8                             Enable;
+
+  ReadConfigBytes (&BaudIndex, &TerminalIndex, &Enable);
+  if (Enable == 0) {
+    return EFI_SUCCESS;
+  }
+  mTerminalGuid = kTerminalGuidMap[(TerminalIndex > 3) ? 3 : TerminalIndex];
+  CopyGuid (&mTerminalPath.Vendor.Guid, mTerminalGuid);
 
   Handles = NULL;
   Status = gBS->LocateHandleBuffer (
@@ -238,10 +301,24 @@ SerialConsoleGlueEntry (
   }
 
   SerialHandle = Handles[0];
+  SerialIo = NULL;
+  if (!EFI_ERROR (gBS->HandleProtocol (SerialHandle, &gEfiSerialIoProtocolGuid, (VOID **)&SerialIo)) &&
+      (SerialIo != NULL)) {
+    (VOID)SerialIo->SetAttributes (
+                      SerialIo,
+                      kBaudMap[(BaudIndex > 4) ? 4 : BaudIndex],
+                      0,
+                      0,
+                      NoParity,
+                      8,
+                      OneStopBit
+                      );
+  }
+
   Child = NULL;
   for (Index = 0; (Index < Count) && (Child == NULL); Index++) {
     (VOID)gBS->ConnectController (Handles[Index], NULL, NULL, FALSE);
-    Child = FindTerminalChild ();
+    Child = FindTerminalChild (mTerminalGuid);
   }
   FreePool (Handles);
 
@@ -259,7 +336,7 @@ SerialConsoleGlueEntry (
     return EFI_OUT_OF_RESOURCES;
   }
   if (Child == NULL) {
-    Path = AppendDevicePathNode (ConsolePath, (EFI_DEVICE_PATH_PROTOCOL *)&mVtUtf8Path);
+    Path = AppendDevicePathNode (ConsolePath, (EFI_DEVICE_PATH_PROTOCOL *)&mTerminalPath);
     FreePool (ConsolePath);
     if (Path == NULL) {
       return EFI_OUT_OF_RESOURCES;
@@ -272,7 +349,7 @@ SerialConsoleGlueEntry (
   (VOID)AppendInstanceToVariable (L"ErrOut", ConsolePath);
   FreePool (ConsolePath);
 
-  Child = FindTerminalChild ();
+  Child = FindTerminalChild (mTerminalGuid);
   if ((Child != NULL) && (ConOutStatus == EFI_SUCCESS)) {
     TextOut = NULL;
     if (!EFI_ERROR (gBS->HandleProtocol (Child, &gEfiSimpleTextOutProtocolGuid, (VOID **)&TextOut)) &&

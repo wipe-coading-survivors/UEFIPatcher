@@ -2386,7 +2386,7 @@ fn real_image_ops_insert_serial_s2() {
         first_diff, FIRST_SLOT,
         "first changed byte must be first free slot"
     );
-    let expected_span = 32_848 + 4 + 65_596 + 24_688;
+    let expected_span = 32_848 + 4 + 65_596 + 41_072;
     assert!(
         last_diff < FIRST_SLOT + expected_span,
         "changes must stay inside {expected_span}-byte span: last_diff={last_diff:#x}"
@@ -2462,7 +2462,7 @@ fn real_image_ops_insert_serial_s3() {
     const SETUP_MODULE_GUID: &str = "899407D7-99FE-43D8-9A21-79EC328CAC21";
     const SETUPDATA_GUID: &str = "FE612B72-203C-47B1-8560-A66D946EB371";
     const SERIAL_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/serial");
-    const S2_WINDOW: (usize, usize) = (0xB63B18, 0xB81C18);
+    const S2_WINDOW: (usize, usize) = (0xB63B18, 0xB85C18);
     const FORM_ID: u16 = 10019;
 
     let data = load_fw();

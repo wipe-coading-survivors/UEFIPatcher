@@ -26,6 +26,9 @@
 [Guids]
   gEfiGlobalVariableGuid
   gEfiVTUTF8Guid
+  gEfiVT100PlusGuid
+  gEfiVT100Guid
+  gEfiPcAnsiGuid
   gEfiEventReadyToBootGuid
 
 [Protocols]
