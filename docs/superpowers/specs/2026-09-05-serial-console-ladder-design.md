@@ -315,3 +315,54 @@ S0 закрыта 2026-09-05: отчёт `docs/reports/2026-09-05-serial-s0-reco
   идентичны (`reproducible (identical)`), итог REPRODUCIBLE; FvForceReproducible в
   этом edk2 отсутствует — доказательство двойной сборкой.
   Гейт S1 выполнен.
+
+## 8. Мини-pre-check S2 (аддендум, 2026-09-06)
+
+Выполнен до плана S2 по §8.5-рекомендации финального ревью S1 (скрипты
+`/tmp/serial-s2-precheck/`, дизасм-проход objdump по S0-блобам; сырьё —
+только чтение, артефакты вне git; метод восстановим из пунктов ниже).
+
+1. **PC-A — CSM-механика (закрывает §8.5-1 статически).** Все шесть
+   `DisconnectController`-сайтов LIVE CsmDxe (`A062CF1F`, декомпрессат
+   `/tmp/serial-s0/csmdxe_dec.bin`, дизасм `_csm.asm`) принадлежат
+   CSM-рантайму: (а) функция @0x2c30 — `LocateProtocol(LegacyBios)` →
+   отключить все SerialIo (0x43ac: LocateHandleBuffer(SerialIo) →
+   DisconnectController по каждому) → `CreateEventEx` на группу
+   gEfiLegacyBootEventGuid (2A571201, пустой колбэк @0x9d34 = `ret 0`) —
+   вписана в vtable LegacyBios-протокола (слот +0x20, заполнение при
+   init @0x1430) и дополнительно вызывается из CSM-launch-пути,
+   завершающегося `gRT->ResetSystem(EfiResetCold)` (0x84ca→0x84e0);
+   (б) остальные сайты — за флагом CSM-машины состояний @0xb016
+   (значение 2 = skip). Прямых вызовов из DXE-init нет: init
+   (entry 0xfd4 → 0x1000/0x119c) только строит таблицы. **Вывод: чистый
+   UEFI-бут порт не отбирает; E30 обязан бутить UEFI-путём — легаси-бут
+   даст ложный негатив (CSM-рантайм отключит SerialIo до INT10/INT14).**
+2. **PC-B — ConOut-ландшафт (закрывает §8.5-2 статически, §8.5-5
+   протокольно).**
+   - Вендор-GUID консольных переменных — стандартный
+     `gEfiGlobalVariableGuid` 8BE4DF61 (GUID-якорь хелперов модуля
+     8F4B8F82 @rva 0x1680): цель `SetVariable` glue верна.
+   - Фабричный NVRAM LIVE не содержит ConOut/ConIn/ErrOut (nvar_dissect,
+     §5.5-инструмент): переменные создаёт BDS при первом буте, glue сам
+     создаёт при NOT_FOUND → **NVRAM-инициализация S2 не нужна**
+     (спека §3-S2 «если разведка скажет» — разведка сказала: не нужно).
+   - Все UTF-16 Con*-ссылки в LIVE — в 5 сжатых DXE-модулях: 8F4B8F82
+     (BdsDxe-подобный: Get-обёртки ConOut/ConOutDev/ConIn/ConInDev +
+     `SetVariable` только ErrOut/ErrOutDev — паттерн UpdateSystemErrOut),
+     447A1B58 (SMM) и 1807040D (DXE) — таблица пар (имя, attr) как
+     BmConsole-порт (Con* attr 7 = NV|BS|RT, *Dev attr 6 = BS|RT),
+     628A497D (AMI ConSplitter, читает ConOutDev/ConInDev), 87AB821C
+     (AcpiPlatform, инцидентный ConIn). **`SetVariable(L"ConOut")`-
+     перезаписи не найдено ни в одном** — семантика merge-append
+     (эталон: refs/edk2 BmConsole.c:482-492 read-merge-write; ConPlatform
+     трогает только Dev-близнецы, ConPlatform.c:395-410/566-575).
+     Остаточный риск (AMI TSE пересобирает ConOut по своей энумерации)
+     статически не подтверждён → эмпирика E30; контингенси — dump ConOut
+     из Shell (`dmpstore ConOut`).
+   - §8.5-5: маркеры SC-S1 — чистый ASCII; для E30 достаточно любого
+     терминала 115200 8N1 без flow control (picocom/minicom); VT-UTF8-
+     специфика несущественна до S3+.
+3. **Уточнение §7/S0 §5.4:** «ConSplitter 0/0» верно для edk2-референса;
+   AMI ConSplitter (628A497D) в LIVE присутствует и читает Dev-близнецы —
+   на маршрут glue (прямой append Con*) не влияет.
+
