@@ -2817,6 +2817,216 @@ fn real_image_ops_insert_serial_s3() {
 
 #[test]
 #[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
+fn real_image_ops_insert_serial_s4() {
+    use uefi_engine::builder::build_image;
+    use uefi_engine::hii::schema::parse_question_add_schema;
+    use uefi_engine::hii::{add_question, question_info};
+    use uefi_engine::ops::{InsertMode, insert};
+    use uefi_engine::types::{ImageMode, Target};
+
+    const MAIN_FV_OFF: usize = 0x890000;
+    const FIRST_SLOT: usize = 0xB63B18;
+    const SETUP_MODULE_GUID: &str = "899407D7-99FE-43D8-9A21-79EC328CAC21";
+    const SETUPDATA_GUID: &str = "FE612B72-203C-47B1-8560-A66D946EB371";
+    const SERIAL_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/serial");
+    const FORM_ID: u16 = 10019;
+    const SERIAL_DXE_GUID: &str = "9A5163E7-5C29-453F-825C-837A46A81E15";
+    const PCD_PROTOCOL_GUID_LE: [u8; 16] = [
+        0xF6, 0xF0, 0xA3, 0x13, 0x4A, 0x26, 0xF0, 0x3E, 0xF2, 0xE0, 0xDE, 0xC5, 0x12, 0x34, 0x2F,
+        0x34,
+    ];
+
+    let data = load_fw();
+    assert_eq!(data.len(), 0x0100_0000, "16 MiB image expected");
+    let serial: Vec<&str> = vec![
+        "SerialIoAmiDxe.ffs",
+        "TerminalDxe.ffs",
+        "SerialConsoleGlue.ffs",
+    ];
+    let expect_tail = [
+        "97C81E5D-8FA0-486A-AAEA-0EFDF090FE4F",
+        "9E863906-A40F-4875-977F-5B93FF237FC6",
+        "1EF3A7C2-9B64-4D58-8A31-5C0E9F2B7D43",
+    ];
+
+    let mut img = parse_image(&data, ImageMode::Write, "img1", "s1").unwrap();
+    let vol_idx = img
+        .root
+        .children
+        .iter()
+        .position(|c| c.offset == MAIN_FV_OFF as u32)
+        .expect("main FV @0x890000");
+    let files_before = img.root.children[vol_idx].children.len();
+    assert!(files_before > 100, "main FV files: {files_before}");
+
+    let mut anchor = Target::Path(vec![vol_idx, files_before - 1]);
+    for name in &serial {
+        let path = std::path::Path::new(SERIAL_DIR).join(name);
+        let ffs = std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        insert(&mut img.root, &anchor, &ffs, InsertMode::After).unwrap();
+        let last = img.root.children[vol_idx].children.len() - 1;
+        anchor = Target::Path(vec![vol_idx, last]);
+    }
+    let s4_triple = build_image(&img).expect("build after S4 inserts");
+    assert_eq!(s4_triple.len(), data.len(), "total flash length preserved");
+
+    let mut first_diff = usize::MAX;
+    let mut last_diff = 0usize;
+    for (i, (a, b)) in data.iter().zip(s4_triple.iter()).enumerate() {
+        if a != b {
+            first_diff = first_diff.min(i);
+            last_diff = i;
+        }
+    }
+    assert_eq!(
+        first_diff, FIRST_SLOT,
+        "first changed byte must be first free slot"
+    );
+    let span = 7_680 + 65_600 + 41_072;
+    assert!(
+        last_diff < FIRST_SLOT + span,
+        "changes must stay inside {span}-byte span: last_diff={last_diff:#x}"
+    );
+    let mut non_tail_changes = 0usize;
+    for i in FIRST_SLOT..=last_diff {
+        if s4_triple[i] != data[i] && data[i] != 0xFF {
+            non_tail_changes += 1;
+        }
+    }
+    assert_eq!(
+        non_tail_changes, 0,
+        "all changed bytes must lie over 0xFF free tail"
+    );
+
+    let mut img2 = parse_image(&s4_triple, ImageMode::Write, "img2", "s4").unwrap();
+
+    let schema_path = std::path::Path::new(SERIAL_DIR).join("s3_questions.json");
+    let schema_json = std::fs::read_to_string(&schema_path)
+        .unwrap_or_else(|e| panic!("read {}: {e}", schema_path.display()));
+    let list = parse_question_add_schema(&schema_json).expect("fixture schema parses");
+    assert_eq!(list.questions.len(), 2);
+
+    let item = format!("{SETUP_MODULE_GUID}:0x10:0#{FORM_ID}");
+    for (i, q) in list.questions.iter().enumerate() {
+        assert_eq!(q.form_id, FORM_ID);
+        let res = add_question(&mut img2, &item, q)
+            .unwrap_or_else(|e| panic!("add_question #{}: {e:?}", i + 1));
+        assert_eq!(res.question_id, q.question_id);
+    }
+    let s4_built = build_image(&img2).expect("build after question adds");
+    assert_eq!(s4_built.len(), data.len(), "total flash length preserved");
+
+    let setup_slot = find_file_range(&s4_triple, SETUP_MODULE_GUID);
+    let sd_slot = find_file_range(&s4_triple, SETUPDATA_GUID);
+    let zones = [
+        (FIRST_SLOT, FIRST_SLOT + span),
+        (setup_slot.start, setup_slot.end),
+        (sd_slot.start, sd_slot.end),
+    ];
+    let mut outside = Vec::new();
+    for (i, (a, b)) in s4_triple.iter().zip(s4_built.iter()).enumerate() {
+        if a != b && !zones.iter().any(|(s, e)| i >= *s && i < *e) {
+            outside.push(i);
+        }
+    }
+    assert!(
+        outside.is_empty(),
+        "{} bytes changed outside the insert window + Setup/SetupData slots, first={outside:#x?}",
+        outside.len()
+    );
+
+    let re = parse_image(&s4_built, ImageMode::Read, "re", "s4").unwrap();
+    let vol = &re.root.children[vol_idx];
+    assert_eq!(vol.children.len(), files_before + 3);
+    let tail: Vec<String> = vol.children[files_before..]
+        .iter()
+        .map(|f| {
+            f.guid
+                .map(|g| g.to_string().to_ascii_uppercase())
+                .unwrap_or_default()
+        })
+        .collect();
+    assert_eq!(tail, expect_tail, "donor swap order at chain end");
+    assert!(
+        !vol.children.iter().any(|f| matches!(&f.guid, Some(g)
+            if g.to_string().to_ascii_uppercase() == SERIAL_DXE_GUID)),
+        "SerialDxe 9A5163E7 must be absent from the S4 candidate (producer replaced, not added)"
+    );
+    for f in &vol.children[files_before..] {
+        assert_eq!(
+            f.header[23], 0xF8,
+            "inserted file state must be polarity-1 valid"
+        );
+        assert_eq!(
+            f.offset % 8,
+            0,
+            "FFS file must be 8-aligned in FV, got @{:#x}",
+            f.offset
+        );
+    }
+    for (i, f) in vol.children[files_before..].iter().enumerate() {
+        let path = std::path::Path::new(SERIAL_DIR).join(serial[i]);
+        let ffs = std::fs::read(&path).unwrap();
+        assert_eq!(
+            f.body,
+            ffs[f.header.len()..f.header.len() + f.body.len()],
+            "inserted body must be byte-identical to the fixture file"
+        );
+    }
+
+    let donor = &vol.children[files_before];
+    assert_eq!(
+        donor.children[0].subtype, 0x13,
+        "donor first section is DEPEX"
+    );
+    assert_eq!(donor.body[3], 0x13);
+    assert_eq!(donor.body[4], 0x02, "DEPEX starts with PUSH");
+    assert_eq!(&donor.body[5..21], &PCD_PROTOCOL_GUID_LE[..]);
+    assert_eq!(donor.body[21], 0x08, "DEPEX ends with END");
+    assert_eq!(donor.body[0x16], 0x00);
+    assert_eq!(donor.body[0x17], 0x00, "2-byte pad after DEPEX");
+    assert_eq!(donor.body[0x1B], 0x02, "second section is GUID_DEFINED");
+    let guided = &donor.children[1];
+    assert_eq!(guided.subtype, 0x02);
+    let ui = guided
+        .children
+        .iter()
+        .find(|c| c.subtype == 0x15)
+        .expect("UI section inside donor guided payload");
+    let ui_text: String = String::from_utf16_lossy(
+        &ui.body
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .take_while(|&u| u != 0)
+            .collect::<Vec<u16>>(),
+    );
+    assert_eq!(ui_text, "SerialIo", "donor UI name");
+
+    for (q, want_opts) in [(&list.questions[0], 5usize), (&list.questions[1], 4usize)] {
+        let qi = question_info(&re, &format!("{item}:{}", q.question_id))
+            .unwrap_or_else(|e| panic!("question_info q{}: {e:?}", q.question_id));
+        assert_eq!(qi.form_id, u32::from(FORM_ID));
+        assert_eq!(qi.question_id, u32::from(q.question_id));
+        assert_eq!(qi.kind, "one_of");
+        assert_eq!(qi.var_store_id, u32::from(q.var_store_id));
+        assert_eq!(qi.var_offset, u32::from(q.var_offset));
+        assert_eq!(qi.options.len(), want_opts);
+        assert_eq!(qi.defaults.len(), 1);
+        assert_eq!(qi.defaults[0].value, 0, "default 0 (115200 / VT-UTF8)");
+    }
+
+    let re2 = parse_image(&s4_built, ImageMode::Read, "re2", "s4b").unwrap();
+    let again = build_image(&re2).expect("stable rebuild");
+    assert_eq!(again, s4_built, "save -> open -> save must be byte-stable");
+
+    eprintln!(
+        "real_image s4: files {files_before} -> {} span={span:#x} last_diff={last_diff:#x}",
+        vol.children.len()
+    );
+}
+
+#[test]
+#[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
 fn real_image_add_question_discovers_nested_setupdata() {
     let data = load_fw();
     let img = parse_image(&data, ImageMode::Write, "i", "s").unwrap();
