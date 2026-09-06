@@ -2,6 +2,7 @@ use r_efi::hii::{
     FormId, IFR_END_OP, IFR_FORM_OP, IFR_FORM_SET_OP, IFR_SUPPRESS_IF_OP, PACKAGE_FORMS, StringId,
 };
 
+use super::HiiError;
 use crate::types::Guid;
 
 #[derive(Debug, Clone)]
@@ -266,6 +267,97 @@ fn locate_formset_insert_points(body: &[u8], formset_idx: usize) -> Option<(usiz
                         depth -= 1;
                         if depth == 0 {
                             return Some((i + length, j));
+                        }
+                    } else if inner_ls & 0x80 != 0 {
+                        depth += 1;
+                    }
+                    j += inner_len;
+                }
+                return None;
+            }
+            seen += 1;
+        }
+        i += length;
+    }
+    None
+}
+
+pub fn splice_question_ops(
+    package: &mut Vec<u8>,
+    formset_idx: usize,
+    form_id: u16,
+    ops: &[u8],
+) -> Result<(usize, usize), HiiError> {
+    if ops.is_empty() {
+        return Err(HiiError::InvalidSchema("empty ops".into()));
+    }
+    let Some(insert_at) = locate_form_end(package, formset_idx, form_id) else {
+        return Err(HiiError::NotFound);
+    };
+    package.splice(insert_at..insert_at, ops.iter().copied());
+    let plen = (package[0] as usize | (package[1] as usize) << 8 | (package[2] as usize) << 16)
+        + ops.len();
+    package[0] = (plen & 0xFF) as u8;
+    package[1] = ((plen >> 8) & 0xFF) as u8;
+    package[2] = ((plen >> 16) & 0xFF) as u8;
+    Ok((insert_at, ops.len()))
+}
+
+fn locate_form_end(body: &[u8], formset_idx: usize, form_id: u16) -> Option<usize> {
+    if !is_form_package(body) {
+        return None;
+    }
+    let plen = body[0] as usize | (body[1] as usize) << 8 | (body[2] as usize) << 16;
+    let end = plen.min(body.len());
+    let mut seen = 0usize;
+    let mut i = 4;
+    while i + 2 <= end {
+        let op_code = body[i];
+        let length_and_scope = body[i + 1];
+        let length = (length_and_scope & 0x7F) as usize;
+        if length < 2 || i + length > end {
+            return None;
+        }
+        if op_code == IFR_FORM_SET_OP {
+            if seen == formset_idx {
+                let mut depth = 1usize;
+                let mut j = i + length;
+                while j + 2 <= end {
+                    let inner_op = body[j];
+                    let inner_ls = body[j + 1];
+                    let inner_len = (inner_ls & 0x7F) as usize;
+                    if inner_len < 2 || j + inner_len > end {
+                        return None;
+                    }
+                    if inner_op == IFR_FORM_OP
+                        && inner_len >= 6
+                        && u16::from_le_bytes([body[j + 2], body[j + 3]]) == form_id
+                    {
+                        let mut fdepth = 1usize;
+                        let mut k = j + inner_len;
+                        while k + 2 <= end {
+                            let f_op = body[k];
+                            let f_ls = body[k + 1];
+                            let f_len = (f_ls & 0x7F) as usize;
+                            if f_len < 2 || k + f_len > end {
+                                return None;
+                            }
+                            if f_op == IFR_END_OP {
+                                fdepth -= 1;
+                                if fdepth == 0 {
+                                    return Some(k);
+                                }
+                            } else if f_ls & 0x80 != 0 {
+                                fdepth += 1;
+                            }
+                            k += f_len;
+                        }
+                        return None;
+                    }
+                    if inner_op == IFR_END_OP {
+                        depth -= 1;
+                        if depth == 0 {
+                            return None;
                         }
                     } else if inner_ls & 0x80 != 0 {
                         depth += 1;
@@ -742,7 +834,7 @@ mod tests {
         x.to_le_bytes().to_vec()
     }
 
-    fn two_form_package() -> Vec<u8> {
+    fn two_form_raw_package() -> Vec<u8> {
         let mut ifr = Vec::new();
         ifr.extend(ifr_op(
             0x0E,
@@ -814,7 +906,7 @@ mod tests {
 
     #[test]
     fn collect_form_string_ids_walks_target_form_only() {
-        let pkg = two_form_package();
+        let pkg = two_form_raw_package();
         assert_eq!(
             collect_form_string_ids(&pkg, 901),
             vec![0x1325, 4894, 4895, 4965, 4966, 4969, 2638]
@@ -827,7 +919,7 @@ mod tests {
 
     #[test]
     fn collect_form_string_ids_unknown_form_is_empty() {
-        let pkg = two_form_package();
+        let pkg = two_form_raw_package();
         assert!(collect_form_string_ids(&pkg, 9999).is_empty());
     }
 
@@ -847,5 +939,142 @@ mod tests {
         ifr.extend(ifr_op(IFR_END_OP, false, &[]));
         ifr.extend(ifr_op(IFR_END_OP, false, &[]));
         assert_eq!(collect_form_string_ids(&ifr, 7), vec![0x22]);
+    }
+
+    fn one_of_question() -> Vec<u8> {
+        let mut p = Vec::new();
+        p.extend_from_slice(&0x21u16.to_le_bytes());
+        p.extend_from_slice(&0x22u16.to_le_bytes());
+        p.extend_from_slice(&0x31u16.to_le_bytes());
+        p.extend_from_slice(&1u16.to_le_bytes());
+        p.extend_from_slice(&0x40u16.to_le_bytes());
+        p.push(0u8);
+        let mut q = opcode(IFR_ONE_OF_OP, true, &p);
+        q.extend(opcode(
+            IFR_ONE_OF_OPTION_OP,
+            false,
+            &[0x23, 0x00, 0x00, 0x05, 0x01, 0x00],
+        ));
+        q.extend(end());
+        q
+    }
+
+    fn two_form_package() -> Vec<u8> {
+        let g = Guid::from_str(FORMSET_GUID).unwrap();
+        let mut ifr = form_set(&g, 7);
+        ifr.extend(form(100, 10));
+        ifr.extend(one_of_question());
+        ifr.extend(end());
+        ifr.extend(form(200, 20));
+        ifr.extend(end());
+        ifr.extend(end());
+        package(&ifr)
+    }
+
+    #[test]
+    fn splice_question_ops_inserts_before_end_form() {
+        let mut pkg = two_form_package(); // формы 100 и 200, в 100 — один one_of
+        let before_len = pkg.len();
+        let ops = opcode(
+            0x05,
+            true,
+            &[
+                0x11, 0x00, 0x12, 0x00, 0xD1, 0x01, 0x01, 0x00, 0x5D, 0x00, 0x10,
+            ],
+        );
+        let (at, delta) = splice_question_ops(&mut pkg, 0, 100, &ops).unwrap();
+        assert_eq!(delta, ops.len());
+        assert_eq!(pkg.len(), before_len + delta);
+        // ops лежат после существующего вопроса формы 100 и перед её END (0x29)
+        assert_eq!(&pkg[at..at + ops.len()], &ops[..]);
+        let window = &pkg[at + ops.len()..at + ops.len() + 2];
+        assert_eq!(window, &[0x29, 0x02]); // END_FORM сразу после вставки
+    }
+
+    #[test]
+    fn splice_question_ops_targets_selected_formset() {
+        let g = Guid::from_str(FORMSET_GUID).unwrap();
+        let mut fs1 = form_set(&g, 7);
+        fs1.extend(form(100, 10));
+        fs1.extend(one_of_question());
+        fs1.extend(end());
+        fs1.extend(end());
+        let mut fs2 = form_set(&g, 8);
+        fs2.extend(form(200, 20));
+        fs2.extend(end());
+        fs2.extend(end());
+        let mut ifr = fs1.clone();
+        ifr.extend(&fs2);
+        let mut pkg = package(&ifr);
+        let orig_len = pkg.len();
+        let ops = opcode(
+            0x05,
+            true,
+            &[
+                0x21, 0x00, 0x22, 0x00, 0xD2, 0x01, 0x01, 0x00, 0x5E, 0x00, 0x10,
+            ],
+        );
+        assert!(matches!(
+            splice_question_ops(&mut pkg, 0, 200, &ops),
+            Err(HiiError::NotFound)
+        ));
+        let (at, delta) = splice_question_ops(&mut pkg, 1, 200, &ops).unwrap();
+        assert_eq!(delta, ops.len());
+        assert_eq!(pkg.len(), orig_len + delta);
+        assert_eq!(
+            at,
+            4 + fs1.len() + form_set(&g, 8).len() + form(200, 20).len()
+        );
+        assert_eq!(&pkg[4..4 + fs1.len()], &fs1[..]);
+        let mut expected = fs1.clone();
+        let mut e2 = form_set(&g, 8);
+        e2.extend(form(200, 20));
+        e2.extend(&ops);
+        e2.extend(end());
+        e2.extend(end());
+        expected.extend(&e2);
+        assert_eq!(&pkg[4..], &expected[..]);
+        assert_eq!(&pkg[at + ops.len()..at + ops.len() + 2], &[0x29, 0x02]);
+        assert_eq!(pkg[0], (pkg.len() & 0xFF) as u8);
+        assert_eq!(pkg[1], ((pkg.len() >> 8) & 0xFF) as u8);
+        assert_eq!(pkg[2], ((pkg.len() >> 16) & 0xFF) as u8);
+        let fs = parse_form_package(&pkg).unwrap();
+        assert_eq!(
+            fs.forms.iter().map(|f| f.form_id).collect::<Vec<_>>(),
+            vec![100, 200]
+        );
+    }
+
+    #[test]
+    fn splice_question_ops_returns_not_found_for_unknown_form_or_formset() {
+        let mut pkg = two_form_package();
+        let before = pkg.clone();
+        let ops = opcode(
+            0x05,
+            true,
+            &[
+                0x11, 0x00, 0x12, 0x00, 0xD1, 0x01, 0x01, 0x00, 0x5D, 0x00, 0x10,
+            ],
+        );
+        assert!(matches!(
+            splice_question_ops(&mut pkg, 0, 999, &ops),
+            Err(HiiError::NotFound)
+        ));
+        assert!(matches!(
+            splice_question_ops(&mut pkg, 1, 100, &ops),
+            Err(HiiError::NotFound)
+        ));
+        assert_eq!(pkg, before);
+    }
+
+    #[test]
+    fn splice_question_ops_rejects_empty_ops() {
+        let mut pkg = two_form_package();
+        let before = pkg.clone();
+        assert!(matches!(
+            splice_question_ops(&mut pkg, 0, 100, &[]),
+            Err(HiiError::InvalidSchema(_))
+        ));
+        assert_eq!(pkg, before);
     }
 }
