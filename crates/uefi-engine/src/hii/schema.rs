@@ -243,16 +243,28 @@ pub struct QuestionAddDefaults {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct QuestionAddRefSchema {
+    pub form_id: u16,
+    pub prompt: String,
+    pub help: String,
+    pub question_id: u16,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct QuestionAddList {
+    #[serde(default)]
     pub questions: Vec<QuestionAddSchema>,
+    #[serde(default)]
+    pub refs: Vec<QuestionAddRefSchema>,
 }
 
 pub fn parse_question_add_schema(json: &str) -> Result<QuestionAddList, HiiError> {
     let s: QuestionAddList =
         serde_json::from_str(json).map_err(|e| HiiError::InvalidSchema(e.to_string()))?;
-    if s.questions.is_empty() {
+    if s.questions.is_empty() && s.refs.is_empty() {
         return Err(HiiError::InvalidSchema(
-            "questions must not be empty".to_string(),
+            "questions and refs must not both be empty".to_string(),
         ));
     }
     Ok(s)
@@ -405,5 +417,76 @@ mod tests {
     #[test]
     fn parse_question_add_schema_rejects_empty_list() {
         assert!(parse_question_add_schema(r#"{"questions": []}"#).is_err());
+    }
+
+    #[test]
+    fn parse_question_add_schema_refs_only() {
+        let s = parse_question_add_schema(
+            r#"{"refs": [{"form_id": 10101, "prompt": "P", "help": "H", "question_id": 528}]}"#,
+        )
+        .unwrap();
+        assert!(s.questions.is_empty());
+        assert_eq!(s.refs.len(), 1);
+        let r = &s.refs[0];
+        assert_eq!(r.form_id, 10101);
+        assert_eq!(r.prompt, "P");
+        assert_eq!(r.help, "H");
+        assert_eq!(r.question_id, 528);
+    }
+
+    #[test]
+    fn parse_question_add_schema_mixed_questions_and_refs() {
+        let s = parse_question_add_schema(
+            r#"{"questions": [{
+                "form_id": 10019, "prompt": "Q", "help": "QH",
+                "question_id": 512, "var_store_id": 1, "var_offset": 128, "size": 1,
+                "options": [{"text": "A", "value": 0}]
+            }],
+            "refs": [{"form_id": 10101, "prompt": "P", "help": "H", "question_id": 528}]}"#,
+        )
+        .unwrap();
+        assert_eq!(s.questions.len(), 1);
+        assert_eq!(s.questions[0].question_id, 512);
+        assert_eq!(s.refs.len(), 1);
+        assert_eq!(s.refs[0].form_id, 10101);
+        assert_eq!(s.refs[0].question_id, 528);
+    }
+
+    #[test]
+    fn parse_question_add_schema_rejects_both_empty() {
+        let e = parse_question_add_schema(r#"{"questions": [], "refs": []}"#).unwrap_err();
+        assert!(matches!(e, HiiError::InvalidSchema(_)));
+    }
+
+    #[test]
+    fn parse_question_add_schema_rejects_unknown_fields_in_ref() {
+        let e = parse_question_add_schema(
+            r#"{"refs": [{"form_id": 10101, "prompt": "P", "help": "H", "question_id": 528, "var_offset": 0}]}"#,
+        )
+        .unwrap_err();
+        assert!(format!("{e:?}").contains("unknown field"));
+    }
+
+    #[test]
+    fn parse_question_add_schema_legacy_without_refs() {
+        let s = parse_question_add_schema(
+            r#"{"questions": [{
+                "form_id": 10019,
+                "prompt": "Serial Console",
+                "help": "Enable serial console output",
+                "question_id": 512,
+                "var_store_id": 1,
+                "var_offset": 128,
+                "size": 1,
+                "options": [
+                    {"text": "Disabled", "value": 0},
+                    {"text": "Enabled", "value": 1, "default": "optimized"}
+                ]
+            }]}"#,
+        )
+        .unwrap();
+        assert_eq!(s.questions.len(), 1);
+        assert_eq!(s.questions[0].question_id, 512);
+        assert!(s.refs.is_empty());
     }
 }
