@@ -985,7 +985,7 @@ pub fn add_question(
         let pkg = question_forms_package(&image.root, &target, bare_channel)?;
         form_hijack::locate_form(pkg, form_id).ok_or(HiiError::NotFound)?
     };
-    let sd_path = ami_patcher::pfs_payload_path(image, None)?;
+    let sd_path = ami_patcher::discover_pfs_payload_path(image)?;
     let spf_plan = {
         let body = node_at(&image.root, &sd_path).body.clone();
         plan_spf_append(
@@ -2457,39 +2457,53 @@ mod tests {
             b
         }
 
-        fn question_add_flash_image() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
-            let pkg = question_add_forms_pkg();
-            let q10019 = crate::hii::form_hijack::locate_questions(&pkg, 10019)[0].0;
-            let q10020 = crate::hii::form_hijack::locate_questions(&pkg, 10020)[0].0;
+        fn question_add_spf_body_for(pkg: &[u8]) -> Vec<u8> {
+            let q10019 = crate::hii::form_hijack::locate_questions(pkg, 10019)[0].0;
+            let q10020 = crate::hii::form_hijack::locate_questions(pkg, 10020)[0].0;
             let rec0 = spf_record(0x3B, q10019 as u32, 0x0001_0066, 0x01A4, 0x01A3);
             let rec1 = spf_record(0x55, q10020 as u32, 0x0001_0066, 0x01A6, 0x01A5);
-            let spf_body = question_add_spf_body(&rec0, &rec1);
+            question_add_spf_body(&rec0, &rec1)
+        }
+
+        fn sd_file_direct(spf_body: &[u8]) -> Vec<u8> {
+            ffs_file_bytes(
+                &Guid::from_str(SETUPDATA_GUID_STR).unwrap(),
+                &file_sections(&[
+                    section_bytes(EFI_SECTION_UI, &ui_name("AMITSESetupData")),
+                    lzma_guided_section_bytes(&section_bytes(
+                        EFI_SECTION_FREEFORM_SUBTYPE_GUID,
+                        spf_body,
+                    )),
+                ]),
+            )
+        }
+
+        fn sd_file_nested(spf_body: &[u8]) -> Vec<u8> {
+            ffs_file_bytes(
+                &Guid::from_str(SETUPDATA_GUID_STR).unwrap(),
+                &lzma_guided_section_bytes(&file_sections(&[
+                    section_bytes(EFI_SECTION_FREEFORM_SUBTYPE_GUID, spf_body),
+                    section_bytes(EFI_SECTION_UI, &ui_name("AMITSESetupData")),
+                ])),
+            )
+        }
+
+        fn question_add_flash_image() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+            let pkg = question_add_forms_pkg();
+            let spf_body = question_add_spf_body_for(&pkg);
             let blob = hii_list_blob(&[&pkg, &string_package_bytes()]);
             let pe = crate::hii::pe_resource::synth_hii_pe("HII", &blob);
             let setup = ffs_file_bytes(
                 &Guid::from_str(FILE_GUID).unwrap(),
                 &section_bytes(EFI_SECTION_PE32, &pe),
             );
-            let sd = ffs_file_bytes(
-                &Guid::from_str(SETUPDATA_GUID_STR).unwrap(),
-                &file_sections(&[
-                    section_bytes(EFI_SECTION_UI, &ui_name("AMITSESetupData")),
-                    lzma_guided_section_bytes(&section_bytes(
-                        EFI_SECTION_FREEFORM_SUBTYPE_GUID,
-                        &spf_body,
-                    )),
-                ]),
-            );
+            let sd = sd_file_direct(&spf_body);
             (flash_with_files(vec![setup, sd]), pkg, spf_body)
         }
 
         fn question_add_bare_flash_image() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
             let pkg = question_add_forms_pkg();
-            let q10019 = crate::hii::form_hijack::locate_questions(&pkg, 10019)[0].0;
-            let q10020 = crate::hii::form_hijack::locate_questions(&pkg, 10020)[0].0;
-            let rec0 = spf_record(0x3B, q10019 as u32, 0x0001_0066, 0x01A4, 0x01A3);
-            let rec1 = spf_record(0x55, q10020 as u32, 0x0001_0066, 0x01A6, 0x01A5);
-            let spf_body = question_add_spf_body(&rec0, &rec1);
+            let spf_body = question_add_spf_body_for(&pkg);
             let setup = ffs_file_bytes(
                 &Guid::from_str(FILE_GUID).unwrap(),
                 &file_sections(&[
@@ -2497,16 +2511,20 @@ mod tests {
                     section_bytes(EFI_SECTION_RAW, &string_package_bytes()),
                 ]),
             );
-            let sd = ffs_file_bytes(
-                &Guid::from_str(SETUPDATA_GUID_STR).unwrap(),
-                &file_sections(&[
-                    section_bytes(EFI_SECTION_UI, &ui_name("AMITSESetupData")),
-                    lzma_guided_section_bytes(&section_bytes(
-                        EFI_SECTION_FREEFORM_SUBTYPE_GUID,
-                        &spf_body,
-                    )),
-                ]),
+            let sd = sd_file_direct(&spf_body);
+            (flash_with_files(vec![setup, sd]), pkg, spf_body)
+        }
+
+        fn question_add_nested_ui_flash_image() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+            let pkg = question_add_forms_pkg();
+            let spf_body = question_add_spf_body_for(&pkg);
+            let blob = hii_list_blob(&[&pkg, &string_package_bytes()]);
+            let pe = crate::hii::pe_resource::synth_hii_pe("HII", &blob);
+            let setup = ffs_file_bytes(
+                &Guid::from_str(FILE_GUID).unwrap(),
+                &section_bytes(EFI_SECTION_PE32, &pe),
             );
+            let sd = sd_file_nested(&spf_body);
             (flash_with_files(vec![setup, sd]), pkg, spf_body)
         }
 
@@ -2793,6 +2811,38 @@ mod tests {
             .unwrap();
             assert_eq!(q.kind, "one_of");
             assert_eq!(q.var_offset, 0x80);
+        }
+
+        #[test]
+        fn add_question_discovers_grandchild_setupdata_behind_guided_wrapper() {
+            let (flash, _, _) = question_add_nested_ui_flash_image();
+            let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+            assert!(
+                matches!(
+                    ami_patcher::pfs_payload_path(&img, None),
+                    Err(HiiError::AmiFilesNotFound)
+                ),
+                "direct-children UI lookup must miss the grandchild geometry"
+            );
+            let res = add_question(&mut img, ITEM_FORM, &question_add_schema(0x200, 0x80))
+                .expect("deep discovery must resolve the nested SetupData");
+            assert_eq!(res.question_id, 0x200);
+            let built = build_image(&img).unwrap();
+            let re = parse_image(&built, ImageMode::Read, "i2", "s2").unwrap();
+            let q = crate::hii::question_info(
+                &re,
+                "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x10:0#10019:0x200",
+            )
+            .unwrap();
+            assert_eq!(q.kind, "one_of");
+            assert_eq!(q.var_offset, 0x80);
+            let spf_body = spf_leaf_of(&re);
+            assert!(
+                spf::scan_question_records(spf_body)
+                    .iter()
+                    .any(|r| r.question_id == 0x200),
+                "new record must land in the nested $SPF"
+            );
         }
 
         #[test]

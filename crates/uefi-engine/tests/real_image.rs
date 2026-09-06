@@ -2446,3 +2446,52 @@ fn real_image_ops_insert_serial_s2() {
     let stable = build_image(&re_img).expect("stable rebuild");
     assert_eq!(stable, rebuilt, "rebuild of re-parsed tree must be stable");
 }
+
+#[test]
+#[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
+fn real_image_add_question_discovers_nested_setupdata() {
+    let data = load_fw();
+    let img = parse_image(&data, ImageMode::Write, "i", "s").unwrap();
+    assert!(
+        matches!(
+            uefi_engine::hii::ami_patcher::pfs_payload_path(&img, None),
+            Err(uefi_engine::hii::HiiError::AmiFilesNotFound)
+        ),
+        "legacy discovery must keep missing the live grandchild UI (documented defect)"
+    );
+    let path = uefi_engine::hii::ami_patcher::discover_pfs_payload_path(&img)
+        .expect("deep discovery must resolve the live SetupData");
+    assert_eq!(path, vec![3, 208, 0, 0]);
+    let mut node = &img.root;
+    for &i in &path {
+        node = &node.children[i];
+    }
+    assert!(
+        node.body.windows(4).any(|w| w == b"$SPF"),
+        "resolved node must carry the $SPF container"
+    );
+
+    let mut live = parse_image(&data, ImageMode::Write, "probe", "s").unwrap();
+    let schema = uefi_engine::hii::schema::QuestionAddSchema {
+        form_id: 10019,
+        prompt: "probe".into(),
+        help: "probe help".into(),
+        question_id: 512,
+        var_store_id: 1,
+        var_offset: u16::MAX,
+        size: 1,
+        options: vec![uefi_engine::hii::schema::QuestionAddOption {
+            text: "off".into(),
+            value: 0,
+            default: None,
+        }],
+        defaults: None,
+    };
+    let err = uefi_engine::hii::add_question(&mut live, "3/28/1/0#10019", &schema)
+        .expect_err("out-of-bounds var_offset must be rejected");
+    eprintln!("live add_question probe error: {err}");
+    assert!(
+        matches!(err, uefi_engine::hii::HiiError::InvalidSchema(_)),
+        "add_question must pass discovery and reach varstore validation on live geometry, got {err:?}"
+    );
+}
