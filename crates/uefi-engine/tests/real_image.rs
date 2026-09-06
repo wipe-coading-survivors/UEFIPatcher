@@ -2334,3 +2334,103 @@ fn real_image_hijack_v2_scenario_b_full_page_matches_e26_content() {
         "scenario B: form=1 flips, 7 question flips, q61 refused, hijack=0 flips, q59 ids {prompt_id}/{help_id}"
     );
 }
+
+#[test]
+#[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
+fn real_image_ops_insert_serial_s2() {
+    use uefi_engine::builder::build_image;
+    use uefi_engine::ops::{InsertMode, insert};
+    use uefi_engine::types::{ImageMode, Target};
+
+    const MAIN_FV_OFF: usize = 0x890000;
+    const FIRST_SLOT: usize = 0xB63B18;
+    const SERIAL_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/serial");
+
+    let data = load_fw();
+    let serial: Vec<&str> = vec!["SerialDxe.ffs", "TerminalDxe.ffs", "SerialConsoleGlue.ffs"];
+
+    let mut img = parse_image(&data, ImageMode::Read, "img1", "s1").unwrap();
+    let vol_idx = img
+        .root
+        .children
+        .iter()
+        .position(|c| c.offset == MAIN_FV_OFF as u32)
+        .expect("main FV @0x890000");
+    let files_before = img.root.children[vol_idx].children.len();
+    assert!(files_before > 100, "main FV files: {files_before}");
+
+    let mut anchor = Target::Path(vec![vol_idx, files_before - 1]);
+    for name in &serial {
+        let path = std::path::Path::new(SERIAL_DIR).join(name);
+        let ffs = std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        insert(&mut img.root, &anchor, &ffs, InsertMode::After).unwrap();
+        let last = img.root.children[vol_idx].children.len() - 1;
+        anchor = Target::Path(vec![vol_idx, last]);
+    }
+
+    let rebuilt = build_image(&img).expect("build after insert");
+
+    assert_eq!(rebuilt.len(), data.len(), "image size must be preserved");
+    let mut regions = 0usize;
+    let mut first_diff = usize::MAX;
+    let mut last_diff = 0usize;
+    for (i, (a, b)) in data.iter().zip(rebuilt.iter()).enumerate() {
+        if a != b {
+            first_diff = first_diff.min(i);
+            last_diff = i;
+            regions += 1;
+        }
+    }
+    assert!(regions > 0, "insert must change bytes");
+    assert_eq!(
+        first_diff, FIRST_SLOT,
+        "first changed byte must be first free slot"
+    );
+    let expected_span = 32_848 + 4 + 65_596 + 24_688;
+    assert!(
+        last_diff < FIRST_SLOT + expected_span,
+        "changes must stay inside {expected_span}-byte span: last_diff={last_diff:#x}"
+    );
+    let mut non_tail_changes = 0usize;
+    for i in FIRST_SLOT..=last_diff {
+        if rebuilt[i] != data[i] && data[i] != 0xFF {
+            non_tail_changes += 1;
+        }
+    }
+    assert_eq!(
+        non_tail_changes, 0,
+        "all changed bytes must lie over 0xFF free tail"
+    );
+
+    let re_img = parse_image(&rebuilt, ImageMode::Read, "img1", "s1").unwrap();
+    let vol = &re_img.root.children[vol_idx];
+    assert_eq!(vol.children.len(), files_before + 3);
+    let tail: Vec<String> = vol.children[files_before..]
+        .iter()
+        .map(|f| {
+            f.guid
+                .map(|g| g.to_string().to_ascii_uppercase())
+                .unwrap_or_default()
+        })
+        .collect();
+    assert_eq!(
+        tail,
+        vec![
+            "9A5163E7-5C29-453F-825C-837A46A81E15".to_string(),
+            "9E863906-A40F-4875-977F-5B93FF237FC6".to_string(),
+            "1EF3A7C2-9B64-4D58-8A31-5C0E9F2B7D43".to_string(),
+        ],
+        "inserted files must sit in S1 order at chain end"
+    );
+    for f in &vol.children[files_before..] {
+        assert_eq!(
+            f.offset % 8,
+            0,
+            "FFS file must be 8-aligned in FV, got @{:#x}",
+            f.offset
+        );
+    }
+
+    let stable = build_image(&re_img).expect("stable rebuild");
+    assert_eq!(stable, rebuilt, "rebuild of re-parsed tree must be stable");
+}
