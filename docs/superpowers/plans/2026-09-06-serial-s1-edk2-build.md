@@ -51,7 +51,7 @@ Assumption: в S2 файлы вставляются в FV1 в порядке Ser
 |---|---|
 | `docker/edk2-builder.containerfile` | Образ сборки: runtime-base + gcc/make/python3/libuuid-devel/git + маркер ENV |
 | `docker/edk2/UefiPatcherSerialPkg/UefiPatcherSerial.dsc` | Платформа: библиотечные инстансы, [PcdsFixedAtBuild] всей §5.2, [Components] |
-| `docker/edk2/UefiPatcherSerialPkg/UefiPatcherSerial.fdf` | FV SERIAL_CONSOLE_FV (3 INF) + [Rule] PE32+UI |
+| `docker/edk2/UefiPatcherSerialPkg/UefiPatcherSerial.fdf` | FV SERIAL_CONSOLE_FV (3 INF) + [Rule.Common.<ModuleType>] PE32+UI |
 | `docker/edk2/UefiPatcherSerialPkg/SerialConsoleGlue/SerialConsoleGlue.inf` | Модуль-описание glue (DXE_DRIVER, DEPEX SerialIo) |
 | `docker/edk2/UefiPatcherSerialPkg/SerialConsoleGlue/SerialConsoleGlue.c` | Glue: append переменных + ConnectController + маркеры |
 | `docker/edk2/build_serial.sh` | Двухрежимный: на хосте оборачивает podman-remote; в контейнере — git-архив-копия edk2 + BaseTools + build + выкладка .ffs |
@@ -200,18 +200,26 @@ git commit -m "feat(s1): edk2-builder container image"
 ```
 [FV.SERIAL_CONSOLE_FV]
 FvNameGuid           = 6B4A19D8-2E75-4C31-B8F0-59D2837A90C4
-FvForceReproducible = TRUE
 INF MdeModulePkg/Universal/SerialDxe/SerialDxe.inf
 INF MdeModulePkg/Universal/Console/TerminalDxe/TerminalDxe.inf
 
-[Rule]
-  DRIVER.SERIAL {
-    SECTION PE32 = $(OUTPUT_DIRECTORY)/$(MODULE_NAME).efi
-    SECTION UI = "$(MODULE_NAME)"
+[Rule.Common.DXE_DRIVER]
+  FILE DRIVER = $(NAMED_GUID) {
+    PE32     PE32                    |.efi
+    UI       STRING="$(MODULE_NAME)"
+  }
+
+[Rule.Common.UEFI_DRIVER]
+  FILE DRIVER = $(NAMED_GUID) {
+    PE32     PE32                    |.efi
+    UI       STRING="$(MODULE_NAME)"
   }
 ```
 
-Если парсер FDF не примет `SECTION UI = "$(MODULE_NAME)"` (синтаксис правил), rule-11-коммит с фактической рабочей формой (например `UI STRING =` или отказ от UI-секции) — но сначала попробовать дословно.
+Примечание (rule-11, дословная форма из исходного плана отвергнута парсером — `GenFds.FdfParser.Warning: expected [FD.] near line 2`):
+- `FvForceReproducible = TRUE` — ключевого слова НЕ существует в edk2@bcd1687 (0 упоминаний в BaseTools/Source/Python и OvmfPkg); парсер обрывал FV-секцию на неизвестном слове. Удалено; воспроизводимость обеспечивается не FV-флагом, а проверкой двойной сборкой в Task 4 (SOURCE_DATE_EPOCH/TimeDateStamp уже учтены риском R-S1.4).
+- Секция правил обязана быть `[Rule.<Arch>.<ModuleType>]` с телом `FILE <type> = $(NAMED_GUID) { <секции> }`; формы `SECTION PE32 = <путь>` в rule-грамматике нет (это грамматика FILE-стейтментов [FV]-секций), заголовок `DRIVER.SERIAL` без `FILE` невалиден. Каноническая форма: `PE32 PE32 |.efi` (файл берётся из OUTPUT модуля) + `UI STRING="$(MODULE_NAME)"`.
+- Правил два: SerialDxe `MODULE_TYPE = DXE_DRIVER`, TerminalDxe `MODULE_TYPE = UEFI_DRIVER`; lookup-ключ GenFds — `RULE.COMMON.<MODULE_TYPE>` (FfsInfStatement.py).
 
 - [ ] **Step 3: Написать build_serial.sh**
 
