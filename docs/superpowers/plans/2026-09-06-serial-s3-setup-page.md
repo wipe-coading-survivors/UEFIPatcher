@@ -269,7 +269,14 @@ fn append_question_record_clones_template_and_patches_fields() {
     для one_of-семантики опций u8; (2) `string_pack::add_strings_to_resource`
     — prompt/help/options тексты; (3) `IfrBuilder` собирает one_of+options+
     default+END; (4) `splice_question_ops` (Task 1) — форма `form_id`;
-    (5) `$SPF` (секция SetupData — находит так же, как form_hijack):
+    (5) `$SPF` (секция SetupData — правка по факту Task 4: `pfs_payload_path
+    (image, None)` НЕ резолвит LIVE-геометрию — UI "AMITSESetupData" внук
+    за GUID_DEFINED-обёрткой, fallback проверяет только прямых детей;
+    marker-fallback требует body%72==0, LIVE body 49860. form_hijack
+    резолвил секцию явным GUID из hijack-схемы; S3-схема и CLI-контракт
+    GUID не содержат → add_question обязан находить SetupData сам —
+    поиском в глубину через GUID_DEFINED-детей по UI-имени или
+    $SPF-сигнатуре в декомпрессированном теле):
     `fixup_record_ifr_offsets(threshold=insert_at, delta)` →
     `append_question_record` (клон записи первого one_of-вопроса целевой
     формы; если нет F8-образца в её записях — клон первой F8-записи
