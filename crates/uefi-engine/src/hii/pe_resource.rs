@@ -203,22 +203,26 @@ impl RsrcGrowPlan {
     }
 }
 
+fn rsrc_grow_plan_bytes(pe: &[u8], delta: usize) -> Option<RsrcGrowPlan> {
+    if let Ok(file) = PeFile64::parse(pe) {
+        return rsrc_grow_plan(&file, pe, delta);
+    }
+    if let Ok(file) = PeFile32::parse(pe) {
+        return rsrc_grow_plan(&file, pe, delta);
+    }
+    tracing::debug!("not a PE image; refusing rsrc tail growth");
+    None
+}
+
+pub(crate) fn can_grow_rsrc_tail(pe: &[u8], delta: usize) -> bool {
+    delta == 0 || rsrc_grow_plan_bytes(pe, delta).is_some()
+}
+
 pub fn try_grow_rsrc_tail(pe: &mut Vec<u8>, delta: usize) -> bool {
     if delta == 0 {
         return true;
     }
-    let data: &[u8] = pe.as_slice();
-    let plan = match PeFile64::parse(data) {
-        Ok(file) => rsrc_grow_plan(&file, data, delta),
-        Err(_) => match PeFile32::parse(data) {
-            Ok(file) => rsrc_grow_plan(&file, data, delta),
-            Err(_) => {
-                tracing::debug!("not a PE image; refusing rsrc tail growth");
-                None
-            }
-        },
-    };
-    match plan {
+    match rsrc_grow_plan_bytes(pe, delta) {
         Some(plan) => {
             plan.apply(pe);
             true

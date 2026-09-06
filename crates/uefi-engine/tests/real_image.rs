@@ -2625,6 +2625,16 @@ fn real_image_ops_insert_serial_s3() {
     let fbase = spf::container_start(&final_spf).expect("$SPF survives adds");
     let final_records = spf::scan_question_records(&final_spf);
     assert_eq!(final_records.len(), base_records.len() + 2);
+    let container_len_field = (spf::SPF_HEADER_REGION_OFFSETS..spf::SPF_PAGE_COUNT_OFFSET)
+        .step_by(4)
+        .map(|p| u32_at(&final_spf, fbase + p))
+        .max()
+        .expect("header zone u32 fields");
+    assert_eq!(
+        container_len_field as usize,
+        final_spf.len() - fbase,
+        "container-length header field (max u32 in header zone, the bump_container_length rule) must equal the post-append container length"
+    );
     let final_by_offset: HashMap<usize, spf::SpfQuestionRecord> = final_records
         .iter()
         .copied()

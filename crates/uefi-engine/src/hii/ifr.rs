@@ -303,7 +303,7 @@ pub fn splice_question_ops(
     Ok((insert_at, ops.len()))
 }
 
-fn locate_form_end(body: &[u8], formset_idx: usize, form_id: u16) -> Option<usize> {
+pub(crate) fn locate_form_end(body: &[u8], formset_idx: usize, form_id: u16) -> Option<usize> {
     if !is_form_package(body) {
         return None;
     }

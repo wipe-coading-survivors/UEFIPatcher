@@ -955,6 +955,8 @@ impl EngineService for EngineServer {
             let img_slot = images
                 .get_mut(&r.image_id)
                 .ok_or_else(|| Status::not_found("image not found"))?;
+            crate::hii::check_question_add(img_slot, &r.target, &schema.questions)
+                .map_err(hii_error_status)?;
             for q in &schema.questions {
                 let result =
                     crate::hii::add_question(img_slot, &r.target, q).map_err(hii_error_status)?;
@@ -1709,6 +1711,62 @@ mod tests {
         )
         .await;
         assert_eq!(st.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[tokio::test]
+    async fn hii_question_add_list_failure_applies_nothing() {
+        let (flash, _, _) = crate::hii::question_add_fixtures::question_add_bare_flash_image();
+        let img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+        let td = TempDir::new().unwrap();
+        let db = crate::storage::open_db(&td.path().join("db.sqlite")).unwrap();
+        let sm = Arc::new(SessionManager::new(
+            db,
+            td.path().to_path_buf(),
+            Duration::from_secs(864000),
+            Duration::from_secs(3600),
+            false,
+        ));
+        let images = Arc::new(Mutex::new(HashMap::from([("i".to_string(), img)])));
+        let server = EngineServer {
+            sm,
+            images: images.clone(),
+            data_dir: td.path().to_path_buf(),
+        };
+        const TARGET: &str = "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:0#10019";
+        const OVERLAP_LIST: &str = r#"{"questions": [
+            {"form_id": 10019, "prompt": "A", "help": "AH", "question_id": 512,
+             "var_store_id": 1, "var_offset": 128, "size": 1,
+             "options": [{"text": "Off", "value": 0}, {"text": "On", "value": 1, "default": "optimized"}]},
+            {"form_id": 10019, "prompt": "B", "help": "BH", "question_id": 513,
+             "var_store_id": 1, "var_offset": 128, "size": 1,
+             "options": [{"text": "Off", "value": 0}, {"text": "On", "value": 1, "default": "optimized"}]}
+        ]}"#;
+        const DUP_QID_LIST: &str = r#"{"questions": [
+            {"form_id": 10019, "prompt": "A", "help": "AH", "question_id": 512,
+             "var_store_id": 1, "var_offset": 128, "size": 1,
+             "options": [{"text": "Off", "value": 0}, {"text": "On", "value": 1, "default": "optimized"}]},
+            {"form_id": 10019, "prompt": "C", "help": "CH", "question_id": 512,
+             "var_store_id": 1, "var_offset": 129, "size": 1,
+             "options": [{"text": "Off", "value": 0}, {"text": "On", "value": 1, "default": "optimized"}]}
+        ]}"#;
+        for schema_json in [OVERLAP_LIST, DUP_QID_LIST] {
+            let st = server
+                .hii_question_add(Request::new(HiiQuestionAddRequest {
+                    image_id: "i".into(),
+                    target: TARGET.into(),
+                    schema_json: schema_json.into(),
+                }))
+                .await
+                .unwrap_err();
+            assert_eq!(st.code(), tonic::Code::InvalidArgument);
+        }
+        let untouched = images.lock().await;
+        let img_ref = untouched.get("i").unwrap();
+        assert_eq!(
+            crate::builder::build_image(img_ref).unwrap(),
+            flash,
+            "a failing question list must leave the image exactly as it was"
+        );
     }
 
     #[tokio::test]

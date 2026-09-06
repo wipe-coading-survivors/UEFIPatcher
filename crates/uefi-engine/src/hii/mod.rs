@@ -713,9 +713,9 @@ pub struct AddQuestionResult {
 fn validate_question_add(
     schema: &schema::QuestionAddSchema,
 ) -> Result<(Option<u64>, Option<u64>), HiiError> {
-    if schema.size > 1 {
+    if schema.size != 1 {
         return Err(HiiError::InvalidSchema(format!(
-            "size {} exceeds one_of u8 semantics",
+            "size {} violates one_of u8 semantics (must be 1)",
             schema.size
         )));
     }
@@ -792,15 +792,24 @@ fn question_forms_package<'a>(
     }
 }
 
-fn splice_question_ops_into_resource(
-    pe: &mut Vec<u8>,
+struct RsrcSpliceCheck {
+    pkg_off: usize,
+    old_len: usize,
+    blob_end: usize,
+    new_blob_len: u32,
+    new_total: u32,
+}
+
+fn check_rsrc_question_splice(
+    pe: &[u8],
     form_id: u16,
-    ops: &[u8],
-) -> Result<(usize, usize), HiiError> {
+    ops_len: usize,
+) -> Result<RsrcSpliceCheck, HiiError> {
     let (pkg_off, old_len) = form_add::resource_forms_package(pe).ok_or(HiiError::NotASetupItem)?;
-    let mut pkg = pe[pkg_off..pkg_off + old_len].to_vec();
-    let res = ifr::splice_question_ops(&mut pkg, 0, form_id, ops)?;
-    let delta = pkg.len() - old_len;
+    let pkg = pe
+        .get(pkg_off..pkg_off + old_len)
+        .ok_or(HiiError::InvalidIfr)?;
+    ifr::locate_form_end(pkg, 0, form_id).ok_or(HiiError::NotFound)?;
     let (_, blob_off, blob_len) = pe_resource::hii_entry_locations(pe)
         .first()
         .copied()
@@ -810,25 +819,51 @@ fn splice_question_ops_into_resource(
     let list = package_list::parse_package_list(blob).ok_or(HiiError::InvalidIfr)?;
     let sum: usize = list.packages.iter().map(|p| p.bytes.len()).sum();
     let new_blob_len = blob_len
-        .checked_add(delta)
+        .checked_add(ops_len)
         .ok_or(HiiError::PeGrowthUnsupported)?;
-    let new_total = 20u64 + sum as u64 + delta as u64 + 4;
+    let new_total = 20u64 + sum as u64 + ops_len as u64 + 4;
     if new_total > u32::MAX as u64 || new_blob_len > u32::MAX as usize {
         return Err(HiiError::PeGrowthUnsupported);
     }
+    let plan =
+        pe_resource::plan_rsrc_blob_growth(pe, ops_len).ok_or(HiiError::PeGrowthUnsupported)?;
+    if plan.grow > 0 && !pe_resource::can_grow_rsrc_tail(pe, plan.grow) {
+        return Err(HiiError::PeGrowthUnsupported);
+    }
+    Ok(RsrcSpliceCheck {
+        pkg_off,
+        old_len,
+        blob_end,
+        new_blob_len: new_blob_len as u32,
+        new_total: new_total as u32,
+    })
+}
+
+fn splice_question_ops_into_resource(
+    pe: &mut Vec<u8>,
+    form_id: u16,
+    ops: &[u8],
+) -> Result<(usize, usize), HiiError> {
+    let chk = check_rsrc_question_splice(pe, form_id, ops.len())?;
+    let mut pkg = pe[chk.pkg_off..chk.pkg_off + chk.old_len].to_vec();
+    let res = ifr::splice_question_ops(&mut pkg, 0, form_id, ops)?;
+    let delta = pkg.len() - chk.old_len;
     let plan =
         pe_resource::plan_rsrc_blob_growth(pe, delta).ok_or(HiiError::PeGrowthUnsupported)?;
     if plan.grow > 0 && !pe_resource::try_grow_rsrc_tail(pe, plan.grow) {
         return Err(HiiError::PeGrowthUnsupported);
     }
-    pe.copy_within(pkg_off + old_len..blob_end, pkg_off + pkg.len());
-    pe[pkg_off..pkg_off + pkg.len()].copy_from_slice(&pkg);
+    pe.copy_within(
+        chk.pkg_off + chk.old_len..chk.blob_end,
+        chk.pkg_off + pkg.len(),
+    );
+    pe[chk.pkg_off..chk.pkg_off + pkg.len()].copy_from_slice(&pkg);
     pe_resource::write_length_chain(
         pe,
         plan.entry_off,
         plan.blob_off,
-        new_blob_len as u32,
-        new_total as u32,
+        chk.new_blob_len,
+        chk.new_total,
     );
     Ok(res)
 }
@@ -959,124 +994,13 @@ fn apply_spf_question(
     Ok(rec_off)
 }
 
-#[tracing::instrument(level = "debug", skip(image, schema), fields(item_id = %item_id), err)]
-pub fn add_question(
-    image: &mut Image,
-    item_id: &str,
+fn build_question_ops(
     schema: &schema::QuestionAddSchema,
-) -> Result<AddQuestionResult, HiiError> {
-    if image.mode != ImageMode::Write {
-        return Err(HiiError::NotWritable);
-    }
-    let (target, form_id, question_id) = parse_item_id(item_id)?;
-    if question_id.is_some() {
-        return Err(HiiError::NotFound);
-    }
-    if schema.form_id != form_id {
-        return Err(HiiError::InvalidSchema(format!(
-            "schema form_id {} does not match target form {form_id}",
-            schema.form_id
-        )));
-    }
-    let (optimized, failsafe) = validate_question_add(schema)?;
-    let path = resolve_writable_path(image, &target)?;
-    let bare_channel = {
-        let node = crate::parser::target::find_item(&image.root, &target)
-            .map_err(|_| HiiError::NotFound)?;
-        if node.node_type != FfsType::Section {
-            return Err(HiiError::NotASetupItem);
-        }
-        if node.subtype == EFI_SECTION_RAW && ifr::is_form_package(&node.body) {
-            true
-        } else if node.subtype == EFI_SECTION_PE32
-            && form_add::resource_forms_package(&node.body).is_some()
-        {
-            false
-        } else {
-            return Err(HiiError::NotASetupItem);
-        }
-    };
-    let span = {
-        let pkg = question_forms_package(&image.root, &target, bare_channel)?;
-        form_hijack::locate_form(pkg, form_id).ok_or(HiiError::NotFound)?
-    };
-    let sd_path = ami_patcher::discover_pfs_payload_path(image)?;
-    let spf_plan = {
-        let pkg = question_forms_package(&image.root, &target, bare_channel)?;
-        let body = node_at(&image.root, &sd_path).body.clone();
-        plan_spf_append(
-            &body,
-            pkg,
-            span.form_op as u32,
-            span.next_form_op as u32,
-            form_id,
-        )?
-    };
-    {
-        let pkg = question_forms_package(&image.root, &target, bare_channel)?;
-        let slots = values::scan_question_slots(pkg);
-        if slots.iter().any(|s| s.question_id == schema.question_id) {
-            return Err(HiiError::InvalidSchema(format!(
-                "question id {:#x} already exists in the formset",
-                schema.question_id
-            )));
-        }
-        for s in slots
-            .iter()
-            .filter(|s| s.var_store_id == schema.var_store_id)
-        {
-            let width = if s.width == 0 { 1 } else { u16::from(s.width) };
-            let s_start = u32::from(s.var_offset);
-            let s_end = s_start + u32::from(width);
-            let n_start = u32::from(schema.var_offset);
-            let n_end = n_start + u32::from(schema.size);
-            if n_start < s_end && s_start < n_end {
-                return Err(HiiError::InvalidSchema(format!(
-                    "var_offset {:#x} overlaps question {:#x} at var_offset {:#x} in var store {}",
-                    schema.var_offset, s.question_id, s.var_offset, schema.var_store_id
-                )));
-            }
-        }
-        let varstores = values::varstore_map(pkg);
-        let vs = varstores
-            .iter()
-            .find(|v| v.id == schema.var_store_id)
-            .ok_or_else(|| {
-                HiiError::InvalidSchema(format!(
-                    "var store {} is not declared in the formset",
-                    schema.var_store_id
-                ))
-            })?;
-        if u32::from(schema.var_offset) + u32::from(schema.size) > u32::from(vs.size) {
-            return Err(HiiError::InvalidSchema(format!(
-                "var_offset {:#x} + size {} exceeds var store size {:#x}",
-                schema.var_offset, schema.size, vs.size
-            )));
-        }
-    }
-
-    let mut strings: Vec<String> = vec![schema.prompt.clone(), schema.help.clone()];
-    strings.extend(schema.options.iter().map(|o| o.text.clone()));
-    strings.dedup();
-    let string_ids = if bare_channel {
-        let owner = form_add::owner_guid_by_path(&image.root, &path);
-        string_pack::add_strings(image, owner.as_ref(), &strings)?
-    } else {
-        let node = crate::parser::target::find_item_mut(&mut image.root, &target)
-            .map_err(|_| HiiError::NotFound)?;
-        match string_pack::add_strings_to_resource(&mut node.body, &strings) {
-            Ok(ids) => ids,
-            Err(string_pack::AddStringsToResourceError::NotFound) => {
-                return Err(HiiError::StringPackageNotFound);
-            }
-            Err(string_pack::AddStringsToResourceError::GrowthUnsupported) => {
-                return Err(HiiError::PeGrowthUnsupported);
-            }
-        }
-    };
-
-    let prompt_id = *string_ids.get(&schema.prompt).ok_or(HiiError::InvalidIfr)?;
-    let help_id = *string_ids.get(&schema.help).ok_or(HiiError::InvalidIfr)?;
+    prompt_id: u16,
+    help_id: u16,
+    string_id_of: impl Fn(&str) -> Option<u16>,
+    optimized: Option<u64>,
+) -> Result<Vec<u8>, HiiError> {
     let mut b = ifr_builder::IfrBuilder::new();
     b.emit_one_of(
         prompt_id,
@@ -1093,7 +1017,7 @@ pub fn add_question(
             Some(schema::DefaultClass::Failsafe) => ifr_builder::IFR_OPTION_DEFAULT_MFG,
             None => 0,
         };
-        let text_id = *string_ids.get(&o.text).ok_or(HiiError::InvalidIfr)?;
+        let text_id = string_id_of(&o.text).ok_or(HiiError::InvalidIfr)?;
         b.emit_one_of_option(text_id, flags, ifr_builder::TYPE_NUM_SIZE_8, o.value, 1);
     }
     if let Some(v) = optimized {
@@ -1105,14 +1029,217 @@ pub fn add_question(
         );
     }
     b.emit_end();
-    let ops = b.build();
-    let (insert_at, delta) = {
-        let node = crate::parser::target::find_item_mut(&mut image.root, &target)
+    Ok(b.build())
+}
+
+fn preflight_question_splice(
+    image: &Image,
+    target: &crate::types::Target,
+    bare_channel: bool,
+    form_id: u16,
+    schema: &schema::QuestionAddSchema,
+    optimized: Option<u64>,
+    strings: &[String],
+) -> Result<(), HiiError> {
+    let ops_len = build_question_ops(schema, 0, 0, |_| Some(0), optimized)?.len();
+    let node =
+        crate::parser::target::find_item(&image.root, target).map_err(|_| HiiError::NotFound)?;
+    if bare_channel {
+        return ifr::locate_form_end(&node.body, 0, form_id)
+            .map(|_| ())
+            .ok_or(HiiError::NotFound);
+    }
+    let mut post_strings = node.body.clone();
+    match string_pack::add_strings_to_resource(&mut post_strings, strings) {
+        Ok(_) => {}
+        Err(string_pack::AddStringsToResourceError::NotFound) => {
+            return Err(HiiError::StringPackageNotFound);
+        }
+        Err(string_pack::AddStringsToResourceError::GrowthUnsupported) => {
+            return Err(HiiError::PeGrowthUnsupported);
+        }
+    }
+    check_rsrc_question_splice(&post_strings, form_id, ops_len)?;
+    Ok(())
+}
+
+struct QuestionTarget {
+    target: crate::types::Target,
+    form_id: u16,
+    bare_channel: bool,
+    pkg: Vec<u8>,
+    span: form_hijack::HijackFormSpan,
+}
+
+fn resolve_question_target(image: &Image, item_id: &str) -> Result<QuestionTarget, HiiError> {
+    let (target, form_id, question_id) = parse_item_id(item_id)?;
+    if question_id.is_some() {
+        return Err(HiiError::NotFound);
+    }
+    let bare_channel = {
+        let node = crate::parser::target::find_item(&image.root, &target)
             .map_err(|_| HiiError::NotFound)?;
-        if bare_channel {
-            ifr::splice_question_ops(&mut node.body, 0, form_id, &ops)?
+        if node.node_type != FfsType::Section {
+            return Err(HiiError::NotASetupItem);
+        }
+        if node.subtype == EFI_SECTION_RAW && ifr::is_form_package(&node.body) {
+            true
+        } else if node.subtype == EFI_SECTION_PE32
+            && form_add::resource_forms_package(&node.body).is_some()
+        {
+            false
         } else {
-            splice_question_ops_into_resource(&mut node.body, form_id, &ops)?
+            return Err(HiiError::NotASetupItem);
+        }
+    };
+    let pkg = question_forms_package(&image.root, &target, bare_channel)?.to_vec();
+    let span = form_hijack::locate_form(&pkg, form_id).ok_or(HiiError::NotFound)?;
+    Ok(QuestionTarget {
+        target,
+        form_id,
+        bare_channel,
+        pkg,
+        span,
+    })
+}
+
+fn check_question_slots(
+    schema: &schema::QuestionAddSchema,
+    pkg: &[u8],
+    pending: &[(u16, u16, u32, u32)],
+) -> Result<(), HiiError> {
+    let slots = values::scan_question_slots(pkg);
+    if slots.iter().any(|s| s.question_id == schema.question_id) {
+        return Err(HiiError::InvalidSchema(format!(
+            "question id {:#x} already exists in the formset",
+            schema.question_id
+        )));
+    }
+    let n_start = u32::from(schema.var_offset);
+    let n_end = n_start + u32::from(schema.size);
+    for s in slots
+        .iter()
+        .filter(|s| s.var_store_id == schema.var_store_id)
+    {
+        let width = if s.width == 0 { 1 } else { u16::from(s.width) };
+        let s_start = u32::from(s.var_offset);
+        let s_end = s_start + u32::from(width);
+        if n_start < s_end && s_start < n_end {
+            return Err(HiiError::InvalidSchema(format!(
+                "var_offset {:#x} overlaps question {:#x} at var_offset {:#x} in var store {}",
+                schema.var_offset, s.question_id, s.var_offset, schema.var_store_id
+            )));
+        }
+    }
+    for &(qid, vsid, s_start, s_end) in pending {
+        if qid == schema.question_id {
+            return Err(HiiError::InvalidSchema(format!(
+                "question id {:#x} duplicates an earlier question in the same request",
+                schema.question_id
+            )));
+        }
+        if vsid == schema.var_store_id && n_start < s_end && s_start < n_end {
+            return Err(HiiError::InvalidSchema(format!(
+                "var_offset {:#x} overlaps question {:#x} in the same request",
+                schema.var_offset, qid
+            )));
+        }
+    }
+    let varstores = values::varstore_map(pkg);
+    let vs = varstores
+        .iter()
+        .find(|v| v.id == schema.var_store_id)
+        .ok_or_else(|| {
+            HiiError::InvalidSchema(format!(
+                "var store {} is not declared in the formset",
+                schema.var_store_id
+            ))
+        })?;
+    if n_start + u32::from(schema.size) > u32::from(vs.size) {
+        return Err(HiiError::InvalidSchema(format!(
+            "var_offset {:#x} + size {} exceeds var store size {:#x}",
+            schema.var_offset, schema.size, vs.size
+        )));
+    }
+    Ok(())
+}
+
+#[tracing::instrument(level = "debug", skip(image, schema), fields(item_id = %item_id), err)]
+pub fn add_question(
+    image: &mut Image,
+    item_id: &str,
+    schema: &schema::QuestionAddSchema,
+) -> Result<AddQuestionResult, HiiError> {
+    if image.mode != ImageMode::Write {
+        return Err(HiiError::NotWritable);
+    }
+    let qt = resolve_question_target(image, item_id)?;
+    if schema.form_id != qt.form_id {
+        return Err(HiiError::InvalidSchema(format!(
+            "schema form_id {} does not match target form {}",
+            schema.form_id, qt.form_id
+        )));
+    }
+    let (optimized, failsafe) = validate_question_add(schema)?;
+    let path = resolve_writable_path(image, &qt.target)?;
+    let sd_path = ami_patcher::discover_pfs_payload_path(image)?;
+    let spf_plan = {
+        let body = node_at(&image.root, &sd_path).body.clone();
+        plan_spf_append(
+            &body,
+            &qt.pkg,
+            qt.span.form_op as u32,
+            qt.span.next_form_op as u32,
+            qt.form_id,
+        )?
+    };
+    check_question_slots(schema, &qt.pkg, &[])?;
+
+    let mut strings: Vec<String> = vec![schema.prompt.clone(), schema.help.clone()];
+    strings.extend(schema.options.iter().map(|o| o.text.clone()));
+    strings.dedup();
+    preflight_question_splice(
+        image,
+        &qt.target,
+        qt.bare_channel,
+        qt.form_id,
+        schema,
+        optimized,
+        &strings,
+    )?;
+    let string_ids = if qt.bare_channel {
+        let owner = form_add::owner_guid_by_path(&image.root, &path);
+        string_pack::add_strings(image, owner.as_ref(), &strings)?
+    } else {
+        let node = crate::parser::target::find_item_mut(&mut image.root, &qt.target)
+            .map_err(|_| HiiError::NotFound)?;
+        match string_pack::add_strings_to_resource(&mut node.body, &strings) {
+            Ok(ids) => ids,
+            Err(string_pack::AddStringsToResourceError::NotFound) => {
+                return Err(HiiError::StringPackageNotFound);
+            }
+            Err(string_pack::AddStringsToResourceError::GrowthUnsupported) => {
+                return Err(HiiError::PeGrowthUnsupported);
+            }
+        }
+    };
+
+    let prompt_id = *string_ids.get(&schema.prompt).ok_or(HiiError::InvalidIfr)?;
+    let help_id = *string_ids.get(&schema.help).ok_or(HiiError::InvalidIfr)?;
+    let ops = build_question_ops(
+        schema,
+        prompt_id,
+        help_id,
+        |s| string_ids.get(s).copied(),
+        optimized,
+    )?;
+    let (insert_at, delta) = {
+        let node = crate::parser::target::find_item_mut(&mut image.root, &qt.target)
+            .map_err(|_| HiiError::NotFound)?;
+        if qt.bare_channel {
+            ifr::splice_question_ops(&mut node.body, 0, qt.form_id, &ops)?
+        } else {
+            splice_question_ops_into_resource(&mut node.body, qt.form_id, &ops)?
         }
     };
     ops::mark_rebuild_to_root_by_path(&mut image.root, &path);
@@ -1142,6 +1269,311 @@ pub fn add_question(
         string_ids,
         spf_record_offset,
     })
+}
+
+pub fn check_question_add(
+    image: &Image,
+    item_id: &str,
+    schemas: &[schema::QuestionAddSchema],
+) -> Result<(), HiiError> {
+    if image.mode != ImageMode::Write {
+        return Err(HiiError::NotWritable);
+    }
+    let qt = resolve_question_target(image, item_id)?;
+    for schema in schemas {
+        if schema.form_id != qt.form_id {
+            return Err(HiiError::InvalidSchema(format!(
+                "schema form_id {} does not match target form {}",
+                schema.form_id, qt.form_id
+            )));
+        }
+    }
+    resolve_writable_path(image, &qt.target)?;
+    let sd_path = ami_patcher::discover_pfs_payload_path(image)?;
+    {
+        let body = node_at(&image.root, &sd_path).body.clone();
+        plan_spf_append(
+            &body,
+            &qt.pkg,
+            qt.span.form_op as u32,
+            qt.span.next_form_op as u32,
+            qt.form_id,
+        )?;
+    }
+    let mut pending: Vec<(u16, u16, u32, u32)> = Vec::new();
+    for schema in schemas {
+        let (optimized, _) = validate_question_add(schema)?;
+        check_question_slots(schema, &qt.pkg, &pending)?;
+        let mut strings: Vec<String> = vec![schema.prompt.clone(), schema.help.clone()];
+        strings.extend(schema.options.iter().map(|o| o.text.clone()));
+        strings.dedup();
+        preflight_question_splice(
+            image,
+            &qt.target,
+            qt.bare_channel,
+            qt.form_id,
+            schema,
+            optimized,
+            &strings,
+        )?;
+        pending.push((
+            schema.question_id,
+            schema.var_store_id,
+            u32::from(schema.var_offset),
+            u32::from(schema.var_offset) + u32::from(schema.size),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+pub(crate) mod question_add_fixtures {
+    use crate::ffs::{
+        EFI_SECTION_FREEFORM_SUBTYPE_GUID, EFI_SECTION_GUID_DEFINED, EFI_SECTION_PE32,
+        EFI_SECTION_RAW, EFI_SECTION_UI,
+    };
+    use crate::hii::form_hijack::test_fixtures::{
+        FILE_GUID, FORMSET_GUID, SETUPDATA_GUID_STR, ffs_file_bytes, file_sections,
+        flash_with_files, section_bytes, string_package_bytes, ui_name,
+    };
+    use crate::hii::ifr_builder::{IfrBuilder, TYPE_NUM_SIZE_8};
+    use crate::hii::spf;
+    use crate::types::Guid;
+    use std::str::FromStr;
+
+    pub(crate) fn question_add_forms_pkg() -> Vec<u8> {
+        let mut b = IfrBuilder::new();
+        let g = Guid::from_str(FORMSET_GUID).unwrap();
+        b.emit_form_set(&g, 1, 1, &[]);
+        b.emit_var_store(1, &g, 0x100, "Setup");
+        b.emit_form(10019, 1);
+        b.emit_one_of(0x01A3, 0x01A4, 0x3B, 1, 0x3A, 0, 1);
+        b.emit_one_of_option(4, 0x30, TYPE_NUM_SIZE_8, 0, 1);
+        b.emit_one_of_option(3, 0x00, TYPE_NUM_SIZE_8, 1, 1);
+        b.emit_end();
+        b.emit_end();
+        b.emit_form(10020, 2);
+        b.emit_one_of(0x01A5, 0x01A6, 0x55, 1, 0x40, 0, 1);
+        b.emit_one_of_option(5, 0x00, TYPE_NUM_SIZE_8, 0, 1);
+        b.emit_end();
+        b.emit_end();
+        b.emit_end();
+        let ifr = b.build();
+        let mut pkg = vec![0u8; 4];
+        let len = 4 + ifr.len() as u32;
+        pkg[0] = (len & 0xFF) as u8;
+        pkg[1] = ((len >> 8) & 0xFF) as u8;
+        pkg[2] = ((len >> 16) & 0xFF) as u8;
+        pkg[3] = r_efi::hii::PACKAGE_FORMS;
+        pkg.extend_from_slice(&ifr);
+        pkg
+    }
+
+    pub(crate) fn spf_record(qid: u16, ifr: u32, counter: u32, help: u16, prompt: u16) -> Vec<u8> {
+        let mut r = vec![0u8; spf::SPF_RECORD_SIZE];
+        r[0..4].copy_from_slice(&(qid as u32).to_le_bytes());
+        r[8..10].copy_from_slice(&6u16.to_le_bytes());
+        r[12..14].copy_from_slice(&0xFFFFu16.to_le_bytes());
+        r[16] = 0x09;
+        r[20..22].copy_from_slice(&help.to_le_bytes());
+        r[24..28].copy_from_slice(&counter.to_le_bytes());
+        r[28..32].copy_from_slice(&ifr.to_le_bytes());
+        r[36..44].copy_from_slice(&[0xF8, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
+        r[44..48].copy_from_slice(&[0x01, 0x00, 0x01, 0x00]);
+        r[48..50].copy_from_slice(&prompt.to_le_bytes());
+        r
+    }
+
+    pub(crate) fn question_add_spf_body(rec0: &[u8], rec1: &[u8], foreign: &[u8]) -> Vec<u8> {
+        let mut body = vec![0u8; 0x188];
+        body[0x10..0x14].copy_from_slice(b"$SPF");
+        body[0x14..0x18].copy_from_slice(&0x200u32.to_le_bytes());
+        body[0x18..0x1C].copy_from_slice(&0x210u32.to_le_bytes());
+        body[0x1C..0x2C]
+            .copy_from_slice(&[0x43, 0xD6, 0x87, 0xEC, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        body[0x2C..0x30].copy_from_slice(&0x48u32.to_le_bytes());
+        body[0x40..0x44].copy_from_slice(&0x94u32.to_le_bytes());
+        body[0x6C..0x70].copy_from_slice(&0x178u32.to_le_bytes());
+        body[0x70..0x74].copy_from_slice(&1u32.to_le_bytes());
+        body[0x74..0x78].copy_from_slice(&0x68u32.to_le_bytes());
+        body[0x78..0x98].copy_from_slice(&[0u8; 0x20]);
+        body[0x82..0x84].copy_from_slice(&10019u16.to_le_bytes());
+        body[0x94..0x98].copy_from_slice(&1u32.to_le_bytes());
+        body[0x98..0x9C].copy_from_slice(&0x94u32.to_le_bytes());
+        body[0xA4..0xEC].copy_from_slice(rec0);
+        body[0xEC..0x134].copy_from_slice(rec1);
+        body[0x134..0x17C].copy_from_slice(foreign);
+        body[0x17C..0x17E].copy_from_slice(&5u16.to_le_bytes());
+        body[0x17E..0x180].copy_from_slice(&0x01A4u16.to_le_bytes());
+        body[0x180..0x182].copy_from_slice(&0u16.to_le_bytes());
+        body[0x182..0x184].copy_from_slice(&0x77u16.to_le_bytes());
+        body[0x184..0x186].copy_from_slice(&0x88u16.to_le_bytes());
+        body[0x186..0x188].copy_from_slice(&78u16.to_le_bytes());
+        body
+    }
+
+    pub(crate) fn lzma_guided_section_bytes(children: &[u8]) -> Vec<u8> {
+        let mut stream = crate::compress::compress_lzma(children).unwrap();
+        stream.resize(stream.len().max(64) + 32, 0x00);
+        let mut body = crate::ffs::lzma_guid().to_bytes().to_vec();
+        body.extend_from_slice(&0x18u16.to_le_bytes());
+        body.extend_from_slice(&1u16.to_le_bytes());
+        body.extend_from_slice(&stream);
+        section_bytes(EFI_SECTION_GUID_DEFINED, &body)
+    }
+
+    pub(crate) fn hii_list_blob(pkgs: &[&[u8]]) -> Vec<u8> {
+        let guid = Guid::from_str(FORMSET_GUID).unwrap();
+        let total = 20 + 4 + pkgs.iter().map(|p| p.len()).sum::<usize>();
+        let mut b = guid.to_bytes().to_vec();
+        b.extend_from_slice(&(total as u32).to_le_bytes());
+        for p in pkgs {
+            b.extend_from_slice(p);
+        }
+        b.extend_from_slice(&[0x04, 0x00, 0x00, r_efi::hii::PACKAGE_END]);
+        b
+    }
+
+    pub(crate) fn question_add_spf_body_for(pkg: &[u8]) -> Vec<u8> {
+        let q10019 = crate::hii::form_hijack::locate_questions(pkg, 10019)[0].0;
+        let q10020 = crate::hii::form_hijack::locate_questions(pkg, 10020)[0].0;
+        let rec0 = spf_record(0x3B, q10019 as u32, 0x0001_0066, 0x01A4, 0x01A3);
+        let rec1 = spf_record(0x55, q10020 as u32, 0x0001_0066, 0x01A6, 0x01A5);
+        let foreign = spf_record(0x66, q10020 as u32, 0x0001_0066, 0x01A8, 0x01A7);
+        question_add_spf_body(&rec0, &rec1, &foreign)
+    }
+
+    pub(crate) fn sd_file_direct(spf_body: &[u8]) -> Vec<u8> {
+        ffs_file_bytes(
+            &Guid::from_str(SETUPDATA_GUID_STR).unwrap(),
+            &file_sections(&[
+                section_bytes(EFI_SECTION_UI, &ui_name("AMITSESetupData")),
+                lzma_guided_section_bytes(&section_bytes(
+                    EFI_SECTION_FREEFORM_SUBTYPE_GUID,
+                    spf_body,
+                )),
+            ]),
+        )
+    }
+
+    pub(crate) fn sd_file_nested(spf_body: &[u8]) -> Vec<u8> {
+        ffs_file_bytes(
+            &Guid::from_str(SETUPDATA_GUID_STR).unwrap(),
+            &lzma_guided_section_bytes(&file_sections(&[
+                section_bytes(EFI_SECTION_FREEFORM_SUBTYPE_GUID, spf_body),
+                section_bytes(EFI_SECTION_UI, &ui_name("AMITSESetupData")),
+            ])),
+        )
+    }
+
+    pub(crate) fn question_add_flash_image() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        let pkg = question_add_forms_pkg();
+        let spf_body = question_add_spf_body_for(&pkg);
+        let blob = hii_list_blob(&[&pkg, &string_package_bytes()]);
+        let pe = crate::hii::pe_resource::synth_hii_pe("HII", &blob);
+        let setup = ffs_file_bytes(
+            &Guid::from_str(FILE_GUID).unwrap(),
+            &section_bytes(EFI_SECTION_PE32, &pe),
+        );
+        let sd = sd_file_direct(&spf_body);
+        (flash_with_files(vec![setup, sd]), pkg, spf_body)
+    }
+
+    pub(crate) fn question_add_bare_flash_image() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        let pkg = question_add_forms_pkg();
+        let spf_body = question_add_spf_body_for(&pkg);
+        let setup = ffs_file_bytes(
+            &Guid::from_str(FILE_GUID).unwrap(),
+            &file_sections(&[
+                section_bytes(EFI_SECTION_RAW, &pkg),
+                section_bytes(EFI_SECTION_RAW, &string_package_bytes()),
+            ]),
+        );
+        let sd = sd_file_direct(&spf_body);
+        (flash_with_files(vec![setup, sd]), pkg, spf_body)
+    }
+
+    pub(crate) fn question_add_nested_ui_flash_image() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        let pkg = question_add_forms_pkg();
+        let spf_body = question_add_spf_body_for(&pkg);
+        let blob = hii_list_blob(&[&pkg, &string_package_bytes()]);
+        let pe = crate::hii::pe_resource::synth_hii_pe("HII", &blob);
+        let setup = ffs_file_bytes(
+            &Guid::from_str(FILE_GUID).unwrap(),
+            &section_bytes(EFI_SECTION_PE32, &pe),
+        );
+        let sd = sd_file_nested(&spf_body);
+        (flash_with_files(vec![setup, sd]), pkg, spf_body)
+    }
+
+    pub(crate) fn corrupt_last_option_of_form(pkg: &mut [u8], form_id: u16) {
+        let span = crate::hii::form_hijack::locate_form(pkg, form_id).unwrap();
+        let one_of_op = 2 + 12 + 3;
+        let option_op = 2 + 4 + 1;
+        let second_option = span.form_op + 6 + one_of_op + option_op;
+        pkg[second_option + 1] = 0x7F;
+    }
+
+    pub(crate) fn question_add_malformed_resource_flash() -> Vec<u8> {
+        let clean = question_add_forms_pkg();
+        let spf_body = question_add_spf_body_for(&clean);
+        let mut pkg = clean;
+        corrupt_last_option_of_form(&mut pkg, 10019);
+        let blob = hii_list_blob(&[&pkg, &string_package_bytes()]);
+        let pe = crate::hii::pe_resource::synth_hii_pe("HII", &blob);
+        let setup = ffs_file_bytes(
+            &Guid::from_str(FILE_GUID).unwrap(),
+            &section_bytes(EFI_SECTION_PE32, &pe),
+        );
+        let sd = sd_file_direct(&spf_body);
+        flash_with_files(vec![setup, sd])
+    }
+
+    pub(crate) fn question_add_malformed_bare_flash() -> Vec<u8> {
+        let clean = question_add_forms_pkg();
+        let spf_body = question_add_spf_body_for(&clean);
+        let mut pkg = clean;
+        corrupt_last_option_of_form(&mut pkg, 10019);
+        let setup = ffs_file_bytes(
+            &Guid::from_str(FILE_GUID).unwrap(),
+            &file_sections(&[
+                section_bytes(EFI_SECTION_RAW, &pkg),
+                section_bytes(EFI_SECTION_RAW, &string_package_bytes()),
+            ]),
+        );
+        let sd = sd_file_direct(&spf_body);
+        flash_with_files(vec![setup, sd])
+    }
+
+    pub(crate) fn question_add_growth_blocked_flash() -> Vec<u8> {
+        let pkg = question_add_forms_pkg();
+        let spf_body = question_add_spf_body_for(&pkg);
+        let blob = hii_list_blob(&[&pkg, &string_package_bytes()]);
+        let mut pe = crate::hii::pe_resource::synth_hii_pe("HII", &blob);
+        let strings: Vec<String> = vec![
+            "Serial Console".into(),
+            "Serial console help".into(),
+            "Disabled".into(),
+            "Enabled".into(),
+        ];
+        let mut probe = pe.clone();
+        crate::hii::string_pack::add_strings_to_resource(&mut probe, &strings).unwrap();
+        let blob_len0 = crate::hii::pe_resource::hii_entry_locations(&pe)[0].2;
+        let blob_len1 = crate::hii::pe_resource::hii_entry_locations(&probe)[0].2;
+        let strings_delta = blob_len1 - blob_len0;
+        let old_virt = u32::from_le_bytes(pe[0x150..0x154].try_into().unwrap());
+        let old_raw = u32::from_le_bytes(pe[0x158..0x15c].try_into().unwrap());
+        pe.resize(pe.len() + strings_delta, 0);
+        pe[0x150..0x154].copy_from_slice(&(old_virt + strings_delta as u32).to_le_bytes());
+        pe[0x158..0x15c].copy_from_slice(&(old_raw + strings_delta as u32).to_le_bytes());
+        pe[0xe8..0xec].copy_from_slice(&0x5000u32.to_le_bytes());
+        let setup = ffs_file_bytes(
+            &Guid::from_str(FILE_GUID).unwrap(),
+            &section_bytes(EFI_SECTION_PE32, &pe),
+        );
+        let sd = sd_file_direct(&spf_body);
+        flash_with_files(vec![setup, sd])
+    }
 }
 
 #[cfg(test)]
@@ -2370,182 +2802,10 @@ mod tests {
     mod question_add_tests {
         use super::*;
         use crate::builder::build_image;
-        use crate::ffs::{
-            EFI_SECTION_FREEFORM_SUBTYPE_GUID, EFI_SECTION_GUID_DEFINED, EFI_SECTION_PE32,
-            EFI_SECTION_RAW, EFI_SECTION_UI,
-        };
-        use crate::hii::form_hijack::test_fixtures::{
-            FILE_GUID, FORMSET_GUID, SETUPDATA_GUID_STR, ffs_file_bytes, file_sections,
-            flash_with_files, section_bytes, string_package_bytes, ui_name,
-        };
-        use crate::hii::ifr_builder::{IfrBuilder, TYPE_NUM_SIZE_8};
+        use crate::hii::form_hijack::test_fixtures::SETUPDATA_GUID_STR;
+        use crate::hii::question_add_fixtures::*;
         use crate::hii::spf;
         use crate::parser::image::parse_image;
-
-        fn question_add_forms_pkg() -> Vec<u8> {
-            let mut b = IfrBuilder::new();
-            let g = Guid::from_str(FORMSET_GUID).unwrap();
-            b.emit_form_set(&g, 1, 1, &[]);
-            b.emit_var_store(1, &g, 0x100, "Setup");
-            b.emit_form(10019, 1);
-            b.emit_one_of(0x01A3, 0x01A4, 0x3B, 1, 0x3A, 0, 1);
-            b.emit_one_of_option(4, 0x30, TYPE_NUM_SIZE_8, 0, 1);
-            b.emit_one_of_option(3, 0x00, TYPE_NUM_SIZE_8, 1, 1);
-            b.emit_end();
-            b.emit_end();
-            b.emit_form(10020, 2);
-            b.emit_one_of(0x01A5, 0x01A6, 0x55, 1, 0x40, 0, 1);
-            b.emit_one_of_option(5, 0x00, TYPE_NUM_SIZE_8, 0, 1);
-            b.emit_end();
-            b.emit_end();
-            b.emit_end();
-            let ifr = b.build();
-            let mut pkg = vec![0u8; 4];
-            let len = 4 + ifr.len() as u32;
-            pkg[0] = (len & 0xFF) as u8;
-            pkg[1] = ((len >> 8) & 0xFF) as u8;
-            pkg[2] = ((len >> 16) & 0xFF) as u8;
-            pkg[3] = r_efi::hii::PACKAGE_FORMS;
-            pkg.extend_from_slice(&ifr);
-            pkg
-        }
-
-        fn spf_record(qid: u16, ifr: u32, counter: u32, help: u16, prompt: u16) -> Vec<u8> {
-            let mut r = vec![0u8; spf::SPF_RECORD_SIZE];
-            r[0..4].copy_from_slice(&(qid as u32).to_le_bytes());
-            r[8..10].copy_from_slice(&6u16.to_le_bytes());
-            r[12..14].copy_from_slice(&0xFFFFu16.to_le_bytes());
-            r[16] = 0x09;
-            r[20..22].copy_from_slice(&help.to_le_bytes());
-            r[24..28].copy_from_slice(&counter.to_le_bytes());
-            r[28..32].copy_from_slice(&ifr.to_le_bytes());
-            r[36..44].copy_from_slice(&[0xF8, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
-            r[44..48].copy_from_slice(&[0x01, 0x00, 0x01, 0x00]);
-            r[48..50].copy_from_slice(&prompt.to_le_bytes());
-            r
-        }
-
-        fn question_add_spf_body(rec0: &[u8], rec1: &[u8], foreign: &[u8]) -> Vec<u8> {
-            let mut body = vec![0u8; 0x188];
-            body[0x10..0x14].copy_from_slice(b"$SPF");
-            body[0x14..0x18].copy_from_slice(&0x200u32.to_le_bytes());
-            body[0x18..0x1C].copy_from_slice(&0x210u32.to_le_bytes());
-            body[0x1C..0x2C]
-                .copy_from_slice(&[0x43, 0xD6, 0x87, 0xEC, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
-            body[0x2C..0x30].copy_from_slice(&0x48u32.to_le_bytes());
-            body[0x40..0x44].copy_from_slice(&0x94u32.to_le_bytes());
-            body[0x6C..0x70].copy_from_slice(&0x178u32.to_le_bytes());
-            body[0x70..0x74].copy_from_slice(&1u32.to_le_bytes());
-            body[0x74..0x78].copy_from_slice(&0x68u32.to_le_bytes());
-            body[0x78..0x98].copy_from_slice(&[0u8; 0x20]);
-            body[0x82..0x84].copy_from_slice(&10019u16.to_le_bytes());
-            body[0x94..0x98].copy_from_slice(&1u32.to_le_bytes());
-            body[0x98..0x9C].copy_from_slice(&0x94u32.to_le_bytes());
-            body[0xA4..0xEC].copy_from_slice(rec0);
-            body[0xEC..0x134].copy_from_slice(rec1);
-            body[0x134..0x17C].copy_from_slice(foreign);
-            body[0x17C..0x17E].copy_from_slice(&5u16.to_le_bytes());
-            body[0x17E..0x180].copy_from_slice(&0x01A4u16.to_le_bytes());
-            body[0x180..0x182].copy_from_slice(&0u16.to_le_bytes());
-            body[0x182..0x184].copy_from_slice(&0x77u16.to_le_bytes());
-            body[0x184..0x186].copy_from_slice(&0x88u16.to_le_bytes());
-            body[0x186..0x188].copy_from_slice(&78u16.to_le_bytes());
-            body
-        }
-
-        fn lzma_guided_section_bytes(children: &[u8]) -> Vec<u8> {
-            let mut stream = crate::compress::compress_lzma(children).unwrap();
-            stream.resize(stream.len().max(64) + 32, 0x00);
-            let mut body = crate::ffs::lzma_guid().to_bytes().to_vec();
-            body.extend_from_slice(&0x18u16.to_le_bytes());
-            body.extend_from_slice(&1u16.to_le_bytes());
-            body.extend_from_slice(&stream);
-            section_bytes(EFI_SECTION_GUID_DEFINED, &body)
-        }
-
-        fn hii_list_blob(pkgs: &[&[u8]]) -> Vec<u8> {
-            let guid = Guid::from_str(FORMSET_GUID).unwrap();
-            let total = 20 + 4 + pkgs.iter().map(|p| p.len()).sum::<usize>();
-            let mut b = guid.to_bytes().to_vec();
-            b.extend_from_slice(&(total as u32).to_le_bytes());
-            for p in pkgs {
-                b.extend_from_slice(p);
-            }
-            b.extend_from_slice(&[0x04, 0x00, 0x00, r_efi::hii::PACKAGE_END]);
-            b
-        }
-
-        fn question_add_spf_body_for(pkg: &[u8]) -> Vec<u8> {
-            let q10019 = crate::hii::form_hijack::locate_questions(pkg, 10019)[0].0;
-            let q10020 = crate::hii::form_hijack::locate_questions(pkg, 10020)[0].0;
-            let rec0 = spf_record(0x3B, q10019 as u32, 0x0001_0066, 0x01A4, 0x01A3);
-            let rec1 = spf_record(0x55, q10020 as u32, 0x0001_0066, 0x01A6, 0x01A5);
-            let foreign = spf_record(0x66, q10020 as u32, 0x0001_0066, 0x01A8, 0x01A7);
-            question_add_spf_body(&rec0, &rec1, &foreign)
-        }
-
-        fn sd_file_direct(spf_body: &[u8]) -> Vec<u8> {
-            ffs_file_bytes(
-                &Guid::from_str(SETUPDATA_GUID_STR).unwrap(),
-                &file_sections(&[
-                    section_bytes(EFI_SECTION_UI, &ui_name("AMITSESetupData")),
-                    lzma_guided_section_bytes(&section_bytes(
-                        EFI_SECTION_FREEFORM_SUBTYPE_GUID,
-                        spf_body,
-                    )),
-                ]),
-            )
-        }
-
-        fn sd_file_nested(spf_body: &[u8]) -> Vec<u8> {
-            ffs_file_bytes(
-                &Guid::from_str(SETUPDATA_GUID_STR).unwrap(),
-                &lzma_guided_section_bytes(&file_sections(&[
-                    section_bytes(EFI_SECTION_FREEFORM_SUBTYPE_GUID, spf_body),
-                    section_bytes(EFI_SECTION_UI, &ui_name("AMITSESetupData")),
-                ])),
-            )
-        }
-
-        fn question_add_flash_image() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
-            let pkg = question_add_forms_pkg();
-            let spf_body = question_add_spf_body_for(&pkg);
-            let blob = hii_list_blob(&[&pkg, &string_package_bytes()]);
-            let pe = crate::hii::pe_resource::synth_hii_pe("HII", &blob);
-            let setup = ffs_file_bytes(
-                &Guid::from_str(FILE_GUID).unwrap(),
-                &section_bytes(EFI_SECTION_PE32, &pe),
-            );
-            let sd = sd_file_direct(&spf_body);
-            (flash_with_files(vec![setup, sd]), pkg, spf_body)
-        }
-
-        fn question_add_bare_flash_image() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
-            let pkg = question_add_forms_pkg();
-            let spf_body = question_add_spf_body_for(&pkg);
-            let setup = ffs_file_bytes(
-                &Guid::from_str(FILE_GUID).unwrap(),
-                &file_sections(&[
-                    section_bytes(EFI_SECTION_RAW, &pkg),
-                    section_bytes(EFI_SECTION_RAW, &string_package_bytes()),
-                ]),
-            );
-            let sd = sd_file_direct(&spf_body);
-            (flash_with_files(vec![setup, sd]), pkg, spf_body)
-        }
-
-        fn question_add_nested_ui_flash_image() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
-            let pkg = question_add_forms_pkg();
-            let spf_body = question_add_spf_body_for(&pkg);
-            let blob = hii_list_blob(&[&pkg, &string_package_bytes()]);
-            let pe = crate::hii::pe_resource::synth_hii_pe("HII", &blob);
-            let setup = ffs_file_bytes(
-                &Guid::from_str(FILE_GUID).unwrap(),
-                &section_bytes(EFI_SECTION_PE32, &pe),
-            );
-            let sd = sd_file_nested(&spf_body);
-            (flash_with_files(vec![setup, sd]), pkg, spf_body)
-        }
 
         fn question_add_schema(qid: u16, voff: u16) -> schema::QuestionAddSchema {
             schema::QuestionAddSchema {
@@ -2933,6 +3193,131 @@ mod tests {
                 build_image(&img).unwrap(),
                 before,
                 "rejections must not mutate the image"
+            );
+        }
+
+        #[test]
+        fn add_question_rejects_size_zero() {
+            let (flash, _, _) = question_add_flash_image();
+            let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+            let before = build_image(&img).unwrap();
+            let mut schema = question_add_schema(0x200, 0x80);
+            schema.size = 0;
+            let err = add_question(&mut img, ITEM_FORM, &schema).unwrap_err();
+            assert!(
+                matches!(err, HiiError::InvalidSchema(ref m) if m.contains('0')),
+                "got {err:?}"
+            );
+            assert_eq!(
+                build_image(&img).unwrap(),
+                before,
+                "size 0 must be rejected before any mutation"
+            );
+        }
+
+        fn snapshot_bodies(node: &FfsNode) -> Vec<Vec<u8>> {
+            let mut out = vec![node.body.clone()];
+            for c in &node.children {
+                out.extend(snapshot_bodies(c));
+            }
+            out
+        }
+
+        #[test]
+        fn add_question_malformed_ifr_splice_failure_keeps_image_identical() {
+            let flash = question_add_malformed_resource_flash();
+            let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+            let before = snapshot_bodies(&img.root);
+            let err =
+                add_question(&mut img, ITEM_FORM, &question_add_schema(0x200, 0x80)).unwrap_err();
+            assert!(matches!(err, HiiError::NotFound), "got {err:?}");
+            assert_eq!(
+                snapshot_bodies(&img.root),
+                before,
+                "splice failure after the strings stage must not leave a half-applied image"
+            );
+        }
+
+        #[test]
+        fn add_question_bare_splice_failure_keeps_image_identical() {
+            let flash = question_add_malformed_bare_flash();
+            let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+            let before = snapshot_bodies(&img.root);
+            let err = add_question(&mut img, ITEM_FORM_BARE, &question_add_schema(0x200, 0x80))
+                .unwrap_err();
+            assert!(matches!(err, HiiError::NotFound), "got {err:?}");
+            assert_eq!(
+                snapshot_bodies(&img.root),
+                before,
+                "bare-channel splice failure after strings must not mutate the image"
+            );
+        }
+
+        #[test]
+        fn add_question_growth_failure_after_strings_keeps_image_identical() {
+            let flash = question_add_growth_blocked_flash();
+            let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+            let before = snapshot_bodies(&img.root);
+            let err =
+                add_question(&mut img, ITEM_FORM, &question_add_schema(0x200, 0x80)).unwrap_err();
+            assert!(matches!(err, HiiError::PeGrowthUnsupported), "got {err:?}");
+            assert_eq!(
+                snapshot_bodies(&img.root),
+                before,
+                "resource-growth failure after the strings stage must not leave a half-applied image"
+            );
+        }
+
+        #[test]
+        fn check_question_add_validates_whole_list_before_any_apply() {
+            let (flash, _, _) = question_add_flash_image();
+            let img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+            let before = snapshot_bodies(&img.root);
+            let good = vec![
+                question_add_schema(0x200, 0x80),
+                question_add_schema(0x201, 0x81),
+            ];
+            assert!(check_question_add(&img, ITEM_FORM, &good).is_ok());
+            let mut dup_qid = good.clone();
+            dup_qid[1].question_id = 0x200;
+            assert!(
+                matches!(
+                    check_question_add(&img, ITEM_FORM, &dup_qid).unwrap_err(),
+                    HiiError::InvalidSchema(_)
+                ),
+                "intra-list duplicate question id must be rejected"
+            );
+            let mut overlap = good.clone();
+            overlap[1].var_offset = 0x80;
+            assert!(
+                matches!(
+                    check_question_add(&img, ITEM_FORM, &overlap).unwrap_err(),
+                    HiiError::InvalidSchema(_)
+                ),
+                "intra-list var_offset overlap must be rejected"
+            );
+            let mut unknown_varstore = good.clone();
+            unknown_varstore[1].var_store_id = 9;
+            assert!(
+                matches!(
+                    check_question_add(&img, ITEM_FORM, &unknown_varstore).unwrap_err(),
+                    HiiError::InvalidSchema(_)
+                ),
+                "second question varstore must be validated up front"
+            );
+            let mut base_dup = good;
+            base_dup[0].question_id = 0x3B;
+            assert!(
+                matches!(
+                    check_question_add(&img, ITEM_FORM, &base_dup).unwrap_err(),
+                    HiiError::InvalidSchema(_)
+                ),
+                "duplicate of an existing formset question id must be rejected"
+            );
+            assert_eq!(
+                snapshot_bodies(&img.root),
+                before,
+                "check must not mutate the image"
             );
         }
     }
