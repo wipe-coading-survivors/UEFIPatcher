@@ -5,7 +5,9 @@
 > Гейт S1: воспроизводимая сборка в контейнере; .ffs-артефакты
 > закоммичены как тест-данные. Числа — факты Tasks 2–5; размеры и
 > sha256 перемерены по коммиту `840fd25` (артефакты идентичны сборке
-> Task 4 `/tmp/serial-s1-r1`).
+> Task 4 `/tmp/serial-s1-r1`); SerialConsoleGlue перемерен заново после
+> гейтинга маркера 1 на статус ConOut-append (fix-волна финального
+> ревью; двойная сборка `/tmp/serial-s1-final{1,2}` — REPRODUCIBLE).
 
 ## 1. Стенд
 
@@ -47,18 +49,20 @@ gEfiPcdProtocolGuid в рантайме не читается (встречае�
 | PcdSerialDetectCable | FALSE | 〃 |
 | PcdSerialExtendedTxFifoSize | 64 | 〃 |
 | PcdSerialPciDeviceInfo | {0xFF} | 〃 |
-| PcdErrorCodeSetVariable | 0x03058002 | служебный S0-таблицы, без правки |
+| PcdErrorCodeSetVariable | 0x03058002 | TerminalDxe (REPORT_STATUS_CODE-путь при неудаче SetVariable), без правки |
 | **PcdDefaultTerminalType** | **3 (VT-UTF8)** | TerminalDxe — единственная правка |
 
 ## 3. Артефакты
 
-Закоммичены в `crates/uefi-engine/tests/data/serial/` (коммит `840fd25`):
+Закоммичены в `crates/uefi-engine/tests/data/serial/` (коммит `840fd25`;
+SerialConsoleGlue.ffs обновлён fix-волной финального ревью — гейтинг
+маркера 1; SerialDxe/TerminalDxe байт-идентичны `840fd25`):
 
 | файл | FFS GUID | размер, Б | sha256 | UI |
 |---|---|---|---|---|
 | SerialDxe.ffs | 9A5163E7-5C29-453F-825C-837A46A81E15 | 32848 | `d16b78eeb2550fa48d593c2b9ac13ddc988cccdec006558665cee8934fc963c2` | SerialDxe |
 | TerminalDxe.ffs | 9E863906-A40F-4875-977F-5B93FF237FC6 | 65596 | `640032425f9e491acc8874dbfdc6b9fae28f24d9ea82badc71b5bf27558e868f` | TerminalDxe |
-| SerialConsoleGlue.ffs | 1EF3A7C2-9B64-4D58-8A31-5C0E9F2B7D43 | 24688 | `48323c8d7898d2427ac85f57041d1d3209c5efa3ee201f4bf55f427e132802e3` | SerialConsoleGlue |
+| SerialConsoleGlue.ffs | 1EF3A7C2-9B64-4D58-8A31-5C0E9F2B7D43 | 24688 | `fa086e47fbc36d2bf9f08ff64ceb0ea284b805481d80201f0173e0606ec79823` | SerialConsoleGlue |
 
 DEPEX (по секциям 0x13 артефактов): SerialDxe — `gEfiPcdProtocolGuid`;
 glue — `gEfiSerialIoProtocolGuid AND gEfiPcdProtocolGuid` (билдер слил
@@ -87,7 +91,11 @@ glue — `gEfiSerialIoProtocolGuid AND gEfiPcdProtocolGuid` (билдер сли
   (VGA+COM) сохраняется.
 - Маркеры (строки-контракт E30/S2, дословно):
   `SC-S1 glue: serial console attached (ConOut updated)` — сразу после
-  ConnectController в DXE-диспетчеризации;
+  ConnectController в DXE-диспетчеризации; гейтится на
+  `ConOutStatus == EFI_SUCCESS` (статус append-а `ConOut` captured,
+  ConIn/ErrOut остаются fire-and-forget) — маркер не напечатается, если
+  SetVariable по `ConOut` фактически не прошёл (AMI VarCheck /
+  attribute / store), фикс fix-волны финального ревью;
   `SC-S1 glue: ReadyToBoot` — в событии ReadyToBoot.
   Нет маркеров → диспетчеризация/DEPEX/UART-init; только первый →
   терминал отключили по ходу бута (кандидат CsmDxe, §8.5-1); оба без
