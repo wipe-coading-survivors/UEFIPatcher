@@ -77,3 +77,96 @@ fn serial_s1_artifacts_parse() {
         assert_eq!(parsed.pe_subsystem, PE_SUBSYSTEM_BOOT_DRIVER, "{file}");
     }
 }
+
+const SECTION_GUIDED: u8 = 0x02;
+const SECTION_DEPEX: u8 = 0x13;
+const SECTION_UI: u8 = 0x15;
+const LZMA_GUID: [u8; 16] = [
+    0x98, 0x58, 0x4E, 0xEE, 0x14, 0x39, 0x59, 0x42, 0x9D, 0x6E, 0xDC, 0x7B, 0xD7, 0x94, 0x03, 0xCF,
+];
+const PCD_PROTOCOL_GUID_LE: [u8; 16] = [
+    0xF6, 0xF0, 0xA3, 0x13, 0x4A, 0x26, 0xF0, 0x3E, 0xF2, 0xE0, 0xDE, 0xC5, 0x12, 0x34, 0x2F, 0x34,
+];
+
+#[test]
+fn serial_io_ami_artifact_structure() {
+    let path = data_dir().join("SerialIoAmiDxe.ffs");
+    let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    assert_eq!(bytes.len(), 7675);
+
+    let guid = guid_from_bytes(&bytes[..16]).unwrap();
+    assert_eq!(
+        guid.to_string().to_ascii_uppercase(),
+        "97C81E5D-8FA0-486A-AAEA-0EFDF090FE4F"
+    );
+    assert_eq!(bytes[0x12], FFS_TYPE_DRIVER);
+    assert_eq!(
+        uint24_to_u32([bytes[0x14], bytes[0x15], bytes[0x16]]) as usize,
+        bytes.len()
+    );
+    let mut hdr = bytes[..24].to_vec();
+    hdr[17] = 0;
+    hdr[23] = 0;
+    assert_eq!(calculate_checksum8(&hdr), 0);
+
+    let depex_size = uint24_to_u32([bytes[0x18], bytes[0x19], bytes[0x1A]]) as usize;
+    assert_eq!(depex_size, 22);
+    assert_eq!(bytes[0x1B], SECTION_DEPEX);
+    let mut expect_depex = vec![0x02];
+    expect_depex.extend_from_slice(&PCD_PROTOCOL_GUID_LE);
+    expect_depex.push(0x08);
+    assert_eq!(&bytes[0x1C..0x1C + expect_depex.len()], &expect_depex[..]);
+
+    let guided_off = (0x18 + depex_size + 3) & !3;
+    let guided_size = uint24_to_u32([
+        bytes[guided_off],
+        bytes[guided_off + 1],
+        bytes[guided_off + 2],
+    ]) as usize;
+    assert_eq!(bytes[guided_off + 3], SECTION_GUIDED);
+    assert_eq!(guided_off + guided_size, bytes.len());
+    assert_eq!(&bytes[guided_off + 4..guided_off + 20], &LZMA_GUID[..]);
+    let data_offset = u16::from_le_bytes([bytes[guided_off + 20], bytes[guided_off + 21]]) as usize;
+    assert_eq!(data_offset, 24);
+    let payload = &bytes[guided_off + data_offset..guided_off + guided_size];
+    let inner = uefi_engine::decompress::decompress(payload, 2).expect("LZMA decode");
+    assert_eq!(inner.len(), 14858);
+
+    let mut pe32: Option<&[u8]> = None;
+    let mut ui_name = String::new();
+    let mut off = 0usize;
+    while off + 4 <= inner.len() {
+        let sec_size = uint24_to_u32([inner[off], inner[off + 1], inner[off + 2]]) as usize;
+        if sec_size < 4 {
+            break;
+        }
+        match inner[off + 3] {
+            SECTION_PE32 => pe32 = Some(&inner[off + 4..off + sec_size]),
+            SECTION_UI => {
+                let body = &inner[off + 4..off + sec_size];
+                let units: Vec<u16> = body
+                    .chunks_exact(2)
+                    .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                    .take_while(|&u| u != 0)
+                    .collect();
+                ui_name = String::from_utf16_lossy(&units);
+            }
+            _ => {}
+        }
+        off = (off + sec_size + 3) & !3;
+    }
+    assert_eq!(ui_name, "SerialIo");
+    let pe = pe32.expect("no PE32 in donor payload");
+    assert_eq!(pe.len(), 14816);
+    assert_eq!(&pe[..2], b"MZ");
+    let lfanew = u32::from_le_bytes(pe[0x3C..0x40].try_into().unwrap()) as usize;
+    assert_eq!(&pe[lfanew..lfanew + 4], b"PE\x00\x00");
+    let machine = u16::from_le_bytes(pe[lfanew + 4..lfanew + 6].try_into().unwrap());
+    assert_eq!(machine, PE_MACHINE_AMD64);
+    let subsystem = u16::from_le_bytes(pe[lfanew + 92..lfanew + 94].try_into().unwrap());
+    assert_eq!(subsystem, PE_SUBSYSTEM_BOOT_DRIVER);
+    let timestamp = u32::from_le_bytes(pe[lfanew + 8..lfanew + 12].try_into().unwrap());
+    assert_eq!(timestamp, 0);
+    let entry = u32::from_le_bytes(pe[lfanew + 40..lfanew + 44].try_into().unwrap());
+    assert_eq!(entry, 0xBA0);
+}
