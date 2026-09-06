@@ -500,3 +500,76 @@ S0 закрыта 2026-09-05: отчёт `docs/reports/2026-09-05-serial-s0-reco
 Вывод: главная движковая работа S3 — op `hii question add` (IFR-сплайс +
 строки + аддитивный $SPF-слой), НЕ регистрация страницы. Донорская
 геометрия страницы (S0 §3.6) остаётся справочной.
+
+## 10. Мини-pre-check S4 (аддендум, 2026-09-06)
+
+Выполнен после решения владельца «идём дальше — S4» (проба
+`/tmp/serial-s4-precheck/pnp_scan.py` — LIVE raw + 207 LZMA-декомпрессатов
+с атрибуцией спанами FFS по методу S0 `sio_scan.py`; дизасм-проходы
+objdump по донорскому SerialIo rd450x (артефакты S0 `/tmp/serial-s0`) и
+LIVE-модулям GenericSio/SioDxeInit; чтение исходников glue/TerminalDxe).
+Сырьё — только чтение, артефакты вне git; метод восстановим из пунктов.
+
+1. **Донорский SerialIo (97C81E5D) — resource-aware, привязывается к
+   нашему SIO-стеку, патчей не требует.** Supported(): probe-and-close
+   AmiSerial (мёртв в LIVE — не блокер) / AmiSio / PciIo + фильтр пути
+   ACPI-HID PNP0501 (`cmpl $0x050141D0` @0xE23) + фильтр
+   RemainingDevicePath (UART-DP). Start(): OpenProtocol(AmiSio) → метод
+   @+8 возвращает ресурсный список → обход дескрипторов (тип-нибл
+   `(b>>3)&0xF`; 8 = IO-дескриптор → база u16) → IO-base в контекст;
+   живая 16550-проба (SCR←0xAA→чтение), FIFO-детект (IIR&0xC0);
+   InstallMultiple **на собственный чайлд-хендл** (@0x193D): SerialIo +
+   DevicePath (путь = ACPI-путь контроллера + 19-Б UART-узел нулей,
+   шаблон @ImageBase+0x890); ExitBoot-событие. Таблица @ImageBase+0x900 —
+   указатели имён COM10…COM1 (круговой селектор), НЕ базы: на AmiSio-ветке
+   фиксированного fallback-адреса нет — **база UART только из
+   SIO-ресурсов** (донор следует за переездом порта, если платформа
+   переотчётит ресурсы). DEPEX gEfiPcdProtocolGuid удовлетворён PcdDxe
+   80CF7257 (S0 §6.2).
+2. **TerminalDxe (наш S1) совместим с донорским продюсером:**
+   Supported() не фильтрует путь контроллера (только наличие SerialIo);
+   тип терминала при отсутствии терминал-узла в пути —
+   PcdDefaultTerminalType (=3 VT-UTF8). Чайлд-хендл донора (ACPI+UART
+   путь) подходит; терминальный чайлд создаётся как в E30/E31.
+3. **Glue producer-agnostic, но timing иной: донорский SerialIo —
+   driver-model, стартует только по ConnectController.** Вся SIO-цепочка
+   LIVE driver-model: SioDxeInit (4E82091E) и GenericSio (8EEF9AD2)
+   регистрируют DriverBinding в entry (единственные InstallMultiple
+   SioDxeInit — binding-регистрация @0xd0f; чайлды GenericSio — только в
+   Start @0x2d40), ConnectController в SIO-стеке никто не зовёт → цепочка
+   поднимается BDS ConnectAll (косвенно подтверждено: PS/2-клавиатура —
+   SIO-функция — работает в Setup). ⇒ при замене SerialDxe→донор
+   immediate-поиск glue в DXE-фазе пуст. **Glue v2**: immediate-путь как
+   в E31 + fallback-нотификация на установку gEfiSerialIoProtocolGuid
+   (тот же обработчик; вызовется при BDS ConnectAll). S4-кандидат
+   ЗАМЕНЯЕТ SerialDxe (не добавляет) — единственный SerialIo-продюсер
+   (Handles[0]-нюанс SetAttributes). Риск-тайминг: если AMI BDS читает
+   ConOut до ConnectAll — консоль со второй загрузки; контингенси E32.
+4. **Кто применяет `PNP0501_0_NV[1]` («Change Settings», COM-переезд) —
+   статически НЕ найден.** pnp_scan: 560BF58A/PNP0501-имена присутствуют
+   ТОЛЬКО в IFR-декларациях Setup-формсета (899407D7, ASCII-имена
+   varstore), NVRAM-дефолтах (CEF5B9A3 raw + зеркало 9221315B) и
+   TSE-зеркале (FE612B72, UTF16-имена); ни GenericSio, ни SioDxeInit, ни
+   PEI NCT5532D не содержат их ни именем, ни GUID — либо имя строится
+   динамически, либо канал иной. Дискриминатор — E32: консоль после
+   переезда на 2F8 = конвейер LIVE применяет и донор следует; остаётся
+   на 3F8 = ручка пишет вхолостую. (Механизм самого клина — непонятое
+   поведение, паркинг вердикта E31.)
+5. **Собственный resource-aware драйвер (путь б') имеет стандартную
+   опору:** EFI_SIO_PROTOCOL — MdePkg/Protocol/SuperIo.h (215FDD18),
+   GenericSio ставит его на чайлды вместе с AmiSio (S0 §6.4):
+   GetResources → ACPI-дескрипторы → IO-base → 16550. Реализуем без
+   AMI-внутренностей.
+6. **Terminal 7A08CB98 (§8.5-6) — вне основного пути S4** (наш
+   TerminalDxe доказан железом E30/E31); остаётся резервом.
+7. **Донорский .ffs — извлечь из rd450x** (`refs/amibcp/
+   450x-4g-default.bin`, SerialIo FFS @0x985318, 7 675 Б, LZMA-guided
+   EE4E5898 = родной GUID движка — insert без нового кода компрессии) →
+   `crates/uefi-engine/tests/data/serial/` (прецедент S1: .ffs
+   коммитятся). TermSrc-патчи пути (а) гибриду не нужны — вне scope.
+
+Вывод: **S4 = гибрид §8.3(в)** — кандидат E32: одна семантическая
+переменная против E31 (продюсер SerialIo; glue v2 = надмножество
+поведения E31). Гейт E32 и резервы — в плане
+`docs/superpowers/plans/2026-09-06-serial-s4-serialio-swap.md`
+(исполнение — после ревью владельца; статус-строка — в roadmap.md).
