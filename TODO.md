@@ -2150,3 +2150,27 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   (почему материализуется вторая секция) до любых S2-решений про
   «FDF cleanup» (~61,7 КБ экономии) — иначе чистка может сломать
   неочевидную зависимость.
+
+### Находки финального ревью S2 serial-console (2026-09-06)
+
+> Финальное ревью E30-flashpack (отчёт
+> `docs/reports/2026-09-06-serial-s2-e30-pack.md`; кандидат v1
+> sha256 `09f5e897…` дважды независимо валидирован — по находкам
+> правки docs-only, код не трогался). Parking-lot:
+
+* [ ] **`regions` в `real_image_ops_insert_serial_s2` считает diff-байты,
+  не регионы** — переменная накапливает счётчик изменившихся байт
+  (косметика имени). Контекст: `crates/uefi-engine/tests/real_image.rs`
+  (`let mut regions = 0usize;` в цикле по `data.zip(rebuilt)`);
+  переименовать (напр. `diff_bytes`) при следующем касании теста.
+* [ ] **Юнит-тест «state 0xF8 в polarity-1 томе проходит verbatim» —
+  докупить** — ветка `ops::insert` (артефакт уже в polarity-1 форме
+  не адаптируется) покрыта только косвенно real-image гейтом на
+  живом HNX99TF. Контекст: коммит `e88691a`, зеркало
+  `insert_keeps_state_byte_verbatim_in_polarity0_volume`; добавить
+  синтетический polarity-1 том c FFS state 0xF8.
+* [ ] **Спека §8.3 «маркеры ASCII» — уточнить при следующем
+  аддендуме** — внутри glue-модуля строки UTF-16LE (CHAR16),
+  ASCII они становятся на проводе только после TerminalDxe.
+  Контекст: спека `2026-09-05-serial-console-ladder-design.md` §8.3;
+  переформулировать как «ASCII на проводе после TerminalDxe».
