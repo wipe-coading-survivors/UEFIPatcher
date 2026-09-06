@@ -933,8 +933,7 @@ fn parse_ffs(bytes: &[u8]) -> ParsedFfs {
     let mut off = 24usize;
     let mut pe32: Option<&[u8]> = None;
     while off + 4 <= bytes.len() {
-        let sec_size =
-            uint24_to_u32([bytes[off], bytes[off + 1], bytes[off + 2]]) as usize;
+        let sec_size = uint24_to_u32([bytes[off], bytes[off + 1], bytes[off + 2]]) as usize;
         if sec_size < 4 {
             break;
         }
@@ -949,8 +948,7 @@ fn parse_ffs(bytes: &[u8]) -> ParsedFfs {
     let lfanew = u32::from_le_bytes(pe[0x3C..0x40].try_into().unwrap()) as usize;
     assert_eq!(&pe[lfanew..lfanew + 4], b"PE\x00\x00");
     let pe_machine = u16::from_le_bytes(pe[lfanew + 4..lfanew + 6].try_into().unwrap());
-    let pe_subsystem =
-        u16::from_le_bytes(pe[lfanew + 92..lfanew + 94].try_into().unwrap());
+    let pe_subsystem = u16::from_le_bytes(pe[lfanew + 92..lfanew + 94].try_into().unwrap());
     ParsedFfs {
         guid: guid.to_string().to_ascii_uppercase(),
         ffs_type: bytes[0x12],
@@ -966,12 +964,14 @@ fn serial_s1_artifacts_parse() {
     let cases = [
         ("SerialDxe.ffs", "9A5163E7-5C29-453F-825C-837A46A81E15"),
         ("TerminalDxe.ffs", "9E863906-A40F-4875-977F-5B93FF237FC6"),
-        ("SerialConsoleGlue.ffs", "1EF3A7C2-9B64-4D58-8A31-5C0E9F2B7D43"),
+        (
+            "SerialConsoleGlue.ffs",
+            "1EF3A7C2-9B64-4D58-8A31-5C0E9F2B7D43",
+        ),
     ];
     for (file, expect_guid) in cases {
         let path = data_dir().join(file);
-        let bytes = std::fs::read(&path)
-            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
         let parsed = parse_ffs(&bytes);
         assert_eq!(parsed.guid, expect_guid, "{file}");
         assert_eq!(parsed.ffs_type, FFS_TYPE_DRIVER, "{file}");
