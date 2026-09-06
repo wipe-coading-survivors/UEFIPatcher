@@ -109,9 +109,31 @@ HasTerminalNode (
 }
 
 STATIC
+BOOLEAN
+HasAnyTerminalNode (
+  IN CONST EFI_DEVICE_PATH_PROTOCOL  *DevicePath
+  )
+{
+  UINTN  Index;
+
+  if (DevicePath == NULL) {
+    return FALSE;
+  }
+  if (HasTerminalNode (DevicePath, mTerminalGuid)) {
+    return TRUE;
+  }
+  for (Index = 0; Index < ARRAY_SIZE (kTerminalGuidMap); Index++) {
+    if (HasTerminalNode (DevicePath, kTerminalGuidMap[Index])) {
+      return TRUE;
+    }
+  }
+  return FALSE;
+}
+
+STATIC
 EFI_HANDLE
 FindTerminalChild (
-  IN CONST EFI_GUID  *TerminalGuid
+  VOID
   )
 {
   EFI_STATUS                Status;
@@ -140,7 +162,7 @@ FindTerminalChild (
                     &gEfiDevicePathProtocolGuid,
                     (VOID **)&DevicePath
                     );
-    if (!EFI_ERROR (Status) && HasTerminalNode (DevicePath, TerminalGuid)) {
+    if (!EFI_ERROR (Status) && HasAnyTerminalNode (DevicePath)) {
       Child = Handles[Index];
       break;
     }
@@ -252,7 +274,7 @@ OnReadyToBoot (
   EFI_HANDLE                    Child;
   EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL  *TextOut;
 
-  Child = FindTerminalChild (mTerminalGuid);
+  Child = FindTerminalChild ();
   if (Child == NULL) {
     return;
   }
@@ -316,7 +338,7 @@ AttachSerialConsole (
   Child = NULL;
   for (Index = 0; (Index < Count) && (Child == NULL); Index++) {
     (VOID)gBS->ConnectController (Handles[Index], NULL, NULL, FALSE);
-    Child = FindTerminalChild (mTerminalGuid);
+    Child = FindTerminalChild ();
   }
   FreePool (Handles);
 
@@ -347,7 +369,7 @@ AttachSerialConsole (
   (VOID)AppendInstanceToVariable (L"ErrOut", ConsolePath);
   FreePool (ConsolePath);
 
-  Child = FindTerminalChild (mTerminalGuid);
+  Child = FindTerminalChild ();
   if ((Child != NULL) && (ConOutStatus == EFI_SUCCESS)) {
     mAttached = TRUE;
     TextOut = NULL;
