@@ -170,3 +170,91 @@ fn serial_io_ami_artifact_structure() {
     let entry = u32::from_le_bytes(pe[lfanew + 40..lfanew + 44].try_into().unwrap());
     assert_eq!(entry, 0xBA0);
 }
+
+const PE32PLUS_MAGIC: u16 = 0x20B;
+
+#[test]
+fn serial_termsrc_ami_artifact_structure() {
+    let path = data_dir().join("TermSrcAmiDxe.ffs");
+    let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    assert_eq!(bytes.len(), 13_361);
+
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(&bytes);
+    assert_eq!(
+        format!("{digest:x}"),
+        "463a6695dda31a078ff7d98b0a7ebb63c14a51c40ddd0d513ecd1197c482acfa",
+        "artifact sha256 pin"
+    );
+
+    let guid = guid_from_bytes(&bytes[..16]).unwrap();
+    assert_eq!(
+        guid.to_string().to_ascii_uppercase(),
+        "54891A9E-763E-4377-8841-8D5C90D88CDE"
+    );
+    assert_eq!(bytes[0x12], FFS_TYPE_DRIVER);
+    assert_eq!(
+        uint24_to_u32([bytes[0x14], bytes[0x15], bytes[0x16]]) as usize,
+        bytes.len()
+    );
+    let mut hdr = bytes[..24].to_vec();
+    hdr[17] = 0;
+    hdr[23] = 0;
+    assert_eq!(calculate_checksum8(&hdr), 0);
+
+    let guided_size = uint24_to_u32([bytes[0x18], bytes[0x19], bytes[0x1A]]) as usize;
+    assert_eq!(guided_size, 0x3419);
+    assert_eq!(
+        bytes[0x1B], SECTION_GUIDED,
+        "no DEPEX section: first (and only) section is GUID_DEFINED"
+    );
+    assert_eq!(0x18 + guided_size, bytes.len());
+    assert_eq!(&bytes[0x1C..0x2C], &LZMA_GUID[..]);
+    let data_offset = u16::from_le_bytes([bytes[0x2C], bytes[0x2D]]) as usize;
+    assert_eq!(data_offset, 24);
+    let attrs = u16::from_le_bytes([bytes[0x2E], bytes[0x2F]]);
+    assert_eq!(attrs, 0x1);
+    let payload = &bytes[0x18 + data_offset..0x18 + guided_size];
+    let inner = uefi_engine::decompress::decompress(payload, 2).expect("LZMA decode");
+    assert_eq!(inner.len(), 37_870);
+
+    let mut pe32: Option<&[u8]> = None;
+    let mut ui_name = String::new();
+    let mut off = 0usize;
+    while off + 4 <= inner.len() {
+        let sec_size = uint24_to_u32([inner[off], inner[off + 1], inner[off + 2]]) as usize;
+        if sec_size < 4 {
+            break;
+        }
+        match inner[off + 3] {
+            SECTION_PE32 => pe32 = Some(&inner[off + 4..off + sec_size]),
+            SECTION_UI => {
+                let body = &inner[off + 4..off + sec_size];
+                let units: Vec<u16> = body
+                    .chunks_exact(2)
+                    .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                    .take_while(|&u| u != 0)
+                    .collect();
+                ui_name = String::from_utf16_lossy(&units);
+            }
+            _ => {}
+        }
+        off = (off + sec_size + 3) & !3;
+    }
+    assert_eq!(ui_name, "TerminalSrc");
+    let pe = pe32.expect("no PE32 in donor payload");
+    assert_eq!(pe.len(), 37_824);
+    assert_eq!(&pe[..2], b"MZ");
+    let lfanew = u32::from_le_bytes(pe[0x3C..0x40].try_into().unwrap()) as usize;
+    assert_eq!(&pe[lfanew..lfanew + 4], b"PE\x00\x00");
+    let machine = u16::from_le_bytes(pe[lfanew + 4..lfanew + 6].try_into().unwrap());
+    assert_eq!(machine, PE_MACHINE_AMD64);
+    let opt_magic = u16::from_le_bytes(pe[lfanew + 24..lfanew + 26].try_into().unwrap());
+    assert_eq!(opt_magic, PE32PLUS_MAGIC);
+    let subsystem = u16::from_le_bytes(pe[lfanew + 92..lfanew + 94].try_into().unwrap());
+    assert_eq!(subsystem, PE_SUBSYSTEM_BOOT_DRIVER);
+    let timestamp = u32::from_le_bytes(pe[lfanew + 8..lfanew + 12].try_into().unwrap());
+    assert_eq!(timestamp, 0);
+    let entry = u32::from_le_bytes(pe[lfanew + 40..lfanew + 44].try_into().unwrap());
+    assert_eq!(entry, 0x1E30);
+}
