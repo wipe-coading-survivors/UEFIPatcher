@@ -617,6 +617,7 @@ SerialConsoleGlueEntry (
   )
 {
   EFI_STATUS                    Status;
+  EFI_STATUS                    ConOutStatus;
   EFI_HANDLE                    *Handles;
   EFI_HANDLE                    SerialHandle;
   EFI_HANDLE                    Child;
@@ -668,13 +669,13 @@ SerialConsoleGlueEntry (
     ConsolePath = Path;
   }
 
-  (VOID)AppendInstanceToVariable (L"ConOut", ConsolePath);
+  ConOutStatus = AppendInstanceToVariable (L"ConOut", ConsolePath);
   (VOID)AppendInstanceToVariable (L"ConIn", ConsolePath);
   (VOID)AppendInstanceToVariable (L"ErrOut", ConsolePath);
   FreePool (ConsolePath);
 
   Child = FindTerminalChild ();
-  if (Child != NULL) {
+  if ((Child != NULL) && (ConOutStatus == EFI_SUCCESS)) {
     TextOut = NULL;
     if (!EFI_ERROR (gBS->HandleProtocol (Child, &gEfiSimpleTextOutProtocolGuid, (VOID **)&TextOut)) &&
         (TextOut != NULL)) {
@@ -724,7 +725,7 @@ cp "$BUILD_ROOT/FV/Ffs/1EF3A7C2-9B64-4D58-8A31-5C0E9F2B7D43SerialConsoleGlue/1EF
 - [ ] **Step 4: Собрать и проверить inline-питоном**
 
 Run: `bash docker/edk2/build_serial.sh /tmp/serial-s1-t3`
-Expected: тот же успех + `SerialConsoleGlue.ffs` (~5–12 КБ) в выводе `ls`.
+Expected: тот же успех + `SerialConsoleGlue.ffs` в выводе `ls`. Фактический размер (rule-11, зафиксировано по первой успешной сборке): 24 688 Б; исходная оценка плана (~5–12 КБ) — тот же класс ошибки, что и Task 2 Step 4 (66b4789): статическое библиотечное замыкание GCC RELEASE (DevicePathLib/UefiLib/PrintLib линкуются в драйвер) шире ручной оценки.
 
 Проверка (тот же inline-скрипт из Task 2 Step 5, дополнить строкой таблицы):
 ```python
@@ -894,7 +895,7 @@ git commit -m "feat(s1): hack/edk2_build_check.py (ffs/pe asserts + build reprod
 - Test: `crates/uefi-engine/tests/serial_ffs.rs`
 
 **Interfaces:**
-- Consumes: `uefi_engine::ffs::{calculate_checksum8, uint24_to_u32}` (ffs.rs:55, ffs.rs:71), `uefi_engine::parser::file::guid_from_bytes` (parser/file.rs:9); артефакты Task 4-валидной сборки.
+- Consumes: `uefi_engine::ffs::{calculate_checksum8, uint24_to_u32}` (ffs.rs:55, ffs.rs:72), `uefi_engine::parser::file::guid_from_bytes` (parser/file.rs:9); артефакты Task 4-валидной сборки.
 - Produces: интеграционный тест `serial_ffs.rs` (имя файла-теста для cargo: `cargo test -p uefi-engine --test serial_ffs`); коммит тест-данных. Двусторонняя валидация: хелперы движка обязаны соглашаться с артефактами GenFfs.
 
 - [ ] **Step 1: Написать падающий тест**
@@ -1007,7 +1008,7 @@ Run:
 ```bash
 cargo test -p uefi-engine && cargo clippy -p uefi-engine -- -D warnings && cargo fmt --all -- --check
 ```
-Expected: все тесты зелёные (базовый уровень: 571 passed / 26 ignored на момент планирования + 1 новый), clippy 0 warnings, fmt чисто.
+Expected: все тесты зелёные (базовый уровень: 543 passed / 26 ignored на момент планирования + 1 новый = 544 при HEAD; исходное «571» — устаревшее число), clippy 0 warnings, fmt чисто.
 
 - [ ] **Step 6: Commit**
 
