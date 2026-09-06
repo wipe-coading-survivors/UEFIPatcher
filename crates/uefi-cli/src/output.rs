@@ -1,6 +1,6 @@
 use uefi_proto::{
-    FormInfo, GateInfo, HiiFormHijackResponse, ImageInfo, Node, QuestionInfo, SessionInfo,
-    StringInfo,
+    FormInfo, GateInfo, HiiFormHijackResponse, HiiQuestionAddOutcome, ImageInfo, Node,
+    QuestionInfo, SessionInfo, StringInfo,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -422,6 +422,39 @@ pub fn print_form_hijack(resp: &HiiFormHijackResponse, format: OutputFormat) {
     }
 }
 
+pub fn print_question_add(outcomes: &[HiiQuestionAddOutcome], format: OutputFormat) {
+    match format {
+        OutputFormat::Json => {
+            let items = outcomes
+                .iter()
+                .map(|o| {
+                    let sids = serde_json::to_string(&o.string_ids).unwrap_or_else(|_| "{}".into());
+                    format!(
+                        "{{\"question_id\":{},\"string_ids\":{sids},\"spf_record_offset\":{}}}",
+                        o.question_id, o.spf_record_offset
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            println!("{{\"questions\":[{items}]}}");
+        }
+        _ => {
+            println!("question_id\tspf_record_offset\tstring_id\tname");
+            for o in outcomes {
+                println!("{:#X}\t{:#X}\t-\t-", o.question_id, o.spf_record_offset);
+                let mut sids: Vec<(&String, &u32)> = o.string_ids.iter().collect();
+                sids.sort_by_key(|&(name, sid)| (*sid, name));
+                for (name, sid) in sids {
+                    println!(
+                        "{:#X}\t{:#X}\t{sid}\t{name}",
+                        o.question_id, o.spf_record_offset
+                    );
+                }
+            }
+        }
+    }
+}
+
 #[allow(dead_code)]
 pub fn print_text(text: &str) {
     print!("{text}");
@@ -486,6 +519,21 @@ mod tests {
         };
         print_form_hijack(&resp, OutputFormat::Json);
         print_form_hijack(&resp, OutputFormat::Text);
+    }
+
+    #[test]
+    fn question_add_print_smoke() {
+        let mut string_ids = std::collections::HashMap::new();
+        string_ids.insert("Serial Console".to_string(), 2u32);
+        string_ids.insert("Enabled".to_string(), 5u32);
+        let outcomes = vec![HiiQuestionAddOutcome {
+            question_id: 0x200,
+            string_ids,
+            spf_record_offset: 0x13C,
+        }];
+        print_question_add(&outcomes, OutputFormat::Json);
+        print_question_add(&outcomes, OutputFormat::Text);
+        print_question_add(&[], OutputFormat::Tsv);
     }
 
     fn mock_question() -> QuestionInfo {

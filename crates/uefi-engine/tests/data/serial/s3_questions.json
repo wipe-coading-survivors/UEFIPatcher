@@ -1,0 +1,35 @@
+{
+  "questions": [
+    {
+      "form_id": 10019,
+      "prompt": "Baud Rate",
+      "help": "Serial console port speed (applies on next boot)",
+      "question_id": 512,
+      "var_store_id": 1,
+      "var_offset": 93,
+      "size": 1,
+      "options": [
+        {"text": "115200", "value": 0, "default": "optimized"},
+        {"text": "57600", "value": 1},
+        {"text": "38400", "value": 2},
+        {"text": "19200", "value": 3},
+        {"text": "9600", "value": 4}
+      ]
+    },
+    {
+      "form_id": 10019,
+      "prompt": "Terminal Type",
+      "help": "Serial console terminal type (applies on next boot)",
+      "question_id": 513,
+      "var_store_id": 1,
+      "var_offset": 94,
+      "size": 1,
+      "options": [
+        {"text": "VT-UTF8", "value": 0, "default": "optimized"},
+        {"text": "VT-100+", "value": 1},
+        {"text": "VT-100", "value": 2},
+        {"text": "ANSI", "value": 3}
+      ]
+    }
+  ]
+}

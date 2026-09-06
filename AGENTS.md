@@ -81,6 +81,12 @@ cd webui && npm run check           # svelte-check (цикл 5+7)
 - `UEFIPATCHER_PURGE_ARTIFACTS` — удалять артефакты при GC (false по умолчанию — безопасность данных приоритетнее)
 - `UEFIPATCHER_GATEWAY_LISTEN` — адрес шлюза (0.0.0.0:8080)
 
+### Фоновые процессы и сокет движка
+
+- Перед запуском `uefi-engine` удаляй осевший сокет прошлой сессии: `rm -f "$UEFIPATCHER_SOCK"` (клиент на мёртвом сокете падает с `transport error (RPC_INTERNAL)` — это окружение, не код).
+- При `RPC_INTERNAL` у `uefi-cli`: проверь жив ли движок (`pgrep`), удали сокет, перезапусти движок, повтори. Не диагностируй RPC-код.
+- Не гаси фоновые процессы через `pkill -f <подстрока>`: паттерн совпадает с командной строкой собственного shell и убивает её (вместе с недовыполненной командой). Используй `pkill -x <имя>` или `pkill -f 'target/debug/<bin>'`.
+
 ### Docker/Podman конвенции
 
 - Именование файлов: `<component>.containerfile` (НЕ `Dockerfile.X`)

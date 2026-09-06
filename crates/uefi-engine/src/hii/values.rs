@@ -277,6 +277,50 @@ fn one_of_width(options: &[OptionEntry], defaults: &[DefaultEntry]) -> u8 {
     width
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct QuestionSlot {
+    pub question_id: u16,
+    pub var_store_id: u16,
+    pub var_offset: u16,
+    pub width: u8,
+}
+
+pub(crate) fn scan_question_slots(pkg: &[u8]) -> Vec<QuestionSlot> {
+    let mut hits: Vec<(usize, usize)> = Vec::new();
+    walk_statements(pkg, |op, off, len, _| {
+        if is_question_op(op) && len >= 13 {
+            hits.push((off, len));
+        }
+    });
+    hits.into_iter()
+        .map(|(q_off, q_len)| {
+            let kind = match pkg[q_off] {
+                IFR_ONE_OF_OP => QuestionKind::OneOf,
+                IFR_CHECKBOX_OP => QuestionKind::CheckBox,
+                IFR_NUMERIC_OP => QuestionKind::Numeric,
+                _ => QuestionKind::Other,
+            };
+            let width = match kind {
+                QuestionKind::CheckBox => 1,
+                QuestionKind::Numeric if q_len >= 14 => 1u8 << (pkg[q_off + 13] & IFR_NUMERIC_SIZE),
+                QuestionKind::OneOf => {
+                    let mut options = Vec::new();
+                    let mut defaults = Vec::new();
+                    scan_options(pkg, q_off + q_len, &mut options, &mut defaults);
+                    one_of_width(&options, &defaults)
+                }
+                QuestionKind::Numeric | QuestionKind::Other => 0,
+            };
+            QuestionSlot {
+                question_id: u16::from_le_bytes([pkg[q_off + 6], pkg[q_off + 7]]),
+                var_store_id: u16::from_le_bytes([pkg[q_off + 8], pkg[q_off + 9]]),
+                var_offset: u16::from_le_bytes([pkg[q_off + 10], pkg[q_off + 11]]),
+                width,
+            }
+        })
+        .collect()
+}
+
 pub fn find_question(pkg: &[u8], form_id: u16, question_id: u16) -> Option<QuestionMap> {
     let mut found: Option<(usize, usize)> = None;
     walk_statements(pkg, |op, off, len, current_form| {

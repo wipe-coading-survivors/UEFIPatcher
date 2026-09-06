@@ -358,6 +358,20 @@ impl EngineService for MockEngine {
             stores: vec!["mock store".into()],
         }))
     }
+    async fn hii_question_add(
+        &self,
+        _req: Request<HiiQuestionAddRequest>,
+    ) -> Result<Response<HiiQuestionAddResponse>, Status> {
+        let mut string_ids = std::collections::HashMap::new();
+        string_ids.insert("Serial Console".to_string(), 2u32);
+        Ok(Response::new(HiiQuestionAddResponse {
+            questions: vec![HiiQuestionAddOutcome {
+                question_id: 0x200,
+                string_ids,
+                spf_record_offset: 0x13C,
+            }],
+        }))
+    }
 }
 
 pub async fn start_mock(sock: &Path) -> JoinHandle<()> {

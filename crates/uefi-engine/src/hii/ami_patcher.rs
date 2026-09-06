@@ -120,6 +120,31 @@ pub fn pfs_payload_path(
     Ok([vec![vi, fi], rel].concat())
 }
 
+pub fn discover_pfs_payload_path(image: &Image) -> Result<Vec<usize>, HiiError> {
+    for (vi, vol) in image.root.children.iter().enumerate() {
+        for (fi, file) in vol.children.iter().enumerate() {
+            if subtree_has_ui_name(file, "setupdata") {
+                let rel = find_payload_path(file, is_pfs_payload)?;
+                return Ok([vec![vi, fi], rel].concat());
+            }
+        }
+    }
+    let mut blocked = false;
+    for (vi, vol) in image.root.children.iter().enumerate() {
+        for (fi, file) in vol.children.iter().enumerate() {
+            match find_payload_path(file, is_pfs_payload) {
+                Ok(rel) => return Ok([vec![vi, fi], rel].concat()),
+                Err(HiiError::MutationBehindCompression) => blocked = true,
+                Err(_) => {}
+            }
+        }
+    }
+    if blocked {
+        return Err(HiiError::MutationBehindCompression);
+    }
+    Err(HiiError::AmiFilesNotFound)
+}
+
 fn find_payload_path(file: &FfsNode, pred: PayloadPred) -> Result<Vec<usize>, HiiError> {
     let mut path = Vec::new();
     let mut blocked = false;
@@ -193,14 +218,26 @@ fn find_ami_module(
     Err(HiiError::AmiFilesNotFound)
 }
 
+fn ui_name_matches(section_name: &str, hint: &str) -> bool {
+    section_name.eq_ignore_ascii_case(hint)
+        || (hint == "setupdata" && section_name.eq_ignore_ascii_case("AMITSESetupData"))
+}
+
+fn subtree_has_ui_name(node: &FfsNode, name: &str) -> bool {
+    if node.node_type == FfsType::Section
+        && node.subtype == crate::ffs::EFI_SECTION_UI
+        && ui_name_matches(&ucs2_body_to_string(&node.body), name)
+    {
+        return true;
+    }
+    node.children.iter().any(|c| subtree_has_ui_name(c, name))
+}
+
 fn has_name_section(children: &[FfsNode], name: &str) -> bool {
-    let matches = |n: &str| {
-        n.eq_ignore_ascii_case(name)
-            || (name == "setupdata" && n.eq_ignore_ascii_case("AMITSESetupData"))
-    };
-    children
-        .iter()
-        .any(|c| c.subtype == crate::ffs::EFI_SECTION_UI && matches(&ucs2_body_to_string(&c.body)))
+    children.iter().any(|c| {
+        c.subtype == crate::ffs::EFI_SECTION_UI
+            && ui_name_matches(&ucs2_body_to_string(&c.body), name)
+    })
 }
 
 fn ucs2_body_to_string(body: &[u8]) -> String {
@@ -774,6 +811,51 @@ mod tests {
         assert_eq!((vi, fi), (0, 0));
         let (vi, fi) = find_ami_module(&img, None, "AMITSE").unwrap();
         assert_eq!((vi, fi), (0, 1));
+    }
+
+    #[test]
+    fn discover_pfs_payload_path_finds_grandchild_ui_behind_guided_wrapper() {
+        let img = ami_image(
+            vec![guided_wrapper(
+                crate::ffs::lzma_guid(),
+                vec![pfs_section(), ui_section("AMITSESetupData")],
+            )],
+            vec![pe32_section(), ui_section("AMITSE")],
+        );
+        assert!(
+            matches!(
+                pfs_payload_path(&img, None),
+                Err(HiiError::AmiFilesNotFound)
+            ),
+            "direct-children UI lookup must miss the grandchild geometry"
+        );
+        assert_eq!(discover_pfs_payload_path(&img).unwrap(), vec![0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn discover_pfs_payload_path_matches_legacy_direct_geometry() {
+        let img = ami_image(
+            vec![pfs_section(), ui_section("AMITSESetupData")],
+            vec![pe32_section(), ui_section("AMITSE")],
+        );
+        assert_eq!(discover_pfs_payload_path(&img).unwrap(), vec![0, 0, 0]);
+    }
+
+    #[test]
+    fn discover_pfs_payload_path_falls_back_to_spf_signature_and_errors_cleanly() {
+        let spf_only = ami_image(
+            vec![pfs_section()],
+            vec![pe32_section(), ui_section("AMITSE")],
+        );
+        assert_eq!(discover_pfs_payload_path(&spf_only).unwrap(), vec![0, 0, 0]);
+        let none = ami_image(
+            vec![ui_section("Other")],
+            vec![pe32_section(), ui_section("AMITSE")],
+        );
+        assert!(matches!(
+            discover_pfs_payload_path(&none),
+            Err(HiiError::AmiFilesNotFound)
+        ));
     }
 
     #[test]

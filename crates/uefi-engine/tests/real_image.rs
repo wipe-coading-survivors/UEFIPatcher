@@ -2334,3 +2334,1419 @@ fn real_image_hijack_v2_scenario_b_full_page_matches_e26_content() {
         "scenario B: form=1 flips, 7 question flips, q61 refused, hijack=0 flips, q59 ids {prompt_id}/{help_id}"
     );
 }
+
+#[test]
+#[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
+fn real_image_ops_insert_serial_s2() {
+    use uefi_engine::builder::build_image;
+    use uefi_engine::ops::{InsertMode, insert};
+    use uefi_engine::types::{ImageMode, Target};
+
+    const MAIN_FV_OFF: usize = 0x890000;
+    const FIRST_SLOT: usize = 0xB63B18;
+    const SERIAL_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/serial");
+
+    let data = load_fw();
+    let serial: Vec<&str> = vec!["SerialDxe.ffs", "TerminalDxe.ffs", "SerialConsoleGlue.ffs"];
+
+    let mut img = parse_image(&data, ImageMode::Read, "img1", "s1").unwrap();
+    let vol_idx = img
+        .root
+        .children
+        .iter()
+        .position(|c| c.offset == MAIN_FV_OFF as u32)
+        .expect("main FV @0x890000");
+    let files_before = img.root.children[vol_idx].children.len();
+    assert!(files_before > 100, "main FV files: {files_before}");
+
+    let mut anchor = Target::Path(vec![vol_idx, files_before - 1]);
+    for name in &serial {
+        let path = std::path::Path::new(SERIAL_DIR).join(name);
+        let ffs = std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        insert(&mut img.root, &anchor, &ffs, InsertMode::After).unwrap();
+        let last = img.root.children[vol_idx].children.len() - 1;
+        anchor = Target::Path(vec![vol_idx, last]);
+    }
+
+    let rebuilt = build_image(&img).expect("build after insert");
+
+    assert_eq!(rebuilt.len(), data.len(), "image size must be preserved");
+    let mut regions = 0usize;
+    let mut first_diff = usize::MAX;
+    let mut last_diff = 0usize;
+    for (i, (a, b)) in data.iter().zip(rebuilt.iter()).enumerate() {
+        if a != b {
+            first_diff = first_diff.min(i);
+            last_diff = i;
+            regions += 1;
+        }
+    }
+    assert!(regions > 0, "insert must change bytes");
+    assert_eq!(
+        first_diff, FIRST_SLOT,
+        "first changed byte must be first free slot"
+    );
+    let expected_span = 32_848 + 4 + 65_596 + 41_072;
+    assert!(
+        last_diff < FIRST_SLOT + expected_span,
+        "changes must stay inside {expected_span}-byte span: last_diff={last_diff:#x}"
+    );
+    let mut non_tail_changes = 0usize;
+    for i in FIRST_SLOT..=last_diff {
+        if rebuilt[i] != data[i] && data[i] != 0xFF {
+            non_tail_changes += 1;
+        }
+    }
+    assert_eq!(
+        non_tail_changes, 0,
+        "all changed bytes must lie over 0xFF free tail"
+    );
+
+    let re_img = parse_image(&rebuilt, ImageMode::Read, "img1", "s1").unwrap();
+    let vol = &re_img.root.children[vol_idx];
+    assert_eq!(vol.children.len(), files_before + 3);
+    let tail: Vec<String> = vol.children[files_before..]
+        .iter()
+        .map(|f| {
+            f.guid
+                .map(|g| g.to_string().to_ascii_uppercase())
+                .unwrap_or_default()
+        })
+        .collect();
+    assert_eq!(
+        tail,
+        vec![
+            "9A5163E7-5C29-453F-825C-837A46A81E15".to_string(),
+            "9E863906-A40F-4875-977F-5B93FF237FC6".to_string(),
+            "1EF3A7C2-9B64-4D58-8A31-5C0E9F2B7D43".to_string(),
+        ],
+        "inserted files must sit in S1 order at chain end"
+    );
+    let fv_attrs = u32::from_le_bytes(
+        rebuilt[MAIN_FV_OFF + 0x2C..MAIN_FV_OFF + 0x30]
+            .try_into()
+            .unwrap(),
+    );
+    assert_eq!((fv_attrs >> 11) & 1, 1, "FV1 erase polarity must be 1");
+    for f in &vol.children[files_before..] {
+        assert_eq!(
+            f.header[23], 0xF8,
+            "inserted file state must be polarity-1 valid"
+        );
+    }
+    for f in &vol.children[files_before..] {
+        assert_eq!(
+            f.offset % 8,
+            0,
+            "FFS file must be 8-aligned in FV, got @{:#x}",
+            f.offset
+        );
+    }
+
+    let stable = build_image(&re_img).expect("stable rebuild");
+    assert_eq!(stable, rebuilt, "rebuild of re-parsed tree must be stable");
+}
+
+#[test]
+#[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
+fn real_image_ops_insert_serial_s3() {
+    use std::collections::{HashMap, HashSet};
+    use uefi_engine::builder::build_image;
+    use uefi_engine::hii::schema::parse_question_add_schema;
+    use uefi_engine::hii::spf;
+    use uefi_engine::hii::{add_question, question_info, spf_record_resolves};
+    use uefi_engine::ops::{InsertMode, insert};
+    use uefi_engine::types::{ImageMode, Target};
+
+    const MAIN_FV_OFF: usize = 0x890000;
+    const SETUP_MODULE_GUID: &str = "899407D7-99FE-43D8-9A21-79EC328CAC21";
+    const SETUPDATA_GUID: &str = "FE612B72-203C-47B1-8560-A66D946EB371";
+    const SERIAL_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/serial");
+    const S2_WINDOW: (usize, usize) = (0xB63B18, 0xB85C18);
+    const FORM_ID: u16 = 10019;
+
+    let data = load_fw();
+    assert_eq!(data.len(), 0x0100_0000, "16 MiB image expected");
+    let serial: Vec<&str> = vec!["SerialDxe.ffs", "TerminalDxe.ffs", "SerialConsoleGlue.ffs"];
+
+    let mut img = parse_image(&data, ImageMode::Write, "img1", "s1").unwrap();
+    let vol_idx = img
+        .root
+        .children
+        .iter()
+        .position(|c| c.offset == MAIN_FV_OFF as u32)
+        .expect("main FV @0x890000");
+    let files_before = img.root.children[vol_idx].children.len();
+    assert!(files_before > 100, "main FV files: {files_before}");
+
+    let mut anchor = Target::Path(vec![vol_idx, files_before - 1]);
+    for name in &serial {
+        let path = std::path::Path::new(SERIAL_DIR).join(name);
+        let ffs = std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        insert(&mut img.root, &anchor, &ffs, InsertMode::After).unwrap();
+        let last = img.root.children[vol_idx].children.len() - 1;
+        anchor = Target::Path(vec![vol_idx, last]);
+    }
+    let s2_built = build_image(&img).expect("build after S2 insert");
+    assert_eq!(s2_built.len(), data.len(), "total flash length preserved");
+
+    let mut img2 = parse_image(&s2_built, ImageMode::Write, "img2", "s2").unwrap();
+
+    let base_spf = find_spf_leaf_body(&img2, SETUPDATA_GUID);
+    let base = spf::container_start(&base_spf).expect("$SPF container");
+    let base_records = spf::scan_question_records(&base_spf);
+    assert_eq!(base_records.len(), 389, "live scanner-visible record count");
+    let base_pkg = module_form_package(&img2, &module_pe32_node_path(&img2, SETUP_MODULE_GUID));
+
+    let r_base: Vec<spf::SpfQuestionRecord> = base_records
+        .iter()
+        .copied()
+        .filter(|r| spf_record_resolves(&base_pkg, r.question_id, r.ifr_offset))
+        .collect();
+    assert_eq!(
+        r_base.len(),
+        32,
+        "|R_base| is the measured-stable Setup-resolving partition of the 389"
+    );
+    let r_base_offsets: HashSet<usize> = r_base.iter().map(|r| r.offset).collect();
+
+    let u32_at = |body: &[u8], at: usize| u32::from_le_bytes(body[at..at + 4].try_into().unwrap());
+    let base_page_count = u32_at(&base_spf, base + spf::SPF_PAGE_COUNT_OFFSET) as usize;
+    let form_slot = (0..base_page_count)
+        .find(|&slot| {
+            let off = u32_at(&base_spf, base + spf::SPF_PAGE_TABLE_OFFSET + 4 * slot) as usize;
+            off != 0
+                && u16::from_le_bytes([base_spf[base + off + 0xA], base_spf[base + off + 0xB]])
+                    == FORM_ID
+        })
+        .expect("page slot for form 10019");
+    let base_page_off =
+        u32_at(&base_spf, base + spf::SPF_PAGE_TABLE_OFFSET + 4 * form_slot) as usize;
+    let base_page_cnt = u32_at(&base_spf, base + base_page_off + spf::SPF_PAGE_CNT_OFFSET) as usize;
+    assert_eq!(base_page_cnt, 6, "page 10019 control count before adds");
+    let base_page_span = 0x20 + 4 * base_page_cnt;
+    let base_page_bytes =
+        base_spf[base + base_page_off..base + base_page_off + base_page_span].to_vec();
+
+    let max_low = base_records
+        .iter()
+        .map(|r| u32_at(&base_spf, r.offset + spf::SPF_RECORD_COUNTER_OFFSET) & 0xFFFF)
+        .max()
+        .unwrap();
+
+    let schema_path = std::path::Path::new(SERIAL_DIR).join("s3_questions.json");
+    let schema_json = std::fs::read_to_string(&schema_path)
+        .unwrap_or_else(|e| panic!("read {}: {e}", schema_path.display()));
+    let list = parse_question_add_schema(&schema_json).expect("fixture schema parses");
+    assert_eq!(list.questions.len(), 2);
+
+    let item = format!("{SETUP_MODULE_GUID}:0x10:0#{FORM_ID}");
+    let mut results = Vec::new();
+    for (i, q) in list.questions.iter().enumerate() {
+        assert_eq!(q.form_id, FORM_ID);
+        let res = add_question(&mut img2, &item, q)
+            .unwrap_or_else(|e| panic!("add_question #{}: {e:?}", i + 1));
+        assert_eq!(res.question_id, q.question_id);
+        results.push(res);
+    }
+    let s3_built = build_image(&img2).expect("build after question adds");
+    assert_eq!(s3_built.len(), data.len(), "total flash length preserved");
+
+    let setup_slot = find_file_range(&s2_built, SETUP_MODULE_GUID);
+    let sd_slot = find_file_range(&s2_built, SETUPDATA_GUID);
+    let zones = [
+        S2_WINDOW,
+        (setup_slot.start, setup_slot.end),
+        (sd_slot.start, sd_slot.end),
+    ];
+    let mut outside = Vec::new();
+    for (i, (a, b)) in s2_built.iter().zip(s3_built.iter()).enumerate() {
+        if a != b && !zones.iter().any(|(s, e)| i >= *s && i < *e) {
+            outside.push(i);
+        }
+    }
+    assert!(
+        outside.is_empty(),
+        "{} bytes changed outside the S2 window + Setup/SetupData slots, first={outside:#x?}",
+        outside.len()
+    );
+
+    let re = parse_image(&s3_built, ImageMode::Read, "re", "s3").unwrap();
+
+    for (q, want_opts) in [(&list.questions[0], 5usize), (&list.questions[1], 4usize)] {
+        let qi = question_info(&re, &format!("{item}:{}", q.question_id))
+            .unwrap_or_else(|e| panic!("question_info q{}: {e:?}", q.question_id));
+        assert_eq!(qi.form_id, u32::from(FORM_ID));
+        assert_eq!(qi.question_id, u32::from(q.question_id));
+        assert_eq!(qi.kind, "one_of");
+        assert_eq!(qi.var_store_id, u32::from(q.var_store_id));
+        assert_eq!(qi.var_offset, u32::from(q.var_offset));
+        assert_eq!(qi.width, u32::from(q.size));
+        assert_eq!(qi.options.len(), want_opts);
+        for (i, o) in q.options.iter().enumerate() {
+            assert_eq!(qi.options[i].value, o.value);
+            let want_flags = u32::from(if o.default.is_some() {
+                r_efi::hii::IFR_OPTION_DEFAULT
+            } else {
+                0
+            });
+            assert_eq!(
+                qi.options[i].flags, want_flags,
+                "option {i} default marker must round-trip"
+            );
+        }
+        assert_eq!(qi.defaults.len(), 1, "optimized default must be emitted");
+        assert_eq!(
+            qi.defaults[0].value, 0,
+            "default value 0 (115200 / VT-UTF8)"
+        );
+    }
+
+    {
+        let strings = uefi_engine::hii::strings::collect_strings(&re);
+        let pe = &node_at_path(&re, &module_pe32_node_path(&re, SETUP_MODULE_GUID)).body;
+        for res in &results {
+            for (text, id) in &res.string_ids {
+                assert!(
+                    strings
+                        .iter()
+                        .any(|s| s.string_id == u32::from(*id) && &s.text == text),
+                    "string id {id} must resolve to '{text}' verbatim"
+                );
+                assert!(
+                    pe.windows(text.len()).any(|w| w == text.as_bytes()),
+                    "'{text}' must be present verbatim in the Setup module string package"
+                );
+            }
+        }
+    }
+
+    let final_spf = find_spf_leaf_body(&re, SETUPDATA_GUID);
+    let fbase = spf::container_start(&final_spf).expect("$SPF survives adds");
+    let final_records = spf::scan_question_records(&final_spf);
+    assert_eq!(final_records.len(), base_records.len() + 2);
+    let container_len_field = (spf::SPF_HEADER_REGION_OFFSETS..spf::SPF_PAGE_COUNT_OFFSET)
+        .step_by(4)
+        .map(|p| u32_at(&final_spf, fbase + p))
+        .max()
+        .expect("header zone u32 fields");
+    assert_eq!(
+        container_len_field as usize,
+        final_spf.len() - fbase,
+        "container-length header field (max u32 in header zone, the bump_container_length rule) must equal the post-append container length"
+    );
+    let final_by_offset: HashMap<usize, spf::SpfQuestionRecord> = final_records
+        .iter()
+        .copied()
+        .map(|r| (r.offset, r))
+        .collect();
+    let final_pkg = module_form_package(&re, &module_pe32_node_path(&re, SETUP_MODULE_GUID));
+
+    let rec_offs: Vec<usize> = results.iter().map(|r| r.spf_record_offset).collect();
+    let new_recs: Vec<spf::SpfQuestionRecord> = rec_offs
+        .iter()
+        .map(|&off| {
+            *final_by_offset.get(&(fbase + off)).unwrap_or_else(|| {
+                panic!("appended record at container+{off:#x} must be a valid scanned F8 record")
+            })
+        })
+        .collect();
+    let (insert1, insert2) = (new_recs[0].ifr_offset, new_recs[1].ifr_offset);
+    let delta1 = insert2 - insert1;
+    let delta2 = (final_pkg.len() - base_pkg.len()) as u32 - delta1;
+    assert_eq!(new_recs[0].question_id, 512);
+    assert_eq!(new_recs[1].question_id, 513);
+    assert!(
+        spf_record_resolves(&final_pkg, 512, insert1),
+        "q512 must resolve at its exact splice position {insert1:#x}"
+    );
+    assert!(
+        spf_record_resolves(&final_pkg, 513, insert2),
+        "q513 must resolve at its exact splice position {insert2:#x}"
+    );
+
+    let mut shifted = 0usize;
+    for r in &base_records {
+        let fr = final_by_offset
+            .get(&r.offset)
+            .expect("append-only container keeps record offsets stable");
+        if r_base_offsets.contains(&r.offset) {
+            let mid = r.ifr_offset + u32::from(r.ifr_offset >= insert1) * delta1;
+            let expected = mid + u32::from(mid >= insert2) * delta2;
+            assert_eq!(
+                fr.ifr_offset, expected,
+                "Setup record qid={:#x} must carry the compensated ifr",
+                r.question_id
+            );
+            assert!(
+                spf_record_resolves(&final_pkg, r.question_id, expected),
+                "Setup record qid={:#x} must still resolve post-rebuild",
+                r.question_id
+            );
+            shifted += usize::from(expected != r.ifr_offset);
+        } else {
+            assert!(
+                final_spf[r.offset..r.offset + spf::SPF_RECORD_SIZE]
+                    == base_spf[r.offset..r.offset + spf::SPF_RECORD_SIZE],
+                "foreign record qid={:#x} at {:#x} must stay byte-identical",
+                r.question_id,
+                r.offset
+            );
+            assert_eq!(fr.ifr_offset, r.ifr_offset);
+        }
+    }
+
+    for (i, (res, &off)) in results.iter().zip(rec_offs.iter()).enumerate() {
+        let at = fbase + off;
+        let counter = u32_at(&final_spf, at + spf::SPF_RECORD_COUNTER_OFFSET);
+        assert_eq!(
+            counter,
+            (0x0001u32 << 16) | (1 + max_low + i as u32),
+            "counter rule (0x0001 << 16) | (1 + max low)"
+        );
+        let help_id = res.string_ids.get(&list.questions[i].help).unwrap();
+        let prompt_id = res.string_ids.get(&list.questions[i].prompt).unwrap();
+        assert_eq!(
+            u16::from_le_bytes([
+                final_spf[at + spf::SPF_RECORD_HELP_ID],
+                final_spf[at + spf::SPF_RECORD_HELP_ID + 1]
+            ]),
+            *help_id,
+            "record s14 must carry the appended help id"
+        );
+        assert_eq!(
+            u16::from_le_bytes([
+                final_spf[at + spf::SPF_RECORD_PROMPT_ID_OFFSET],
+                final_spf[at + spf::SPF_RECORD_PROMPT_ID_OFFSET + 1],
+            ]),
+            *prompt_id,
+            "record s30 must carry the appended prompt id"
+        );
+        assert_eq!(final_spf[at + spf::SPF_RECORD_FAILSAFE], 0);
+        assert_eq!(final_spf[at + spf::SPF_RECORD_OPTIMAL], 0);
+    }
+
+    let fpage_count = u32_at(&final_spf, fbase + spf::SPF_PAGE_COUNT_OFFSET) as usize;
+    assert_eq!(
+        fpage_count, base_page_count,
+        "page count must stay unchanged"
+    );
+    let clone_off = u32_at(
+        &final_spf,
+        fbase + spf::SPF_PAGE_TABLE_OFFSET + 4 * form_slot,
+    ) as usize;
+    assert_ne!(
+        clone_off, base_page_off,
+        "slot must be repointed to the clone"
+    );
+    assert_eq!(
+        u16::from_le_bytes([
+            final_spf[fbase + clone_off + 0xA],
+            final_spf[fbase + clone_off + 0xB]
+        ]),
+        FORM_ID,
+        "clone keeps form 10019"
+    );
+    let clone_cnt = u32_at(&final_spf, fbase + clone_off + spf::SPF_PAGE_CNT_OFFSET) as usize;
+    assert_eq!(clone_cnt, base_page_cnt + 2, "cnt 6 -> 8");
+    assert_eq!(
+        &final_spf[fbase + clone_off..fbase + clone_off + 0x1C],
+        &base_page_bytes[..0x1C],
+        "clone header up to cnt must copy the base page verbatim"
+    );
+    let clone_entry = |i: usize| {
+        u32_at(
+            &final_spf,
+            fbase + clone_off + spf::SPF_PAGE_LIST_OFFSET + 4 * i,
+        )
+    };
+    for i in 0..base_page_cnt {
+        assert_eq!(
+            clone_entry(i),
+            u32_at(
+                &base_spf,
+                base + base_page_off + spf::SPF_PAGE_LIST_OFFSET + 4 * i
+            ),
+            "clone entries[0..6] must be byte-identical to the base page"
+        );
+    }
+    for (i, (want_ptr, want_qid)) in [(6usize, (rec_offs[0], 512u32)), (7, (rec_offs[1], 513))] {
+        assert_eq!(
+            clone_entry(i) as usize,
+            want_ptr,
+            "new entry must equal spf_record_offset of the added question"
+        );
+        let rec = final_by_offset
+            .get(&(fbase + want_ptr))
+            .unwrap_or_else(|| panic!("entry {i} must resolve to a valid scanned F8 record"));
+        assert_eq!(u32::from(rec.question_id), want_qid);
+    }
+    assert_eq!(
+        &final_spf[fbase + base_page_off..fbase + base_page_off + base_page_span],
+        &base_page_bytes[..],
+        "orphaned original page must stay intact"
+    );
+
+    let vol = &re.root.children[vol_idx];
+    assert_eq!(vol.children.len(), files_before + 3);
+    for (i, f) in vol.children[files_before..].iter().enumerate() {
+        assert_eq!(
+            f.header[23], 0xF8,
+            "inserted file state must be polarity-1 valid"
+        );
+        let path = std::path::Path::new(SERIAL_DIR).join(serial[i]);
+        let ffs = std::fs::read(&path).unwrap();
+        assert_eq!(
+            f.body,
+            ffs[f.header.len()..f.header.len() + f.body.len()],
+            "inserted body must be byte-identical to the fixture file"
+        );
+    }
+
+    let re2 = parse_image(&s3_built, ImageMode::Read, "re2", "s3b").unwrap();
+    let again = build_image(&re2).expect("stable rebuild");
+    assert_eq!(again, s3_built, "save -> open -> save must be byte-stable");
+
+    eprintln!(
+        "real_image s3: r_base={} shifted={} foreign={} delta1={delta1:#x} delta2={delta2:#x} inserts={insert1:#x}/{insert2:#x} clone=container+{clone_off:#x} cnt={clone_cnt}",
+        r_base.len(),
+        shifted,
+        base_records.len() - r_base.len(),
+    );
+}
+
+#[test]
+#[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
+fn real_image_ops_insert_serial_s4() {
+    use uefi_engine::builder::build_image;
+    use uefi_engine::hii::schema::parse_question_add_schema;
+    use uefi_engine::hii::{add_question, question_info};
+    use uefi_engine::ops::{InsertMode, insert};
+    use uefi_engine::types::{ImageMode, Target};
+
+    const MAIN_FV_OFF: usize = 0x890000;
+    const FIRST_SLOT: usize = 0xB63B18;
+    const SETUP_MODULE_GUID: &str = "899407D7-99FE-43D8-9A21-79EC328CAC21";
+    const SETUPDATA_GUID: &str = "FE612B72-203C-47B1-8560-A66D946EB371";
+    const SERIAL_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/serial");
+    const FORM_ID: u16 = 10019;
+    const SERIAL_DXE_GUID: &str = "9A5163E7-5C29-453F-825C-837A46A81E15";
+    const PCD_PROTOCOL_GUID_LE: [u8; 16] = [
+        0xF6, 0xF0, 0xA3, 0x13, 0x4A, 0x26, 0xF0, 0x3E, 0xF2, 0xE0, 0xDE, 0xC5, 0x12, 0x34, 0x2F,
+        0x34,
+    ];
+
+    let data = load_fw();
+    assert_eq!(data.len(), 0x0100_0000, "16 MiB image expected");
+    let serial: Vec<&str> = vec![
+        "SerialIoAmiDxe.ffs",
+        "TerminalDxe.ffs",
+        "SerialConsoleGlue.ffs",
+    ];
+    let expect_tail = [
+        "97C81E5D-8FA0-486A-AAEA-0EFDF090FE4F",
+        "9E863906-A40F-4875-977F-5B93FF237FC6",
+        "1EF3A7C2-9B64-4D58-8A31-5C0E9F2B7D43",
+    ];
+
+    let mut img = parse_image(&data, ImageMode::Write, "img1", "s1").unwrap();
+    let vol_idx = img
+        .root
+        .children
+        .iter()
+        .position(|c| c.offset == MAIN_FV_OFF as u32)
+        .expect("main FV @0x890000");
+    let files_before = img.root.children[vol_idx].children.len();
+    assert!(files_before > 100, "main FV files: {files_before}");
+
+    let mut anchor = Target::Path(vec![vol_idx, files_before - 1]);
+    for name in &serial {
+        let path = std::path::Path::new(SERIAL_DIR).join(name);
+        let ffs = std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        insert(&mut img.root, &anchor, &ffs, InsertMode::After).unwrap();
+        let last = img.root.children[vol_idx].children.len() - 1;
+        anchor = Target::Path(vec![vol_idx, last]);
+    }
+    let s4_triple = build_image(&img).expect("build after S4 inserts");
+    assert_eq!(s4_triple.len(), data.len(), "total flash length preserved");
+
+    let mut first_diff = usize::MAX;
+    let mut last_diff = 0usize;
+    for (i, (a, b)) in data.iter().zip(s4_triple.iter()).enumerate() {
+        if a != b {
+            first_diff = first_diff.min(i);
+            last_diff = i;
+        }
+    }
+    assert_eq!(
+        first_diff, FIRST_SLOT,
+        "first changed byte must be first free slot"
+    );
+    let span = 7_680 + 65_600 + 41_072;
+    assert!(
+        last_diff < FIRST_SLOT + span,
+        "changes must stay inside {span}-byte span: last_diff={last_diff:#x}"
+    );
+    let mut non_tail_changes = 0usize;
+    for i in FIRST_SLOT..=last_diff {
+        if s4_triple[i] != data[i] && data[i] != 0xFF {
+            non_tail_changes += 1;
+        }
+    }
+    assert_eq!(
+        non_tail_changes, 0,
+        "all changed bytes must lie over 0xFF free tail"
+    );
+
+    let mut img2 = parse_image(&s4_triple, ImageMode::Write, "img2", "s4").unwrap();
+
+    let schema_path = std::path::Path::new(SERIAL_DIR).join("s3_questions.json");
+    let schema_json = std::fs::read_to_string(&schema_path)
+        .unwrap_or_else(|e| panic!("read {}: {e}", schema_path.display()));
+    let list = parse_question_add_schema(&schema_json).expect("fixture schema parses");
+    assert_eq!(list.questions.len(), 2);
+
+    let item = format!("{SETUP_MODULE_GUID}:0x10:0#{FORM_ID}");
+    for (i, q) in list.questions.iter().enumerate() {
+        assert_eq!(q.form_id, FORM_ID);
+        let res = add_question(&mut img2, &item, q)
+            .unwrap_or_else(|e| panic!("add_question #{}: {e:?}", i + 1));
+        assert_eq!(res.question_id, q.question_id);
+    }
+    let s4_built = build_image(&img2).expect("build after question adds");
+    assert_eq!(s4_built.len(), data.len(), "total flash length preserved");
+
+    let setup_slot = find_file_range(&s4_triple, SETUP_MODULE_GUID);
+    let sd_slot = find_file_range(&s4_triple, SETUPDATA_GUID);
+    let zones = [
+        (FIRST_SLOT, FIRST_SLOT + span),
+        (setup_slot.start, setup_slot.end),
+        (sd_slot.start, sd_slot.end),
+    ];
+    let mut outside = Vec::new();
+    for (i, (a, b)) in s4_triple.iter().zip(s4_built.iter()).enumerate() {
+        if a != b && !zones.iter().any(|(s, e)| i >= *s && i < *e) {
+            outside.push(i);
+        }
+    }
+    assert!(
+        outside.is_empty(),
+        "{} bytes changed outside the insert window + Setup/SetupData slots, first={outside:#x?}",
+        outside.len()
+    );
+
+    let re = parse_image(&s4_built, ImageMode::Read, "re", "s4").unwrap();
+    let vol = &re.root.children[vol_idx];
+    assert_eq!(vol.children.len(), files_before + 3);
+    let tail: Vec<String> = vol.children[files_before..]
+        .iter()
+        .map(|f| {
+            f.guid
+                .map(|g| g.to_string().to_ascii_uppercase())
+                .unwrap_or_default()
+        })
+        .collect();
+    assert_eq!(tail, expect_tail, "donor swap order at chain end");
+    assert!(
+        !vol.children.iter().any(|f| matches!(&f.guid, Some(g)
+            if g.to_string().to_ascii_uppercase() == SERIAL_DXE_GUID)),
+        "SerialDxe 9A5163E7 must be absent from the S4 candidate (producer replaced, not added)"
+    );
+    for f in &vol.children[files_before..] {
+        assert_eq!(
+            f.header[23], 0xF8,
+            "inserted file state must be polarity-1 valid"
+        );
+        assert_eq!(
+            f.offset % 8,
+            0,
+            "FFS file must be 8-aligned in FV, got @{:#x}",
+            f.offset
+        );
+    }
+    for (i, f) in vol.children[files_before..].iter().enumerate() {
+        let path = std::path::Path::new(SERIAL_DIR).join(serial[i]);
+        let ffs = std::fs::read(&path).unwrap();
+        assert_eq!(
+            f.body,
+            ffs[f.header.len()..f.header.len() + f.body.len()],
+            "inserted body must be byte-identical to the fixture file"
+        );
+    }
+
+    let donor = &vol.children[files_before];
+    assert_eq!(
+        donor.children[0].subtype, 0x13,
+        "donor first section is DEPEX"
+    );
+    assert_eq!(donor.body[3], 0x13);
+    assert_eq!(donor.body[4], 0x02, "DEPEX starts with PUSH");
+    assert_eq!(&donor.body[5..21], &PCD_PROTOCOL_GUID_LE[..]);
+    assert_eq!(donor.body[21], 0x08, "DEPEX ends with END");
+    assert_eq!(donor.body[0x16], 0x00);
+    assert_eq!(donor.body[0x17], 0x00, "2-byte pad after DEPEX");
+    assert_eq!(donor.body[0x1B], 0x02, "second section is GUID_DEFINED");
+    let guided = &donor.children[1];
+    assert_eq!(guided.subtype, 0x02);
+    let ui = guided
+        .children
+        .iter()
+        .find(|c| c.subtype == 0x15)
+        .expect("UI section inside donor guided payload");
+    let ui_text: String = String::from_utf16_lossy(
+        &ui.body
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .take_while(|&u| u != 0)
+            .collect::<Vec<u16>>(),
+    );
+    assert_eq!(ui_text, "SerialIo", "donor UI name");
+
+    for (q, want_opts) in [(&list.questions[0], 5usize), (&list.questions[1], 4usize)] {
+        let qi = question_info(&re, &format!("{item}:{}", q.question_id))
+            .unwrap_or_else(|e| panic!("question_info q{}: {e:?}", q.question_id));
+        assert_eq!(qi.form_id, u32::from(FORM_ID));
+        assert_eq!(qi.question_id, u32::from(q.question_id));
+        assert_eq!(qi.kind, "one_of");
+        assert_eq!(qi.var_store_id, u32::from(q.var_store_id));
+        assert_eq!(qi.var_offset, u32::from(q.var_offset));
+        assert_eq!(qi.options.len(), want_opts);
+        assert_eq!(qi.defaults.len(), 1);
+        assert_eq!(qi.defaults[0].value, 0, "default 0 (115200 / VT-UTF8)");
+    }
+
+    let re2 = parse_image(&s4_built, ImageMode::Read, "re2", "s4b").unwrap();
+    let again = build_image(&re2).expect("stable rebuild");
+    assert_eq!(again, s4_built, "save -> open -> save must be byte-stable");
+
+    eprintln!(
+        "real_image s4: files {files_before} -> {} span={span:#x} last_diff={last_diff:#x}",
+        vol.children.len()
+    );
+}
+
+#[test]
+#[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
+fn real_image_ops_insert_serial_s4a() {
+    use uefi_engine::builder::build_image;
+    use uefi_engine::hii::schema::parse_question_add_schema;
+    use uefi_engine::hii::{add_question, question_info};
+    use uefi_engine::ops::{InsertMode, insert};
+    use uefi_engine::types::{ImageMode, Target};
+
+    const MAIN_FV_OFF: usize = 0x890000;
+    const FIRST_SLOT: usize = 0xB63B18;
+    const SETUP_MODULE_GUID: &str = "899407D7-99FE-43D8-9A21-79EC328CAC21";
+    const SETUPDATA_GUID: &str = "FE612B72-203C-47B1-8560-A66D946EB371";
+    const SERIAL_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/serial");
+    const FORM_ID: u16 = 10019;
+    const SERIAL_DXE_GUID: &str = "9A5163E7-5C29-453F-825C-837A46A81E15";
+    const TERMINAL_DXE_GUID: &str = "9E863906-A40F-4875-977F-5B93FF237FC6";
+
+    let data = load_fw();
+    assert_eq!(data.len(), 0x0100_0000, "16 MiB image expected");
+    let serial: Vec<&str> = vec![
+        "SerialIoAmiDxe.ffs",
+        "TermSrcAmiDxe.ffs",
+        "SerialConsoleGlueV3.ffs",
+    ];
+    let expect_tail = [
+        "97C81E5D-8FA0-486A-AAEA-0EFDF090FE4F",
+        "54891A9E-763E-4377-8841-8D5C90D88CDE",
+        "1EF3A7C2-9B64-4D58-8A31-5C0E9F2B7D43",
+    ];
+
+    let mut img = parse_image(&data, ImageMode::Write, "img1", "s1").unwrap();
+    let vol_idx = img
+        .root
+        .children
+        .iter()
+        .position(|c| c.offset == MAIN_FV_OFF as u32)
+        .expect("main FV @0x890000");
+    let files_before = img.root.children[vol_idx].children.len();
+    assert!(files_before > 100, "main FV files: {files_before}");
+
+    let mut anchor = Target::Path(vec![vol_idx, files_before - 1]);
+    for name in &serial {
+        let path = std::path::Path::new(SERIAL_DIR).join(name);
+        let ffs = std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        insert(&mut img.root, &anchor, &ffs, InsertMode::After).unwrap();
+        let last = img.root.children[vol_idx].children.len() - 1;
+        anchor = Target::Path(vec![vol_idx, last]);
+    }
+    let s4a_triple = build_image(&img).expect("build after S4a inserts");
+    assert_eq!(s4a_triple.len(), data.len(), "total flash length preserved");
+
+    let mut first_diff = usize::MAX;
+    let mut last_diff = 0usize;
+    for (i, (a, b)) in data.iter().zip(s4a_triple.iter()).enumerate() {
+        if a != b {
+            first_diff = first_diff.min(i);
+            last_diff = i;
+        }
+    }
+    assert_eq!(
+        first_diff, FIRST_SLOT,
+        "first changed byte must be first free slot"
+    );
+    let span = 7_680 + 13_368 + 41_072;
+    assert!(
+        last_diff < FIRST_SLOT + span,
+        "changes must stay inside {span}-byte span: last_diff={last_diff:#x}"
+    );
+    let mut non_tail_changes = 0usize;
+    for i in FIRST_SLOT..=last_diff {
+        if s4a_triple[i] != data[i] && data[i] != 0xFF {
+            non_tail_changes += 1;
+        }
+    }
+    assert_eq!(
+        non_tail_changes, 0,
+        "all changed bytes must lie over 0xFF free tail"
+    );
+
+    let mut img2 = parse_image(&s4a_triple, ImageMode::Write, "img2", "s4a").unwrap();
+
+    let schema_path = std::path::Path::new(SERIAL_DIR).join("s3_questions.json");
+    let schema_json = std::fs::read_to_string(&schema_path)
+        .unwrap_or_else(|e| panic!("read {}: {e}", schema_path.display()));
+    let list = parse_question_add_schema(&schema_json).expect("fixture schema parses");
+    assert_eq!(list.questions.len(), 2);
+
+    let item = format!("{SETUP_MODULE_GUID}:0x10:0#{FORM_ID}");
+    for (i, q) in list.questions.iter().enumerate() {
+        assert_eq!(q.form_id, FORM_ID);
+        let res = add_question(&mut img2, &item, q)
+            .unwrap_or_else(|e| panic!("add_question #{}: {e:?}", i + 1));
+        assert_eq!(res.question_id, q.question_id);
+    }
+    let s4a_built = build_image(&img2).expect("build after question adds");
+    assert_eq!(s4a_built.len(), data.len(), "total flash length preserved");
+
+    let setup_slot = find_file_range(&s4a_triple, SETUP_MODULE_GUID);
+    let sd_slot = find_file_range(&s4a_triple, SETUPDATA_GUID);
+    let zones = [
+        (FIRST_SLOT, FIRST_SLOT + span),
+        (setup_slot.start, setup_slot.end),
+        (sd_slot.start, sd_slot.end),
+    ];
+    let mut outside = Vec::new();
+    for (i, (a, b)) in s4a_triple.iter().zip(s4a_built.iter()).enumerate() {
+        if a != b && !zones.iter().any(|(s, e)| i >= *s && i < *e) {
+            outside.push(i);
+        }
+    }
+    assert!(
+        outside.is_empty(),
+        "{} bytes changed outside the insert window + Setup/SetupData slots, first={outside:#x?}",
+        outside.len()
+    );
+
+    let re = parse_image(&s4a_built, ImageMode::Read, "re", "s4a").unwrap();
+    let vol = &re.root.children[vol_idx];
+    assert_eq!(vol.children.len(), files_before + 3);
+    let tail: Vec<String> = vol.children[files_before..]
+        .iter()
+        .map(|f| {
+            f.guid
+                .map(|g| g.to_string().to_ascii_uppercase())
+                .unwrap_or_default()
+        })
+        .collect();
+    assert_eq!(tail, expect_tail, "TermSrc swap order at chain end");
+    assert!(
+        !vol.children.iter().any(|f| matches!(&f.guid, Some(g)
+            if g.to_string().to_ascii_uppercase() == SERIAL_DXE_GUID)),
+        "SerialDxe 9A5163E7 must be absent from the S4a candidate (producer replaced, not added)"
+    );
+    assert!(
+        !vol.children.iter().any(|f| matches!(&f.guid, Some(g)
+            if g.to_string().to_ascii_uppercase() == TERMINAL_DXE_GUID)),
+        "TerminalDxe 9E863906 must be absent from the S4a candidate (terminal consumer swapped for TermSrc)"
+    );
+    for f in &vol.children[files_before..] {
+        assert_eq!(
+            f.header[23], 0xF8,
+            "inserted file state must be polarity-1 valid"
+        );
+        assert_eq!(
+            f.offset % 8,
+            0,
+            "FFS file must be 8-aligned in FV, got @{:#x}",
+            f.offset
+        );
+    }
+    for (i, f) in vol.children[files_before..].iter().enumerate() {
+        let path = std::path::Path::new(SERIAL_DIR).join(serial[i]);
+        let ffs = std::fs::read(&path).unwrap();
+        assert_eq!(
+            f.body,
+            ffs[f.header.len()..f.header.len() + f.body.len()],
+            "inserted body must be byte-identical to the fixture file"
+        );
+    }
+
+    let termsrc = &vol.children[files_before + 1];
+    assert_eq!(
+        termsrc.body[3], 0x02,
+        "TermSrc has no DEPEX section: first section is GUID_DEFINED"
+    );
+    let guided = &termsrc.children[0];
+    assert_eq!(guided.subtype, 0x02);
+    let ui = guided
+        .children
+        .iter()
+        .find(|c| c.subtype == 0x15)
+        .expect("UI section inside TermSrc guided payload");
+    let ui_text: String = String::from_utf16_lossy(
+        &ui.body
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .take_while(|&u| u != 0)
+            .collect::<Vec<u16>>(),
+    );
+    assert_eq!(ui_text, "TerminalSrc", "TermSrc donor UI name");
+
+    for (q, want_opts) in [(&list.questions[0], 5usize), (&list.questions[1], 4usize)] {
+        let qi = question_info(&re, &format!("{item}:{}", q.question_id))
+            .unwrap_or_else(|e| panic!("question_info q{}: {e:?}", q.question_id));
+        assert_eq!(qi.form_id, u32::from(FORM_ID));
+        assert_eq!(qi.question_id, u32::from(q.question_id));
+        assert_eq!(qi.kind, "one_of");
+        assert_eq!(qi.var_store_id, u32::from(q.var_store_id));
+        assert_eq!(qi.var_offset, u32::from(q.var_offset));
+        assert_eq!(qi.options.len(), want_opts);
+        assert_eq!(qi.defaults.len(), 1);
+        assert_eq!(qi.defaults[0].value, 0, "default 0 (115200 / VT-UTF8)");
+    }
+
+    let re2 = parse_image(&s4a_built, ImageMode::Read, "re2", "s4ab").unwrap();
+    let again = build_image(&re2).expect("stable rebuild");
+    assert_eq!(again, s4a_built, "save -> open -> save must be byte-stable");
+
+    eprintln!(
+        "real_image s4a: files {files_before} -> {} span={span:#x} last_diff={last_diff:#x}",
+        vol.children.len()
+    );
+}
+
+#[test]
+#[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
+fn real_image_ops_insert_serial_s4b() {
+    use uefi_engine::builder::build_image;
+    use uefi_engine::ops::{InsertMode, insert};
+    use uefi_engine::types::{ImageMode, Target};
+
+    const MAIN_FV_OFF: usize = 0x890000;
+    const FIRST_SLOT: usize = 0xB63B18;
+    const SERIAL_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/serial");
+    const SERIAL_DXE_GUID: &str = "9A5163E7-5C29-453F-825C-837A46A81E15";
+    const TERMINAL_DXE_GUID: &str = "9E863906-A40F-4875-977F-5B93FF237FC6";
+    const GLUE_GUID: &str = "1EF3A7C2-9B64-4D58-8A31-5C0E9F2B7D43";
+
+    let data = load_fw();
+    assert_eq!(data.len(), 0x0100_0000, "16 MiB image expected");
+    let serial: Vec<&str> = vec!["SerialIoAmiDxe.ffs", "TermSrcAmiDxe.ffs"];
+    let expect_tail = [
+        "97C81E5D-8FA0-486A-AAEA-0EFDF090FE4F",
+        "54891A9E-763E-4377-8841-8D5C90D88CDE",
+    ];
+
+    let mut img = parse_image(&data, ImageMode::Write, "img1", "s1").unwrap();
+    let vol_idx = img
+        .root
+        .children
+        .iter()
+        .position(|c| c.offset == MAIN_FV_OFF as u32)
+        .expect("main FV @0x890000");
+    let files_before = img.root.children[vol_idx].children.len();
+    assert!(files_before > 100, "main FV files: {files_before}");
+
+    let mut anchor = Target::Path(vec![vol_idx, files_before - 1]);
+    for name in &serial {
+        let path = std::path::Path::new(SERIAL_DIR).join(name);
+        let ffs = std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        insert(&mut img.root, &anchor, &ffs, InsertMode::After).unwrap();
+        let last = img.root.children[vol_idx].children.len() - 1;
+        anchor = Target::Path(vec![vol_idx, last]);
+    }
+    let e34 = build_image(&img).expect("build after E34 inserts");
+    assert_eq!(e34.len(), data.len(), "total flash length preserved");
+
+    let mut first_diff = usize::MAX;
+    let mut last_diff = 0usize;
+    for (i, (a, b)) in data.iter().zip(e34.iter()).enumerate() {
+        if a != b {
+            first_diff = first_diff.min(i);
+            last_diff = i;
+        }
+    }
+    assert_eq!(
+        first_diff, FIRST_SLOT,
+        "first changed byte must be first free slot"
+    );
+    let span = 7_680 + 13_368;
+    assert!(
+        last_diff < FIRST_SLOT + span,
+        "changes must stay inside {span}-byte span: last_diff={last_diff:#x}"
+    );
+    let mut non_tail_changes = 0usize;
+    for i in FIRST_SLOT..=last_diff {
+        if e34[i] != data[i] && data[i] != 0xFF {
+            non_tail_changes += 1;
+        }
+    }
+    assert_eq!(
+        non_tail_changes, 0,
+        "all changed bytes must lie over 0xFF free tail"
+    );
+
+    let re = parse_image(&e34, ImageMode::Read, "re", "s4b").unwrap();
+    let vol = &re.root.children[vol_idx];
+    assert_eq!(vol.children.len(), files_before + 2);
+    let tail: Vec<String> = vol.children[files_before..]
+        .iter()
+        .map(|f| {
+            f.guid
+                .map(|g| g.to_string().to_ascii_uppercase())
+                .unwrap_or_default()
+        })
+        .collect();
+    assert_eq!(tail, expect_tail, "E34 pair order at chain end");
+    for absent in [SERIAL_DXE_GUID, TERMINAL_DXE_GUID, GLUE_GUID] {
+        assert!(
+            !vol.children.iter().any(|f| matches!(&f.guid, Some(g)
+                if g.to_string().to_ascii_uppercase() == absent)),
+            "{absent} must be absent from the E34 candidate (no-glue discriminator)"
+        );
+    }
+    for f in &vol.children[files_before..] {
+        assert_eq!(
+            f.header[23], 0xF8,
+            "inserted file state must be polarity-1 valid"
+        );
+        assert_eq!(
+            f.offset % 8,
+            0,
+            "FFS file must be 8-aligned in FV, got @{:#x}",
+            f.offset
+        );
+    }
+    for (i, f) in vol.children[files_before..].iter().enumerate() {
+        let path = std::path::Path::new(SERIAL_DIR).join(serial[i]);
+        let ffs = std::fs::read(&path).unwrap();
+        assert_eq!(
+            f.body,
+            ffs[f.header.len()..f.header.len() + f.body.len()],
+            "inserted body must be byte-identical to the fixture file"
+        );
+    }
+
+    let termsrc = &vol.children[files_before + 1];
+    assert_eq!(
+        termsrc.body[3], 0x02,
+        "TermSrc has no DEPEX section: first section is GUID_DEFINED"
+    );
+    assert_eq!(termsrc.children[0].subtype, 0x02);
+    let ui = termsrc.children[0]
+        .children
+        .iter()
+        .find(|c| c.subtype == 0x15)
+        .expect("UI section inside TermSrc guided payload");
+    let ui_text: String = String::from_utf16_lossy(
+        &ui.body
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .take_while(|&u| u != 0)
+            .collect::<Vec<u16>>(),
+    );
+    assert_eq!(ui_text, "TerminalSrc", "TermSrc donor UI name");
+
+    let re2 = parse_image(&e34, ImageMode::Read, "re2", "s4bb").unwrap();
+    let again = build_image(&re2).expect("stable rebuild");
+    assert_eq!(again, e34, "save -> open -> save must be byte-stable");
+
+    eprintln!(
+        "real_image s4b: files {files_before} -> {} span={span:#x} last_diff={last_diff:#x}",
+        vol.children.len()
+    );
+}
+
+#[test]
+#[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
+fn real_image_ops_insert_serial_s4c() {
+    use uefi_engine::builder::build_image;
+    use uefi_engine::hii::schema::parse_question_add_schema;
+    use uefi_engine::hii::{add_question, question_info};
+    use uefi_engine::ops::{InsertMode, insert};
+    use uefi_engine::types::{ImageMode, Target};
+
+    const MAIN_FV_OFF: usize = 0x890000;
+    const FIRST_SLOT: usize = 0xB63B18;
+    const SETUP_MODULE_GUID: &str = "899407D7-99FE-43D8-9A21-79EC328CAC21";
+    const SETUPDATA_GUID: &str = "FE612B72-203C-47B1-8560-A66D946EB371";
+    const SERIAL_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/serial");
+    const FORM_ID: u16 = 10019;
+    const SERIAL_DXE_GUID: &str = "9A5163E7-5C29-453F-825C-837A46A81E15";
+
+    let data = load_fw();
+    assert_eq!(data.len(), 0x0100_0000, "16 MiB image expected");
+    let serial: Vec<&str> = vec![
+        "SerialIoAmiDxe.ffs",
+        "TerminalDxe.ffs",
+        "SerialConsoleGlueV3.ffs",
+    ];
+    let expect_tail = [
+        "97C81E5D-8FA0-486A-AAEA-0EFDF090FE4F",
+        "9E863906-A40F-4875-977F-5B93FF237FC6",
+        "1EF3A7C2-9B64-4D58-8A31-5C0E9F2B7D43",
+    ];
+
+    let mut img = parse_image(&data, ImageMode::Write, "img1", "s1").unwrap();
+    let vol_idx = img
+        .root
+        .children
+        .iter()
+        .position(|c| c.offset == MAIN_FV_OFF as u32)
+        .expect("main FV @0x890000");
+    let files_before = img.root.children[vol_idx].children.len();
+    assert!(files_before > 100, "main FV files: {files_before}");
+
+    let mut anchor = Target::Path(vec![vol_idx, files_before - 1]);
+    for name in &serial {
+        let path = std::path::Path::new(SERIAL_DIR).join(name);
+        let ffs = std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        insert(&mut img.root, &anchor, &ffs, InsertMode::After).unwrap();
+        let last = img.root.children[vol_idx].children.len() - 1;
+        anchor = Target::Path(vec![vol_idx, last]);
+    }
+    let e35_triple = build_image(&img).expect("build after E35 inserts");
+    assert_eq!(e35_triple.len(), data.len(), "total flash length preserved");
+
+    let mut first_diff = usize::MAX;
+    let mut last_diff = 0usize;
+    for (i, (a, b)) in data.iter().zip(e35_triple.iter()).enumerate() {
+        if a != b {
+            first_diff = first_diff.min(i);
+            last_diff = i;
+        }
+    }
+    assert_eq!(
+        first_diff, FIRST_SLOT,
+        "first changed byte must be first free slot"
+    );
+    let span = 7_680 + 65_600 + 41_072;
+    assert!(
+        last_diff < FIRST_SLOT + span,
+        "changes must stay inside {span}-byte span: last_diff={last_diff:#x}"
+    );
+    let mut non_tail_changes = 0usize;
+    for i in FIRST_SLOT..=last_diff {
+        if e35_triple[i] != data[i] && data[i] != 0xFF {
+            non_tail_changes += 1;
+        }
+    }
+    assert_eq!(
+        non_tail_changes, 0,
+        "all changed bytes must lie over 0xFF free tail"
+    );
+
+    let mut img2 = parse_image(&e35_triple, ImageMode::Write, "img2", "s4c").unwrap();
+
+    let schema_path = std::path::Path::new(SERIAL_DIR).join("s3_questions.json");
+    let schema_json = std::fs::read_to_string(&schema_path)
+        .unwrap_or_else(|e| panic!("read {}: {e}", schema_path.display()));
+    let list = parse_question_add_schema(&schema_json).expect("fixture schema parses");
+    assert_eq!(list.questions.len(), 2);
+
+    let item = format!("{SETUP_MODULE_GUID}:0x10:0#{FORM_ID}");
+    for (i, q) in list.questions.iter().enumerate() {
+        assert_eq!(q.form_id, FORM_ID);
+        let res = add_question(&mut img2, &item, q)
+            .unwrap_or_else(|e| panic!("add_question #{}: {e:?}", i + 1));
+        assert_eq!(res.question_id, q.question_id);
+    }
+    let e35_built = build_image(&img2).expect("build after question adds");
+    assert_eq!(e35_built.len(), data.len(), "total flash length preserved");
+
+    let setup_slot = find_file_range(&e35_triple, SETUP_MODULE_GUID);
+    let sd_slot = find_file_range(&e35_triple, SETUPDATA_GUID);
+    let zones = [
+        (FIRST_SLOT, FIRST_SLOT + span),
+        (setup_slot.start, setup_slot.end),
+        (sd_slot.start, sd_slot.end),
+    ];
+    let mut outside = Vec::new();
+    for (i, (a, b)) in e35_triple.iter().zip(e35_built.iter()).enumerate() {
+        if a != b && !zones.iter().any(|(s, e)| i >= *s && i < *e) {
+            outside.push(i);
+        }
+    }
+    assert!(
+        outside.is_empty(),
+        "{} bytes changed outside the insert window + Setup/SetupData slots, first={outside:#x?}",
+        outside.len()
+    );
+
+    let re = parse_image(&e35_built, ImageMode::Read, "re", "s4c").unwrap();
+    let vol = &re.root.children[vol_idx];
+    assert_eq!(vol.children.len(), files_before + 3);
+    let tail: Vec<String> = vol.children[files_before..]
+        .iter()
+        .map(|f| {
+            f.guid
+                .map(|g| g.to_string().to_ascii_uppercase())
+                .unwrap_or_default()
+        })
+        .collect();
+    assert_eq!(tail, expect_tail, "E35 chain order at end");
+    assert!(
+        !vol.children.iter().any(|f| matches!(&f.guid, Some(g)
+            if g.to_string().to_ascii_uppercase() == SERIAL_DXE_GUID)),
+        "SerialDxe 9A5163E7 must be absent from the E35 candidate (producer replaced, not added)"
+    );
+    for f in &vol.children[files_before..] {
+        assert_eq!(
+            f.header[23], 0xF8,
+            "inserted file state must be polarity-1 valid"
+        );
+        assert_eq!(
+            f.offset % 8,
+            0,
+            "FFS file must be 8-aligned in FV, got @{:#x}",
+            f.offset
+        );
+    }
+    for (i, f) in vol.children[files_before..].iter().enumerate() {
+        let path = std::path::Path::new(SERIAL_DIR).join(serial[i]);
+        let ffs = std::fs::read(&path).unwrap();
+        assert_eq!(
+            f.body,
+            ffs[f.header.len()..f.header.len() + f.body.len()],
+            "inserted body must be byte-identical to the fixture file"
+        );
+    }
+
+    for (q, want_opts) in [(&list.questions[0], 5usize), (&list.questions[1], 4usize)] {
+        let qi = question_info(&re, &format!("{item}:{}", q.question_id))
+            .unwrap_or_else(|e| panic!("question_info q{}: {e:?}", q.question_id));
+        assert_eq!(qi.form_id, u32::from(FORM_ID));
+        assert_eq!(qi.question_id, u32::from(q.question_id));
+        assert_eq!(qi.kind, "one_of");
+        assert_eq!(qi.var_store_id, u32::from(q.var_store_id));
+        assert_eq!(qi.var_offset, u32::from(q.var_offset));
+        assert_eq!(qi.options.len(), want_opts);
+        assert_eq!(qi.defaults.len(), 1);
+        assert_eq!(qi.defaults[0].value, 0, "default 0 (115200 / VT-UTF8)");
+    }
+
+    let re2 = parse_image(&e35_built, ImageMode::Read, "re2", "s4cb").unwrap();
+    let again = build_image(&re2).expect("stable rebuild");
+    assert_eq!(again, e35_built, "save -> open -> save must be byte-stable");
+
+    eprintln!(
+        "real_image s4c: files {files_before} -> {} span={span:#x} last_diff={last_diff:#x}",
+        vol.children.len()
+    );
+}
+
+#[test]
+#[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
+fn real_image_add_question_discovers_nested_setupdata() {
+    let data = load_fw();
+    let img = parse_image(&data, ImageMode::Write, "i", "s").unwrap();
+    assert!(
+        matches!(
+            uefi_engine::hii::ami_patcher::pfs_payload_path(&img, None),
+            Err(uefi_engine::hii::HiiError::AmiFilesNotFound)
+        ),
+        "legacy discovery must keep missing the live grandchild UI (documented defect)"
+    );
+    let path = uefi_engine::hii::ami_patcher::discover_pfs_payload_path(&img)
+        .expect("deep discovery must resolve the live SetupData");
+    assert_eq!(path, vec![3, 208, 0, 0]);
+    let mut node = &img.root;
+    for &i in &path {
+        node = &node.children[i];
+    }
+    assert!(
+        node.body.windows(4).any(|w| w == b"$SPF"),
+        "resolved node must carry the $SPF container"
+    );
+
+    let mut live = parse_image(&data, ImageMode::Write, "probe", "s").unwrap();
+    let schema = uefi_engine::hii::schema::QuestionAddSchema {
+        form_id: 10019,
+        prompt: "probe".into(),
+        help: "probe help".into(),
+        question_id: 512,
+        var_store_id: 1,
+        var_offset: u16::MAX,
+        size: 1,
+        options: vec![uefi_engine::hii::schema::QuestionAddOption {
+            text: "off".into(),
+            value: 0,
+            default: None,
+        }],
+        defaults: None,
+    };
+    let err = uefi_engine::hii::add_question(&mut live, "3/28/1/0#10019", &schema)
+        .expect_err("out-of-bounds var_offset must be rejected");
+    eprintln!("live add_question probe error: {err}");
+    assert!(
+        matches!(err, uefi_engine::hii::HiiError::InvalidSchema(_)),
+        "add_question must pass discovery and reach varstore validation on live geometry, got {err:?}"
+    );
+}
+
+fn spf_body_of(img: &Image) -> Vec<u8> {
+    let path = uefi_engine::hii::ami_patcher::discover_pfs_payload_path(img).unwrap();
+    let mut node = &img.root;
+    for &i in &path {
+        node = &node.children[i];
+    }
+    node.body.clone()
+}
+
+fn setup_forms_package(img: &Image) -> Vec<u8> {
+    let t = parse_target("3/28/1/0").unwrap();
+    let node = find_item(&img.root, &t).unwrap();
+    for blob in uefi_engine::hii::pe_resource::hii_resource_blobs(&node.body) {
+        if let Some(list) = uefi_engine::hii::package_list::parse_package_list(blob) {
+            for p in &list.packages {
+                if uefi_engine::hii::ifr::is_form_package(p.bytes) {
+                    return p.bytes.to_vec();
+                }
+            }
+        }
+    }
+    panic!("no forms package in Setup PE 3/28/1/0");
+}
+
+fn live_question_schema(qid: u16, voff: u16) -> uefi_engine::hii::schema::QuestionAddSchema {
+    uefi_engine::hii::schema::QuestionAddSchema {
+        form_id: 10019,
+        prompt: format!("S3 probe {qid}"),
+        help: format!("S3 probe help {qid}"),
+        question_id: qid,
+        var_store_id: 1,
+        var_offset: voff,
+        size: 1,
+        options: vec![
+            uefi_engine::hii::schema::QuestionAddOption {
+                text: "Off".into(),
+                value: 0,
+                default: None,
+            },
+            uefi_engine::hii::schema::QuestionAddOption {
+                text: "On".into(),
+                value: 1,
+                default: Some(uefi_engine::hii::schema::DefaultClass::Optimized),
+            },
+        ],
+        defaults: None,
+    }
+}
+
+#[test]
+#[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
+fn real_image_add_question_selective_ifr_fixup() {
+    let data = load_fw();
+    let base = parse_image(&data, ImageMode::Read, "base", "s").unwrap();
+    let pkg_base = setup_forms_package(&base);
+    let spf_base = spf_body_of(&base);
+    let base_records = uefi_engine::hii::spf::scan_question_records(&spf_base);
+    let r_base: Vec<_> = base_records
+        .iter()
+        .filter(|r| uefi_engine::hii::spf_record_resolves(&pkg_base, r.question_id, r.ifr_offset))
+        .collect();
+    let foreign_base: Vec<_> = base_records
+        .iter()
+        .filter(|r| !uefi_engine::hii::spf_record_resolves(&pkg_base, r.question_id, r.ifr_offset))
+        .collect();
+    eprintln!(
+        "selective fixup: {} base records, {} setup-resolving, {} foreign",
+        base_records.len(),
+        r_base.len(),
+        foreign_base.len()
+    );
+    assert_eq!(
+        r_base.len(),
+        32,
+        "engine predicate: (qid, ifr) resolves at a question opcode of the Setup forms package"
+    );
+    assert_eq!(foreign_base.len(), 357);
+
+    let mut img = parse_image(&data, ImageMode::Write, "i", "s").unwrap();
+    uefi_engine::hii::add_question(&mut img, "3/28/1/0#10019", &live_question_schema(512, 93))
+        .expect("first live add_question");
+    let pkg_after1 = setup_forms_package(&img);
+    let delta1 = pkg_after1.len() - pkg_base.len();
+    uefi_engine::hii::add_question(&mut img, "3/28/1/0#10019", &live_question_schema(513, 94))
+        .expect("second live add_question");
+    let pkg_after2 = setup_forms_package(&img);
+    let delta2 = pkg_after2.len() - pkg_after1.len();
+
+    let spf_final = spf_body_of(&img);
+    let final_records = uefi_engine::hii::spf::scan_question_records(&spf_final);
+    assert_eq!(final_records.len(), base_records.len() + 2);
+    let rec512 = final_records
+        .iter()
+        .find(|r| r.question_id == 512)
+        .expect("record for qid 512");
+    let rec513 = final_records
+        .iter()
+        .find(|r| r.question_id == 513)
+        .expect("record for qid 513");
+    assert!(
+        uefi_engine::hii::spf_record_resolves(&pkg_after2, 512, rec512.ifr_offset),
+        "new record 512 must resolve at its splice position"
+    );
+    assert!(
+        uefi_engine::hii::spf_record_resolves(&pkg_after2, 513, rec513.ifr_offset),
+        "new record 513 must resolve at its splice position"
+    );
+    let insert1 = rec512.ifr_offset;
+    assert_eq!(rec513.ifr_offset, insert1 + delta1 as u32);
+    let mut shifted = 0;
+    for r in &r_base {
+        let fr = final_records
+            .iter()
+            .find(|x| x.offset == r.offset)
+            .expect("base record offset must be stable");
+        let expected = r.ifr_offset + u32::from(r.ifr_offset >= insert1) * (delta1 + delta2) as u32;
+        assert_eq!(
+            fr.ifr_offset, expected,
+            "setup record qid {:#x} must shift by the deltas",
+            r.question_id
+        );
+        assert!(
+            uefi_engine::hii::spf_record_resolves(&pkg_after2, fr.question_id, fr.ifr_offset),
+            "setup record qid {:#x} must still resolve after the splice",
+            r.question_id
+        );
+        shifted += usize::from(r.ifr_offset >= insert1);
+    }
+    for r in &foreign_base {
+        let fr = final_records
+            .iter()
+            .find(|x| x.offset == r.offset)
+            .expect("foreign record offset must be stable");
+        assert_eq!(
+            fr.ifr_offset, r.ifr_offset,
+            "foreign record qid {:#x} must keep its base ifr",
+            r.question_id
+        );
+        assert_eq!(
+            &spf_final[r.offset..r.offset + uefi_engine::hii::spf::SPF_RECORD_SIZE],
+            &spf_base[r.offset..r.offset + uefi_engine::hii::spf::SPF_RECORD_SIZE],
+            "foreign record qid {:#x} must stay byte-identical",
+            r.question_id
+        );
+    }
+    eprintln!(
+        "selective fixup: {shifted}/{} setup records shifted, {} foreign untouched, deltas {delta1}+{delta2}",
+        r_base.len(),
+        foreign_base.len()
+    );
+}

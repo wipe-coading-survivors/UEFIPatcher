@@ -34,6 +34,7 @@ service EngineService {
   rpc HiiUnlock(HiiUnlockRequest)                       returns (HiiUnlockResponse);
   rpc HiiQuestionInfo(HiiQuestionInfoRequest)           returns (HiiQuestionInfoResponse);
   rpc HiiSetValue(HiiSetValueRequest)                   returns (HiiSetValueResponse);
+  rpc HiiQuestionAdd(HiiQuestionAddRequest)             returns (HiiQuestionAddResponse);
 }
 
 enum ImageMode { READ = 0; WRITE = 1; }
@@ -260,5 +261,17 @@ message HiiQuestionInfoRequest  { string image_id = 1; string item_id = 2; }
 message HiiQuestionInfoResponse { QuestionInfo question = 1; }
 message HiiSetValueRequest      { string image_id = 1; string item_id = 2; uint64 value = 3; }
 message HiiSetValueResponse     { QuestionInfo question = 1; repeated string applied_flips = 2; repeated string stores = 3; }
+
+message HiiQuestionAddRequest {
+  string image_id = 1;
+  string target = 2;
+  string schema_json = 3;
+}
+message HiiQuestionAddOutcome {
+  uint32 question_id = 1;
+  map<string, uint32> string_ids = 2;
+  uint32 spf_record_offset = 3;
+}
+message HiiQuestionAddResponse { repeated HiiQuestionAddOutcome questions = 1; }
 
 message Empty {}
