@@ -134,8 +134,13 @@ COM + redirect Setup-экрана, настройка из Setup) — флагм
   потребитель PNP0501_0_NV статически не найден (дискриминатор — E32).
   Кандидат E32 = гибрид §8.3(в): донорский SerialIo + наш TerminalDxe +
   glue v2 + вопросы S3 — план
-  `docs/superpowers/plans/2026-09-06-serial-s4-serialio-swap.md`
-  (исполнение — после ревью владельца).
+  `docs/superpowers/plans/2026-09-06-serial-s4-serialio-swap.md`.
+  **Исполнен (2026-09-06, коммиты `ad281f1..5f96610`)**: кандидат
+  `~/E32/E32-candidate-8def2850.bin` (sha256 `8def2850…`, окно FV1
+  [0xB63B18, 0xB7F9C8), fv_audit 216→219, дифф вне трёх зон — 0);
+  гейт `real_image_ops_insert_serial_s4` 31/31 живьём. Протокол
+  приёмки (a)–(c) — отчёт `docs/reports/2026-09-06-serial-s4-e32-pack.md`;
+  вердикт прошивки — за владельцем.
 - **S5** — redirect Setup-экрана: гейт фактически продемонстрирован в
   E30 (Setup на COM1 + управление с терминала — AMITSE рендерит через
   gST->ConOut, отдельного redirect-переключателя в AMI-стеке нет);
