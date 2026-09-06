@@ -1,0 +1,16 @@
+[FV.SERIAL_CONSOLE_FV]
+FvNameGuid           = 6B4A19D8-2E75-4C31-B8F0-59D2837A90C4
+INF MdeModulePkg/Universal/SerialDxe/SerialDxe.inf
+INF MdeModulePkg/Universal/Console/TerminalDxe/TerminalDxe.inf
+
+[Rule.Common.DXE_DRIVER]
+  FILE DRIVER = $(NAMED_GUID) {
+    PE32     PE32                    |.efi
+    UI       STRING="$(MODULE_NAME)"
+  }
+
+[Rule.Common.UEFI_DRIVER]
+  FILE DRIVER = $(NAMED_GUID) {
+    PE32     PE32                    |.efi
+    UI       STRING="$(MODULE_NAME)"
+  }
