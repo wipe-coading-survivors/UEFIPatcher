@@ -207,7 +207,10 @@ one_of, varstores []), `tests/data/serial/np_ref.json`
   gap occupied")`) → `bump_container_length` → mark rebuild (setup +
   setupdata). seq = count ДО бампа (индекс нового слота).
 - proto: `rpc HiiPageAdd(HiiPageAddRequest) returns (HiiPageAddResponse);`
-  `message HiiPageAddRequest { string target=1; string schema_json=2; }`,
+  `message HiiPageAddRequest { string image_id=1; string target=2; string schema_json=3; }`
+  (image_id обязателен — зеркалит `HiiQuestionAddRequest`; без него
+  запрос нефункционален — дефект исходного текста плана, найден при
+  реализации Task 4),
   `message HiiPageAddResponse { uint32 form_id=1; uint32 slot=2; uint32 page_offset=3; uint32 title_string_id=4; }`.
 - RPC-сервер: parse → write-lock → `hii::add_page` (статус-маппинг по
   образцу `hii_question_add`, server.rs:944).
