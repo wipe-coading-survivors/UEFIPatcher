@@ -25,11 +25,25 @@ pub fn insert(
     ffs_bytes: &[u8],
     mode: InsertMode,
 ) -> Result<(), OpsError> {
-    let new_node = parse_ffs_bytes(ffs_bytes).map_err(|_| OpsError::InvalidFfs)?;
+    let mut new_node = parse_ffs_bytes(ffs_bytes).map_err(|_| OpsError::InvalidFfs)?;
     let parent_path = match target {
         Target::Path(p) => p.clone(),
         _ => return Err(OpsError::NotFound),
     };
+    let vol_path = match mode {
+        InsertMode::Into => parent_path.clone(),
+        InsertMode::Before | InsertMode::After => {
+            if parent_path.is_empty() {
+                return Err(OpsError::InvalidParent);
+            }
+            parent_path[..parent_path.len() - 1].to_vec()
+        }
+    };
+    if enclosing_volume_empty_byte(root, &vol_path) == Some(0xFF)
+        && new_node.header.get(23) == Some(&0x07)
+    {
+        new_node.header[23] = 0xF8;
+    }
     match mode {
         InsertMode::Into => {
             let parent = find_mut(root, &parent_path).ok_or(OpsError::NotFound)?;
@@ -37,9 +51,6 @@ pub fn insert(
             mark_rebuild_to_root_by_path(root, &parent_path);
         }
         InsertMode::Before | InsertMode::After => {
-            if parent_path.is_empty() {
-                return Err(OpsError::InvalidParent);
-            }
             let idx = *parent_path.last().unwrap();
             let grandparent_path = &parent_path[..parent_path.len() - 1];
             let grandparent = find_mut(root, grandparent_path).ok_or(OpsError::NotFound)?;
@@ -139,6 +150,21 @@ fn find_mut<'a>(node: &'a mut FfsNode, path: &[usize]) -> Option<&'a mut FfsNode
     Some(cur)
 }
 
+fn enclosing_volume_empty_byte(root: &FfsNode, path: &[usize]) -> Option<u8> {
+    let mut chain = vec![root];
+    let mut node = root;
+    for &i in path {
+        node = node.children.get(i)?;
+        chain.push(node);
+    }
+    for n in chain.into_iter().rev() {
+        if let ParsingData::Volume(vd) = &n.parsing_data {
+            return Some(vd.empty_byte);
+        }
+    }
+    None
+}
+
 fn parse_ffs_bytes(data: &[u8]) -> Result<FfsNode, ParserError> {
     crate::parser::file::parse_file(data, 0, 0xFF, 2)
 }
@@ -168,6 +194,54 @@ mod tests {
         buf[20..23].copy_from_slice(&size_to_uint24(32));
         buf[24..32].copy_from_slice(&[0xAA; 8]);
         buf
+    }
+
+    fn make_simple_image_polarity(empty: u8) -> Vec<u8> {
+        let mut buf = make_simple_image();
+        if empty == 0x00 {
+            buf[44..48].copy_from_slice(&0u32.to_le_bytes());
+        }
+        buf
+    }
+
+    fn make_ffs_file_state(state: u8) -> Vec<u8> {
+        let mut buf = make_ffs_file();
+        buf[16] = 0xAB;
+        buf[23] = state;
+        buf
+    }
+
+    #[test]
+    fn insert_adapts_state_byte_to_erase_polarity() {
+        let buf = make_simple_image_polarity(0xFF);
+        let mut img = parse_image(&buf, ImageMode::Read, "i", "s").unwrap();
+        img.root.children[0]
+            .children
+            .push(parse_ffs_bytes(&make_ffs_file_state(0x07)).unwrap());
+        let anchor = parse_target("0/0").unwrap();
+        let ffs = make_ffs_file_state(0x07);
+        insert(&mut img.root, &anchor, &ffs, InsertMode::After).unwrap();
+        let new_file = &img.root.children[0].children[1];
+        assert_eq!(new_file.header[23], 0xF8);
+        assert_eq!(
+            new_file.header[16], 0xAB,
+            "header checksum must stay untouched"
+        );
+    }
+
+    #[test]
+    fn insert_keeps_state_byte_verbatim_in_polarity0_volume() {
+        let buf = make_simple_image_polarity(0x00);
+        let mut img = parse_image(&buf, ImageMode::Read, "i", "s").unwrap();
+        img.root.children[0]
+            .children
+            .push(parse_ffs_bytes(&make_ffs_file_state(0x07)).unwrap());
+        let anchor = parse_target("0/0").unwrap();
+        let ffs = make_ffs_file_state(0x07);
+        insert(&mut img.root, &anchor, &ffs, InsertMode::After).unwrap();
+        let new_file = &img.root.children[0].children[1];
+        assert_eq!(new_file.header[23], 0x07);
+        assert_eq!(new_file.header[16], 0xAB);
     }
 
     #[test]

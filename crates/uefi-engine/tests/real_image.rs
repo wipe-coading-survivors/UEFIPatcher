@@ -2422,6 +2422,18 @@ fn real_image_ops_insert_serial_s2() {
         ],
         "inserted files must sit in S1 order at chain end"
     );
+    let fv_attrs = u32::from_le_bytes(
+        rebuilt[MAIN_FV_OFF + 0x2C..MAIN_FV_OFF + 0x30]
+            .try_into()
+            .unwrap(),
+    );
+    assert_eq!((fv_attrs >> 11) & 1, 1, "FV1 erase polarity must be 1");
+    for f in &vol.children[files_before..] {
+        assert_eq!(
+            f.header[23], 0xF8,
+            "inserted file state must be polarity-1 valid"
+        );
+    }
     for f in &vol.children[files_before..] {
         assert_eq!(
             f.offset % 8,
