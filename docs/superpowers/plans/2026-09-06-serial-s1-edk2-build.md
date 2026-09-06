@@ -505,6 +505,7 @@ AppendInstanceToVariable (
   EFI_STATUS                Status;
   EFI_DEVICE_PATH_PROTOCOL  *Buffer;
   EFI_DEVICE_PATH_PROTOCOL  *Walk;
+  EFI_DEVICE_PATH_PROTOCOL  *OrigWalk;
   EFI_DEVICE_PATH_PROTOCOL  *Instance;
   EFI_DEVICE_PATH_PROTOCOL  *Merged;
   EFI_DEVICE_PATH_PROTOCOL  *Tail;
@@ -542,6 +543,7 @@ AppendInstanceToVariable (
   Found = FALSE;
   Walk = DuplicateDevicePath (Buffer);
   if (Walk != NULL) {
+    OrigWalk = Walk;
     while (TRUE) {
       Instance = GetNextDevicePathInstance (&Walk, &InstanceSize);
       if (Instance == NULL) {
@@ -555,7 +557,7 @@ AppendInstanceToVariable (
         break;
       }
     }
-    FreePool (Walk);
+    FreePool (OrigWalk);
   }
   if (Found) {
     FreePool (Buffer);
