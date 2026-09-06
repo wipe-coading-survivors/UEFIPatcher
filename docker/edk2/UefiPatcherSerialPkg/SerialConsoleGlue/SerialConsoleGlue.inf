@@ -1,0 +1,37 @@
+[Defines]
+  INF_VERSION       = 0x00010005
+  BASE_NAME         = SerialConsoleGlue
+  FILE_GUID         = 1EF3A7C2-9B64-4D58-8A31-5C0E9F2B7D43
+  MODULE_TYPE       = DXE_DRIVER
+  VERSION_STRING    = 0.1
+  ENTRY_POINT       = SerialConsoleGlueEntry
+
+[Sources]
+  SerialConsoleGlue.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+
+[LibraryClasses]
+  UefiDriverEntryPoint
+  UefiBootServicesTableLib
+  UefiRuntimeServicesTableLib
+  DevicePathLib
+  MemoryAllocationLib
+  BaseMemoryLib
+  DebugLib
+  BaseLib
+
+[Guids]
+  gEfiGlobalVariableGuid
+  gEfiVTUTF8Guid
+  gEfiEventReadyToBootGuid
+
+[Protocols]
+  gEfiSerialIoProtocolGuid
+  gEfiDevicePathProtocolGuid
+  gEfiSimpleTextOutProtocolGuid
+
+[Depex]
+  gEfiSerialIoProtocolGuid

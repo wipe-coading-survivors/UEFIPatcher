@@ -33,6 +33,7 @@
 [Components]
   MdeModulePkg/Universal/SerialDxe/SerialDxe.inf
   MdeModulePkg/Universal/Console/TerminalDxe/TerminalDxe.inf
+  UefiPatcherSerialPkg/SerialConsoleGlue/SerialConsoleGlue.inf
 
 [PcdsFixedAtBuild]
   gEfiMdePkgTokenSpaceGuid.PcdUartDefaultBaudRate|115200

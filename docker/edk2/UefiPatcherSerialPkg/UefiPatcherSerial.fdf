@@ -2,9 +2,11 @@
 FvNameGuid           = 6B4A19D8-2E75-4C31-B8F0-59D2837A90C4
 INF MdeModulePkg/Universal/SerialDxe/SerialDxe.inf
 INF MdeModulePkg/Universal/Console/TerminalDxe/TerminalDxe.inf
+INF UefiPatcherSerialPkg/SerialConsoleGlue/SerialConsoleGlue.inf
 
 [Rule.Common.DXE_DRIVER]
   FILE DRIVER = $(NAMED_GUID) {
+    DXE_DEPEX    DXE_DEPEX               Optional   |.depex
     PE32     PE32                    |.efi
     UI       STRING="$(MODULE_NAME)"
   }
