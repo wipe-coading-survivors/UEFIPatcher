@@ -160,6 +160,9 @@ git commit -m "feat(s1): edk2-builder container image"
   IoLib|MdePkg/Library/BaseIoLibIntrinsic/BaseIoLibIntrinsic.inf
   PlatformHookLib|MdeModulePkg/Library/BasePlatformHookLibNull/BasePlatformHookLibNull.inf
   PciLib|MdePkg/Library/BasePciLibCf8/BasePciLibCf8.inf
+  PciCf8Lib|MdePkg/Library/BasePciCf8Lib/BasePciCf8Lib.inf
+  StackCheckLib|MdePkg/Library/StackCheckLibNull/StackCheckLibNull.inf
+  RegisterFilterLib|MdePkg/Library/RegisterFilterLibNull/RegisterFilterLibNull.inf
   ReportStatusCodeLib|MdePkg/Library/BaseReportStatusCodeLibNull/BaseReportStatusCodeLibNull.inf
   SerialPortLib|MdeModulePkg/Library/BaseSerialPortLib16550/BaseSerialPortLib16550.inf
 
@@ -192,6 +195,8 @@ git commit -m "feat(s1): edk2-builder container image"
 Примечание (rule-11, проверено по .dec чекаута refs/edk2@bcd1687): все `PcdSerial*` объявлены в `MdeModulePkg.dec` под `gEfiMdeModulePkgTokenSpaceGuid` (в т.ч. `PcdSerialRegisterBase/UseMmio/BaudRate/LineControl/FifoControl/ClockRate/RegisterStride/RegisterAccessWidth/UseHardwareFlowControl/DetectCable/ExtendedTxFifoSize/PciDeviceInfo`), а `PcdDefaultTerminalType` — в `MdePkg.dec` под `gEfiMdePkgTokenSpaceGuid`. Исходные префиксы плана не соответствовали декларациям (build упал бы с PCD not found); исправлены только префиксы token space, значения — по-прежнему дословно §5.2 отчёта S0.
 
 Примечание (rule-11, обнаружено при выполнении Step 4): `BasePlatformHookLibNull` лежит в `MdeModulePkg/Library/`, а не в `MdePkg/Library/` (build: `error 000E: … BasePlatformHookLibNull.inf is not found in packages path`). Остальные пути [LibraryClasses]/[Components] проверены по чекауту — существуют.
+
+Примечание (rule-11, обнаружено при выполнении Step 4, замыкание библиотек edk2@bcd1687): исходный набор [LibraryClasses] неполон — `BasePciLibCf8` (PciLib) в этой версии edk2 сам потребляет `PciCf8Lib` (реализация — `MdePkg/Library/BasePciCf8Lib/`, как в OvmfPkg), `UefiDriverEntryPoint` потребляет `StackCheckLib` (null-инстанс `MdePkg/Library/StackCheckLibNull/`), `BaseIoLibIntrinsic` потребляет `RegisterFilterLib` (null-инстанс `MdePkg/Library/RegisterFilterLibNull/`). Без них build: `error 4000: Instance of library class [PciCf8Lib|StackCheckLib|RegisterFilterLib] is not found`. Замыкание остальных инстансов (DxePcdLib/UefiLib/PrintLib/DevicePathLib/16550/…) проверено по INF — покрывается исходным набором.
 
 Пояснение для исполнителя (не в файл): все PCD fixed-at-build — обращения `PcdGet*` в SerialDxe/TerminalDxe/16550 резолвятся в compile-time константы, gEfiPcdProtocolGuid в рантайме не трогается (важно для чужого PCD-пространства LIVE).
 
