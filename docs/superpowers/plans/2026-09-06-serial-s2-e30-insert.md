@@ -15,6 +15,7 @@
 - BIOS-образы никогда не коммитятся: живой образ — только чтение из `refs/fw/HNX99TF_200525_original_E5C88C6F.bin`; E30-кандидат живёт вне git (в артефактной директории), в отчёт — только sha256/офсеты.
 - S1-артефакты blessed и не пересобираются: вставляются байт-в-байт файлы из `crates/uefi-engine/tests/data/serial/` (SerialDxe 32 848 Б, TerminalDxe 65 596 Б, SerialConsoleGlue 24 688 Б; sha256 — отчёт S1 §3). Решение по PE32-doubling: **принять** удвоенные ~123,1 КБ (запас 16,9×; чистка — TODO root-cause, не в этой ступени).
 - Вставка: append в хвост FV1 (DXE) @0x890000, FvNameGuid `5C60F367-A505-419A-859E-2A4FF6CA6FE5`, первый свободный слот 0xB63B18; порядок SerialDxe → TerminalDxe → SerialConsoleGlue (S1 §6); FFS-файлы в FV 8-выровнены (между TerminalDxe и Glue возникнет 4-Б 0xFF-прокладка — её кладёт builder).
+- **State-байт вставленных файлов (rule-11, вскрыто сборкой кандидата):** FV1 имеет EFI_FVB2_ERASE_POLARITY=1 (attrs 0x0004feff, бит 11; валидный файл = raw 0xF8, как все 216 существующих), а S1-артефакты несут GenFfs-форму polarity-0: `state[23]=0x07`. Verbatim-вставка даёт файлы, которые PI-DXE-core сочтёт HEADER_INVALID/DELETED. Движок обязан при insert адаптировать: **если enclosing-том empty_byte=0xFF (polarity 1) и state вставляемого == 0x07 → заменить на 0xF8** (узкое правило; иные state проходят verbatim). Header-checksum не затронут: [23] исключается из суммы (S1-семантика). Артефакты на диске НЕ перекодировать (blessed, polarity-0-форма — норма для standalone .ffs).
 - Флеш — только решением владельца; план доводит до ready-to-flash артефакта и протокола, вердикт E30 — владельческий. Закрытие ступени S2 аддендумом спеки происходит ПОСЛЕ вердикта E30 (не в этом плане).
 - Мини-pre-check S2 (см. спека §7, аддендум): (PC-A) disconnect SerialIo в CsmDxe — только CSM-рантайм, чистый UEFI-бут порт не отбирает; E30 обязан бутить UEFI-путём. (PC-B) консольные переменные LIVE — под `gEfiGlobalVariableGuid`; перезаписи `ConOut` в образе статически нет; NVRAM-инициализация НЕ нужна (glue создаёт переменные сам).
 - Module-first rule, TDD, один коммит на шаг где указан `git commit`, никаких комментариев в коде (кроме `file:line`-референсов). Тесты на живом образе — `#[ignore]`, запуск явно: `cargo test -p uefi-engine -- --ignored real_image_ops_insert_serial_s2`.
@@ -137,6 +138,10 @@ fn real_image_ops_insert_serial_s2() {
 }
 ```
 
+После Task 1b тест расширяется двумя ассертами (state-байты вставленных == 0xF8, polarity-бит FV1) — код расширения в Task 1b.
+
+**Уточнение по факту (rule-11, вскрыто сборкой кандидата в Task 2):** тест выше не проверял state-байты — verbatim-вставка 0x07 в polarity-1 FV даёт недиспетчеризуемые файлы. Требование адаптации — в Global Constraints; реализация и расширение теста — Task 1b ниже. Порядок span/bайтовых инвариантов не меняется: изменения по-прежнему все над 0xFF-хвостом (state-байт — внутри вставляемых файлов).
+
 - [ ] **Step 2: Run test to verify it fails or passes honestly**
 
 Run: `cargo test -p uefi-engine -- --ignored real_image_ops_insert_serial_s2`
@@ -145,7 +150,7 @@ Expected: PASS, если машинерия уже корректна (это д
 - [ ] **Step 3: Run crate checks**
 
 Run: `cargo test -p uefi-engine && cargo clippy -p uefi-engine -- -D warnings && cargo fmt --all -- --check`
-Expected: PASS (ignored-набор не меняется: 544 passed / 26 ignored + 1 новый ignored).
+Expected: PASS (ignored-набор +1 новый; все не-ignored зелёные; абсолютные счётчики не фиксируются — крейт много меньше workspace).
 
 - [ ] **Step 4: Commit**
 
@@ -158,6 +163,80 @@ git commit -m "test(s2): real-image insert gate for serial pair (tail-append inv
 
 ---
 
+### Task 1b: State-адаптация вставляемых FFS под erase-polarity тома (rule-11)
+
+Добавлен по факту сборки кандидата (Task 2 concern №1, подтверждён контроллером побайтово: артефакты [23]=0x07, FV1 attrs=0x0004feff → ERASE_POLARITY=1, существующие файлы [23]=0xF8, кандидат после verbatim-вставки — [23]=0x07 → PI-семантика: HEADER_INVALID|DELETED, драйверы не диспетчеризуются).
+
+**Files:**
+- Modify: `crates/uefi-engine/src/ops.rs` (функция `insert`)
+- Modify: `crates/uefi-engine/tests/real_image.rs` (расширение `real_image_ops_insert_serial_s2`)
+- Test: юнит-тест рядом с существующими тестами insert (где они живут в крейте — найти grep'ом `mod tests`/существующие insert-тесты; если интеграционные — `tests/`)
+
+**Interfaces:**
+- Consumes: `ParsingData::Volume(vd).empty_byte` (парсер уже кладёт erase_polarity в каждый Volume и File узел, `parser/file.rs:54`, `parser/volume.rs:35`); сигнатуру `insert(root, target, ffs_bytes, mode)` не менять.
+- Produces: семантика insert — вставляемый файл получает валидный для enclosing-тома state-байт: при empty_byte=0xFF и новом state 0x07 → 0xF8 (иначе verbatim). Хедж для последующих задач: артефакты на диске остаются blessed polarity-0-формой.
+
+- [ ] **Step 1: Write the failing tests**
+
+Юнит-тест (в месте существующих insert-тестов; фикстура — маленький polarity-1 FV: header c FvbAttributes битом EFI_FVB2_ERASE_POLARITY и empty_byte=0xFF, один дочерний файл; вставляем .ffs со state 0x07):
+
+```rust
+#[test]
+fn insert_adapts_state_byte_to_erase_polarity() {
+    // фикстура: volume node с ParsingData::Volume{empty_byte: 0xFF, ..},
+    // один child-file; ffs_bytes с header[23] == 0x07
+    // insert(.., InsertMode::After) в последний файл
+    // assert: новый child.header[23] == 0xF8; header[16] (hdr-checksum) не изменён
+}
+
+#[test]
+fn insert_keeps_state_byte_verbatim_in_polarity0_volume() {
+    // та же вставка в volume с empty_byte = 0x00
+    // assert: header[23] остался 0x07
+}
+```
+
+Расширение `real_image_ops_insert_serial_s2` (после GUID-ассерта):
+
+```rust
+    let fv_attrs = u32::from_le_bytes(
+        rebuilt[MAIN_FV_OFF + 0x2C..MAIN_FV_OFF + 0x30]
+            .try_into()
+            .unwrap(),
+    );
+    assert_eq!((fv_attrs >> 11) & 1, 1, "FV1 erase polarity must be 1");
+    for f in &vol.children[files_before..] {
+        assert_eq!(
+            f.header[23],
+            0xF8,
+            "inserted file state must be polarity-1 valid"
+        );
+    }
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `cargo test -p uefi-engine insert_adapts_state` и `cargo test -p uefi-engine -- --ignored real_image_ops_insert_serial_s2`
+Expected: оба FAIL (0x07 вместо 0xF8).
+
+- [ ] **Step 3: Implement adaptation in ops::insert**
+
+В `insert`, после `parse_ffs_bytes`: определить enclosing-Volume для позиции вставки (Into → сам parent; Before/After → родитель таргета, т.е. `parent_path[..len-1]`; подниматься до ближайшего `FfsType::Volume`), взять его `ParsingData::Volume(vd).empty_byte`; если `== 0xFF` и `new_node.header[23] == 0x07` → `new_node.header[23] = 0xF8`. Нет Volume-предка — не трогать. Никаких комментариев в коде.
+
+- [ ] **Step 4: Run tests to verify they pass + crate checks**
+
+Run: `cargo test -p uefi-engine && cargo clippy -p uefi-engine -- -D warnings && cargo fmt --all -- --check`
+Expected: PASS (ignored-набор: 27 → 27, счётчики passed не падают).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add crates/uefi-engine/src/ops.rs crates/uefi-engine/tests/real_image.rs
+git commit -m "fix(engine): adapt inserted FFS state byte to volume erase polarity (0x07->0xF8)"
+```
+
+---
+
 ### Task 2: Сборка E30-кандидата через CLI движка + двойная валидация
 
 **Files:**
@@ -167,53 +246,57 @@ git commit -m "test(s2): real-image insert gate for serial pair (tail-append inv
 **Interfaces:**
 - Produces: `E30-candidate.bin` (16 МБ, sha256 фиксируется для отчёта Task 3 и прошивки владельцем); лог валидации (движок + fv_audit.py).
 
-- [ ] **Step 1: Поднять движок и открыть образ в edit-режиме**
+- [ ] **Step 1: Поднять движок и открыть образ в write-режиме**
+
+(rule-11 по факту: дефолт сокета бинаря — `/run/uefipatcher.sock`; везде задаём UEFIPATCHER_SOCK явно; режима `edit` нет — есть `write`; `session init` при stale-state требует `--force`)
 
 ```bash
+export UEFIPATCHER_SOCK=/tmp/serial-s2/engine.sock
 rm -f "$UEFIPATCHER_SOCK"
-cargo run -q -p uefi-engine --bin engine &
+mkdir -p /tmp/serial-s2
+cargo run -q -p uefi-engine --bin engine > /tmp/serial-s2/engine.log 2>&1 &
 sleep 2
-UEFIPATCHER_SOCK="$UEFIPATCHER_SOCK" cargo run -q -p uefi-cli -- session init
-UEFIPATCHER_SOCK="$UEFIPATCHER_SOCK" cargo run -q -p uefi-cli -- image open \
-    --mode edit refs/fw/HNX99TF_200525_original_E5C88C6F.bin
+cargo run -q -p uefi-cli -- session init --force
+cargo run -q -p uefi-cli -- image open \
+    --mode write refs/fw/HNX99TF_200525_original_E5C88C6F.bin
 ```
 
 Expected: session/image id в выводе; движок стартовал без ошибки сокета.
 
-- [ ] **Step 2: Найти адрес последнего файла FV1 и вставить три .ffs**
+- [ ] **Step 2: Вставить три .ffs по путям из node list**
+
+(rule-11 по факту: `node tree` и фильтр по type в CLI отсутствуют — адресация путями вида `3/215` из живого `node list`; `node insert` печатает id ТА RGETA, а не нового узла — путь нового узла = путь таргета + 1 по последнему индексу)
 
 ```bash
-UEFIPATCHER_SOCK="$UEFIPATCHER_SOCK" cargo run -q -p uefi-cli -- node list --filter 'type=Volume'   # взять путь тома @0x890000
-UEFIPATCHER_SOCK="$UEFIPATCHER_SOCK" cargo run -q -p uefi-cli -- node tree                          # взять id последнего файла в этом томе
-UEFIPATCHER_SOCK="$UEFIPATCHER_SOCK" cargo run -q -p uefi-cli -- node insert <id-последнего-файла-FV1> \
-    --file crates/uefi-engine/tests/data/serial/SerialDxe.ffs --mode after
-UEFIPATCHER_SOCK="$UEFIPATCHER_SOCK" cargo run -q -p uefi-cli -- node insert <id-нового-SerialDxe> \
-    --file crates/uefi-engine/tests/data/serial/TerminalDxe.ffs --mode after
-UEFIPATCHER_SOCK="$UEFIPATCHER_SOCK" cargo run -q -p uefi-cli -- node insert <id-нового-TerminalDxe> \
-    --file crates/uefi-engine/tests/data/serial/SerialConsoleGlue.ffs --mode after
+cargo run -q -p uefi-cli -- node list            # найти путь тома @0x890000 (напр. "3") и индекс его последнего файла (напр. "3/215")
+cargo run -q -p uefi-cli -- node insert 3/215 --file crates/uefi-engine/tests/data/serial/SerialDxe.ffs --mode after
+cargo run -q -p uefi-cli -- node insert 3/216 --file crates/uefi-engine/tests/data/serial/TerminalDxe.ffs --mode after
+cargo run -q -p uefi-cli -- node insert 3/217 --file crates/uefi-engine/tests/data/serial/SerialConsoleGlue.ffs --mode after
 ```
 
-Expected: каждый insert печатает id нового узла;SerialDxe→TerminalDxe→SerialConsoleGlue в конце цепочки FV1.
+(конкретные индексы — из фактического вывода `node list`; пример выше — фактические значения живого образа: том 3, последний файл 215)
+
+Expected: каждый insert отрабатывает без RPC-ошибки; SerialDxe→TerminalDxe→SerialConsoleGlue в конце цепочки FV1.
 
 - [ ] **Step 3: Сохранить кандидата и зафиксировать sha256**
 
 ```bash
-mkdir -p /tmp/serial-s2
-UEFIPATCHER_SOCK="$UEFIPATCHER_SOCK" cargo run -q -p uefi-cli -- image save /tmp/serial-s2/E30-candidate.bin
+cargo run -q -p uefi-cli -- image save /tmp/serial-s2/E30-candidate.bin
 sha256sum /tmp/serial-s2/E30-candidate.bin refs/fw/HNX99TF_200525_original_E5C88C6F.bin | tee /tmp/serial-s2/sha256.txt
 cmp -l /tmp/serial-s2/E30-candidate.bin refs/fw/HNX99TF_200525_original_E5C88C6F.bin | wc -l
 ```
 
-Expected: размер обоих 16 МБ; число differing-байт ≈ 123 136 (могут быть меньше из-за совпадающих 0xFF в прокладке/последнем блоке — отличий ВНЕ диапазона [0xB63B18, 0xB63B18+123 136) быть не должно, проверяется Step 4).
+Expected: размер обоих 16 МБ; differing-байты < 123 136 (часть вставленных байт может совпадать с 0xFF-хвостом) и ВСЕ строго внутри [0xB63B18, 0xB63B18+123 136) — точная проверка диапазона в Step 4 (cmp даёт только счётчик). Дополнительно (state-инвариант Task 1b): у вставленных файлов в кандидате `bytes[off+23] == 0xF8` для off ∈ {0xB63B18, 0xB63B18+32848+4, 0xB63B18+32848+4+65596}.
 
-- [ ] **Step 4: Вторая независимая валидация (fv_audit.py) + сверка с инвариантами Task 1**
+- [ ] **Step 4: Вторая независимая валидация (fv_audit.py) + сверка с инвариантами Task 1/1b**
 
 ```bash
+python3 hack/fv_audit.py refs/fw/HNX99TF_200525_original_E5C88C6F.bin | tee /tmp/serial-s2/fv_orig.tsv
 python3 hack/fv_audit.py /tmp/serial-s2/E30-candidate.bin | tee /tmp/serial-s2/fv_candidate.tsv
-python3 hack/fv_audit.py refs/fw/HNX99TF_200525_original_E5C88C6F.bin | diff - /tmp/serial-s2/fv_candidate.tsv
+diff /tmp/serial-s2/fv_orig.tsv /tmp/serial-s2/fv_candidate.tsv
 ```
 
-Expected: diff только в строке FV @0x890000 (files +3, used +123 136, free_tail −123 136); остальные FV-строки идентичны. Плюс повторный прогон теста Task 1 (уже зелёный) подтверждает те же инварианты на уровне движка.
+Expected (rule-11 по факту): diff только в строке FV @0x890000 — files +3, used/free_tail ±123 140 (НЕ 123 136: fv_audit меряет used до невыровненного конца последнего файла, вставка стартует с 8-выровненного 0xB63B18 — 4 Б разницы это выравнивание, не повреждение; байтовым авторитетом остаётся cmp-инвариант Step 3). Плюс прогон теста Task 1 (расширенного Task 1b) — зелёный.
 
 - [ ] **Step 5: Заглушить движок**
 
