@@ -2495,3 +2495,155 @@ fn real_image_add_question_discovers_nested_setupdata() {
         "add_question must pass discovery and reach varstore validation on live geometry, got {err:?}"
     );
 }
+
+fn spf_body_of(img: &Image) -> Vec<u8> {
+    let path = uefi_engine::hii::ami_patcher::discover_pfs_payload_path(img).unwrap();
+    let mut node = &img.root;
+    for &i in &path {
+        node = &node.children[i];
+    }
+    node.body.clone()
+}
+
+fn setup_forms_package(img: &Image) -> Vec<u8> {
+    let t = parse_target("3/28/1/0").unwrap();
+    let node = find_item(&img.root, &t).unwrap();
+    for blob in uefi_engine::hii::pe_resource::hii_resource_blobs(&node.body) {
+        if let Some(list) = uefi_engine::hii::package_list::parse_package_list(blob) {
+            for p in &list.packages {
+                if uefi_engine::hii::ifr::is_form_package(p.bytes) {
+                    return p.bytes.to_vec();
+                }
+            }
+        }
+    }
+    panic!("no forms package in Setup PE 3/28/1/0");
+}
+
+fn live_question_schema(qid: u16, voff: u16) -> uefi_engine::hii::schema::QuestionAddSchema {
+    uefi_engine::hii::schema::QuestionAddSchema {
+        form_id: 10019,
+        prompt: format!("S3 probe {qid}"),
+        help: format!("S3 probe help {qid}"),
+        question_id: qid,
+        var_store_id: 1,
+        var_offset: voff,
+        size: 1,
+        options: vec![
+            uefi_engine::hii::schema::QuestionAddOption {
+                text: "Off".into(),
+                value: 0,
+                default: None,
+            },
+            uefi_engine::hii::schema::QuestionAddOption {
+                text: "On".into(),
+                value: 1,
+                default: Some(uefi_engine::hii::schema::DefaultClass::Optimized),
+            },
+        ],
+        defaults: None,
+    }
+}
+
+#[test]
+#[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
+fn real_image_add_question_selective_ifr_fixup() {
+    let data = load_fw();
+    let base = parse_image(&data, ImageMode::Read, "base", "s").unwrap();
+    let pkg_base = setup_forms_package(&base);
+    let spf_base = spf_body_of(&base);
+    let base_records = uefi_engine::hii::spf::scan_question_records(&spf_base);
+    let r_base: Vec<_> = base_records
+        .iter()
+        .filter(|r| uefi_engine::hii::spf_record_resolves(&pkg_base, r.question_id, r.ifr_offset))
+        .collect();
+    let foreign_base: Vec<_> = base_records
+        .iter()
+        .filter(|r| !uefi_engine::hii::spf_record_resolves(&pkg_base, r.question_id, r.ifr_offset))
+        .collect();
+    eprintln!(
+        "selective fixup: {} base records, {} setup-resolving, {} foreign",
+        base_records.len(),
+        r_base.len(),
+        foreign_base.len()
+    );
+    assert_eq!(
+        r_base.len(),
+        32,
+        "engine predicate: (qid, ifr) resolves at a question opcode of the Setup forms package"
+    );
+    assert_eq!(foreign_base.len(), 357);
+
+    let mut img = parse_image(&data, ImageMode::Write, "i", "s").unwrap();
+    uefi_engine::hii::add_question(&mut img, "3/28/1/0#10019", &live_question_schema(512, 93))
+        .expect("first live add_question");
+    let pkg_after1 = setup_forms_package(&img);
+    let delta1 = pkg_after1.len() - pkg_base.len();
+    uefi_engine::hii::add_question(&mut img, "3/28/1/0#10019", &live_question_schema(513, 94))
+        .expect("second live add_question");
+    let pkg_after2 = setup_forms_package(&img);
+    let delta2 = pkg_after2.len() - pkg_after1.len();
+
+    let spf_final = spf_body_of(&img);
+    let final_records = uefi_engine::hii::spf::scan_question_records(&spf_final);
+    assert_eq!(final_records.len(), base_records.len() + 2);
+    let rec512 = final_records
+        .iter()
+        .find(|r| r.question_id == 512)
+        .expect("record for qid 512");
+    let rec513 = final_records
+        .iter()
+        .find(|r| r.question_id == 513)
+        .expect("record for qid 513");
+    assert!(
+        uefi_engine::hii::spf_record_resolves(&pkg_after2, 512, rec512.ifr_offset),
+        "new record 512 must resolve at its splice position"
+    );
+    assert!(
+        uefi_engine::hii::spf_record_resolves(&pkg_after2, 513, rec513.ifr_offset),
+        "new record 513 must resolve at its splice position"
+    );
+    let insert1 = rec512.ifr_offset;
+    assert_eq!(rec513.ifr_offset, insert1 + delta1 as u32);
+    let mut shifted = 0;
+    for r in &r_base {
+        let fr = final_records
+            .iter()
+            .find(|x| x.offset == r.offset)
+            .expect("base record offset must be stable");
+        let expected = r.ifr_offset + u32::from(r.ifr_offset >= insert1) * (delta1 + delta2) as u32;
+        assert_eq!(
+            fr.ifr_offset, expected,
+            "setup record qid {:#x} must shift by the deltas",
+            r.question_id
+        );
+        assert!(
+            uefi_engine::hii::spf_record_resolves(&pkg_after2, fr.question_id, fr.ifr_offset),
+            "setup record qid {:#x} must still resolve after the splice",
+            r.question_id
+        );
+        shifted += usize::from(r.ifr_offset >= insert1);
+    }
+    for r in &foreign_base {
+        let fr = final_records
+            .iter()
+            .find(|x| x.offset == r.offset)
+            .expect("foreign record offset must be stable");
+        assert_eq!(
+            fr.ifr_offset, r.ifr_offset,
+            "foreign record qid {:#x} must keep its base ifr",
+            r.question_id
+        );
+        assert_eq!(
+            &spf_final[r.offset..r.offset + uefi_engine::hii::spf::SPF_RECORD_SIZE],
+            &spf_base[r.offset..r.offset + uefi_engine::hii::spf::SPF_RECORD_SIZE],
+            "foreign record qid {:#x} must stay byte-identical",
+            r.question_id
+        );
+    }
+    eprintln!(
+        "selective fixup: {shifted}/{} setup records shifted, {} foreign untouched, deltas {delta1}+{delta2}",
+        r_base.len(),
+        foreign_base.len()
+    );
+}

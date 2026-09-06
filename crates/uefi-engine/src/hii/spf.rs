@@ -217,6 +217,25 @@ pub fn fixup_record_ifr_offsets(body: &mut [u8], threshold: u32, delta: u32) -> 
     patched
 }
 
+pub fn fixup_selected_record_ifr_offsets(
+    body: &mut [u8],
+    record_offsets: &[usize],
+    threshold: u32,
+    delta: u32,
+) -> usize {
+    container_start(body).expect("$SPF signature not found");
+    let mut patched = 0;
+    for &off in record_offsets {
+        let at = off + SPF_RECORD_IFR_OFFSET;
+        let ifr = u32::from_le_bytes(body[at..at + 4].try_into().unwrap());
+        if ifr >= threshold {
+            body[at..at + 4].copy_from_slice(&(ifr + delta).to_le_bytes());
+            patched += 1;
+        }
+    }
+    patched
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -813,5 +832,45 @@ mod tests {
     fn fixup_record_ifr_offsets_panics_without_spf_container() {
         let mut body = vec![0u8; 0x200];
         fixup_record_ifr_offsets(&mut body, 0, 0);
+    }
+
+    #[test]
+    fn fixup_selected_record_ifr_offsets_shifts_only_listed_above_threshold() {
+        let mut body = synth_container();
+        body.extend_from_slice(&question_record(0x37, 0x0D00, 0, 0));
+        let unlisted = body.len() - SPF_RECORD_SIZE;
+        let before = body.clone();
+        let n =
+            fixup_selected_record_ifr_offsets(&mut body, &[TEMPLATE_Q35, SYNTH_REC_B], 0x0D00, 4);
+        assert_eq!(n, 1, "only the listed record above the threshold moves");
+        let patched = TEMPLATE_Q35 + SPF_RECORD_IFR_OFFSET;
+        assert_eq!(
+            u32::from_le_bytes(body[patched..patched + 4].try_into().unwrap()),
+            0x0DD7
+        );
+        let kept = SYNTH_REC_B + SPF_RECORD_IFR_OFFSET;
+        assert_eq!(
+            u32::from_le_bytes(body[kept..kept + 4].try_into().unwrap()),
+            0x0500,
+            "listed but below threshold: untouched"
+        );
+        let unlisted_at = unlisted + SPF_RECORD_IFR_OFFSET;
+        assert_eq!(
+            u32::from_le_bytes(body[unlisted_at..unlisted_at + 4].try_into().unwrap()),
+            0x0D00,
+            "above threshold but not listed: untouched"
+        );
+        for i in 0..body.len() {
+            if !(patched..patched + 4).contains(&i) {
+                assert_eq!(body[i], before[i]);
+            }
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "$SPF")]
+    fn fixup_selected_record_ifr_offsets_panics_without_spf_container() {
+        let mut body = vec![0u8; 0x200];
+        fixup_selected_record_ifr_offsets(&mut body, &[0], 0, 0);
     }
 }

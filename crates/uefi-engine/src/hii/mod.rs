@@ -839,6 +839,14 @@ struct SpfAppendPlan {
     record_template: usize,
     ctrl_template: usize,
     counter: u32,
+    selected_records: Vec<usize>,
+}
+
+pub fn spf_record_resolves(pkg: &[u8], question_id: u16, ifr_offset: u32) -> bool {
+    let ifr = ifr_offset as usize;
+    ifr + 8 <= pkg.len()
+        && values::is_question_op(pkg[ifr])
+        && u16::from_le_bytes([pkg[ifr + 6], pkg[ifr + 7]]) == question_id
 }
 
 fn record_counter(body: &[u8], offset: usize) -> u32 {
@@ -851,6 +859,7 @@ fn record_counter(body: &[u8], offset: usize) -> u32 {
 
 fn plan_spf_append(
     body: &[u8],
+    pkg: &[u8],
     form_start: u32,
     form_end: u32,
     form_id: u16,
@@ -868,6 +877,11 @@ fn plan_spf_append(
         .max()
         .unwrap_or(0);
     let counter = (0x0001u32 << 16) | (1 + max_low);
+    let selected_records = records
+        .iter()
+        .filter(|r| spf_record_resolves(pkg, r.question_id, r.ifr_offset))
+        .map(|r| r.offset)
+        .collect();
     let count_at = base + spf::SPF_PAGE_COUNT_OFFSET;
     let count_bytes = body.get(count_at..count_at + 4).ok_or(HiiError::NotFound)?;
     let page_count = u32::from_le_bytes(count_bytes.try_into().unwrap()) as usize;
@@ -905,6 +919,7 @@ fn plan_spf_append(
         record_template: template.offset - base,
         ctrl_template,
         counter,
+        selected_records,
     })
 }
 
@@ -921,7 +936,7 @@ fn apply_spf_question(
     failsafe: Option<u64>,
 ) -> Result<usize, HiiError> {
     let body = &mut node.body;
-    spf::fixup_record_ifr_offsets(body, insert_at, delta);
+    spf::fixup_selected_record_ifr_offsets(body, &plan.selected_records, insert_at, delta);
     let optimal = optimized.map_or(0, |v| v as u8);
     let failsafe_v = failsafe.map_or(0, |v| v as u8);
     let rec_off = spf::append_question_record(
@@ -987,9 +1002,11 @@ pub fn add_question(
     };
     let sd_path = ami_patcher::discover_pfs_payload_path(image)?;
     let spf_plan = {
+        let pkg = question_forms_package(&image.root, &target, bare_channel)?;
         let body = node_at(&image.root, &sd_path).body.clone();
         plan_spf_append(
             &body,
+            pkg,
             span.form_op as u32,
             span.next_form_op as u32,
             form_id,
@@ -2408,8 +2425,8 @@ mod tests {
             r
         }
 
-        fn question_add_spf_body(rec0: &[u8], rec1: &[u8]) -> Vec<u8> {
-            let mut body = vec![0u8; 0x140];
+        fn question_add_spf_body(rec0: &[u8], rec1: &[u8], foreign: &[u8]) -> Vec<u8> {
+            let mut body = vec![0u8; 0x188];
             body[0x10..0x14].copy_from_slice(b"$SPF");
             body[0x14..0x18].copy_from_slice(&0x200u32.to_le_bytes());
             body[0x18..0x1C].copy_from_slice(&0x210u32.to_le_bytes());
@@ -2417,7 +2434,7 @@ mod tests {
                 .copy_from_slice(&[0x43, 0xD6, 0x87, 0xEC, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
             body[0x2C..0x30].copy_from_slice(&0x48u32.to_le_bytes());
             body[0x40..0x44].copy_from_slice(&0x94u32.to_le_bytes());
-            body[0x6C..0x70].copy_from_slice(&0x130u32.to_le_bytes());
+            body[0x6C..0x70].copy_from_slice(&0x178u32.to_le_bytes());
             body[0x70..0x74].copy_from_slice(&1u32.to_le_bytes());
             body[0x74..0x78].copy_from_slice(&0x68u32.to_le_bytes());
             body[0x78..0x98].copy_from_slice(&[0u8; 0x20]);
@@ -2426,12 +2443,13 @@ mod tests {
             body[0x98..0x9C].copy_from_slice(&0x94u32.to_le_bytes());
             body[0xA4..0xEC].copy_from_slice(rec0);
             body[0xEC..0x134].copy_from_slice(rec1);
-            body[0x134..0x136].copy_from_slice(&5u16.to_le_bytes());
-            body[0x136..0x138].copy_from_slice(&0x01A4u16.to_le_bytes());
-            body[0x138..0x13A].copy_from_slice(&0u16.to_le_bytes());
-            body[0x13A..0x13C].copy_from_slice(&0x77u16.to_le_bytes());
-            body[0x13C..0x13E].copy_from_slice(&0x88u16.to_le_bytes());
-            body[0x13E..0x140].copy_from_slice(&78u16.to_le_bytes());
+            body[0x134..0x17C].copy_from_slice(foreign);
+            body[0x17C..0x17E].copy_from_slice(&5u16.to_le_bytes());
+            body[0x17E..0x180].copy_from_slice(&0x01A4u16.to_le_bytes());
+            body[0x180..0x182].copy_from_slice(&0u16.to_le_bytes());
+            body[0x182..0x184].copy_from_slice(&0x77u16.to_le_bytes());
+            body[0x184..0x186].copy_from_slice(&0x88u16.to_le_bytes());
+            body[0x186..0x188].copy_from_slice(&78u16.to_le_bytes());
             body
         }
 
@@ -2462,7 +2480,8 @@ mod tests {
             let q10020 = crate::hii::form_hijack::locate_questions(pkg, 10020)[0].0;
             let rec0 = spf_record(0x3B, q10019 as u32, 0x0001_0066, 0x01A4, 0x01A3);
             let rec1 = spf_record(0x55, q10020 as u32, 0x0001_0066, 0x01A6, 0x01A5);
-            question_add_spf_body(&rec0, &rec1)
+            let foreign = spf_record(0x66, q10020 as u32, 0x0001_0066, 0x01A8, 0x01A7);
+            question_add_spf_body(&rec0, &rec1, &foreign)
         }
 
         fn sd_file_direct(spf_body: &[u8]) -> Vec<u8> {
@@ -2675,7 +2694,25 @@ mod tests {
             assert_eq!(
                 rec1_after.ifr_offset,
                 rec1_before.ifr_offset + delta1 as u32,
-                "records above the splice point shift by the op delta"
+                "Setup records above the splice point shift by the op delta"
+            );
+            let foreign_before = spf::scan_question_records(&spf_before)
+                .into_iter()
+                .find(|r| r.question_id == 0x66)
+                .unwrap();
+            let foreign_after = recs1.iter().find(|r| r.question_id == 0x66).unwrap();
+            assert_eq!(
+                foreign_after.offset, foreign_before.offset,
+                "foreign record must stay in place"
+            );
+            assert_eq!(
+                foreign_after.ifr_offset, foreign_before.ifr_offset,
+                "foreign (non-resolving) record ifr must not shift"
+            );
+            assert_eq!(
+                &spf_after1[foreign_before.offset..foreign_before.offset + spf::SPF_RECORD_SIZE],
+                &spf_before[foreign_before.offset..foreign_before.offset + spf::SPF_RECORD_SIZE],
+                "foreign record must stay byte-identical"
             );
             let pkg_after1 = pkg_of(&img, "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x10:0");
             let new_q_off = crate::hii::form_hijack::locate_questions(&pkg_after1, 10019)
@@ -2726,7 +2763,7 @@ mod tests {
             let spf_rebuilt = spf_leaf_of(&re).to_vec();
             let base_r = spf::container_start(&spf_rebuilt).unwrap();
             let recs_r = spf::scan_question_records(&spf_rebuilt);
-            assert_eq!(recs_r.len(), 3);
+            assert_eq!(recs_r.len(), 4);
             let new_r = recs_r.iter().find(|r| r.question_id == 0x200).unwrap();
             assert_eq!(new_r.optimal, 1);
             let slot_r = rec_u32(&spf_rebuilt, base_r, spf::SPF_PAGE_TABLE_OFFSET);
@@ -2761,7 +2798,17 @@ mod tests {
             assert_eq!(
                 rec1_2.ifr_offset,
                 rec1_after.ifr_offset + delta2 as u32,
-                "older records above the new splice shift again"
+                "older Setup records above the new splice shift again"
+            );
+            let foreign_2 = recs2.iter().find(|r| r.question_id == 0x66).unwrap();
+            assert_eq!(
+                foreign_2.ifr_offset, foreign_before.ifr_offset,
+                "foreign record must survive the second add untouched"
+            );
+            assert_eq!(
+                &spf_after2[foreign_before.offset..foreign_before.offset + spf::SPF_RECORD_SIZE],
+                &spf_before[foreign_before.offset..foreign_before.offset + spf::SPF_RECORD_SIZE],
+                "foreign record must stay byte-identical across both adds"
             );
             let slot2 = rec_u32(&spf_after2, base2, spf::SPF_PAGE_TABLE_OFFSET);
             let page2 = base2 + slot2 as usize;
