@@ -258,6 +258,7 @@ OUT_DIR="${1:?usage: build_serial.sh <out-dir>}"
 rm -rf /work/edk2
 mkdir -p /work/edk2
 git -C /src/edk2 archive --format=tar HEAD | tar -xf - -C /work/edk2
+mkdir -p /work/edk2/MdePkg/Library/MipiSysTLib/mipisyst/library/include
 cd /work/edk2
 make -C BaseTools -j"$(nproc)" APPLICATIONS='GenFfs GenFv GenSec GenFw'
 export WORKSPACE="$PWD"
@@ -281,7 +282,9 @@ ls -la "$OUT_DIR"
 
 Примечание к `set +u … set -u` вокруг source (rule-11, обнаружено при выполнении Step 4): опции шелла действуют и на sourced-код, а edksetup.sh/BaseEnv не рассчитаны на `set -u` — падают на unbound variable (`edksetup.sh:110: PYTHON_COMMAND: unbound variable`; следующим был бы `EDK_TOOLS_PATH`); BuildEnv вдобавок source-ит Conf-файлы с непредсказуемым содержимым. Гард `set +u`/`set -u` вокруг source закрывает всё сразу; после source строгий режим возвращается.
 
-Примечание к `APPLICATIONS='GenFfs GenFv GenSec GenFw'`: чекаут edk2 БЕЗ submodules (brotli не инициализирован), полный `make -C BaseTools` падает на BrotliCompress; нашему сетапу нужны только эти четыре генератора (+ общая либа Common). Если `build` пожалуется на отсутствие ещё какого-то C-инструмента (сообщение вида `command not found: …/BaseTools/Source/C/bin/…`) — добавить его в список APPLICATIONS (rule-11, зафиксировать какой и почему).
+Примечание к `APPLICATIONS='GenFfs GenFv GenSec GenFw'`: чекаут edk2 БЕЗ submodules (brotli не инициализирован), полный `make -C BaseTools` падает на BrotliCompress; нашему сетапу нужны только эти четыре генератора (+ общая либа Common). Если `build` пожалуется на отсутствие ещё какого-то C-инструмента (сообщение вида `command not found: …/BaseTools/Source/C/bin/…`) — добавить его в список APPLICATIONS (rule-11, зафиксировать какой и почему). Побочный эффект: дефолт-цель GNUmakefile прогоняет BaseTools/Tests (301 python-тест), 2 из них падают (TianoCompress не в APPLICATIONS) — не фатально (make выходит 0), шум известен и допустим.
+
+Примечание к `mkdir -p … MipiSysTLib/mipisyst/library/include` (rule-11, обнаружено при выполнении Step 4): MdePkg.dec декларирует [Includes]-путь внутрь подмодуля mipisyst; парсер DEC валидирует существование путей при разборе, а в git-archive-копии подмодулей нет вовсе → `MdePkg.dec(33): error 000E: Library/MipiSysTLib/mipisyst/library/include is not found`. Ни один из наших модулей MIPI-заголовки не включает (DebugLib — Null), поэтому пустого каталога достаточно; остальные [Includes] MdePkg/MdeModulePkg существуют в чекауте без подмодулей (проверено сканированием обоих .dec).
 
 - [ ] **Step 4: Запустить сборку**
 
