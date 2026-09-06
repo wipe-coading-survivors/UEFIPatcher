@@ -130,6 +130,9 @@ baud применяется через `SerialIo->SetAttributes` после по
   формсетах в пакете; (3) NotFound на несуществующую форму; (4) InvalidSchema
   на пустые ops. Тестовый хелпер — синт-пакет из существующих тестов
   `insert_form_into_package` (ifr.rs:591+), переиспользовать `opcode()`.
+  Правка по факту (dfbddc1): имя `two_form_package` уже занято в тестах
+  (формы 901/902) — старый хелпер переименован в `two_form_raw_package`,
+  новое имя отдано синт-пакету 100/200 из теста выше.
 
 ```rust
 #[test]
@@ -151,7 +154,9 @@ fn splice_question_ops_inserts_before_end_form() {
 - [ ] **Step 3:** Реализация `splice_question_ops`: повторить обход
   `formset_at`/`insert_form_into_package` (ifr.rs:216) для нахождения границ
   формы (позиция END_FORM = конец scope-цепочки формы `form_id` внутри
-  formset_idx); `Vec::splice(insert_at..insert_at, ops.iter().copied())`.
+  formset_idx); `Vec::splice(insert_at..insert_at, ops.iter().copied())`;
+  обновить 3-байтный заголовок длины форм-пакета по образцу
+  `insert_form_into_package` (без него выросший пакет не парсится).
 - [ ] **Step 4:** `cargo test -p uefi-engine ifr::` — зелёные; `cargo clippy -p uefi-engine -- -D warnings`; `cargo fmt --all -- --check`.
 - [ ] **Step 5:** Commit: `feat(uefi-engine): ifr splice_question_ops — insert question opcodes before target form END`.
 
