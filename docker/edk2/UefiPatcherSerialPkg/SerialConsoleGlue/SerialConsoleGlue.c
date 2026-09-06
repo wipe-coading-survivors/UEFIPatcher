@@ -43,6 +43,10 @@ STATIC TERMINAL_DEVICE_PATH mTerminalPath = {
 
 STATIC CONST EFI_GUID *mTerminalGuid    = NULL;
 STATIC EFI_EVENT       mReadyToBootEvent = NULL;
+STATIC EFI_EVENT       mSerialIoNotifyEvent = NULL;
+STATIC VOID            *mSerialIoRegistration = NULL;
+STATIC BOOLEAN         mAttached = FALSE;
+STATIC UINT8           mBaudIndex = 0;
 
 STATIC
 VOID
@@ -259,11 +263,10 @@ OnReadyToBoot (
   }
 }
 
-EFI_STATUS
-EFIAPI
-SerialConsoleGlueEntry (
-  IN EFI_HANDLE        ImageHandle,
-  IN EFI_SYSTEM_TABLE  *SystemTable
+STATIC
+VOID
+AttachSerialConsole (
+  VOID
   )
 {
   EFI_STATUS                        Status;
@@ -277,16 +280,10 @@ SerialConsoleGlueEntry (
   EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL   *TextOut;
   UINTN                             Count;
   UINTN                             Index;
-  UINT8                             BaudIndex;
-  UINT8                             TerminalIndex;
-  UINT8                             Enable;
 
-  ReadConfigBytes (&BaudIndex, &TerminalIndex, &Enable);
-  if (Enable == 0) {
-    return EFI_SUCCESS;
+  if (mAttached) {
+    return;
   }
-  mTerminalGuid = kTerminalGuidMap[(TerminalIndex > 3) ? 3 : TerminalIndex];
-  CopyGuid (&mTerminalPath.Vendor.Guid, mTerminalGuid);
 
   Handles = NULL;
   Status = gBS->LocateHandleBuffer (
@@ -297,16 +294,17 @@ SerialConsoleGlueEntry (
                   &Handles
                   );
   if (EFI_ERROR (Status) || (Handles == NULL) || (Count == 0)) {
-    return EFI_NOT_FOUND;
+    return;
   }
 
   SerialHandle = Handles[0];
   SerialIo = NULL;
   if (!EFI_ERROR (gBS->HandleProtocol (SerialHandle, &gEfiSerialIoProtocolGuid, (VOID **)&SerialIo)) &&
-      (SerialIo != NULL)) {
+      (SerialIo != NULL))
+  {
     (VOID)SerialIo->SetAttributes (
                       SerialIo,
-                      kBaudMap[(BaudIndex > 4) ? 4 : BaudIndex],
+                      kBaudMap[(mBaudIndex > 4) ? 4 : mBaudIndex],
                       0,
                       0,
                       NoParity,
@@ -329,17 +327,17 @@ SerialConsoleGlueEntry (
     Status = gBS->HandleProtocol (SerialHandle, &gEfiDevicePathProtocolGuid, (VOID **)&Path);
   }
   if (EFI_ERROR (Status) || (Path == NULL)) {
-    return EFI_NOT_FOUND;
+    return;
   }
   ConsolePath = DuplicateDevicePath (Path);
   if (ConsolePath == NULL) {
-    return EFI_OUT_OF_RESOURCES;
+    return;
   }
   if (Child == NULL) {
     Path = AppendDevicePathNode (ConsolePath, (EFI_DEVICE_PATH_PROTOCOL *)&mTerminalPath);
     FreePool (ConsolePath);
     if (Path == NULL) {
-      return EFI_OUT_OF_RESOURCES;
+      return;
     }
     ConsolePath = Path;
   }
@@ -351,20 +349,73 @@ SerialConsoleGlueEntry (
 
   Child = FindTerminalChild (mTerminalGuid);
   if ((Child != NULL) && (ConOutStatus == EFI_SUCCESS)) {
+    mAttached = TRUE;
     TextOut = NULL;
     if (!EFI_ERROR (gBS->HandleProtocol (Child, &gEfiSimpleTextOutProtocolGuid, (VOID **)&TextOut)) &&
-        (TextOut != NULL)) {
+        (TextOut != NULL))
+    {
       (VOID)TextOut->OutputString (TextOut, GLUE_MARKER_BOOT);
     }
   }
+}
+
+STATIC
+VOID
+EFIAPI
+OnSerialIoInstalled (
+  IN EFI_EVENT  Event,
+  IN VOID       *Context
+  )
+{
+  AttachSerialConsole ();
+}
+
+EFI_STATUS
+EFIAPI
+SerialConsoleGlueEntry (
+  IN EFI_HANDLE        ImageHandle,
+  IN EFI_SYSTEM_TABLE  *SystemTable
+  )
+{
+  EFI_STATUS  Status;
+  UINT8       BaudIndex;
+  UINT8       TerminalIndex;
+  UINT8       Enable;
+
+  ReadConfigBytes (&BaudIndex, &TerminalIndex, &Enable);
+  if (Enable == 0) {
+    return EFI_SUCCESS;
+  }
+  mBaudIndex = BaudIndex;
+  mTerminalGuid = kTerminalGuidMap[(TerminalIndex > 3) ? 3 : TerminalIndex];
+  CopyGuid (&mTerminalPath.Vendor.Guid, mTerminalGuid);
 
   (VOID)gBS->CreateEventEx (
-                  EVT_NOTIFY_SIGNAL,
-                  TPL_CALLBACK,
-                  OnReadyToBoot,
-                  NULL,
-                  &gEfiEventReadyToBootGuid,
-                  &mReadyToBootEvent
+             EVT_NOTIFY_SIGNAL,
+             TPL_CALLBACK,
+             OnReadyToBoot,
+             NULL,
+             &gEfiEventReadyToBootGuid,
+             &mReadyToBootEvent
+             );
+
+  AttachSerialConsole ();
+
+  if (!mAttached) {
+    Status = gBS->CreateEvent (
+                    EVT_NOTIFY_SIGNAL,
+                    TPL_CALLBACK,
+                    OnSerialIoInstalled,
+                    NULL,
+                    &mSerialIoNotifyEvent
+                    );
+    if (!EFI_ERROR (Status)) {
+      (VOID)gBS->RegisterProtocolNotify (
+                  &gEfiSerialIoProtocolGuid,
+                  mSerialIoNotifyEvent,
+                  &mSerialIoRegistration
                   );
+    }
+  }
   return EFI_SUCCESS;
 }
