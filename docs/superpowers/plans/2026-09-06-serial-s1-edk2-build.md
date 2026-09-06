@@ -594,7 +594,7 @@ OnReadyToBoot (
   )
 {
   EFI_HANDLE                    Child;
-  EFI_SIMPLE_TEXT_OUT_PROTOCOL  *TextOut;
+  EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL  *TextOut;
 
   Child = FindTerminalChild ();
   if (Child == NULL) {
@@ -620,7 +620,7 @@ SerialConsoleGlueEntry (
   EFI_HANDLE                    Child;
   EFI_DEVICE_PATH_PROTOCOL      *Path;
   EFI_DEVICE_PATH_PROTOCOL      *ConsolePath;
-  EFI_SIMPLE_TEXT_OUT_PROTOCOL  *TextOut;
+  EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL  *TextOut;
   UINTN                         Count;
   UINTN                         Index;
 
