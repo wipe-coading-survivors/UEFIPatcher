@@ -1,0 +1,264 @@
+syntax = "proto3";
+package engine;
+
+service EngineService {
+  rpc SessionCreate(SessionCreateRequest)   returns (SessionCreateResponse);
+  rpc SessionDestroy(SessionDestroyRequest) returns (Empty);
+  rpc SessionsList(SessionsListRequest)     returns (SessionsListResponse);
+
+  rpc ImageOpen(ImageOpenRequest)     returns (ImageOpenResponse);
+  rpc ImageClose(ImageCloseRequest)   returns (Empty);
+  rpc ImagesList(ImagesListRequest)   returns (ImagesListResponse);
+  rpc ImageSave(ImageSaveRequest)     returns (Empty);
+  rpc ImageStatus(ImageStatusRequest) returns (ImageStatusResponse);
+
+  rpc ImageNodesList(ImageNodesListRequest)      returns (ImageNodesResponse);
+  rpc ImageNodesSearch(ImageNodesSearchRequest)  returns (ImageNodesResponse);
+  rpc ImageNodeInsert(ImageNodeInsertRequest)    returns (ImageNodeResponse);
+  rpc ImageNodeRemove(ImageNodeRemoveRequest)    returns (Empty);
+  rpc ImageNodeReplace(ImageNodeReplaceRequest)  returns (ImageNodeResponse);
+  rpc ImageNodeRebuild(ImageNodeRebuildRequest)  returns (Empty);
+  rpc ImageNodeExtract(ImageNodeExtractRequest)  returns (ImageNodeExtractResponse);
+
+  rpc ArtifactsList(ArtifactsListRequest)    returns (ArtifactsListResponse);
+  rpc ArtifactImport(ArtifactImportRequest) returns (ArtifactImportResponse);
+  rpc ArtifactExport(ArtifactExportRequest) returns (Empty);
+
+  rpc HiiListForms(HiiListFormsRequest)                 returns (HiiListFormsResponse);
+  rpc HiiSetFormVisibility(HiiSetFormVisibilityRequest) returns (Empty);
+  rpc HiiListStrings(HiiListStringsRequest)             returns (HiiListStringsResponse);
+  rpc HiiFormSetAdd(HiiFormSetAddRequest)               returns (HiiFormSetAddResponse);
+  rpc HiiFormAdd(HiiFormAddRequest)                     returns (HiiFormAddResponse);
+  rpc HiiFormHijack(HiiFormHijackRequest)               returns (HiiFormHijackResponse);
+  rpc HiiGatesList(HiiGatesListRequest)                 returns (HiiGatesListResponse);
+  rpc HiiUnlock(HiiUnlockRequest)                       returns (HiiUnlockResponse);
+  rpc HiiQuestionInfo(HiiQuestionInfoRequest)           returns (HiiQuestionInfoResponse);
+  rpc HiiSetValue(HiiSetValueRequest)                   returns (HiiSetValueResponse);
+}
+
+enum ImageMode { READ = 0; WRITE = 1; }
+enum InsertMode { INTO = 0; BEFORE = 1; AFTER = 2; }
+enum SearchMode { NAME = 0; UTF8 = 1; UTF16 = 2; BYTES = 3; }
+
+message SessionCreateRequest  { string name = 1; }
+message SessionCreateResponse { string session_id = 1; string token = 2; }
+message SessionDestroyRequest { string session_id = 1; }
+message SessionsListRequest   {}
+message SessionInfo { string session_id = 1; string name = 2; int64 created_at = 3; int64 last_activity = 4; }
+message SessionsListResponse  { repeated SessionInfo sessions = 1; }
+
+message ImageOpenRequest {
+  string session_id = 1;
+  string path = 2;
+  ImageMode mode = 3;
+  string name = 4;
+}
+message ImageOpenResponse {
+  string image_id = 1;
+  string root_guid = 2;
+  string name = 3;
+}
+
+message ImageInfo {
+  string image_id = 1;
+  string name = 2;
+  string path = 3;
+  ImageMode mode = 4;
+  uint64 size = 5;
+  int64 created_at = 6;
+  int64 last_activity = 7;
+}
+message ImagesListRequest  { string session_id = 1; }
+message ImagesListResponse { repeated ImageInfo images = 1; }
+
+message ImageCloseRequest { string image_id = 1; }
+
+message ImageStatusRequest  { string image_id = 1; }
+message ImageStatusResponse { ImageInfo info = 1; }
+
+message ImageSaveRequest { string image_id = 1; string output_path = 2; }
+
+message ImageNodesListRequest { string image_id = 1; string filter = 2; }
+message Node {
+  string path = 1;
+  uint32 type = 2;
+  uint32 subtype = 3;
+  string guid = 4;
+  uint64 offset = 5;
+  uint64 size = 6;
+  string name = 7;
+  uint32 action = 8;
+}
+message ImageNodesResponse { repeated Node nodes = 1; }
+
+message ImageNodesSearchRequest {
+  string image_id = 1;
+  string query = 2;
+  repeated SearchMode modes = 3;
+  uint32 limit = 4;
+}
+
+message ImageNodeInsertRequest {
+  string image_id = 1;
+  string target = 2;
+  string ffs_path = 3;
+  string artifact_id = 4;
+  InsertMode mode = 5;
+}
+message ImageNodeResponse { string item_id = 1; }
+
+message ImageNodeRemoveRequest { string image_id = 1; string target = 2; }
+
+message ImageNodeReplaceRequest {
+  string image_id = 1;
+  string target = 2;
+  string ffs_path = 3;
+  string artifact_id = 4;
+  bool body_only = 5;
+}
+
+message ImageNodeRebuildRequest { string image_id = 1; string target = 2; }
+
+message ImageNodeExtractRequest {
+  string image_id = 1;
+  string target = 2;
+  bool body_only = 3;
+}
+message ImageNodeExtractResponse { string artifact_id = 1; }
+
+message ArtifactsListRequest { string session_id = 1; }
+message ArtifactInfo {
+  string artifact_id = 1;
+  string kind = 2;
+  uint64 size = 3;
+  int64 created_at = 4;
+  string source = 5;
+}
+message ArtifactsListResponse { repeated ArtifactInfo artifacts = 1; }
+
+message ArtifactImportRequest {
+  string session_id = 1;
+  string path = 2;
+}
+message ArtifactImportResponse { string artifact_id = 1; }
+
+message ArtifactExportRequest {
+  string artifact_id = 1;
+  string output_path = 2;
+}
+
+message HiiListFormsRequest { string image_id = 1; }
+message FormInfo {
+  string form_id = 1;
+  string formset_guid = 2;
+  uint32 form_id_ifr = 3;
+  string title = 4;
+  bool visible = 5;
+}
+message HiiListFormsResponse { repeated FormInfo forms = 1; }
+
+message HiiSetFormVisibilityRequest {
+  string image_id = 1;
+  string item_id = 2;
+  bool visible = 3;
+}
+
+message HiiListStringsRequest { string image_id = 1; }
+message StringInfo {
+  string language = 1;
+  uint32 string_id = 2;
+  string text = 3;
+}
+message HiiListStringsResponse { repeated StringInfo strings = 1; }
+
+message HiiFormSetAddRequest {
+  string image_id = 1;
+  string schema_json = 2;
+  string target_ffs_guid = 3;
+}
+message HiiFormSetAddResponse {
+  string new_ffs_id = 1;
+  repeated uint32 inserted_form_ids = 2;
+  map<string, uint32> string_ids = 3;
+}
+
+message HiiFormAddRequest {
+  string image_id = 1;
+  string target = 2;
+  string schema_json = 3;
+}
+message HiiFormAddResponse {
+  repeated uint32 inserted_form_ids = 1;
+  map<string, uint32> string_ids = 2;
+}
+
+message HiiHelpControlEdit {
+  uint32 question_id = 1;
+  uint32 offset = 2;
+  uint32 old_string_id = 3;
+  uint32 new_string_id = 4;
+}
+
+message HiiHelpRecordEdit {
+  uint32 question_id = 1;
+  uint32 record_offset = 2;
+  uint32 old_string_id = 3;
+  uint32 new_string_id = 4;
+}
+message HiiFormHijackRequest {
+  string image_id = 1;
+  string target = 2;
+  string schema_json = 3;
+  string setupdata_guid = 4;
+}
+message HiiFormHijackResponse {
+  map<string, uint32> string_ids = 1;
+  reserved 2;
+  uint32 form_ifr_start = 3;
+  uint32 form_ifr_end = 4;
+  repeated string unlock_flips = 5;
+  repeated HiiHelpControlEdit help_controls = 6;
+  repeated HiiHelpRecordEdit help_records = 7;
+}
+
+message GateInfo {
+  string gate_kind = 1;
+  string wraps = 2;
+  uint32 form_id = 3;
+  uint32 host_form_id = 4;
+  uint32 question_id = 5;
+  string expression = 6;
+  bool   flippable = 7;
+  string flip = 8;
+  uint32 scope_offset = 9;
+}
+
+message HiiGatesListRequest  { string image_id = 1; string item_id = 2; }
+message HiiGatesListResponse { repeated GateInfo gates = 1; }
+
+message HiiUnlockRequest     { string image_id = 1; string item_id = 2; }
+message HiiUnlockResponse    { repeated GateInfo gates = 1; repeated string applied_flips = 2; }
+
+message VarStoreInfo { uint32 id = 1; string guid = 2; uint32 size = 3; string name = 4; }
+message OptionEntry  { uint32 string_id = 1; uint64 value = 2; uint32 flags = 3; }
+message DefaultEntry { uint32 default_id = 1; uint32 type = 2; uint64 value = 3; }
+message QuestionInfo {
+  uint32 form_id = 1;
+  uint32 question_id = 2;
+  string kind = 3;
+  uint32 var_store_id = 4;
+  VarStoreInfo varstore = 5;
+  uint32 var_offset = 6;
+  uint32 width = 7;
+  uint64 min = 8;
+  uint64 max = 9;
+  uint64 step = 10;
+  repeated OptionEntry options = 11;
+  repeated DefaultEntry defaults = 12;
+}
+message HiiQuestionInfoRequest  { string image_id = 1; string item_id = 2; }
+message HiiQuestionInfoResponse { QuestionInfo question = 1; }
+message HiiSetValueRequest      { string image_id = 1; string item_id = 2; uint64 value = 3; }
+message HiiSetValueResponse     { QuestionInfo question = 1; repeated string applied_flips = 2; repeated string stores = 3; }
+
+message Empty {}

@@ -534,7 +534,7 @@ git commit -m "feat: base types using uguid::Guid, FfsNode, Image, Target"
 **Interfaces:**
 - Consumes: `types::*`
 - Produces:
-  - Константы типов секций: `EFI_SECTION_COMPRESSION=0x01`, `EFI_SECTION_GUID_DEFINED=0x02`, `EFI_SECTION_PE32=0x10`, `EFI_SECTION_RAW=0x19`, `EFI_SECTION_UI=0x15`, `EFI_SECTION_VERSION=0x16`, `EFI_SECTION_FV_IMAGE=0x17`, `EFI_SECTION_FREEFORM_SUBTYPE_GUID=0x18`, `EFI_SECTION_DEPEX=0x1C`, `EFI_SECTION_TE=0x12`
+  - Константы типов секций: `EFI_SECTION_COMPRESSION=0x01`, `EFI_SECTION_GUID_DEFINED=0x02`, `EFI_SECTION_PE32=0x10`, `EFI_SECTION_RAW=0x19`, `EFI_SECTION_UI=0x15`, `EFI_SECTION_VERSION=0x14` (FIXME legacy bug: plan originally said 0x16 but per EDK2 ffs.h:481 EFI_SECTION_VERSION=0x14 and EFI_SECTION_COMPATIBILITY16=0x16 — value 0x16 was COMPATIBILITY16 mislabelled as VERSION; corrected in cycle 6 Task 6 by mapping to uefi_common::pi::SectionType::Version which carries the right 0x14), `EFI_SECTION_FV_IMAGE=0x17`, `EFI_SECTION_FREEFORM_SUBTYPE_GUID=0x18`, `EFI_SECTION_DEPEX=0x1C`, `EFI_SECTION_TE=0x12`
   - Константы: `EFI_FVH_SIGNATURE = 0x4856465F` ("_FVH"), `EFI_FVB2_ERASE_POLARITY = 0x00000800`
   - Константы GUID-ов: `TIANO_GUID`, `LZMA_GUID`, `LZMAF86_GUID`, `CRC32_GUID`
   - Структуры-парсеры: `parse_ffs_file_header(buf, offset) -> (size, guid, type, revision, attributes)`, `parse_section_header(buf, offset) -> (size, type)`
@@ -625,7 +625,7 @@ pub const EFI_SECTION_GUID_DEFINED: u8 = 0x02;
 pub const EFI_SECTION_PE32: u8 = 0x10;
 pub const EFI_SECTION_TE: u8 = 0x12;
 pub const EFI_SECTION_UI: u8 = 0x15;
-pub const EFI_SECTION_VERSION: u8 = 0x16;
+pub const EFI_SECTION_VERSION: u8 = 0x14; // FIXME legacy bug: was 0x16 (COMPATIBILITY16) — EDK2 ffs.h:481 says EFI_SECTION_VERSION=0x14; fixed in cycle 6 Task 6 via SectionType::Version enum
 pub const EFI_SECTION_FV_IMAGE: u8 = 0x17;
 pub const EFI_SECTION_FREEFORM_SUBTYPE_GUID: u8 = 0x18;
 pub const EFI_SECTION_RAW: u8 = 0x19;
@@ -635,16 +635,22 @@ pub const EFI_FVH_SIGNATURE: u32 = 0x4856465F;
 pub const EFI_FVB2_ERASE_POLARITY: u32 = 0x00000800;
 
 pub fn tiano_guid() -> Guid {
-    Guid::try_parse("a31280ad-0411-42b8-aa09-c484a2906fdc").unwrap()
+    Guid::try_parse("a31280ad-481e-41b6-95e8-127f4c984779").unwrap()
 }
 pub fn lzma_guid() -> Guid {
-    Guid::try_parse("ee4e5ace-8c72-4ae3-8bfc-e1f3c1a08c14").unwrap()
+    Guid::try_parse("ee4e5898-3914-4259-9d6e-dc7bd79403cf").unwrap()
+}
+pub fn lzma_hp_guid() -> Guid {
+    Guid::try_parse("0ed85e23-f253-413f-a03c-901987b04397").unwrap()
+}
+pub fn lzma_ms_guid() -> Guid {
+    Guid::try_parse("bd9921ea-ed91-404a-8b2f-b4d724747c8c").unwrap()
 }
 pub fn lzmaf86_guid() -> Guid {
-    Guid::try_parse("d42ae6bd-1352-4b12-95a0-c1d41df29e0c").unwrap()
+    Guid::try_parse("d42ae6bd-1352-4bfb-909a-ca72a6eae889").unwrap()
 }
 pub fn crc32_guid() -> Guid {
-    Guid::try_parse("fcdefeee-3598-4908-b337-78f59f8f1a8e").unwrap()
+    Guid::try_parse("fc1bcdb0-7d31-49aa-936a-a4600d9dd083").unwrap()
 }
 
 pub fn calculate_checksum8(data: &[u8]) -> u8 {
@@ -881,7 +887,9 @@ git commit -m "feat: add FirmwareVolume parser"
 **Interfaces:**
 - Consumes: `types::*`, `ffs::*`, `parser::ParserError`, `parser::section::parse_sections` (Task 6)
 - Produces: `pub fn parse_file(buf: &[u8], offset: u32, erase_polarity: u8, revision: u8) -> Result<FfsNode, ParserError>`
-- Референс: `../refs/UEFITool-ai-fork/common/ffsparser.cpp` `parseFileHeader`/`parseFileBody`. Заголовок `EFI_FFS_FILE_HEADER` 24 байта (FFSv2) или 32 байта (FFSv3 large / Lenovo large). GUID из первых 16 байт. Checksum проверяется: `calculate_checksum8(header) == 0`. Tail для revision 1 — 2 байта `~TailReference`. После заголовка — тело (body), парсится `parse_sections`.
+- Референс: `../refs/UEFITool-ai-fork/common/ffsparser.cpp` `parseFileHeader`/`parseFileBody`. Заголовок `EFI_FFS_FILE_HEADER` (layout — `../refs/UEFITool-ai-fork/common/ffs.h:270-277`): `Name@0(16) | IntegrityCheck@16(2) | **Type@18(1)** | **Attributes@19(1)** | Size@20(3) | State@23`. FFSv2 = 24 байта; FFSv3 large (`EFI_FFS_FILE_HEADER2`, 32 байта, Size=0xFFFFFF → ExtendedSize@24 u64) и Lenovo large (ExtendedSize@24 u32) — ffs.h:280-299. GUID из первых 16 байт. Checksum (валидация отложена на поздний цикл): header-checksum в `IntegrityCheck.Checksum.Header@16`, `calculate_checksum8(header) == 0` при FFS_ATTRIB_CHECKSUM. Tail для revision 1 — 2 байта `~TailReference`. После заголовка — тело (body), парсится `parse_sections` (Task 6).
+
+> **NOTE (исправление плана, 2026-07-25):** исходный Step 1/Step 3 читал `Type@16` и `Attributes@17` — это позиции `EFI_FFS_INTEGRITY_CHECK` (union Header/File @16-17, ffs.h:261-268), а не Type/Attributes. Тест-фикстура и impl были согласованы между собой (оба писали Type в IntegrityCheck.Header), поэтому тест прошёл бы формально, но на реальном образе `node.subtype` и атрибуты считывались бы неправильно (Type брался из checksum-байта). Смещения исправлены на канонические Type@18/Attributes@19. Заодно удалён неиспользуемый read `attributes` (не хранится в `FileParsingData`; будет добавлен когда понадобится для checksum/alignment). Причина: `ffs.h:270-277`.
 
 - [ ] **Step 1: Написать failing test**
 
@@ -894,18 +902,13 @@ mod tests {
     fn make_minimal_ffs() -> Vec<u8> {
         let mut buf = vec![0u8; 48];
         let guid = Guid::try_parse("5C60F367-A505-419A-859E-2A4FF6CA6FE5").unwrap();
-        let gb = guid.to_bytes();
-        buf[0..16].copy_from_slice(&gb);
-        buf[16] = 0x01; // type: FFSv2 RAW
-        buf[17] = 0x02; // attributes
-        buf[18] = 0x00; // size[0]
-        buf[19] = 0x00; // size[1]
-        buf[20] = size_to_uint24(48)[0];
-        buf[21] = size_to_uint24(48)[1];
-        buf[22] = size_to_uint24(48)[2];
-        let cs = calculate_checksum8(&buf[0..23]);
-        buf[23] = cs;
-        buf[24..48].copy_from_slice(&[0xFF; 24]);
+        buf[0..16].copy_from_slice(&guid.to_bytes());
+        // IntegrityCheck @16-17 — нули (валидация checksum отложена)
+        buf[18] = 0x01; // Type: RAW (canonical offset)
+        buf[19] = 0x02; // Attributes (canonical offset)
+        buf[20..23].copy_from_slice(&size_to_uint24(48)); // Size[3] @20
+        // State @23 — 0
+        buf[24..48].copy_from_slice(&[0xFF; 24]); // body
         buf
     }
 
@@ -955,9 +958,9 @@ pub fn guid_to_bytes(g: &Guid) -> [u8; 16] {
     g.to_bytes()
 }
 
-pub fn guid_from_bytes(b: &[u8]) -> Result<Guid, ()> {
-    let arr: [u8; 16] = b.get(..16).ok_or(())?.try_into().unwrap();
-    Ok(Guid::from_bytes(arr))
+pub fn guid_from_bytes(b: &[u8]) -> Option<Guid> {
+    let arr: [u8; 16] = b.get(..16)?.try_into().unwrap();
+    Some(Guid::from_bytes(arr))
 }
 
 pub fn parse_file(buf: &[u8], offset: u32, erase_polarity: u8, revision: u8) -> Result<FfsNode, ParserError> {
@@ -966,9 +969,8 @@ pub fn parse_file(buf: &[u8], offset: u32, erase_polarity: u8, revision: u8) -> 
     let large = is_large_ffs(&buf[off..]);
     let hdr_len = if large { 32 } else { 24 };
     if off + hdr_len > buf.len() { return Err(ParserError::EndOfBuffer); }
-    let guid = guid_from_bytes(&buf[off..off+16]).map_err(|_| ParserError::InvalidHeader("guid".into()))?;
-    let ftype = buf[off+16];
-    let attributes = buf[off+17];
+    let guid = guid_from_bytes(&buf[off..off+16]).ok_or_else(|| ParserError::InvalidHeader("guid".into()))?;
+    let ftype = buf[off+18];
     let size = ffs_file_size(&buf[off..]);
     let total = size as usize;
     if off + total > buf.len() { return Err(ParserError::EndOfBuffer); }
@@ -1089,8 +1091,8 @@ pub fn parse_section(buf: &[u8], offset: u32) -> Result<FfsNode, ParserError> {
     let body = buf[off+hdr_len..off+size].to_vec();
     let parsing_data = match stype {
         EFI_SECTION_GUID_DEFINED if body.len() >= 20 => {
-            let guid = crate::parser::file::guid_from_bytes(&body[0..16]).map_err(|_| ParserError::InvalidHeader("guid".into()))?;
-            let data_offset = u16::from_le_bytes([body[16], body[17]]) as usize;
+            let guid = crate::parser::file::guid_from_bytes(&body[0..16]).ok_or_else(|| ParserError::InvalidHeader("guid".into()))?;
+            let _data_offset = u16::from_le_bytes([body[16], body[17]]) as usize;
             let _attributes = u16::from_le_bytes([body[18], body[19]]);
             ParsingData::GuidedSection(GuidedSectionParsingData { guid, dictionary_size: 0 })
         }
@@ -1106,13 +1108,9 @@ pub fn parse_section(buf: &[u8], offset: u32) -> Result<FfsNode, ParserError> {
         }
         _ => ParsingData::None,
     };
-    let mut children = vec![];
-    if stype == EFI_SECTION_COMPRESSION || stype == EFI_SECTION_GUID_DEFINED {
-        // Декомпрессия и рекурсивный парсинг — в Task 7 (decompress).
-        // Пока: children пустые, body as-is.
-    } else {
-        // leaf section
-    }
+    // Декомпрессия compressed/guided-секций и рекурсивный парсинг — в Task 7.
+    // Пока: children пустые, body as-is.
+    let children = vec![];
     Ok(FfsNode {
         guid: None,
         node_type: FfsType::Section,
@@ -1178,6 +1176,11 @@ git commit -m "feat: add section parser (raw, pe32, guid-defined, compression st
   - `enum DecompressError { Unsupported, Corrupted }`
 - Алгоритмы: `EFI_NOT_COMPRESSED=0`, `EFI_STANDARD_COMPRESSION=1` (Tiano/LZSS), `EFI_LZMA_COMPRESSION=2`. Для GUIDed-секций алгоритм определяется по GUID: `TIANO_GUID` → Tiano, `LZMA_GUID`/`LZMAF86_GUID` → LZMA.
 - Референс: `../refs/UEFITool-ai-fork/common/ffsparser.cpp` `decompress`. Tiano — LZSS-вариант EDK2. LZMA — через `LzmaDecode`.
+
+> **NOTE (исправление плана, 2026-07-25):** исходный Task 7 содержал три дефекта, выявленные валидацией на реальном образе `refs/fw/HNX99TF_200525_original_E5C88C6F.bin`:
+> 1. **Неверные well-known GUIDs** в Task 3 (`ee4e5ace-...`, `a31280ad-0411-...` и т.д.) — выдуманные значения, не встречающиеся в реальном UEFI. На образе 0 совпадений. Исправлены на канонические EDK2 (`ee4e5898-3914-4259-9d6e-dc7bd79403cf` LZMA, `a31280ad-481e-41b6-95e8-127f4c984779` Tiano, `d42ae6bd-1352-4bfb-909a-ca72a6eae889` LZMAF86, `fc1bcdb0-7d31-49aa-936a-a4600d9dd083` CRC32) + добавлены LZMA_HP/LZMA_MS. После исправнения: 207 LZMA-секций в образе. Референс: `../refs/edk2/MdeModulePkg/Include/Guid/LzmaDecompress.h`, `../refs/UEFITool-ai-fork/common/ffs.cpp:190-200`.
+> 2. **Несуществующий API lzma-rs**: код `lzma_rs::lzma_decompressor().decompress(input, output, &props)` (3 аргумента, явные props) не компилируется — в lzma-rs 0.3 доступна только `lzma_rs::lzma_decompress(input: &mut BufRead, output: &mut Write)` без props. При этом UEFI LZMA-поток — это стандартный LZMA1 «alone» (5 байт props + 8 байт LE u64 uncompressed-size + данные), который lzma-rs читает целиком. Реализация: `lzma_rs::lzma_decompress(&mut Cursor::new(data), &mut output)`.
+> 3. **Отсутствовала декомпрессия GUIDed-секций**: Step 4 подключал только `EFI_SECTION_COMPRESSION`, но реальный образ использует исключительно GUIDed-секции с LZMA GUID (207 шт., 0 `EFI_SECTION_COMPRESSION`). Добавлена wiring-логика для `EFI_SECTION_GUID_DEFINED` по GUID (LZMA/Tiano) с извлечением payload из `body[data_offset-4..]` (DataOffset — из заголовка GUIDed-секции, `body[16..18]` LE u16; measured from section start incl. 4-байтный общий заголовок) и заполнением `dictionary_size` из props[1..5]. Результат: `real_image_decompresses_lzma_sections` — все 207 секций декомпрессируются, восстановлено 193 PE32-модуля.
 
 - [ ] **Step 1: Написать failing test для not-compressed**
 
@@ -1305,6 +1308,11 @@ git commit -m "feat: add decompression (LZMA via lzma-rs, Tiano stub)"
   - `pub fn list_items(node: &FfsNode, filter: Option<&str>) -> Vec<Item>`
 - `parse_image` ищет сигнатуру `_FVH` через весь буфер, парсит все volumes, соединяет в один root `FfsType::Image`.
 
+> **NOTE (исправление плана, 2026-07-25):** исходный Task 8 содержал три дефекта, выявленные валидацией на реальном образе `refs/fw/HNX99TF_200525_original_E5C88C6F.bin`:
+> 1. **`vol_size` читался из неверного offset 20** (`u32::from_le_bytes(buf[off+20..off+24])`) — это середина `FileSystemGuid`. Канонический `FvLength` (u64) находится @32 (см. исправление Task 4). На реальном образе offset 20 даёт garbage `0x4f1c8a3d` вместо `0x40000` (FV @0x800000), что ломает весь обход образа (`off += vol_size` улетает за буфер). Исправление: `vol_size = vol.header.len() + vol.body.len()` — `parse_volume` уже хранит header `buf[off..off+header_len]` и body `buf[off+header_len..off+vol_size]`, поэтому их сумма == FvLength. Дополнительно: дублирующий `read` `vol_size` удалён.
+> 2. **Синтетический fixture `make_image_with_volume` сломан** — пишет `256u32` в offset 20 и не задаёт `FvLength@32`/`HeaderLength@48`/`Revision@55`, поэтому `parse_volume` (с каноническими offset'ами из Task 4) на нём падает. Fixture переписан под канонический `EFI_FIRMWARE_VOLUME_HEADER`.
+> 3. **`list_recursive` дублировал путь "0"** для root и первого ребёнка (`new_path = "0"` для root, и первый ребёнок тоже получал index-path "0"). Исправлено: root получает пустой путь `""`, дети — index-path `0/2/207` (консистентно с `Target::Path` из Task 9). `name` извлекается только для UI/VERSION-секций (UTF-16LE), а не `String::from_utf8_lossy(body)` (давало мусор для бинарных тел). `guid` выводится UPPERCASE через `guid_to_upper_string` (AGENTS.md).
+
 - [ ] **Step 1: Написать failing test**
 
 **Module-first rule:** добавить `pub mod image;` в `crates/uefi-engine/src/parser/mod.rs` (ДО запуска `cargo test` в Step 2).
@@ -1318,9 +1326,17 @@ mod tests {
 
     fn make_image_with_volume() -> Vec<u8> {
         let mut buf = vec![0xFFu8; 256];
+        // ZeroVector@0(16) и FileSystemGuid@16(16) — нули
+        // FvLength@32 (u64) = 256 — полный размер volume
+        buf[32..40].copy_from_slice(&256u64.to_le_bytes());
+        // Signature@40 (u32) = "_FVH"
         buf[40..44].copy_from_slice(&EFI_FVH_SIGNATURE.to_le_bytes());
-        buf[20..24].copy_from_slice(&256u32.to_le_bytes());
-        buf[44] = 0x48; buf[45] = 0xFE; buf[46] = 0xFF; buf[47] = 0xFF;
+        // Attributes@44 (u32) = EFI_FVB2_ERASE_POLARITY
+        buf[44..48].copy_from_slice(&EFI_FVB2_ERASE_POLARITY.to_le_bytes());
+        // HeaderLength@48 (u16) = 56
+        buf[48..50].copy_from_slice(&56u16.to_le_bytes());
+        // Revision@55 (u8) = 2
+        buf[55] = 2;
         buf
     }
 
@@ -1367,7 +1383,7 @@ pub fn parse_image(buf: &[u8], mode: ImageMode, image_id: &str, session_id: &str
         if sig != EFI_FVH_SIGNATURE { off += 16; continue; }
         match parse_volume(buf, off) {
             Ok(vol) => {
-                let vol_size = u32::from_le_bytes([buf[off as usize + 20], buf[off as usize + 21], buf[off as usize + 22], buf[off as usize + 23]]);
+                let vol_size = vol.header.len() + vol.body.len();
                 let mut vol_with_files = vol.clone();
                 let erase = if let ParsingData::Volume(vd) = &vol.parsing_data { vd.empty_byte } else { 0xFF };
                 let rev = if let ParsingData::Volume(vd) = &vol.parsing_data { vd.revision } else { 2 };
@@ -1498,6 +1514,8 @@ git commit -m "feat: add parse_image, dump_tree, list_items"
   - `pub fn find_item(root: &FfsNode, target: &Target) -> Result<&FfsNode, ParserError>`
 - Референс: `../refs/UEFITool-ai-fork/UEFIEdit/uefiedit.cpp:195` `parseTarget`. Path: десятичные индексы детей от root, разделённые `/`. GUID: 36-символьная строка. `GUID:T` — file GUID + первая секция типа T (hex). `GUID:T:N` — N-ная секция типа T.
 
+> **NOTE (исправление плана, 2026-07-25):** исходный Task 9 требовал `s.contains('/')` для Path-таргета, отклоняя одиночные индексы ("0"). Но `list_items` (Task 8) эмитит "0"/"1"/... для детей первого уровня (конвенция без ведущего root-маркера), а Task 11 ops должны уметь адресовать volume (первый ребёнок root) через "0". Условие ослаблено: Path = непустая строка из цифр и '/', начинающаяся с цифры — принимает "0", "0/2/207". Не конфликтует с GUID (содержит буквы/дефисы) и `GUID:T` (содержит ':'). Референс требует '/', т.к. его конвенция пути включает ведущий root "0" (минимум "0/0"); в нашей конвенции одиночный индекс валиден.
+
 - [ ] **Step 1: Написать failing tests**
 
 **Module-first rule:** добавить `pub mod target;` в `crates/uefi-engine/src/parser/mod.rs` (ДО запуска `cargo test` в Step 2).
@@ -1565,7 +1583,12 @@ use std::str::FromStr;
 use super::ParserError;
 
 pub fn parse_target(s: &str) -> Result<Target, ParserError> {
-    if s.chars().all(|c| c.is_ascii_digit() || c == '/') && s.contains('/') {
+    // Path: все символы — цифры или '/', первый символ — цифра (принимает одиночные индексы "0",
+    // т.к. list_items эмитит "0"/"1"/... для детей первого уровня — без ведущего root-маркера).
+    if !s.is_empty()
+        && s.chars().next().is_some_and(|c| c.is_ascii_digit())
+        && s.chars().all(|c| c.is_ascii_digit() || c == '/')
+    {
         let path: Result<Vec<usize>, _> = s.split('/').map(|p| p.parse::<usize>()).collect();
         return path.map(Target::Path).map_err(|_| ParserError::InvalidHeader(format!("bad path: {s}")));
     }
@@ -1662,6 +1685,12 @@ git commit -m "feat: add Target parsing (guid/path/guid:type/guid:type:index) an
   - `enum BuilderError { SizeMismatch, ChecksumFailed }`
 - Референс: `../refs/UEFITool-ai-fork/common/ffsbuilder.cpp` `build`/`buildVolume`/`buildFile`/`buildSection`. Файлы выравниваются по 8 (padding `empty_byte`), секции по 4. `buildFile`/`buildSection` с `children.is_empty()` используют `body` as-is (баг 5). `buildVolume` сохраняет оригинальные offset'ы неизменённых файлов, padding к оригинальному размеру (баг 11). Контрольные суммы пересчитываются.
 
+> **NOTE (исправление плана, 2026-07-25):** исходный Task 10 содержал четыре дефекта, выявленные сверкой с референсом `ffsbuilder.cpp` и валидацией round-trip на реальном образе:
+> 1. **Сломанный synthetic fixture** (тот же класс, что Task 4/8): пишет `256u32` в offset 20 вместо канонического `FvLength@32` (u64). Без этого `parse_volume` падает → round-trip тривиально проваливается. Fixture переписан под канонический `EFI_FIRMWARE_VOLUME_HEADER`.
+> 2. **Always-rebuild вместо verbatim-for-NoAction:** исходный `build_file`/`build_section` всегда пересобирали body из children при `!children.is_empty()`. Но референс (`ffsbuilder.cpp:533`, `:396`) для `action == NoAction` эмитит `model->full(index)` дословно (header+body+tail). Это критично для round-trip немодифицированного образа и для compressed/guided-секций (чья body — непрозрачный сжатый blob, а children — распакованные для инспекции; пересборка невозможна без рекомпрессии). Исправлено: `NoAction` → verbatim; `Rebuild/Replace/Insert` → rebuild-путь.
+> 3. **Чексумма пишется в byte 23 (State), а не в byte 16/17:** `header[23] = calculate_checksum8(header[0..23])` — это поле `State` (см. Task 5), а не `IntegrityCheck`. Канон: Header-чексумма в `IntegrityCheck.Checksum.Header` (byte 16) по формуле `0x100 - (sum_all - byte16 - byte17 - byte23)` (`ffsbuilder.cpp:649-653`); File-чексумма в byte 17 (`calculate_checksum8(body)` при `FFS_ATTRIB_CHECKSUM`, иначе фиксированная). Исправлено: пересчёт в bytes 16/17.
+> 4. **Отсутствует size-absorption (заполнение/раздвижение) в `build_volume`:** при insert/remove/replace размеры детей меняются, и референс поглощает дельту через free-space (паддинг `empty_byte` до `oldBodySize = node.body.len()`, error при переполнении — `ffsbuilder.cpp:462-480`). `build_file`/`build_section` пересчитывают размер снизу-вверх (size propagates: секция→файл→volume). Для compressed/guided-секций рекомпрессия в цикле 1 недоступна → verbatim body. Для FFSv2/large файлов размер пишется в Size@20 (24-bit) или ExtendedSize@24 (large).
+
 - [ ] **Step 1: Написать round-trip failing test**
 
 **Module-first rule:** добавить `pub mod builder;` в `crates/uefi-engine/src/lib.rs` (ДО запуска `cargo test` в Step 2).
@@ -1688,9 +1717,12 @@ mod tests {
 
     fn make_image_with_volume() -> Vec<u8> {
         let mut buf = vec![0xFFu8; 256];
-        buf[40..44].copy_from_slice(&EFI_FVH_SIGNATURE.to_le_bytes());
-        buf[20..24].copy_from_slice(&256u32.to_le_bytes());
-        buf[44] = 0x48; buf[45] = 0xFE; buf[46] = 0xFF; buf[47] = 0xFF;
+        // Канонический EFI_FIRMWARE_VOLUME_HEADER (см. исправление Task 4/8)
+        buf[32..40].copy_from_slice(&256u64.to_le_bytes()); // FvLength@32 (u64)
+        buf[40..44].copy_from_slice(&EFI_FVH_SIGNATURE.to_le_bytes()); // Signature@40
+        buf[44..48].copy_from_slice(&EFI_FVB2_ERASE_POLARITY.to_le_bytes()); // Attributes@44
+        buf[48..50].copy_from_slice(&56u16.to_le_bytes()); // HeaderLength@48
+        buf[55] = 2; // Revision@55
         buf
     }
 
@@ -1757,67 +1789,89 @@ fn build_node(node: &FfsNode, out: &mut Vec<u8>) -> Result<(), BuilderError> {
 }
 
 fn build_volume(node: &FfsNode, out: &mut Vec<u8>) -> Result<(), BuilderError> {
+    if node.action == Action::Remove { return Ok(()); }
+    // NoAction → verbatim (header+body+tail). body уже содержит FFS+free-space.
+    if node.action == Action::NoAction {
+        out.extend_from_slice(&node.header);
+        out.extend_from_slice(&node.body);
+        out.extend_from_slice(&node.tail);
+        return Ok(());
+    }
+    // Rebuild/Replace/Insert: пересобрать children, поглотить size-дельту через free-space.
+    let vol_start = out.len();
     out.extend_from_slice(&node.header);
     let empty_byte = if let ParsingData::Volume(vd) = &node.parsing_data { vd.empty_byte } else { 0xFF };
+    let body_start = out.len();
     for child in &node.children {
         if child.action == Action::Remove { continue; }
-        let before = out.len();
+        // выравнивание файла по 8 относительно начала volume (заполнение empty_byte)
+        let target = vol_start + align8(out.len() - vol_start);
+        pad_to(out, target, empty_byte);
         build_node(child, out)?;
-        let aligned = align8(out.len());
-        pad_to(out, aligned, empty_byte);
     }
+    // size-absorption: pad до oldBodySize (оригинальный размер body) — free-space забирает рост/усадку
+    let old_total = vol_start + node.header.len() + node.body.len();
+    if out.len() > old_total {
+        return Err(BuilderError::SizeMismatch); // контент превысил ёмкость volume
+    }
+    pad_to(out, old_total, empty_byte);
+    out.extend_from_slice(&node.tail);
     Ok(())
 }
 
 fn build_file(node: &FfsNode, out: &mut Vec<u8>) -> Result<(), BuilderError> {
     if node.action == Action::Remove { return Ok(()); }
-    let mut header = node.header.clone();
-    if !node.children.is_empty() {
-        let mut body = vec![];
-        for child in &node.children {
-            build_node(child, &mut body)?;
-            let aligned = align4(body.len());
-            pad_to(&mut body, aligned, 0x00);
-        }
-        let total = header.len() + body.len() + node.tail.len();
-        let size_bytes = size_to_uint24(total as u32);
-        header[20] = size_bytes[0]; header[21] = size_bytes[1]; header[22] = size_bytes[2];
-        let cs = calculate_checksum8(&header[0..23]);
-        header[23] = cs;
-        out.extend_from_slice(&header);
-        out.extend_from_slice(&body);
-        out.extend_from_slice(&node.tail);
-    } else {
-        out.extend_from_slice(&header);
+    if node.action == Action::NoAction {
+        out.extend_from_slice(&node.header);
         out.extend_from_slice(&node.body);
         out.extend_from_slice(&node.tail);
+        return Ok(());
     }
+    // Rebuild/Replace/Insert: пересобрать body из children (баг 5: пустые children → body as-is)
+    let mut header = node.header.clone();
+    let mut body = if node.children.is_empty() { node.body.clone() } else { vec![] };
+    for child in &node.children {
+        build_node(child, &mut body)?;
+        let aligned = align4(body.len());
+        pad_to(&mut body, aligned, 0x00);
+    }
+    let tail = node.tail.clone();
+    let total = header.len() + body.len() + tail.len();
+    set_ffs_size(&mut header, total);                         // 24-bit или large ExtendedSize
+    recompute_ffs_checksums(&mut header, &body);              // bytes 16 (Header) / 17 (File), НЕ byte 23 (State)
+    out.extend_from_slice(&header);
+    out.extend_from_slice(&body);
+    out.extend_from_slice(&tail);
     Ok(())
 }
 
 fn build_section(node: &FfsNode, out: &mut Vec<u8>) -> Result<(), BuilderError> {
-    if !node.children.is_empty() {
-        let mut body = vec![];
-        for child in &node.children {
-            build_node(child, &mut body)?;
-            let aligned = align4(body.len());
-            pad_to(&mut body, aligned, 0x00);
-        }
-        let mut header = node.header.clone();
-        let total = header.len() + body.len();
-        if is_large_section(&header) {
-            let sb = (total as u32).to_le_bytes();
-            header[4] = sb[0]; header[5] = sb[1]; header[6] = sb[2]; header[7] = sb[3];
-        } else {
-            let sb = size_to_uint24(total as u32);
-            header[0] = sb[0]; header[1] = sb[1]; header[2] = sb[2];
-        }
-        out.extend_from_slice(&header);
-        out.extend_from_slice(&body);
-    } else {
+    if node.action == Action::NoAction
+        || is_compressed_or_guided(node)   // recompress недоступен в цикле 1 → verbatim body
+    {
         out.extend_from_slice(&node.header);
         out.extend_from_slice(&node.body);
+        out.extend_from_slice(&node.tail);
+        return Ok(());
     }
+    // Rebuild для uncompressed container-секций (FV_IMAGE и т.п.)
+    let mut body = if node.children.is_empty() { node.body.clone() } else { vec![] };
+    for child in &node.children {
+        build_node(child, &mut body)?;
+        let aligned = align4(body.len());
+        pad_to(&mut body, aligned, 0x00);
+    }
+    let mut header = node.header.clone();
+    let total = header.len() + body.len();
+    if is_large_section(&header) {
+        let sb = (total as u32).to_le_bytes();
+        header[4] = sb[0]; header[5] = sb[1]; header[6] = sb[2]; header[7] = sb[3];
+    } else {
+        let sb = size_to_uint24(total as u32);
+        header[0] = sb[0]; header[1] = sb[1]; header[2] = sb[2];
+    }
+    out.extend_from_slice(&header);
+    out.extend_from_slice(&body);
     Ok(())
 }
 ```
@@ -1854,6 +1908,13 @@ git commit -m "feat: add builder (round-trip volume/file/section)"
   - `enum OpsError { NotFound, InvalidParent, InvalidFfs }`
 - Референс: `../refs/UEFITool-ai-fork/UEFIEdit/uefiedit.cpp:375` (insert), `472` (remove), `494` (replace), `520` (rebuild). После каждой операции — каскад `Rebuild` для всех предков до root. `replace` с `body_only=true` заменяет только body, сохраняет заголовок. `replace` должен `clearChildren` перед `setBody` (баг 9).
 
+> **NOTE (исправление плана, 2026-07-25):** исходный Task 11 содержал четыре дефекта:
+> 1. **Сломанный synthetic fixture** (`make_simple_image`, тот же класс что Task 4/8/10): пишет `256u32` в offset 20 вместо канонического `FvLength@32`. Fixture переписан.
+> 2. **`parse_target("0")` отвергался** Task 9 (требовалось '/'), но тест `rebuild_marks_node` использует "0" для адресации volume (первый ребёнок root). Исправлено в Task 9 (см. NOTE выше) — одиночные индексы теперь валидны.
+> 3. **`use super::ParserError`** неразрешим: `ops.rs` лежит в корне крейта (`crate::ops`), `super` = crate root, где `ParserError` не реэкспортирован. Заменено на `use crate::parser::ParserError;`.
+> 4. **Неиспользуемые импорты** `find_item`, `parse_target` (ops используют `find_mut` по path) — удалены.
+> Дополнение к дизайну: `mark_rebuild_to_root_by_path` помечает только `NoAction`-узлы (не перезаписывает `Remove`/`Replace`), чтобы корректно сочетаться с уже выставленными действиями. Size-absorption (заполнение/раздвижение) выполняется builder'ом (Task 10): ops лишь меняют дерево + ставят `Rebuild`-каскад, а builder поглощает size-дельту через free-space volume.
+
 - [ ] **Step 1: Написать failing tests**
 
 **Module-first rule:** добавить `pub mod ops;` в `crates/uefi-engine/src/lib.rs` (ДО запуска `cargo test` в Step 2).
@@ -1883,9 +1944,12 @@ mod tests {
 
     fn make_simple_image() -> Vec<u8> {
         let mut buf = vec![0xFFu8; 256];
-        buf[40..44].copy_from_slice(&crate::ffs::EFI_FVH_SIGNATURE.to_le_bytes());
-        buf[20..24].copy_from_slice(&256u32.to_le_bytes());
-        buf[44] = 0x48; buf[45] = 0xFE; buf[46] = 0xFF; buf[47] = 0xFF;
+        // Канонический EFI_FIRMWARE_VOLUME_HEADER (см. исправление Task 4/8/10)
+        buf[32..40].copy_from_slice(&256u64.to_le_bytes()); // FvLength@32 (u64)
+        buf[40..44].copy_from_slice(&crate::ffs::EFI_FVH_SIGNATURE.to_le_bytes()); // Signature@40
+        buf[44..48].copy_from_slice(&crate::ffs::EFI_FVB2_ERASE_POLARITY.to_le_bytes()); // Attributes@44
+        buf[48..50].copy_from_slice(&56u16.to_le_bytes()); // HeaderLength@48
+        buf[55] = 2; // Revision@55
         buf
     }
 
@@ -1911,8 +1975,7 @@ Expected: FAIL
 ```rust
 use crate::types::*;
 use crate::ffs::*;
-use crate::parser::target::{find_item, parse_target};
-use super::ParserError;
+use crate::parser::ParserError;
 
 #[derive(Debug, thiserror::Error)]
 pub enum OpsError {
@@ -2319,12 +2382,12 @@ pub mod session;
 ```rust
 use std::path::PathBuf;
 use std::time::Duration;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use anyhow::Result;
 use crate::storage::{Db, SessionRow};
 
 pub struct SessionManager {
-    db: Arc<Db>,
+    db: Arc<Mutex<Db>>,
     pub data_dir: PathBuf,
     pub ttl: Duration,
     pub gc_interval: Duration,
@@ -2340,7 +2403,7 @@ mod tests {
         let td = TempDir::new().unwrap();
         let db = crate::storage::open_db(&td.path().join("s.db")).unwrap();
         let sm = SessionManager {
-            db: Arc::new(db),
+            db: Arc::new(Mutex::new(db)),
             data_dir: td.path().to_path_buf(),
             ttl: Duration::from_secs(1),
             gc_interval: Duration::from_millis(100),
@@ -2390,24 +2453,27 @@ Expected: FAIL
 - [ ] **Step 3: Реализовать SessionManager**
 
 Дополнить `crates/uefi-engine/src/session.rs`:
+
+**Важно (issue #2):** `rusqlite::Connection` — `Send`, но **`!Sync`** (rusqlite 0.31). `tokio::spawn` требует `F: Future + Send`, а `Arc<Db>: !Send` при `Db: !Sync`. Поэтому `db` **обязательно** оборачивается в `std::sync::Mutex`: поле `db: Arc<Mutex<Db>>` (это `Send + Sync`). `std::sync::Mutex` уместен — операции БД синхронные и короткие, lock не удерживается через `.await`.
+
 ```rust
 use uuid::Uuid;
 use std::fs;
 
 impl SessionManager {
     pub fn new(db: Db, data_dir: PathBuf, ttl: Duration, gc_interval: Duration, purge_artifacts: bool) -> Self {
-        Self { db: Arc::new(db), data_dir, ttl, gc_interval, purge_artifacts }
+        Self { db: Arc::new(Mutex::new(db)), data_dir, ttl, gc_interval, purge_artifacts }
     }
     pub fn create_session(&self, name: &str) -> Result<(String, String)> {
         let id = Uuid::new_v4().to_string();
         let token = Uuid::new_v4().to_string();
-        self.db.insert_session(&id, &token, name)?;
+        self.db.lock().unwrap().insert_session(&id, &token, name)?;
         let sess_dir = self.data_dir.join("sessions").join(&id);
         fs::create_dir_all(&sess_dir)?;
         Ok((id, token))
     }
     pub fn destroy_session(&self, id: &str, purge_files: bool) -> Result<()> {
-        self.db.delete_session_metadata(id)?;
+        self.db.lock().unwrap().delete_session_metadata(id)?;
         if purge_files {
             let sess_dir = self.data_dir.join("sessions").join(id);
             let _ = fs::remove_dir_all(&sess_dir);
@@ -2415,33 +2481,35 @@ impl SessionManager {
         Ok(())
     }
     pub fn list_sessions(&self) -> Result<Vec<SessionRow>> {
-        self.db.list_sessions()
+        self.db.lock().unwrap().list_sessions()
     }
     pub fn touch(&self, id: &str) -> Result<()> {
-        self.db.touch_session(id)
+        self.db.lock().unwrap().touch_session(id)
     }
     pub fn validate_token(&self, session_id: &str, token: &str) -> bool {
-        match self.db.get_session(session_id) {
+        match self.db.lock().unwrap().get_session(session_id) {
             Ok(Some(row)) => row.token == token,
             _ => false,
         }
     }
     pub fn spawn_gc(self: Arc<Self>) -> tokio::task::JoinHandle<()> {
         let interval = self.gc_interval;
-        let ttl = self.ttl;
+        let ttl_secs = self.ttl.as_secs() as i64;
         let purge = self.purge_artifacts;
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(interval);
             loop {
                 ticker.tick().await;
-                if let Ok(expired) = self.db.list_expired(ttl.as_secs() as i64) {
-                    for id in expired {
-                        let _ = self.destroy_session(&id, purge);
-                        if purge {
-                            tracing::info!("GC purged session {id} (files+metadata)");
-                        } else {
-                            tracing::info!("GC removed session {id} metadata (files preserved)");
-                        }
+                // Собираем expired ВНЕ последующего lock: destroy_session снова
+                // берёт lock, а std::sync::Mutex не реентерабелен -> deadlock,
+                // если держать guard в if let через всё тело цикла.
+                let expired = self.db.lock().unwrap().list_expired(ttl_secs).unwrap_or_default();
+                for id in expired {
+                    let _ = self.destroy_session(&id, purge);
+                    if purge {
+                        tracing::info!("GC purged session {id} (files+metadata)");
+                    } else {
+                        tracing::info!("GC removed session {id} metadata (files preserved)");
                     }
                 }
             }
@@ -2508,7 +2576,10 @@ mod tests {
 
     #[test]
     fn unsuppress_makes_block_empty() {
-        let mut ifr = vec![0x0A, 0x82, 0x12, 0x06, 0x40, 0x01, 0x00, 0x29, 0x02];
+        // 0x12 opcode имеет длину 0x03 (3 байта: 12 03 40), чтобы алгоритм
+        // приземлился на End-опкод (29 02) по индексу 5. Длина 0x06 съела бы
+        // байт 0x29, и find_suppress_if_scopes ничего бы не нашёл.
+        let mut ifr = vec![0x0A, 0x82, 0x12, 0x03, 0x40, 0x29, 0x02];
         let scopes = ifr::find_suppress_if_scopes(&ifr);
         assert_eq!(scopes.len(), 1);
         ifr::unsuppress(&mut ifr, &scopes[0]);
@@ -2572,21 +2643,35 @@ pub fn unsuppress(ifr: &mut Vec<u8>, scope: &SuppressScope) {
 - [ ] **Step 4: Реализовать set_item_visibility в setup/mod.rs**
 
 Дополнить `crates/uefi-engine/src/setup/mod.rs`:
+
+**Важно (issue #3):** (а) `unsuppress` ДЕЛАЕТ элемент видимым (нейтрализует SuppressIf), поэтому вызывается при `visible == true`, а не `!visible` (референс UEFI-Editor scripts.ts:184 — `!suppression.active` → unsuppress). (б) `mark_rebuild_to_root_by_path` нужно вызывать с **полным путём** `&path`, а не `&[]`: Image/Root в build_node игнорирует action (всегда обходит children), а NoAction-предки (volume/file) эмитятся verbatim — изменение body глубокой section без каскада Rebuild теряется. Согласовано с ops.rs (insert/remove/replace передают `&path`).
+
 ```rust
 use crate::types::*;
 use crate::ops;
 
 pub fn set_item_visibility(image: &mut Image, item_id: &str, visible: bool) -> Result<(), SetupError> {
     let target = crate::parser::target::parse_target(item_id).map_err(|_| SetupError::NotFound)?;
-    let node = crate::parser::target::find_item_mut(&mut image.root, &target).map_err(|_| SetupError::NotFound)?;
-    if node.node_type != FfsType::Section { return Err(SetupError::NotASetupItem); }
-    if !visible {
-        if let Some(scope) = ifr::find_suppress_if_scopes(&node.body).into_iter().next() {
-            let mut body = node.body.clone();
-            ifr::unsuppress(&mut body, &scope);
-            node.body = body;
-            ops::mark_rebuild_to_root_by_path(&mut image.root, &[]);
+    let path = match &target {
+        Target::Path(p) => p.clone(),
+        _ => return Err(SetupError::NotFound),
+    };
+    let mut changed = false;
+    {
+        let node = crate::parser::target::find_item_mut(&mut image.root, &target)
+            .map_err(|_| SetupError::NotFound)?;
+        if node.node_type != FfsType::Section { return Err(SetupError::NotASetupItem); }
+        if visible {
+            if let Some(scope) = ifr::find_suppress_if_scopes(&node.body).into_iter().next() {
+                let mut body = node.body.clone();
+                ifr::unsuppress(&mut body, &scope);
+                node.body = body;
+                changed = true;
+            }
         }
+    }
+    if changed {
+        ops::mark_rebuild_to_root_by_path(&mut image.root, &path);
     }
     Ok(())
 }
@@ -2670,29 +2755,34 @@ mod tests {
     use tempfile::TempDir;
     use tonic::transport::Channel;
 
-    async fn setup() -> (TempDir, String, EngineServiceClient<Channel>) {
+    async fn setup() -> (TempDir, EngineServiceClient<Channel>) {
         let td = TempDir::new().unwrap();
         let sock = td.path().join("test.sock");
-        let db = Db::open_db(&td.path().join("db.sqlite")).unwrap();
+        let db = crate::storage::open_db(&td.path().join("db.sqlite")).unwrap();
         let sm = Arc::new(SessionManager::new(db, td.path().to_path_buf(), Duration::from_secs(864000), Duration::from_secs(3600), false));
         let images = Arc::new(Mutex::new(HashMap::new()));
         let server = EngineServer { sm, images, data_dir: td.path().to_path_buf() };
-        let sock2 = sock.clone();
+        let listener = tokio::net::UnixListener::bind(&sock).unwrap();
+        let incoming = tokio_stream::wrappers::UnixListenerStream::new(listener);
         tokio::spawn(async move {
-            let endpoint = Endpoint::from_unix(&sock2).unwrap();
             Server::builder().add_service(EngineServiceServer::new(server))
-                .serve_with_incoming(endpoint.connect_with_connector_override().await.unwrap()).await.unwrap();
+                .serve_with_incoming(incoming).await.unwrap();
         });
         tokio::time::sleep(Duration::from_millis(100)).await;
-        let client = Channel::from_shared(format!("unix://{}", sock.display())).unwrap()
-            .connect().await.unwrap();
-        (td, sock.to_string_lossy().into(), client)
+        let sock_str = sock.to_string_lossy().to_string();
+        let client = Endpoint::try_from("http://localhost").unwrap()
+            .connect_with_connector(tower::service_fn(move |_: http::Uri| {
+                let s = sock_str.clone();
+                async move { Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(tokio::net::UnixStream::connect(s).await?)) }
+            }))
+            .await.unwrap();
+        (td, EngineServiceClient::new(client))
     }
 
     #[tokio::test]
     async fn create_and_destroy_session() {
-        let (_td, _sock, mut client) = setup().await;
-        let resp = client.create_session(CreateSessionRequest {}).await.unwrap().into_inner();
+        let (_td, mut client) = setup().await;
+        let resp = client.create_session(CreateSessionRequest::default()).await.unwrap().into_inner();
         assert!(!resp.session_id.is_empty());
         client.destroy_session(DestroySessionRequest { session_id: resp.session_id }).await.unwrap();
     }
@@ -2706,6 +2796,14 @@ mod tests {
 tonic.workspace = true
 uefi-proto = { path = "../uefi-proto" }
 tokio = { workspace = true, features = ["full"] }
+tokio-stream = { version = "0.1", features = ["net"] }
+```
+
+[dev-dependencies] (для unix-сокет клиента в интеграционном тесте):
+```toml
+tower = { version = "0.4", features = ["util"] }   # service_fn
+hyper-util = { version = "0.1", features = ["tokio"] }  # TokioIo
+http = "1"   # Uri
 ```
 
 - [ ] **Step 3: Реализовать auth.rs**
@@ -2736,6 +2834,13 @@ pub fn check_auth<T>(req: &Request<T>, sm: &crate::session::SessionManager) -> R
 pub mod auth;
 pub mod server;
 ```
+
+> **fix vs буквального текста impl (реальное API):**
+> - `SessionManager.db` сделать `pub` (доступ из rpc); все `self.sm.db.*` обернуть в `.lock().unwrap()` (там `Arc<Mutex<Db>>`, не голый `Db`).
+> - в `extract_artifact` клонировать `session_id` ДО `drop(images)` — заимствовать `img.session_id` после drop MutexGuard нельзя.
+> - `ImageMode` импортировать явно `use crate::types::{Image, ImageMode};` (коллизия с proto-glob `uefi_proto::*`); `crate::ops::*` вызывать полным путём (коллизия имён с методами трейта EngineService).
+> - `CreateSessionRequest {}` → `CreateSessionRequest::default()` (prost требует все поля).
+> - `#[allow(clippy::result_large_err)]` на `check_auth` (tonic::Status ≈ 176 байт).
 
 `crates/uefi-engine/src/rpc/server.rs` (дополнить после теста):
 ```rust
@@ -2924,15 +3029,19 @@ pub fn serve(socket_path: &Path, db: Db, data_dir: PathBuf, ttl: Duration, gc_in
             images: Arc::new(Mutex::new(HashMap::new())),
             data_dir,
         };
-        let endpoint = Endpoint::from_unix(socket_path).map_err(|e| anyhow::anyhow!(e))?;
+        let _ = std::fs::remove_file(socket_path);
+        let listener = tokio::net::UnixListener::bind(socket_path).map_err(|e| anyhow::anyhow!(e))?;
+        let incoming = tokio_stream::wrappers::UnixListenerStream::new(listener);
         Server::builder()
             .add_service(EngineServiceServer::new(server))
-            .serve_with_incoming(endpoint.connect_with_connector_override().await.map_err(|e| anyhow::anyhow!(e))?)
+            .serve_with_incoming(incoming)
             .await
             .map_err(|e| anyhow::anyhow!(e))
     })
 }
 ```
+
+> **fix vs плана (serve/test):** в tonic 0.12 нет серверного `Endpoint::from_unix`/`connect_with_connector_override`. Серверная сторона над unix-сокетом — `tokio::net::UnixListener` + `tokio_stream::wrappers::UnixListenerStream` (`UnixStream: Connected`); клиентская — `Endpoint::connect_with_connector(service_fn + TokioIo(UnixStream))`. См. примечание ниже по остальным правкам.
 
 - [ ] **Step 5: Запустить тесты**
 
@@ -3175,17 +3284,18 @@ git commit -m "feat: add uefi-cli smoke CLI (session create/destroy + clap)"
 
 ---
 
-### Task 18: Контейнеризация (containerfile + fedora:44 + rust-builder)
+### Task 18: Контейнеризация (containerfile + fedora:44 + rust-builder + runtime-base)
 
 **Files:**
-- Create: `docker/rust-builder.containerfile`
-- Create: `docker/engine.containerfile`
+- Create: `docker/rust-builder.containerfile` (базовый образ всех Rust-сборок)
+- Create: `docker/runtime-base.containerfile` (базовый образ всех runtime-контейнеров, аналог rust-builder)
+- Create: `docker/engine.containerfile` (multi-stage: builder FROM rust-builder, runtime FROM runtime-base)
 - Create: `docker/docker-compose.yml`
-- Create: `docker/.dockerignore`
+- Create: `.dockerignore` (в КОРНЕ репо — dockerignore читается из корня build-context; `docker/.dockerignore` был бы no-op)
 
 **Interfaces:**
 - Consumes: workspace
-- Produces: образ `uefipatcher-engine` на базе `registry.fedoraproject.org/fedora:44`
+- Produces: образ `uefipatcher-engine`; runtime-стадия наследуется от `uefipatcher-runtime-base` (аналог rust-builder для сборок), а не напрямую от fedora:44
 
 - [ ] **Step 1: Создать rust-builder.containerfile (базовый образ для всех Rust-сборок)**
 
@@ -3196,7 +3306,15 @@ RUN dnf install -y rust cargo protobuf-compiler make gcc && dnf clean all
 WORKDIR /app
 ```
 
-- [ ] **Step 2: Создать engine.containerfile**
+- [ ] **Step 2: Создать runtime-base.containerfile (базовый образ для всех runtime-контейнеров, аналог rust-builder)**
+
+`docker/runtime-base.containerfile`:
+```dockerfile
+FROM registry.fedoraproject.org/fedora:44
+RUN dnf install -y ca-certificates sqlite-libs && dnf clean all
+```
+
+- [ ] **Step 3: Создать engine.containerfile (multi-stage, runtime FROM runtime-base)**
 
 `docker/engine.containerfile`:
 ```dockerfile
@@ -3205,8 +3323,7 @@ WORKDIR /app
 COPY . .
 RUN cargo build --release --bin engine -p uefi-engine
 
-FROM registry.fedoraproject.org/fedora:44
-RUN dnf install -y ca-certificates sqlite-libs && dnf clean all
+FROM uefipatcher-runtime-base
 COPY --from=builder /app/target/release/engine /usr/local/bin/uefi-engine
 VOLUME ["/data", "/run/uefipatcher"]
 ENV UEFIPATCHER_DATA=/data
@@ -3215,7 +3332,7 @@ ENV UEFIPATCHER_PURGE_ARTIFACTS=false
 ENTRYPOINT ["uefi-engine"]
 ```
 
-- [ ] **Step 3: Создать docker-compose.yml**
+- [ ] **Step 4: Создать docker-compose.yml**
 
 `docker/docker-compose.yml`:
 ```yaml
@@ -3239,26 +3356,41 @@ volumes:
   uefi-sock:
 ```
 
-- [ ] **Step 4: Создать .dockerignore**
+- [ ] **Step 5: Создать .dockerignore (в корне репо, НЕ в docker/)**
 
-`docker/.dockerignore`:
+`.dockerignore` (корень репо; build-context = корень, поэтому dockerignore обязан быть здесь):
 ```
 target/
 .git/
+.opencode/
 docs/
+refs/
+tests/
 *.md
 ```
 
-- [ ] **Step 5: Проверить валидность compose**
+> `refs/` — symlink наружу (`../refs/`); без исключения раздувает build-context. `docker/.dockerignore` не работает — dockerignore читается только из корня build-context.
 
-Run: `podman-compose -f docker/docker-compose.yml config`
-Expected: корректный вывод конфигурации
+- [ ] **Step 6: Проверить сборку (toolbox → podman-remote; compose-провайдер недоступен)**
 
-- [ ] **Step 6: Коммит**
+Run (в порядке зависимостей `FROM`):
+```bash
+podman-remote build -t uefipatcher-rust-builder -f docker/rust-builder.containerfile .
+podman-remote build -t uefipatcher-runtime-base -f docker/runtime-base.containerfile .
+podman-remote build -t uefipatcher-engine        -f docker/engine.containerfile .
+```
+Expected: 3 образа собраны. Проверить запуск:
+```bash
+podman-remote run --rm -d --name uefi-engine-test uefipatcher-engine
+podman-remote exec uefi-engine-test ls /run/uefipatcher/uefipatcher.sock /data/uefipatcher.db
+podman-remote stop uefi-engine-test
+```
+
+- [ ] **Step 7: Коммит**
 
 ```bash
-git add docker/
-git commit -m "feat: containerfile (fedora:44 + rust-builder), --purge-artifacts=false default"
+git add docker/ .dockerignore
+git commit -m "feat: containerization (fedora:44 + rust-builder + runtime-base; engine inherits runtime-base)"
 ```
 
 ---
@@ -3312,7 +3444,7 @@ git commit -m "chore: final checks — all tests pass, clippy clean, round-trip 
 - Engine binary (clap CLI, --purge-artifacts): Task 16 ✓
 - uefi-common (state.rs + error.rs скелет): Task 1 ✓
 - CLI-минимум (зависит от uefi-common): Task 17 ✓
-- Контейнеризация (containerfile + fedora:44 + rust-builder): Task 18 ✓
+- Контейнеризация (containerfile + fedora:44 + rust-builder + runtime-base; engine inherits runtime-base): Task 18 ✓
 - uguid (Display/FromStr/serde + UPPERCASE): Task 2 ✓
 - ffs.rs (wrapping arithmetic, correct offsets, ref ffs.rs): Task 3 ✓
 - Module-first rule: Global Constraints ✓ (mod объявляется до cargo test)
@@ -3323,7 +3455,7 @@ git commit -m "chore: final checks — all tests pass, clippy clean, round-trip 
 - Session name (CWD без symlink resolution через PWD): Tasks 12, 13, 15 ✓
 - --purge-artifacts (default false): Tasks 13, 16, 18 ✓
 - uefi-common в цикле 1: Task 1 ✓
-- Docker → containerfile + fedora:44 + rust-builder: Task 18 ✓
+- Docker → containerfile + fedora:44 + rust-builder + runtime-base: Task 18 ✓
 
 **Issue #2 покрытие:**
 - Guid → uguid: Task 2 ✓

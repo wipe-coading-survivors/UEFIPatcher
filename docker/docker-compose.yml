@@ -1,0 +1,39 @@
+version: "3.8"
+services:
+  engine:
+    build:
+      context: ..
+      dockerfile: docker/engine.containerfile
+    volumes:
+      - uefi-data:/data
+      - uefi-sock:/run/uefipatcher
+    environment:
+      UEFIPATCHER_DATA: /data
+      UEFIPATCHER_SOCK: /run/uefipatcher/uefipatcher.sock
+      UEFIPATCHER_SESSION_TTL_SECS: "864000"
+      UEFIPATCHER_SESSION_GC_INTERVAL_SECS: "3600"
+      UEFIPATCHER_PURGE_ARTIFACTS: "false"
+  gateway:
+    build:
+      context: ..
+      dockerfile: docker/gateway.containerfile
+    volumes:
+      - uefi-sock:/run/uefipatcher
+    environment:
+      UEFIPATCHER_SOCK: /run/uefipatcher/uefipatcher.sock
+      UEFIPATCHER_GATEWAY_LISTEN: 0.0.0.0:8080
+    ports:
+      - "8080:8080"
+    depends_on:
+      - engine
+  webui:
+    build:
+      context: ..
+      dockerfile: docker/webui.containerfile
+    ports:
+      - "3000:3000"
+    depends_on:
+      - gateway
+volumes:
+  uefi-data:
+  uefi-sock:

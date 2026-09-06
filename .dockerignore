@@ -1,0 +1,7 @@
+target/
+.git/
+.opencode/
+docs/
+refs/
+tests/
+*.md

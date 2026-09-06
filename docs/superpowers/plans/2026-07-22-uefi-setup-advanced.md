@@ -376,36 +376,29 @@ git commit -m "feat(setup_advanced): add JSON schema (FormSet/Form/Item/Defaults
 use crate::types::Guid;
 use std::str::FromStr;
 
-// NOTE: вместо ручных констант предпочтительно использовать `r_efi::hii::*`:
-//   IFR_FORM_SET_OP, IFR_FORM_OP, IFR_END_OP, IFR_VARSTORE_OP, IFR_VARSTORE_EFI_OP,
-//   IFR_DEFAULT_STORE_OP, IFR_ONE_OF_OP, IFR_ONE_OF_OPTION_OP, IFR_CHECKBOX_OP,
-//   IFR_NUMERIC_OP, IFR_REF_OP, IFR_TEXT_OP, IFR_STRING_OP, IFR_ACTION_OP,
-//   IFR_ORDERED_LIST_OP, IFR_DEFAULT_OP.
-// Локальные алиасы ниже оставлены для совместимости с остальным кодом плана;
-// при реализации можно заменить на `pub use r_efi::hii::IFR_FORM_SET_OP as OP_FORM_SET;` и т.д.
-pub const OP_FORM_SET: u8 = 0x0E;
-pub const OP_FORM: u8 = 0x01;
-pub const OP_END: u8 = 0x29;
-pub const OP_VARSTORE: u8 = 0x24;
-pub const OP_VARSTORE_EFI: u8 = 0x26;
-pub const OP_DEFAULT_STORE: u8 = 0x5C;
-pub const OP_ONE_OF: u8 = 0x05;
-pub const OP_ONE_OF_OPTION: u8 = 0x09;
-pub const OP_CHECKBOX: u8 = 0x06;
-pub const OP_NUMERIC: u8 = 0x07;
-pub const OP_REF: u8 = 0x0F;
-pub const OP_TEXT: u8 = 0x03;
-pub const OP_STRING: u8 = 0x1C;
-pub const OP_ACTION: u8 = 0x0C;
-pub const OP_ORDERED_LIST: u8 = 0x23;
-pub const OP_DEFAULT: u8 = 0x5B;
+pub use r_efi::hii::IFR_FORM_SET_OP as OP_FORM_SET;
+pub use r_efi::hii::IFR_FORM_OP as OP_FORM;
+pub use r_efi::hii::IFR_END_OP as OP_END;
+pub use r_efi::hii::IFR_VARSTORE_OP as OP_VARSTORE;
+pub use r_efi::hii::IFR_VARSTORE_EFI_OP as OP_VARSTORE_EFI;
+pub use r_efi::hii::IFR_DEFAULTSTORE_OP as OP_DEFAULT_STORE;
+pub use r_efi::hii::IFR_ONE_OF_OP as OP_ONE_OF;
+pub use r_efi::hii::IFR_ONE_OF_OPTION_OP as OP_ONE_OF_OPTION;
+pub use r_efi::hii::IFR_CHECKBOX_OP as OP_CHECKBOX;
+pub use r_efi::hii::IFR_NUMERIC_OP as OP_NUMERIC;
+pub use r_efi::hii::IFR_REF_OP as OP_REF;
+pub use r_efi::hii::IFR_TEXT_OP as OP_TEXT;
+pub use r_efi::hii::IFR_STRING_OP as OP_STRING;
+pub use r_efi::hii::IFR_ACTION_OP as OP_ACTION;
+pub use r_efi::hii::IFR_ORDERED_LIST_OP as OP_ORDERED_LIST;
+pub use r_efi::hii::IFR_DEFAULT_OP as OP_DEFAULT;
 
-pub const TYPE_NUM_SIZE_8: u8 = 0x00;
-pub const TYPE_NUM_SIZE_16: u8 = 0x01;
-pub const TYPE_NUM_SIZE_32: u8 = 0x02;
-pub const TYPE_NUM_SIZE_64: u8 = 0x03;
-pub const TYPE_BOOLEAN: u8 = 0x04;
-pub const TYPE_STRING: u8 = 0x07;
+pub use r_efi::hii::IFR_TYPE_NUM_SIZE_8 as TYPE_NUM_SIZE_8;
+pub use r_efi::hii::IFR_TYPE_NUM_SIZE_16 as TYPE_NUM_SIZE_16;
+pub use r_efi::hii::IFR_TYPE_NUM_SIZE_32 as TYPE_NUM_SIZE_32;
+pub use r_efi::hii::IFR_TYPE_NUM_SIZE_64 as TYPE_NUM_SIZE_64;
+pub use r_efi::hii::IFR_TYPE_BOOLEAN as TYPE_BOOLEAN;
+pub use r_efi::hii::IFR_TYPE_STRING as TYPE_STRING;
 
 pub const DEFAULT_ID_STANDARD: u16 = 0x0000;
 pub const DEFAULT_ID_MANUFACTURING: u16 = 0x0001;
@@ -427,7 +420,7 @@ impl IfrBuilder {
 
     pub fn emit_form_set(&mut self, guid: &Guid, title_id: u16, help_id: u16, class_guids: &[Guid]) {
         let flags = class_guids.len() as u8 & 0x03;
-        self.write_header(OP_FORM_SET, true, 20 + 16 * class_guids.len());
+        self.write_header(OP_FORM_SET, true, 21 + 16 * class_guids.len());
         self.buf.extend_from_slice(&guid_to_bytes(guid));
         self.buf.extend_from_slice(&title_id.to_le_bytes());
         self.buf.extend_from_slice(&help_id.to_le_bytes());
@@ -460,7 +453,7 @@ impl IfrBuilder {
     }
 
     pub fn emit_one_of(&mut self, prompt_id: u16, help_id: u16, qid: u16, vsid: u16, voff: u16, flags: u8, size: u8) {
-        self.write_header(OP_ONE_OF, true, 13);
+        self.write_header(OP_ONE_OF, true, 12 + 3 * size as usize);
         self.buf.extend_from_slice(&prompt_id.to_le_bytes());
         self.buf.extend_from_slice(&help_id.to_le_bytes());
         self.buf.extend_from_slice(&qid.to_le_bytes());
@@ -496,7 +489,7 @@ impl IfrBuilder {
     }
 
     pub fn emit_numeric(&mut self, prompt_id: u16, help_id: u16, qid: u16, vsid: u16, voff: u16, flags: u8, size: u8, min: u64, max: u64, step: u64) {
-        self.write_header(OP_NUMERIC, true, 13);
+        self.write_header(OP_NUMERIC, true, 12 + 3 * size as usize);
         self.buf.extend_from_slice(&prompt_id.to_le_bytes());
         self.buf.extend_from_slice(&help_id.to_le_bytes());
         self.buf.extend_from_slice(&qid.to_le_bytes());
@@ -574,7 +567,7 @@ mod tests {
         b.emit_form_set(&g, 1, 2, &[]);
         let buf = b.build();
         assert_eq!(buf[0], OP_FORM_SET);
-        assert_eq!(buf[1] & 0x7F, 22);
+        assert_eq!(buf[1] & 0x7F, 23);
         assert_eq!(buf[1] & 0x80, 0x80);
         assert_eq!(&buf[2..18], &guid_to_bytes(&g));
         assert_eq!(u16::from_le_bytes([buf[18], buf[19]]), 1);
@@ -606,10 +599,10 @@ mod tests {
         b.emit_var_store(1, &g, 256, "MyVar");
         let buf = b.build();
         assert_eq!(buf[0], OP_VARSTORE);
-        assert_eq!(u16::from_le_bytes([buf[20], buf[21]]), 1);
-        assert_eq!(u16::from_le_bytes([buf[22], buf[23]]), 256);
-        assert_eq!(&buf[24..29], b"MyVar");
-        assert_eq!(buf[29], 0);
+        assert_eq!(u16::from_le_bytes([buf[18], buf[19]]), 1);
+        assert_eq!(u16::from_le_bytes([buf[20], buf[21]]), 256);
+        assert_eq!(&buf[22..27], b"MyVar");
+        assert_eq!(buf[27], 0);
     }
 
     #[test]
@@ -659,47 +652,85 @@ git commit -m "feat(setup_advanced): add IFR builder (FormSet/Form/VarStore/OneO
 - Create: `crates/uefi-engine/src/setup_advanced/string_pack.rs`
 
 **Interfaces:**
-- Consumes: `types::*` (Image, FfsNode, Guid), `parser::target::find_item`
+- Consumes: `types::*` (Image, FfsNode, Guid, Action), `ops::mark_rebuild_to_root_by_path`, `r_efi::hii::PACKAGE_STRINGS`
 - Produces:
   - `pub fn add_strings(image: &mut Image, ffs_guid: Option<&Guid>, strings: &[String]) -> Result<HashMap<String, u16>, SetupAdvancedError>`
-  - Поиск String-пакета: по GUID FFS (если передан) → авто-поиск (первый FFS с HII String Package)
-  - Парсинг: извлечение существующих StringId → `max_string_id`
-  - Добавление: alloc новых StringId (от max+1), запись SIBT-блоков
-  - Пересборка: обновление Length заголовка, пересчёт checksum
+  - Поиск String-пакета: по GUID FFS (если передан) → авто-поиск (первый FFS с HII String Package). Возвращает путь `(volume_idx, file_idx, section_idx)` — пакет живёт в теле **Section**-узла (`file.children[si].body`, см. parser/section.rs:64-78, setup/mod.rs:67), не в теле File-узла.
+  - Парсинг: следующий свободный StringId выводится сканированием SIBT-блоков (StringId 1-базированные, последовательные, счётчик продвигается SKIP-блоками) — фиксированного поля «max string id» в `EFI_HII_STRING_PACKAGE_HDR` нет (edk2 UefiInternalFormRepresentation.h:337-344: bytes 4-7 = HdrSize, 8-11 = StringInfoOffset).
+  - Добавление: alloc новых StringId (от max+1), запись валидных `SIBT_STRING_SCSU (0x10)` блоков (`0x10` + SCSU-байты + `0x00`) **перед** существующим `SIBT_END (0x00)` маркером. StringId не пишется инлайн — он неявный/последовательный (edk2 UefiInternalFormRepresentation.h:353-364).
+  - Пересборка: обновление 3-байтного `Length` (bytes 0-2) заголовка пакета `EFI_HII_PACKAGE_HEADER` (length:24+type:8, edk2 UefiInternalFormRepresentation.h:56-60). Поля checksum у отдельного HII-пакета нет. После правки тела Section вызывается `ops::mark_rebuild_to_root_by_path` для каскадного Rebuild File/Volume.
   - Возврат: маппинг текст→StringId
+  - Детектор пакета: `pub fn is_string_package(body) -> bool` (`body[3] == r_efi::hii::PACKAGE_STRINGS`, тип пакета в 4-м байте битового поля). SIBT-коды локальные (`const SIBT_*`), т.к. r_efi их не экспортирует.
 
 - [ ] **Step 1: Написать failing test**
 
 `crates/uefi-engine/src/setup_advanced/string_pack.rs`:
 ```rust
 use std::collections::HashMap;
-use crate::types::*;
-use super::SetupAdvancedError;
 
-pub fn add_strings(image: &mut Image, ffs_guid: Option<&Guid>, strings: &[String]) -> Result<HashMap<String, u16>, SetupAdvancedError> {
-    let (ffs_idx, section_idx) = find_string_package(image, ffs_guid)?;
-    let node = &mut image.root.children[ffs_idx].children[section_idx];
-    let max_id = parse_max_string_id(&node.body);
-    let mut mapping = HashMap::new();
-    let mut next_id = max_id + 1;
-    for s in strings {
-        mapping.insert(s.clone(), next_id);
-        append_string_to_package(&mut node.body, next_id, s);
-        next_id += 1;
-    }
-    update_package_header(&mut node.body);
+use super::SetupAdvancedError;
+use crate::ops;
+use crate::types::*;
+
+pub use r_efi::hii::PACKAGE_STRINGS;
+
+const SIBT_END: u8 = 0x00;
+const SIBT_STRING_SCSU: u8 = 0x10;
+const SIBT_STRING_SCSU_FONT: u8 = 0x11;
+const SIBT_STRINGS_SCSU: u8 = 0x12;
+const SIBT_STRINGS_SCSU_FONT: u8 = 0x13;
+const SIBT_STRING_UCS2: u8 = 0x14;
+const SIBT_STRING_UCS2_FONT: u8 = 0x15;
+const SIBT_STRINGS_UCS2: u8 = 0x16;
+const SIBT_STRINGS_UCS2_FONT: u8 = 0x17;
+const SIBT_DUPLICATE: u8 = 0x20;
+const SIBT_SKIP2: u8 = 0x21;
+const SIBT_SKIP1: u8 = 0x22;
+
+const PACKAGE_HEADER_LEN: usize = 4;
+const STRING_INFO_OFFSET_POS: usize = 8;
+
+pub fn add_strings(
+    image: &mut Image,
+    ffs_guid: Option<&Guid>,
+    strings: &[String],
+) -> Result<HashMap<String, u16>, SetupAdvancedError> {
+    let (vi, fi, si) = find_string_package(image, ffs_guid)?;
+    let path = vec![vi, fi, si];
+    let body = &mut image.root.children[vi].children[fi].children[si].body;
+    let mapping = add_strings_to_body(body, strings);
+    ops::mark_rebuild_to_root_by_path(&mut image.root, &path);
     Ok(mapping)
 }
 
-fn find_string_package(image: &Image, ffs_guid: Option<&Guid>) -> Result<(usize, usize), SetupAdvancedError> {
+fn add_strings_to_body(body: &mut Vec<u8>, strings: &[String]) -> HashMap<String, u16> {
+    let sibt_start = string_info_offset(body);
+    let (mut next_id, mut end_pos) = scan_sibt(body, sibt_start);
+    let mut mapping = HashMap::new();
+    for s in strings {
+        let new_id = next_id;
+        next_id = next_id.wrapping_add(1);
+        mapping.insert(s.clone(), new_id);
+        end_pos = append_scsu_string(body, end_pos, s);
+    }
+    update_package_length(body);
+    mapping
+}
+
+fn find_string_package(
+    image: &Image,
+    ffs_guid: Option<&Guid>,
+) -> Result<(usize, usize, usize), SetupAdvancedError> {
     for (vi, vol) in image.root.children.iter().enumerate() {
         for (fi, file) in vol.children.iter().enumerate() {
-            if let Some(g) = ffs_guid {
-                if file.guid != Some(*g) { continue; }
+            if let Some(g) = ffs_guid
+                && file.guid != Some(*g)
+            {
+                continue;
             }
-            for (_si, sec) in file.children.iter().enumerate() {
+            for (si, sec) in file.children.iter().enumerate() {
                 if is_string_package(&sec.body) {
-                    return Ok((vi, fi));
+                    return Ok((vi, fi, si));
                 }
             }
         }
@@ -707,63 +738,274 @@ fn find_string_package(image: &Image, ffs_guid: Option<&Guid>) -> Result<(usize,
     Err(SetupAdvancedError::StringPackageNotFound)
 }
 
-fn is_string_package(body: &[u8]) -> bool {
-    body.len() >= 4 && body[3] == 0x04
+pub fn is_string_package(body: &[u8]) -> bool {
+    body.len() >= PACKAGE_HEADER_LEN && body[3] == PACKAGE_STRINGS
 }
 
-fn parse_max_string_id(body: &[u8]) -> u16 {
-    if body.len() < 6 { return 0; }
-    u16::from_le_bytes([body[4], body[5]])
+fn string_info_offset(body: &[u8]) -> usize {
+    if body.len() >= STRING_INFO_OFFSET_POS + 4 {
+        let off = u32::from_le_bytes([
+            body[STRING_INFO_OFFSET_POS],
+            body[STRING_INFO_OFFSET_POS + 1],
+            body[STRING_INFO_OFFSET_POS + 2],
+            body[STRING_INFO_OFFSET_POS + 3],
+        ]) as usize;
+        if off >= PACKAGE_HEADER_LEN && off < body.len() {
+            return off;
+        }
+    }
+    PACKAGE_HEADER_LEN
 }
 
-fn append_string_to_package(body: &mut Vec<u8>, string_id: u16, text: &str) {
-    body.push(0x00);
-    body.push(0x01);
-    body.extend_from_slice(&string_id.to_le_bytes());
-    body.extend_from_slice(text.as_bytes());
-    body.push(0x00);
+fn scan_sibt(body: &[u8], start: usize) -> (u16, usize) {
+    let mut pos = start;
+    let mut next_id: u16 = 1;
+    while pos < body.len() {
+        match body[pos] {
+            SIBT_END => return (next_id, pos),
+            SIBT_STRING_SCSU => {
+                next_id = next_id.wrapping_add(1);
+                pos = skip_scsu(body, pos + 1);
+            }
+            SIBT_STRING_SCSU_FONT => {
+                next_id = next_id.wrapping_add(1);
+                pos = skip_scsu(body, pos + 2);
+            }
+            SIBT_STRINGS_SCSU => {
+                let (ids, p) = read_u16_count(body, pos + 1);
+                pos = p;
+                for _ in 0..ids {
+                    next_id = next_id.wrapping_add(1);
+                    pos = skip_scsu(body, pos);
+                }
+            }
+            SIBT_STRINGS_SCSU_FONT => {
+                let (ids, p) = read_u16_count(body, pos + 2);
+                pos = p;
+                for _ in 0..ids {
+                    next_id = next_id.wrapping_add(1);
+                    pos = skip_scsu(body, pos);
+                }
+            }
+            SIBT_STRING_UCS2 => {
+                next_id = next_id.wrapping_add(1);
+                pos = skip_ucs2(body, pos + 1);
+            }
+            SIBT_STRING_UCS2_FONT => {
+                next_id = next_id.wrapping_add(1);
+                pos = skip_ucs2(body, pos + 2);
+            }
+            SIBT_STRINGS_UCS2 => {
+                let (ids, p) = read_u16_count(body, pos + 1);
+                pos = p;
+                for _ in 0..ids {
+                    next_id = next_id.wrapping_add(1);
+                    pos = skip_ucs2(body, pos);
+                }
+            }
+            SIBT_STRINGS_UCS2_FONT => {
+                let (ids, p) = read_u16_count(body, pos + 2);
+                pos = p;
+                for _ in 0..ids {
+                    next_id = next_id.wrapping_add(1);
+                    pos = skip_ucs2(body, pos);
+                }
+            }
+            SIBT_DUPLICATE => {
+                next_id = next_id.wrapping_add(1);
+                pos += 1 + 2;
+            }
+            SIBT_SKIP2 => {
+                let (c, p) = read_u16_count(body, pos + 1);
+                next_id = next_id.wrapping_add(c);
+                pos = p;
+            }
+            SIBT_SKIP1 => {
+                let count = body.get(pos + 1).copied().unwrap_or(0);
+                next_id = next_id.wrapping_add(count as u16);
+                pos += 2;
+            }
+            _ => break,
+        }
+    }
+    (next_id, body.len())
 }
 
-fn update_package_header(body: &mut Vec<u8>) {
+fn skip_scsu(body: &[u8], start: usize) -> usize {
+    let mut p = start;
+    while p < body.len() {
+        if body[p] == 0 {
+            return p + 1;
+        }
+        p += 1;
+    }
+    p
+}
+
+fn skip_ucs2(body: &[u8], start: usize) -> usize {
+    let mut p = start;
+    while p + 1 < body.len() {
+        if body[p] == 0 && body[p + 1] == 0 {
+            return p + 2;
+        }
+        p += 2;
+    }
+    body.len()
+}
+
+fn read_u16_count(body: &[u8], pos: usize) -> (u16, usize) {
+    if pos + 2 > body.len() {
+        return (0, body.len());
+    }
+    let c = u16::from_le_bytes([body[pos], body[pos + 1]]);
+    (c, pos + 2)
+}
+
+fn append_scsu_string(body: &mut Vec<u8>, end_pos: usize, text: &str) -> usize {
+    let block = build_scsu_block(text);
+    body.splice(end_pos..end_pos, block.iter().copied());
+    end_pos + block.len()
+}
+
+fn build_scsu_block(text: &str) -> Vec<u8> {
+    let mut block = Vec::with_capacity(1 + text.len() + 1);
+    block.push(SIBT_STRING_SCSU);
+    block.extend_from_slice(text.as_bytes());
+    block.push(0x00);
+    block
+}
+
+fn update_package_length(body: &mut [u8]) {
     let len = body.len() as u32;
-    body[0..4].copy_from_slice(&len.to_le_bytes());
-    let max_id = parse_max_string_id(body);
-    let _ = max_id;
+    body[0] = (len & 0xFF) as u8;
+    body[1] = ((len >> 8) & 0xFF) as u8;
+    body[2] = ((len >> 16) & 0xFF) as u8;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn make_minimal_string_package() -> Vec<u8> {
-        let mut buf = vec![0u8; 6];
-        buf[3] = 0x04;
-        buf[0..4].copy_from_slice(&6u32.to_le_bytes());
-        buf[4..6].copy_from_slice(&0u16.to_le_bytes());
+    fn make_string_package(existing: &[&str]) -> Vec<u8> {
+        let sibt_start = 12u32;
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&[0u8; 3]);
+        buf.push(PACKAGE_STRINGS);
+        buf.extend_from_slice(&sibt_start.to_le_bytes());
+        buf.extend_from_slice(&sibt_start.to_le_bytes());
+        for s in existing {
+            buf.push(SIBT_STRING_SCSU);
+            buf.extend_from_slice(s.as_bytes());
+            buf.push(0x00);
+        }
+        buf.push(SIBT_END);
+        let len = buf.len() as u32;
+        buf[0] = (len & 0xFF) as u8;
+        buf[1] = ((len >> 8) & 0xFF) as u8;
+        buf[2] = ((len >> 16) & 0xFF) as u8;
         buf
     }
 
-    #[test]
-    fn parse_max_id_empty() {
-        let pkg = make_minimal_string_package();
-        assert_eq!(parse_max_string_id(&pkg), 0);
+    fn mk_node(node_type: FfsType, body: Vec<u8>, children: Vec<FfsNode>) -> FfsNode {
+        FfsNode {
+            guid: None,
+            node_type,
+            subtype: 0,
+            offset: 0,
+            header: vec![],
+            body,
+            tail: vec![],
+            children,
+            action: Action::NoAction,
+            parsing_data: ParsingData::None,
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        }
     }
 
-    #[test]
-    fn append_string_increases_size() {
-        let mut pkg = make_minimal_string_package();
-        let len_before = pkg.len();
-        append_string_to_package(&mut pkg, 1, "hello");
-        assert!(pkg.len() > len_before);
-        assert_eq!(&pkg[len_before+2..len_before+4], &1u16.to_le_bytes());
-        assert_eq!(&pkg[len_before+4..len_before+9], b"hello");
+    fn make_image(pkg_body: Vec<u8>) -> Image {
+        let section = mk_node(FfsType::Section, pkg_body, vec![]);
+        let file = mk_node(FfsType::File, vec![], vec![section]);
+        let volume = mk_node(FfsType::Volume, vec![], vec![file]);
+        let root = mk_node(FfsType::Image, vec![], vec![volume]);
+        Image {
+            image_id: "img".into(),
+            session_id: "s".into(),
+            root,
+            mode: ImageMode::Write,
+        }
     }
 
     #[test]
     fn is_string_package_detects() {
-        let pkg = make_minimal_string_package();
+        let pkg = make_string_package(&[]);
         assert!(is_string_package(&pkg));
         assert!(!is_string_package(&[0x00, 0x00, 0x00, 0x02]));
+    }
+
+    #[test]
+    fn add_strings_to_body_assigns_sequential_ids() {
+        let mut pkg = make_string_package(&["first", "second"]);
+        let mapping = add_strings_to_body(&mut pkg, &["a".to_string(), "b".to_string()]);
+        assert_eq!(mapping["a"], 3);
+        assert_eq!(mapping["b"], 4);
+    }
+
+    #[test]
+    fn add_strings_to_body_writes_scsu_block_before_end() {
+        let mut pkg = make_string_package(&["first"]);
+        let end_pos_before = pkg.len() - 1;
+        assert_eq!(pkg[end_pos_before], SIBT_END);
+        add_strings_to_body(&mut pkg, &["new".to_string()]);
+        assert_eq!(pkg[end_pos_before], SIBT_STRING_SCSU);
+        assert_eq!(&pkg[end_pos_before + 1..end_pos_before + 4], b"new");
+        assert_eq!(pkg[end_pos_before + 4], 0x00);
+        assert_eq!(*pkg.last().unwrap(), SIBT_END);
+    }
+
+    #[test]
+    fn add_strings_to_body_updates_length() {
+        let mut pkg = make_string_package(&[]);
+        let len_before = pkg.len();
+        add_strings_to_body(&mut pkg, &["hello".to_string()]);
+        let stored = pkg[0] as u32 | ((pkg[1] as u32) << 8) | ((pkg[2] as u32) << 16);
+        assert_eq!(stored as usize, pkg.len());
+        assert!(pkg.len() > len_before);
+    }
+
+    #[test]
+    fn add_strings_skips_skip_blocks_in_id_counting() {
+        let mut pkg = make_string_package(&["first"]);
+        // insert a SIBT_SKIP2 (0x21) + count=5 before SIBT_END
+        let end = pkg.len() - 1;
+        pkg.splice(end..end, [SIBT_SKIP2, 0x05, 0x00]);
+        let mapping = add_strings_to_body(&mut pkg, &["after".to_string()]);
+        assert_eq!(mapping["after"], 7);
+    }
+
+    #[test]
+    fn add_strings_on_image_mutates_section_and_marks_rebuild() {
+        let pkg = make_string_package(&["first", "second"]);
+        let mut image = make_image(pkg);
+        let mapping = add_strings(&mut image, None, &["x".to_string()]).unwrap();
+        assert_eq!(mapping["x"], 3);
+        let section = &image.root.children[0].children[0].children[0];
+        let stored = section.body[0] as u32
+            | ((section.body[1] as u32) << 8)
+            | ((section.body[2] as u32) << 16);
+        assert_eq!(stored as usize, section.body.len());
+        assert_eq!(section.action, Action::Rebuild);
+        assert_eq!(image.root.children[0].children[0].action, Action::Rebuild);
+    }
+
+    #[test]
+    fn add_strings_returns_error_when_no_package() {
+        let mut image = make_image(vec![0x00, 0x00, 0x00, 0x02]);
+        assert!(matches!(
+            add_strings(&mut image, None, &["x".to_string()]),
+            Err(SetupAdvancedError::StringPackageNotFound)
+        ));
     }
 }
 ```
@@ -802,11 +1044,16 @@ git commit -m "feat(setup_advanced): add HII String package search and string ad
 
 `crates/uefi-engine/src/setup_advanced/ami_patcher.rs`:
 ```rust
+use crate::ops;
 use crate::types::*;
 use super::SetupAdvancedError;
 
 pub const AMI_RECORD_SIZE: usize = 108;
 pub const AMI_DEFAULT_ACCESS_LEVEL: u8 = 0x05;
+const AMI_PAGE_ID_OFFSET: usize = 24;
+const AMI_ACCESS_LEVEL_OFFSET: usize = 32;
+const AMI_FAILSAFE_OFFSET: usize = 104;
+const AMI_OPTIMAL_OFFSET: usize = 106;
 
 pub struct QuestionAmiRecord {
     pub question_id: u16,
@@ -820,11 +1067,11 @@ pub fn make_ami_record(rec: &QuestionAmiRecord) -> Vec<u8> {
     let mut buf = vec![0u8; AMI_RECORD_SIZE];
     buf[0..2].copy_from_slice(&rec.question_id.to_le_bytes());
     if let Some(pid) = rec.page_id {
-        buf[24..26].copy_from_slice(&pid.to_le_bytes());
+        buf[AMI_PAGE_ID_OFFSET..AMI_PAGE_ID_OFFSET + 2].copy_from_slice(&pid.to_le_bytes());
     }
-    buf[32] = rec.access_level;
-    buf[104] = rec.failsafe;
-    buf[106] = rec.optimal;
+    buf[AMI_ACCESS_LEVEL_OFFSET] = rec.access_level;
+    buf[AMI_FAILSAFE_OFFSET] = rec.failsafe;
+    buf[AMI_OPTIMAL_OFFSET] = rec.optimal;
     buf
 }
 
@@ -836,53 +1083,75 @@ pub fn patch_ami(
     setupdata_guid: Option<&Guid>,
     amitse_guid: Option<&Guid>,
 ) -> Result<(), SetupAdvancedError> {
-    let setupdata_idx = find_ami_module(image, setupdata_guid, "setupdata")?;
-    let amitse_idx = find_ami_module(image, amitse_guid, "AMITSE")?;
-    let setupdata = &mut image.root.children[0].children[setupdata_idx];
-    for q in questions {
-        let record = make_ami_record(q);
-        setupdata.body.extend_from_slice(&record);
+    let (sd_vi, sd_fi) = find_ami_module(image, setupdata_guid, "setupdata")?;
+    let (am_vi, am_fi) = find_ami_module(image, amitse_guid, "AMITSE")?;
+    {
+        let setupdata = &mut image.root.children[sd_vi].children[sd_fi];
+        for q in questions {
+            let record = make_ami_record(q);
+            setupdata.body.extend_from_slice(&record);
+        }
     }
-    let amitse = &mut image.root.children[0].children[amitse_idx];
-    let formset_marker = &formset_guid.to_bytes()[12..14];
-    let insert_pos = find_formset_marker_position(&amitse.body, formset_marker)
-        .unwrap_or(amitse.body.len());
-    for &fid in form_ids {
-        let mut entry = vec![0u8; 0];
-        entry.extend_from_slice(&fid.to_le_bytes());
-        amitse.body.splice(insert_pos..insert_pos, entry.iter().cloned());
+    ops::mark_rebuild_to_root_by_path(&mut image.root, &[sd_vi, sd_fi]);
+    {
+        let amitse = &mut image.root.children[am_vi].children[am_fi];
+        let formset_marker = &formset_guid.to_bytes()[12..14];
+        let insert_pos = find_formset_marker_position(&amitse.body, formset_marker)
+            .unwrap_or(amitse.body.len());
+        let mut entries = Vec::with_capacity(form_ids.len() * 2);
+        for &fid in form_ids {
+            entries.extend_from_slice(&fid.to_le_bytes());
+        }
+        amitse.body.splice(insert_pos..insert_pos, entries.iter().copied());
     }
+    ops::mark_rebuild_to_root_by_path(&mut image.root, &[am_vi, am_fi]);
     Ok(())
 }
 
-fn find_ami_module(image: &Image, guid: Option<&Guid>, name_hint: &str) -> Result<usize, SetupAdvancedError> {
-    let vol = &image.root.children[0];
-    for (i, file) in vol.children.iter().enumerate() {
-        if let Some(g) = guid {
-            if file.guid == Some(*g) { return Ok(i); }
+fn find_ami_module(image: &Image, guid: Option<&Guid>, name_hint: &str) -> Result<(usize, usize), SetupAdvancedError> {
+    for (vi, vol) in image.root.children.iter().enumerate() {
+        for (fi, file) in vol.children.iter().enumerate() {
+            if let Some(g) = guid
+                && file.guid == Some(*g)
+            {
+                return Ok((vi, fi));
+            }
         }
     }
-    if let Some(g) = guid {
-        let _ = g;
+    for (vi, vol) in image.root.children.iter().enumerate() {
+        for (fi, file) in vol.children.iter().enumerate() {
+            if has_name_section(&file.children, name_hint) {
+                return Ok((vi, fi));
+            }
+        }
     }
-    for (i, file) in vol.children.iter().enumerate() {
-        if has_name_section(&file.children, name_hint) { return Ok(i); }
-    }
-    for (i, file) in vol.children.iter().enumerate() {
-        if has_question_id_markers(&file.body) { return Ok(i); }
+    for (vi, vol) in image.root.children.iter().enumerate() {
+        for (fi, file) in vol.children.iter().enumerate() {
+            if has_question_id_markers(&file.body) {
+                return Ok((vi, fi));
+            }
+        }
     }
     Err(SetupAdvancedError::AmiFilesNotFound)
 }
 
 fn has_name_section(children: &[FfsNode], name: &str) -> bool {
     children.iter().any(|c| {
-        c.subtype == crate::ffs::EFI_SECTION_UI &&
-        String::from_utf8_lossy(&c.body).trim_end_matches('\0') == name
+        c.subtype == crate::ffs::EFI_SECTION_UI && ucs2_body_to_string(&c.body) == name
     })
 }
 
+fn ucs2_body_to_string(body: &[u8]) -> String {
+    let text: Vec<u16> = body
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .take_while(|&c| c != 0)
+        .collect();
+    String::from_utf16_lossy(&text)
+}
+
 fn has_question_id_markers(body: &[u8]) -> bool {
-    body.len() >= AMI_RECORD_SIZE && body.len() % AMI_RECORD_SIZE == 0
+    body.len() >= AMI_RECORD_SIZE && body.len().is_multiple_of(AMI_RECORD_SIZE)
 }
 
 fn find_formset_marker_position(body: &[u8], marker: &[u8]) -> Option<usize> {
@@ -920,6 +1189,91 @@ mod tests {
         assert_eq!(buf[50], 0);
         assert_eq!(buf[107], 0);
     }
+
+    fn mk_node(node_type: FfsType, body: Vec<u8>, children: Vec<FfsNode>) -> FfsNode {
+        FfsNode {
+            guid: None,
+            node_type,
+            subtype: 0,
+            offset: 0,
+            header: vec![],
+            body,
+            tail: vec![],
+            children,
+            action: Action::NoAction,
+            parsing_data: ParsingData::None,
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        }
+    }
+
+    fn ui_section(name: &str) -> FfsNode {
+        let mut ucs2: Vec<u8> = Vec::new();
+        for u in name.encode_utf16() {
+            ucs2.extend_from_slice(&u.to_le_bytes());
+        }
+        ucs2.extend_from_slice(&[0, 0]);
+        FfsNode {
+            guid: None,
+            node_type: FfsType::Section,
+            subtype: crate::ffs::EFI_SECTION_UI,
+            offset: 0,
+            header: vec![],
+            body: ucs2,
+            tail: vec![],
+            children: vec![],
+            action: Action::NoAction,
+            parsing_data: ParsingData::None,
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        }
+    }
+
+    fn make_image_named(setupdata_body: Vec<u8>, amitse_body: Vec<u8>) -> Image {
+        let setupdata = mk_node(FfsType::File, setupdata_body, vec![ui_section("setupdata")]);
+        let amitse = mk_node(FfsType::File, amitse_body, vec![ui_section("AMITSE")]);
+        let volume = mk_node(FfsType::Volume, vec![], vec![setupdata, amitse]);
+        let root = mk_node(FfsType::Image, vec![], vec![volume]);
+        Image { image_id: "img".into(), session_id: "s".into(), root, mode: ImageMode::Write }
+    }
+
+    #[test]
+    fn patch_ami_appends_records_and_marks_rebuild() {
+        let mut image = make_image_named(vec![0u8; AMI_RECORD_SIZE], vec![]);
+        let formset_guid: Guid = "A1B2C3D4-E5F6-7890-ABCD-EF1234567890".parse().unwrap();
+        let q = QuestionAmiRecord { question_id: 0x10, page_id: None, access_level: 0x05, failsafe: 1, optimal: 0 };
+        patch_ami(&mut image, &formset_guid, &[], &[q], None, None).unwrap();
+        let setupdata = &image.root.children[0].children[0];
+        assert_eq!(setupdata.body.len(), 2 * AMI_RECORD_SIZE);
+        assert_eq!(u16::from_le_bytes([setupdata.body[AMI_RECORD_SIZE], setupdata.body[AMI_RECORD_SIZE + 1]]), 0x10);
+        assert_eq!(setupdata.action, Action::Rebuild);
+        assert_eq!(image.root.children[0].action, Action::Rebuild);
+    }
+
+    #[test]
+    fn patch_ami_inserts_form_ids_in_order() {
+        let mut image = make_image_named(vec![0u8; AMI_RECORD_SIZE], vec![0xA1, 0xB2, 0xC3, 0xD4]);
+        let formset_guid: Guid = "A1B2C3D4-E5F6-7890-ABCD-EF1234567890".parse().unwrap();
+        patch_ami(&mut image, &formset_guid, &[0x0001, 0x0002], &[], None, None).unwrap();
+        let amitse = &image.root.children[0].children[1];
+        assert_eq!(u16::from_le_bytes([amitse.body[4], amitse.body[5]]), 0x0001);
+        assert_eq!(u16::from_le_bytes([amitse.body[6], amitse.body[7]]), 0x0002);
+    }
+
+    #[test]
+    fn patch_ami_returns_error_when_files_not_found() {
+        let other = mk_node(FfsType::File, vec![0xAB], vec![ui_section("Other")]);
+        let volume = mk_node(FfsType::Volume, vec![], vec![other]);
+        let root = mk_node(FfsType::Image, vec![], vec![volume]);
+        let mut image = Image { image_id: "img".into(), session_id: "s".into(), root, mode: ImageMode::Write };
+        let formset_guid: Guid = "A1B2C3D4-E5F6-7890-ABCD-EF1234567890".parse().unwrap();
+        assert!(matches!(
+            patch_ami(&mut image, &formset_guid, &[], &[], None, None),
+            Err(SetupAdvancedError::AmiFilesNotFound)
+        ));
+    }
 }
 ```
 
@@ -943,55 +1297,69 @@ git commit -m "feat(setup_advanced): add AMI patcher (setupdataBin records + ami
 
 **Files:**
 - Create: `crates/uefi-engine/src/setup_advanced/ffs_assembler.rs`
+- Modify: `crates/uefi-engine/src/ffs.rs` (add `EFI_FV_FILETYPE_RAW` — r_efi не экспортирует FFS file-type константы)
 
 **Interfaces:**
-- Consumes: `types::*`, `ffs::*` (checksums, header helpers)
+- Consumes: `types::Guid`, `ffs::*` (checksums, header helpers, section constants)
 - Produces:
   - `pub fn assemble_ffs(ifr_bytes: &[u8], string_package_bytes: &[u8], file_guid: &Guid) -> Result<Vec<u8>, SetupAdvancedError>`
-  - Сборка: FFSv2-заголовок (24 байта) + секции (EFI_SECTION_RAW с IFR + EFI_SECTION_RAW с String-пакетом)
-  - Пересчёт checksum, size
+  - Сборка: FFSv2-заголовок (24 байта, layout `EFI_FFS_FILE_HEADER` из UEFITool ffs.h:270-277: Name@0, IntegrityCheck@16-17, Type@18, Attributes@19, Size@20-22, State@23) + секции (EFI_SECTION_RAW с IFR + EFI_SECTION_RAW с String-пакетом)
+  - Пересчёт Header checksum8 (byte 16), size (byte 20-22). r_efi не экспортирует FFS file-type константы → `EFI_FV_FILETYPE_RAW=0x01` определяется в `crate::ffs` (refs/UEFITool-ai-fork/common/ffs.h).
 
-- [ ] **Step 1: Написать failing test**
+- [ ] **Step 1: Добавить константу типа FFS-файла в ffs.rs**
+
+`crates/uefi-engine/src/ffs.rs` — рядом с `EFI_SECTION_*`:
+```rust
+pub const EFI_FV_FILETYPE_RAW: u8 = 0x01; // refs/UEFITool-ai-fork/common/ffs.h
+```
+
+- [ ] **Step 2: Написать failing test**
 
 `crates/uefi-engine/src/setup_advanced/ffs_assembler.rs`:
 ```rust
-use crate::types::*;
 use crate::ffs::*;
+use crate::types::Guid;
+
 use super::SetupAdvancedError;
 
-pub fn assemble_ffs(ifr_bytes: &[u8], string_package_bytes: &[u8], file_guid: &Guid) -> Result<Vec<u8>, SetupAdvancedError> {
+const FFS_HEADER_SIZE: usize = 24;
+
+pub fn assemble_ffs(
+    ifr_bytes: &[u8],
+    string_package_bytes: &[u8],
+    file_guid: &Guid,
+) -> Result<Vec<u8>, SetupAdvancedError> {
     let mut body = Vec::new();
     emit_raw_section(&mut body, ifr_bytes);
     emit_raw_section(&mut body, string_package_bytes);
-    let total = 24 + body.len();
-    let mut header = vec![0u8; 24];
-    header[0..16].copy_from_slice(&guid_to_bytes(file_guid));
-    header[16] = 0x01;
-    header[17] = 0x00;
+    let total = FFS_HEADER_SIZE + body.len();
+    let mut header = vec![0u8; FFS_HEADER_SIZE];
+    header[0..16].copy_from_slice(&file_guid.to_bytes());
+    header[18] = EFI_FV_FILETYPE_RAW;
+    header[19] = 0x00;
     let size_b = size_to_uint24(total as u32);
-    header[20] = size_b[0]; header[21] = size_b[1]; header[22] = size_b[2];
-    let cs = calculate_checksum8(&header[0..23]);
-    header[23] = cs;
+    header[20] = size_b[0];
+    header[21] = size_b[1];
+    header[22] = size_b[2];
+    header[16] = calculate_checksum8(&header);
     let mut ffs = Vec::with_capacity(total);
     ffs.extend_from_slice(&header);
     ffs.extend_from_slice(&body);
     Ok(ffs)
 }
 
-// NOTE: дубликат `guid_to_bytes` из ifr_builder.rs — при реализации вынести в общий
-// хелпер (например, в `crate::types`) и переиспользовать; `uguid::Guid::to_bytes()` уже даёт [u8;16].
-fn guid_to_bytes(g: &Guid) -> [u8; 16] {
-    g.to_bytes()
-}
-
 fn emit_raw_section(out: &mut Vec<u8>, data: &[u8]) {
     let total = 4 + data.len();
     let size_b = size_to_uint24(total as u32);
-    out.push(size_b[0]); out.push(size_b[1]); out.push(size_b[2]);
+    out.push(size_b[0]);
+    out.push(size_b[1]);
+    out.push(size_b[2]);
     out.push(EFI_SECTION_RAW);
     out.extend_from_slice(data);
     let aligned = (out.len() + 3) & !3;
-    while out.len() < aligned { out.push(0x00); }
+    while out.len() < aligned {
+        out.push(0x00);
+    }
 }
 
 #[cfg(test)]
@@ -1006,10 +1374,10 @@ mod tests {
         let strpkg = vec![0x06, 0x00, 0x00, 0x00, 0x04];
         let ffs = assemble_ffs(&ifr, &strpkg, &g).unwrap();
         assert!(ffs.len() > 24);
-        assert_eq!(&ffs[0..16], &guid_to_bytes(&g));
-        assert_eq!(ffs[16], 0x01);
-        let cs = calculate_checksum8(&ffs[0..23]);
-        assert_eq!(ffs[23], cs);
+        assert_eq!(&ffs[0..16], &g.to_bytes());
+        assert_eq!(ffs[18], EFI_FV_FILETYPE_RAW);
+        let sum: u8 = ffs[0..24].iter().fold(0u8, |a, &b| a.wrapping_add(b));
+        assert_eq!(sum, 0);
     }
 
     #[test]
@@ -1020,20 +1388,32 @@ mod tests {
         let size = uint24_to_u32([ffs[20], ffs[21], ffs[22]]) as usize;
         assert_eq!(size, ffs.len());
     }
+
+    #[test]
+    fn assemble_ffs_round_trips_through_parser() {
+        let g = Guid::from_str("5C60F367-A505-419A-859E-2A4FF6CA6FE5").unwrap();
+        let ifr = vec![0x29, 0x02];
+        let ffs = assemble_ffs(&ifr, &[], &g).unwrap();
+        let node = crate::parser::file::parse_file(&ffs, 0, 0xFF, 2).unwrap();
+        assert_eq!(node.guid, Some(g));
+        assert_eq!(node.subtype, EFI_FV_FILETYPE_RAW);
+        assert_eq!(node.header.len(), 24);
+        assert_eq!(node.body.len(), ffs.len() - 24);
+    }
 }
 ```
 
-- [ ] **Step 2: Подключить в mod.rs и запустить тесты**
+- [ ] **Step 3: Подключить в mod.rs и запустить тесты**
 
 `crates/uefi-engine/src/setup_advanced/mod.rs`: добавить `pub mod ffs_assembler;`
 
 Run: `cargo test -p uefi-engine setup_advanced::ffs_assembler`
 Expected: PASS
 
-- [ ] **Step 3: Коммит**
+- [ ] **Step 4: Коммит**
 
 ```bash
-git add crates/uefi-engine/src/setup_advanced/ffs_assembler.rs crates/uefi-engine/src/setup_advanced/mod.rs
+git add crates/uefi-engine/src/setup_advanced/ffs_assembler.rs crates/uefi-engine/src/setup_advanced/mod.rs crates/uefi-engine/src/ffs.rs
 git commit -m "feat(setup_advanced): add FFS assembler (header + RAW sections + checksum)"
 ```
 
@@ -1073,7 +1453,7 @@ pub struct AddSetupResult {
 }
 
 pub fn add_setup_formset(image: &mut Image, schema: &schema::FormSetSchema, target_ffs_guid: Option<&Guid>) -> Result<AddSetupResult, SetupAdvancedError> {
-    let formset_guid: Guid = schema.formset_guid.parse().map_err(|e: std::str::ParseError| SetupAdvancedError::InvalidSchema(e.to_string()))?;
+    let formset_guid: Guid = Guid::try_parse(&schema.formset_guid).map_err(|e| SetupAdvancedError::InvalidSchema(e.to_string()))?;
     let new_ffs_guid = Guid::try_parse(&format!(
         "{:08X}-BEEF-1234-8000-000000000001",
         0xB00B0000 + image.root.children.len() as u32,
@@ -1091,14 +1471,14 @@ pub fn add_setup_formset(image: &mut Image, schema: &schema::FormSetSchema, targ
     }
     let string_ids = string_pack::add_strings(image, target_ffs_guid, &strings)?;
     let ifr_bytes = build_ifr(schema, &string_ids)?;
-    let strpkg_idx = find_string_package_section(image, target_ffs_guid)?;
-    let strpkg_bytes = image.root.children[0].children[strpkg_idx.0].children[strpkg_idx.1].body.clone();
+    let (sp_vi, sp_fi, sp_si) = find_string_package_section(image, target_ffs_guid)?;
+    let strpkg_bytes = image.root.children[sp_vi].children[sp_fi].children[sp_si].body.clone();
     let ffs_bytes = ffs_assembler::assemble_ffs(&ifr_bytes, &strpkg_bytes, &new_ffs_guid)?;
     let (form_ids, questions) = extract_form_ids_and_questions(schema);
     let setupdata_guid = schema.setupdata_guid.as_ref().and_then(|s| s.parse().ok());
     let amitse_guid = schema.amitse_guid.as_ref().and_then(|s| s.parse().ok());
     ami_patcher::patch_ami(image, &formset_guid, &form_ids, &questions, setupdata_guid.as_ref(), amitse_guid.as_ref())?;
-    let target = crate::parser::target::Target::Path(vec![0]);
+    let target = Target::Path(vec![0]);
     ops::insert(&mut image.root, &target, &ffs_bytes, ops::InsertMode::Into)
         .map_err(|e| SetupAdvancedError::FfsAssemblyError(e.to_string()))?;
     Ok(AddSetupResult { new_ffs_guid, inserted_form_ids: form_ids, string_ids })
@@ -1122,13 +1502,13 @@ fn collect_item_strings(item: &schema::ItemSchema, strings: &mut Vec<String>) {
 
 fn build_ifr(schema: &schema::FormSetSchema, string_ids: &HashMap<String, u16>) -> Result<Vec<u8>, SetupAdvancedError> {
     let mut b = IfrBuilder::new();
-    let formset_guid: Guid = schema.formset_guid.parse().map_err(|e: std::str::ParseError| SetupAdvancedError::InvalidSchema(e.to_string()))?;
+    let formset_guid: Guid = Guid::try_parse(&schema.formset_guid).map_err(|e| SetupAdvancedError::InvalidSchema(e.to_string()))?;
     let title_id = string_ids[&schema.title];
     let help_id = string_ids[&schema.help];
     let class_guids: Vec<Guid> = schema.class_guids.iter().filter_map(|s| s.parse().ok()).collect();
     b.emit_form_set(&formset_guid, title_id, help_id, &class_guids);
     for vs in &schema.varstores {
-        let g: Guid = vs.guid.parse().map_err(|e: std::str::ParseError| SetupAdvancedError::InvalidSchema(e.to_string()))?;
+        let g: Guid = Guid::try_parse(&vs.guid).map_err(|e| SetupAdvancedError::InvalidSchema(e.to_string()))?;
         let name_id = string_ids[&vs.name];
         b.emit_var_store(vs.id, &g, vs.size, &vs.name);
         let _ = name_id;
@@ -1150,7 +1530,7 @@ fn build_ifr(schema: &schema::FormSetSchema, string_ids: &HashMap<String, u16>) 
 
 fn emit_item(b: &mut IfrBuilder, item: &schema::ItemSchema, string_ids: &HashMap<String, u16>) {
     let display_flags = |d: schema::DisplayMode| -> u8 {
-        match d { schema::DisplayMode::IntDec => 0x00, schema::DisplayMode::UintDec => 0x10, schema::DisplayMode::UintHex => 0x20 }
+        match d { schema::DisplayMode::IntDec => IFR_DISPLAY_INT_DEC, schema::DisplayMode::UintDec => IFR_DISPLAY_UINT_DEC, schema::DisplayMode::UintHex => IFR_DISPLAY_UINT_HEX }
     };
     match item {
         schema::ItemSchema::OneOf(o) => {
@@ -1160,8 +1540,8 @@ fn emit_item(b: &mut IfrBuilder, item: &schema::ItemSchema, string_ids: &HashMap
                 let tid = string_ids[&opt.text];
                 let mut flags = 0u8;
                 match opt.default {
-                    Some(schema::DefaultClass::Optimized) => flags |= 0x10,
-                    Some(schema::DefaultClass::Failsafe) => flags |= 0x20,
+                    Some(schema::DefaultClass::Optimized) => flags |= IFR_OPTION_DEFAULT,
+                    Some(schema::DefaultClass::Failsafe) => flags |= IFR_OPTION_DEFAULT_MFG,
                     None => {}
                 }
                 b.emit_one_of_option(tid, flags, o.size - 1, opt.value, o.size);
@@ -1176,8 +1556,10 @@ fn emit_item(b: &mut IfrBuilder, item: &schema::ItemSchema, string_ids: &HashMap
         }
         schema::ItemSchema::CheckBox(c) => {
             let pid = string_ids[&c.prompt]; let hid = string_ids[&c.help];
-            b.emit_check_box(pid, hid, c.question_id, c.var_store_id, c.var_offset, 0);
-            if let Some(v) = c.defaults.optimized { if v != 0 { b.emit_check_box_default(true); } }
+            let mut cbflags = 0u8;
+            if c.defaults.optimized.unwrap_or(0) != 0 { cbflags |= IFR_CHECKBOX_DEFAULT; }
+            if c.defaults.failsafe.unwrap_or(0) != 0 { cbflags |= IFR_CHECKBOX_DEFAULT_MFG; }
+            b.emit_check_box(pid, hid, c.question_id, c.var_store_id, c.var_offset, cbflags);
             b.emit_end();
         }
         schema::ItemSchema::Numeric(n) => {
@@ -1230,12 +1612,12 @@ fn extract_question(item: &schema::ItemSchema) -> Option<(u16, Option<u16>, u8, 
     }
 }
 
-fn find_string_package_section(image: &Image, ffs_guid: Option<&Guid>) -> Result<(usize, usize), SetupAdvancedError> {
+fn find_string_package_section(image: &Image, ffs_guid: Option<&Guid>) -> Result<(usize, usize, usize), SetupAdvancedError> {
     for (vi, vol) in image.root.children.iter().enumerate() {
         for (fi, file) in vol.children.iter().enumerate() {
             if let Some(g) = ffs_guid { if file.guid != Some(*g) { continue; } }
-            for (_si, sec) in file.children.iter().enumerate() {
-                if string_pack::is_string_package_pub(&sec.body) { return Ok((vi, fi)); }
+            for (si, sec) in file.children.iter().enumerate() {
+                if string_pack::is_string_package(&sec.body) { return Ok((vi, fi, si)); }
             }
         }
     }
@@ -1243,18 +1625,15 @@ fn find_string_package_section(image: &Image, ffs_guid: Option<&Guid>) -> Result
 }
 ```
 
-Добавить в `string_pack.rs`:
+Добавить в `ifr_builder.rs` рядом с существующими `pub use r_efi::hii::*` алиасами реэкспорт флаг-констант (используются координатором; r_efi::hii их экспортирует):
 ```rust
-pub fn is_string_package_pub(body: &[u8]) -> bool { is_string_package(body) }
-```
-
-Добавить в `ifr_builder.rs`:
-```rust
-impl IfrBuilder {
-    pub fn emit_check_box_default(&mut self, _standard: bool) {
-        self.buf.push(0x01);
-    }
-}
+pub use r_efi::hii::IFR_CHECKBOX_DEFAULT;
+pub use r_efi::hii::IFR_CHECKBOX_DEFAULT_MFG;
+pub use r_efi::hii::IFR_DISPLAY_INT_DEC;
+pub use r_efi::hii::IFR_DISPLAY_UINT_DEC;
+pub use r_efi::hii::IFR_DISPLAY_UINT_HEX;
+pub use r_efi::hii::IFR_OPTION_DEFAULT;
+pub use r_efi::hii::IFR_OPTION_DEFAULT_MFG;
 ```
 
 - [ ] **Step 2: Запустить компиляцию**
@@ -1310,16 +1689,21 @@ Expected: компиляция, типы `AddSetupFormSetRequest`/`AddSetupFormS
 
 - [ ] **Step 3: Реализовать метод в server.rs**
 
+Обновить импорт в `crates/uefi-engine/src/rpc/server.rs` (добавить `Guid` — без него вызов `Guid::try_parse` ниже не компилируется E0433, т.к. существующий импорт лишь `use crate::types::{Image, ImageMode};`):
+```rust
+use crate::types::{Guid, Image, ImageMode};
+```
+
 Добавить в `impl EngineService for EngineServer` в `crates/uefi-engine/src/rpc/server.rs`:
 ```rust
 async fn add_setup_form_set(&self, req: Request<AddSetupFormSetRequest>) -> RpcResult<AddSetupFormSetResponse> {
     let r = req.into_inner();
     let schema = crate::setup_advanced::schema::parse_schema(&r.schema_json)
         .map_err(|e| Status::invalid_argument(e.to_string()))?;
-    let target_guid: Option<crate::types::Guid> = if r.target_ffs_guid.is_empty() {
+    let target_guid: Option<Guid> = if r.target_ffs_guid.is_empty() {
         None
     } else {
-        Some(r.target_ffs_guid.parse().map_err(|e: std::str::ParseError| Status::invalid_argument(e.to_string()))?)
+        Some(Guid::try_parse(&r.target_ffs_guid).map_err(|e| Status::invalid_argument(e.to_string()))?)
     };
     let mut images = self.images.lock().await;
     let img = images.get_mut(&r.image_id).ok_or_else(|| Status::not_found("image not found"))?;
@@ -1339,15 +1723,36 @@ async fn add_setup_form_set(&self, req: Request<AddSetupFormSetRequest>) -> RpcR
 }
 ```
 
-- [ ] **Step 4: Запустить компиляцию и тесты**
+- [ ] **Step 4: Запустить компиляцию и тесты uefi-engine**
 
 Run: `cargo build -p uefi-engine && cargo test -p uefi-engine`
 Expected: PASS
 
-- [ ] **Step 5: Коммит**
+- [ ] **Step 5: Обновить downstream mock-серверы (uefi-cli, uefi-tui, uefi-gateway)**
+
+Шаг 4 не ловит дефект: расширение trait `EngineService` новым методом требует его реализации во ВСЕХ impl-блоках, иначе `cargo test --all` падает с E0046 "not all trait items implemented, missing: `add_setup_form_set`". Кроме серверного impl в `crates/uefi-engine/src/rpc/server.rs` (Step 3), trait реализуют mock-серверы в test-крейтах: `crates/uefi-cli/tests/mock_server.rs`, `crates/uefi-tui/tests/mock_server.rs`, `crates/uefi-gateway/tests/mock_server.rs` (определены в планах циклов 2/3/5+7). Каждый нужно дополнить stub-реализацией нового метода.
+
+В каждый из трёх файлов добавить в `impl EngineService for MockEngine` (перед закрывающей `}` блока impl) stub:
+```rust
+    async fn add_setup_form_set(
+        &self,
+        _req: Request<AddSetupFormSetRequest>,
+    ) -> Result<Response<AddSetupFormSetResponse>, Status> {
+        Ok(Response::new(AddSetupFormSetResponse {
+            new_ffs_id: "mock".into(),
+            inserted_form_ids: vec![],
+            string_ids: std::collections::HashMap::new(),
+        }))
+    }
+```
+
+Run: `cargo test --all`
+Expected: PASS (все крейты компилируются)
+
+- [ ] **Step 6: Коммит**
 
 ```bash
-git add crates/uefi-proto/proto/engine.proto crates/uefi-engine/src/rpc/server.rs
+git add crates/uefi-proto/proto/engine.proto crates/uefi-engine/src/rpc/server.rs crates/uefi-cli/tests/mock_server.rs crates/uefi-tui/tests/mock_server.rs crates/uefi-gateway/tests/mock_server.rs
 git commit -m "feat(setup_advanced): add gRPC AddSetupFormSet method to EngineService"
 ```
 

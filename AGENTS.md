@@ -9,6 +9,7 @@ UEFIPatcher — многокомпонентное приложение для �
 - `roadmap.md` — декомпозиция на циклы, зависимости, статусы
 - `docs/superpowers/specs/` — дизайн-спеки каждого цикла
 - `docs/superpowers/plans/` — детальные планы реализации (TDD, пошаговые задачи)
+- `TODO.md` — отложенные и несрочные правки (deprecated-код, известные дефекты, пробелы в API). Сюда же фиксируются находки ревизии CLI/кода, пока по ним не принят отдельный план.
 
 ## Порядок реализации (по приоритетам)
 
@@ -25,20 +26,22 @@ UEFIPatcher — многокомпонентное приложение для �
 1. **Читай план цикла перед стартом.** Открой соответствующий файл из `docs/superpowers/plans/`.
 2. **Иди строго по задачам (Task 1, Task 2, ...).** Не перескакивай.
 3. **Внутри задачи — по шагам (Step 1, Step 2, ...).** Каждый шаг = одно действие.
-4. **Module-first rule (критично!):** при создании файла модуля (например `ffs.rs`), добавь `pub mod ffs;` в `lib.rs`/`main.rs`/`mod.rs` **В ТОМ ЖЕ ШАГЕ**, ДО запуска `cargo test`. Это исключает false-positive (0 из 0 тестов).
-5. **TDD порядок:** (1) объявить `mod` + создать файл с тестами → (2) `cargo test` (падает) → (3) реализация → (4) `cargo test` (проходит) → (5) commit.
+4. **Module-first rule (критично!):** сразу после создания файла модуля (например `ffs.rs`), добавь `pub mod ffs;` в `lib.rs`/`main.rs`/`mod.rs` **В ТОМ ЖЕ ШАГЕ**, ДО запуска `cargo test`. Это исключает false-positive (0 из 0 тестов).
+5. **TDD порядок:** (1) создать файл с тестами + объявить `mod` → (2) `cargo test` (падает) → (3) реализация → (4) `cargo test` (проходит) → (5) commit.
 6. **Binary crates:** `main.rs` / `src/bin/*.rs` создаётся одновременно с `Cargo.toml` (минимальный `fn main() {}`).
 7. **Один коммит на шаг** где указано `git commit`. Сообщения коммитов — из плана.
 8. **Не добавляй комментарии в код** (кроме ссылок на референс `file:line`).
 9. **После каждой задачи** запускай `cargo test -p <crate>` и `cargo clippy -p <crate> -- -D warnings`.
 10. **Если тест падает** — исправляй, не двигайся дальше пока не пройдёт.
+11. **Дефекты плана — отдельным коммитом ДО реализации.** Если в шаге обнаружено расхождение с реальностью (несуществующий API, неверный тип/сигнатура, код не компилируется, тест не может пройти на данных из плана, унаследованные баги из прошлых циклов, и т.п.) — не правь молча код под неправильный план и не вставляй fixup в implementation-коммит. Сначала отдельный коммит `docs: fix Task N in cycle X plan (<конкретные дефекты через запятую>)` с правкой `docs/superpowers/plans/*.md`, затем — реализация. История коммитов должна показывать, что именно выяснилось и где. Примеры: `0d2c7e1`, `4a8ef43`, `014fc58`.
+12. **Container runtime** - если присутствует файл `/run/.containerenv`, значит разработка ведется в контейнере, проверить наличие настроенного `podman-remote`, альтернатива docker/podman-compose - `podman-remote kube play`
 
 ### Крейты (НЕ писать самописный парсинг!)
 
 | Крейт | Назначение |
 |-------|-----------|
 | `uguid` | `Guid` — Display (`to_ascii_hex_lower`), FromStr (`try_parse`), serde. UPPERCASE wrapper: `g.to_string().to_ascii_uppercase()`. Не использовать struct literal с data1/data2/data3/data4 — их нет в uguid. |
-| `r-efi` | UEFI типы: `r_efi::hii::*` (IFR-структуры: IfrFormSet, IfrForm, IfrCheckbox, IfrNumeric, IfrOneOf, IfrDefault, IfrVarstoreEfi, IfrEnd, etc.), opcode-константы (IFR_FORM_SET_OP, etc.). НЕ определять свои IFR-структуры. |
+| `r-efi` | UEFI runtime + HII типы: `r_efi::hii::*` (IFR-структуры: IfrFormSet, IfrForm, IfrCheckbox, IfrNumeric, IfrOneOf, IfrDefault, IfrVarstoreEfi, IfrEnd, etc.), opcode-константы (IFR_FORM_SET_OP, etc.). НЕ определять свои IFR-структуры. ВАЖНО: r-efi 7.0 НЕ содержит PI-констант (EFI_SECTION_*, EFI_FV_FILETYPE_*, EFI_FVH_SIGNATURE, EFI_FVB2_*) — они в `uefi-common::pi`. |
 | `binrw` | `#[brw]`-макросы для декларативного описания binary-структур (FFS/section/FV заголовки). НЕ читать байты вручную по offset. |
 | `object` | PE32 parsing (features: read_core, pe) для PEI/DXE модулей. |
 | `lzma-rs` | LZMA декомпрессия compressed-секций. |
@@ -55,6 +58,10 @@ UEFIPatcher — многокомпонентное приложение для �
 - `../refs/UEFI-Editor/src/components/scripts/scripts.ts` — AMI-патчинг
 - `../refs/current/fixes/UEFIPatcher/crates/uefi-engine/src/ffs.rs` — эталонный ffs.rs (checksums, wrapping arithmetic)
 - IFR-структуры: `r_efi::hii::*` (крейт r-efi, не читать заголовки C)
+
+### Тестовые данные
+
+- `refs/fw/HNX99TF_200525_original_E5C88C6F.bin` — реальный 16MB BIOS-образ для валидации парсера/билдера на живых данных. Используется в `crates/uefi-engine/tests/real_image.rs` (тесты `#[ignore]` по умолчанию, запускаются явно при наличии файла). Путь из крейта: `../../../refs/fw/HNX99TF_200525_original_E5C88C6F.bin`.
 
 ### Команды проверки
 

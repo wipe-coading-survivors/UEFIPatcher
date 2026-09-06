@@ -24,7 +24,7 @@
 - WebSocket: `/api/v1/image/:id/dump/ws` — streaming dump.
 - Кодстайл Rust: `cargo fmt`, `cargo clippy -- -D warnings`. Кодстайл TS: `eslint`, `prettier`, `svelte-check`.
 - Без комментариев в коде.
-- Docker: `docker/gateway.containerfile`, `docker/webui.containerfile` (на базе `docker/rust-builder.containerfile` из цикла 1, `registry.fedoraproject.org/fedora:44`), обновить `docker/docker-compose.yml`.
+- Docker: `docker/gateway.containerfile`, `docker/webui.containerfile` (на базе `docker/rust-builder.containerfile` из цикла 1, `registry.fedoraproject.org/fedora:44`), `docker/webui-nginx.conf`, обновить `docker/docker-compose.yml`. Runtime-каскад повторяет cycle 1: builder → `uefipatcher-rust-builder`, runtime → `uefipatcher-runtime-base`. Альтернатива compose — `docker/uefipatcher-pod.yaml` (Kubernetes Pod manifest для `podman-remote kube play`, см. AGENTS.md rule 12).
 
 ---
 
@@ -46,7 +46,7 @@
 | `crates/uefi-gateway/src/routes/setup.rs` | /api/v1/image/:id/{set-visibility,setup-items,add-formset} |
 | `crates/uefi-gateway/src/routes/upload.rs` | /api/v1/image/upload, /api/v1/image/:id/download |
 | `crates/uefi-gateway/src/routes/artifact.rs` | /api/v1/image/:id/extract, /api/v1/artifact/{export,import}, /api/v1/artifacts |
-| `crates/uefi-gateway/src/ws.rs` | WebSocket streaming dump |
+| `crates/uefi-gateway/src/routes/ws.rs` | WebSocket streaming dump |
 | `crates/uefi-gateway/tests/mock_server.rs` | mock EngineService |
 | `crates/uefi-gateway/tests/integration.rs` | integration-тесты |
 | `webui/package.json` | SvelteKit project |
@@ -63,9 +63,11 @@
 | `webui/src/lib/stores.ts` | svelte stores |
 | `webui/src/lib/Tree.svelte` | tree-view компонент |
 | `webui/src/lib/Details.svelte` | details panel |
-| `docker/gateway.containerfile` | gateway образ (на базе rust-builder.containerfile, fedora:44) |
-| `docker/webui.containerfile` | webui образ (fedora:44 + nginx/static) |
+| `docker/gateway.containerfile` | gateway образ (билдер `uefipatcher-rust-builder`, runtime `uefipatcher-runtime-base`) |
+| `docker/webui.containerfile` | webui образ (билдер + runtime на базе `uefipatcher-runtime-base`, nginx) |
+| `docker/webui-nginx.conf` | nginx конфиг (listen 3000, proxy `/api/v1/` → gateway:8080) |
 | `docker/docker-compose.yml` | engine + gateway + webui |
+| `docker/uefipatcher-pod.yaml` | альтернатива docker-compose для `podman-remote kube play` (AGENTS.md rule 12) |
 
 ---
 
@@ -129,6 +131,7 @@ use anyhow::Result;
 
 pub struct Config {
     pub listen: SocketAddr,
+    #[allow(dead_code)] // consumed in Task 2 (client::EngineClient::connect); remove then
     pub sock_path: PathBuf,
 }
 
@@ -152,6 +155,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
 #[derive(Debug)]
+#[allow(dead_code)] // consumed in Task 4 (routes); remove then
 pub enum AppError {
     Auth,
     NotFound(String),
@@ -191,7 +195,7 @@ impl From<tonic::Status> for AppError {
 mod config;
 mod error;
 
-use axum::routing::{get, post};
+use axum::routing::get;
 use axum::Json;
 use serde_json::{json, Value};
 use tower_http::cors::CorsLayer;
@@ -217,6 +221,8 @@ async fn health() -> Json<Value> {
 Run: `cargo build -p uefi-gateway`
 Expected: компиляция без ошибок
 
+> **Note (clippy):** AGENTS.md rule 9 требует `cargo clippy -p uefi-gateway -- -D warnings`. В Task 1 `Config::sock_path` и `AppError` ещё не используются (потребуются в Task 2 и Task 4 соответственно), поэтому на них временно навешан `#[allow(dead_code)]` — удалить эти атрибуты при выполнении Task 2 (sock_path) и Task 4 (AppError). Аналогично `use axum::routing::get` без `post` (post понадобится в Task 4 — вернуть импорт тогда).
+
 - [ ] **Step 7: Коммит**
 
 ```bash
@@ -228,24 +234,37 @@ git commit -m "feat(gateway): scaffold uefi-gateway (axum, config, health, error
 
 ### Task 2: gateway/client.rs — gRPC-клиент к движку
 
+> ⚠️ **Дефекты (исправлены в плане):**
+> - **A (зависимость):** `client.rs` импортирует `crate::session::SessionMap` (Task 3). Сначала выполни Task 3 (session.rs), затем этот task.
+> - **B (unix-сокет):** `Endpoint::from_shared("unix://...")` НЕ работает в tonic 0.12. Использовать connector-override через `tower::service_fn` + `UnixStream` (как `uefi-cli/src/client.rs:30-39`, фикс cycle 3 `4a8ef43`).
+> - **C (несуществующий RPC):** `add_setup_form_set` ссылается на `AddSetupFormSetRequest/Response` — этих типов **нет в proto** (добавляются в cycle 6 Task 7, ещё не выполнен). Метод отложен до cycle 6.
+> - **D (dead_code):** `EngineClient`/`SessionMap` не используются до Task 4. Добавить crate-level `#![allow(dead_code)]` в main.rs, удалить в Task 4.
+> - **E (deps):** для connector-override нужны `hyper-util` (tokio), `http`, `tower = "0.4"` (вместо 0.5 — tonic 0.12/axum 0.7 используют tower 0.4). Дополнить `Cargo.toml`.
+> - **G (async):** `auth_req` вызывает `sessions.get_token()` (async, tokio Mutex) — `auth_req` должна быть `async fn`, а все call sites `Self::auth_req(...).await?`.
+> - **H (clippy):** `insert`/`replace` имеют 8 аргументов → `clippy::too_many_arguments`. Добавить `#[allow(clippy::too_many_arguments)]` (дизайн sessions-per-call неизбежен для multi-session).
+
 **Files:**
 - Create: `crates/uefi-gateway/src/client.rs`
 - Modify: `crates/uefi-gateway/src/main.rs`
+- Modify: `crates/uefi-gateway/Cargo.toml` (deps для connector-override)
 
 **Interfaces:**
 - Consumes: `uefi-proto`, `tonic`, `config::Config`
 - Produces:
   - `pub struct EngineClient { inner: EngineServiceClient<Channel> }`
   - `pub async fn connect(sock_path: &Path) -> Result<EngineClient>`
-  - Методы-обёртки для всех RPC (с metadata auth): `create_session(name)`, `destroy_session`, `list_sessions`, `open_image`, `dump_tree`, `list_items`, `find_item`, `insert`, `remove`, `replace`, `rebuild`, `set_setup_visibility`, `save_image`, `add_setup_form_set`, `extract_artifact`, `export_artifact`, `import_artifact`, `list_artifacts`
+  - Методы-обёртки для всех RPC (с metadata auth): `create_session(name)`, `destroy_session`, `list_sessions`, `open_image`, `dump_tree`, `list_items`, `find_item`, `insert`, `remove`, `replace`, `rebuild`, `set_setup_visibility`, `save_image`, `extract_artifact`, `export_artifact`, `import_artifact`, `list_artifacts`. (`add_setup_form_set` отложен до cycle 6 — нет proto RPC)
 
 - [ ] **Step 1: Реализовать client.rs**
 
 `crates/uefi-gateway/src/client.rs`:
 ```rust
 use std::path::Path;
+use http::Uri;
+use hyper_util::rt::TokioIo;
 use tonic::transport::{Channel, Endpoint};
 use tonic::Request;
+use tower::service_fn;
 use uefi_proto::engine_service_client::EngineServiceClient;
 use uefi_proto::*;
 use crate::session::SessionMap;
@@ -256,13 +275,24 @@ pub struct EngineClient {
 
 impl EngineClient {
     pub async fn connect(sock_path: &Path) -> anyhow::Result<Self> {
-        let url = format!("unix://{}", sock_path.display());
-        let ch = Endpoint::from_shared(url)?.connect().await?;
-        Ok(Self { inner: EngineServiceClient::new(ch) })
+        let sock_str = sock_path.display().to_string();
+        let channel = Endpoint::try_from("http://localhost")?
+            .connect_with_connector(service_fn(move |_: Uri| {
+                let s = sock_str.clone();
+                async move {
+                    Ok::<_, std::io::Error>(TokioIo::new(
+                        tokio::net::UnixStream::connect(s).await?,
+                    ))
+                }
+            }))
+            .await?;
+        Ok(Self {
+            inner: EngineServiceClient::new(channel),
+        })
     }
 
-    fn auth_req<T>(sessions: &SessionMap, session_id: &str, body: T) -> Result<Request<T>, tonic::Status> {
-        let token = sessions.get_token(session_id)
+    async fn auth_req<T>(sessions: &SessionMap, session_id: &str, body: T) -> Result<Request<T>, tonic::Status> {
+        let token = sessions.get_token(session_id).await
             .ok_or_else(|| tonic::Status::unauthenticated("no token for session"))?;
         let mut req = Request::new(body);
         req.metadata_mut().insert("authorization", format!("Bearer {token}").parse().unwrap());
@@ -283,77 +313,81 @@ impl EngineClient {
     }
     pub async fn open_image(&mut self, sessions: &SessionMap, session_id: &str, path: &str, mode: i32) -> anyhow::Result<OpenImageResponse> {
         let req = OpenImageRequest { session_id: session_id.into(), image_path: path.into(), mode };
-        Ok(self.inner.open_image(Self::auth_req(sessions, session_id, req)?).await?.into_inner())
+        Ok(self.inner.open_image(Self::auth_req(sessions, session_id, req).await?).await?.into_inner())
     }
     pub async fn dump_tree(&mut self, sessions: &SessionMap, session_id: &str, image_id: &str, format: i32) -> anyhow::Result<String> {
         let req = DumpTreeRequest { image_id: image_id.into(), format };
-        Ok(self.inner.dump_tree(Self::auth_req(sessions, session_id, req)?).await?.into_inner().text)
+        Ok(self.inner.dump_tree(Self::auth_req(sessions, session_id, req).await?).await?.into_inner().text)
     }
     pub async fn list_items(&mut self, sessions: &SessionMap, session_id: &str, image_id: &str, filter: &str) -> anyhow::Result<Vec<Item>> {
         let req = ListItemsRequest { image_id: image_id.into(), filter: filter.into() };
-        Ok(self.inner.list_items(Self::auth_req(sessions, session_id, req)?).await?.into_inner().items)
+        Ok(self.inner.list_items(Self::auth_req(sessions, session_id, req).await?).await?.into_inner().items)
     }
     pub async fn find_item(&mut self, sessions: &SessionMap, session_id: &str, image_id: &str, target: &str) -> anyhow::Result<String> {
         let req = FindItemRequest { image_id: image_id.into(), target: target.into() };
-        Ok(self.inner.find_item(Self::auth_req(sessions, session_id, req)?).await?.into_inner().item_id)
+        Ok(self.inner.find_item(Self::auth_req(sessions, session_id, req).await?).await?.into_inner().item_id)
     }
+    #[allow(clippy::too_many_arguments)]
     pub async fn insert(&mut self, sessions: &SessionMap, session_id: &str, image_id: &str, target: &str, ffs_path: &str, artifact_id: &str, mode: i32) -> anyhow::Result<String> {
         let req = InsertRequest { image_id: image_id.into(), target: target.into(), ffs_path: ffs_path.into(), artifact_id: artifact_id.into(), mode };
-        Ok(self.inner.insert(Self::auth_req(sessions, session_id, req)?).await?.into_inner().item_id)
+        Ok(self.inner.insert(Self::auth_req(sessions, session_id, req).await?).await?.into_inner().item_id)
     }
     pub async fn remove(&mut self, sessions: &SessionMap, session_id: &str, image_id: &str, target: &str) -> anyhow::Result<()> {
         let req = RemoveRequest { image_id: image_id.into(), target: target.into() };
-        self.inner.remove(Self::auth_req(sessions, session_id, req)?).await?;
+        self.inner.remove(Self::auth_req(sessions, session_id, req).await?).await?;
         Ok(())
     }
+    #[allow(clippy::too_many_arguments)]
     pub async fn replace(&mut self, sessions: &SessionMap, session_id: &str, image_id: &str, target: &str, data_path: &str, artifact_id: &str, body_only: bool) -> anyhow::Result<String> {
         let req = ReplaceRequest { image_id: image_id.into(), target: target.into(), ffs_path: data_path.into(), artifact_id: artifact_id.into(), body_only };
-        Ok(self.inner.replace(Self::auth_req(sessions, session_id, req)?).await?.into_inner().item_id)
+        Ok(self.inner.replace(Self::auth_req(sessions, session_id, req).await?).await?.into_inner().item_id)
     }
     pub async fn rebuild(&mut self, sessions: &SessionMap, session_id: &str, image_id: &str, target: &str) -> anyhow::Result<()> {
         let req = RebuildRequest { image_id: image_id.into(), target: target.into() };
-        self.inner.rebuild(Self::auth_req(sessions, session_id, req)?).await?;
+        self.inner.rebuild(Self::auth_req(sessions, session_id, req).await?).await?;
         Ok(())
     }
     pub async fn set_setup_visibility(&mut self, sessions: &SessionMap, session_id: &str, image_id: &str, item_id: &str, visible: bool) -> anyhow::Result<()> {
         let req = SetSetupItemVisibilityRequest { image_id: image_id.into(), item_id: item_id.into(), visible };
-        self.inner.set_setup_item_visibility(Self::auth_req(sessions, session_id, req)?).await?;
+        self.inner.set_setup_item_visibility(Self::auth_req(sessions, session_id, req).await?).await?;
         Ok(())
     }
     pub async fn save_image(&mut self, sessions: &SessionMap, session_id: &str, image_id: &str, output_path: &str) -> anyhow::Result<()> {
         let req = SaveImageRequest { image_id: image_id.into(), output_path: output_path.into() };
-        self.inner.save_image(Self::auth_req(sessions, session_id, req)?).await?;
+        self.inner.save_image(Self::auth_req(sessions, session_id, req).await?).await?;
         Ok(())
     }
-    pub async fn add_setup_form_set(&mut self, sessions: &SessionMap, session_id: &str, image_id: &str, schema_json: &str, target_ffs_guid: &str) -> anyhow::Result<AddSetupFormSetResponse> {
-        let req = AddSetupFormSetRequest { image_id: image_id.into(), schema_json: schema_json.into(), target_ffs_guid: target_ffs_guid.into() };
-        Ok(self.inner.add_setup_form_set(Self::auth_req(sessions, session_id, req)?).await?.into_inner())
-    }
+    // add_setup_form_set отложен до cycle 6 (Task 7 добавляет AddSetupFormSet RPC в proto)
     pub async fn extract_artifact(&mut self, sessions: &SessionMap, session_id: &str, image_id: &str, target: &str, body_only: bool) -> anyhow::Result<String> {
         let req = ExtractArtifactRequest { image_id: image_id.into(), target: target.into(), body_only };
-        Ok(self.inner.extract_artifact(Self::auth_req(sessions, session_id, req)?).await?.into_inner().artifact_id)
+        Ok(self.inner.extract_artifact(Self::auth_req(sessions, session_id, req).await?).await?.into_inner().artifact_id)
     }
     pub async fn export_artifact(&mut self, sessions: &SessionMap, session_id: &str, artifact_id: &str, output_path: &str) -> anyhow::Result<()> {
         let req = ExportArtifactRequest { artifact_id: artifact_id.into(), output_path: output_path.into() };
-        self.inner.export_artifact(Self::auth_req(sessions, session_id, req)?).await?;
+        self.inner.export_artifact(Self::auth_req(sessions, session_id, req).await?).await?;
         Ok(())
     }
     pub async fn import_artifact(&mut self, sessions: &SessionMap, session_id: &str, file_path: &str) -> anyhow::Result<String> {
         let req = ImportArtifactRequest { session_id: session_id.into(), file_path: file_path.into() };
-        Ok(self.inner.import_artifact(Self::auth_req(sessions, session_id, req)?).await?.into_inner().artifact_id)
+        Ok(self.inner.import_artifact(Self::auth_req(sessions, session_id, req).await?).await?.into_inner().artifact_id)
     }
     pub async fn list_artifacts(&mut self, sessions: &SessionMap, session_id: &str) -> anyhow::Result<Vec<ArtifactInfo>> {
         let req = ListArtifactsRequest { session_id: session_id.into() };
-        Ok(self.inner.list_artifacts(Self::auth_req(sessions, session_id, req)?).await?.into_inner().artifacts)
+        Ok(self.inner.list_artifacts(Self::auth_req(sessions, session_id, req).await?).await?.into_inner().artifacts)
     }
 }
 ```
 
 - [ ] **Step 2: Подключить в main.rs**
 
-`crates/uefi-gateway/src/main.rs`: добавить `mod client;`
+`crates/uefi-gateway/src/main.rs`: добавить `#![allow(dead_code)]` (crate-level, удалить в Task 4), `mod client;` и `mod session;` (session — prerequisite из Task 3). Также обновить `Cargo.toml`: добавить `hyper-util = { version = "0.1", features = ["tokio"] }`, `http = "1"`, заменить `tower = "0.5"` → `tower = { version = "0.4", features = ["util"] }`.
 
-- [ ] **Step 3: Коммит**
+- [ ] **Step 3: Проверить сборку + clippy**
+
+Run: `cargo build -p uefi-gateway && cargo clippy -p uefi-gateway -- -D warnings`
+Expected: компиляция без ошибок/предупреждений (модули dead_code до Task 4 — подавлены `#![allow(dead_code)]`)
+
+- [ ] **Step 4: Коммит**
 
 ```bash
 git add crates/uefi-gateway/src/client.rs crates/uefi-gateway/src/main.rs
@@ -363,6 +397,10 @@ git commit -m "feat(gateway): add gRPC client to engine (all EngineService metho
 ---
 
 ### Task 3: gateway/session.rs — cookie-маппинг и token map
+
+> ⚠️ **Порядок:** выполняется ПЕРЕД Task 2 (client.rs импортирует `crate::session::SessionMap`). См. дефект A в Task 2.
+>
+> ⚠️ **Дефект F (исправлен):** в axum-extra 0.9.6 модуль `cookie` находится по пути `axum_extra::extract::cookie` (НЕ `axum_extra::cookie`). Импорты: `use axum_extra::extract::cookie::{Cookie, SameSite};`. `CookieJar` остаётся `axum_extra::extract::CookieJar`.
 
 **Files:**
 - Create: `crates/uefi-gateway/src/session.rs`
@@ -383,7 +421,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use axum_extra::extract::CookieJar;
-use axum_extra::cookie::Cookie;
+use axum_extra::extract::cookie::{Cookie, SameSite};
 
 pub struct SessionMap {
     map: Arc<Mutex<HashMap<String, String>>>,
@@ -411,7 +449,7 @@ pub fn extract_session_id(jar: &CookieJar) -> Option<String> {
 pub fn make_session_cookie(session_id: &str) -> Cookie<'static> {
     Cookie::build(("uefipatcher_session", session_id.to_string()))
         .http_only(true)
-        .same_site(axum_extra::cookie::SameSite::Strict)
+        .same_site(SameSite::Strict)
         .path("/")
         .build()
 }
@@ -419,13 +457,9 @@ pub fn make_session_cookie(session_id: &str) -> Cookie<'static> {
 pub fn make_image_cookie(image_id: &str) -> Cookie<'static> {
     Cookie::build(("uefipatcher_image", image_id.to_string()))
         .http_only(true)
-        .same_site(axum_extra::cookie::SameSite::Strict)
+        .same_site(SameSite::Strict)
         .path("/")
         .build()
-}
-
-pub fn extract_image_id(jar: &CookieJar) -> Option<String> {
-    jar.get("uefipatcher_image").map(|c| c.value().to_string())
 }
 ```
 
@@ -443,6 +477,15 @@ git commit -m "feat(gateway): add session module (cookie mapping, in-memory toke
 ---
 
 ### Task 4: gateway/routes/ — REST эндпоинты (session, image, edit, setup, upload)
+
+> ⚠️ **Дефекты (исправлены в плане):**
+> - **I (Query-тип):** `items` handler использовал `Query<serde_json::Map<...>>` — хрупко/несовместимо с `serde_urlencoded`. Заменить на структуру `ItemsQuery { filter: Option<String> }`.
+> - **C⁻ (наследник defect C):** route `/add-formset` + `setup::add_formset` вызывают `add_setup_form_set` (отложен в Task 2 до cycle 6). Убрать route и handler.
+> - **J (dead_code):** `session::extract_image_id` не используется ни одним route (image_id берётся из URL `Path`, не из cookie). Удалить из session.rs.
+> - **D⁻ (cleanup):** убрать `#![allow(dead_code)]` из main.rs (модули теперь wired) и per-item `#[allow(dead_code)]` из config.rs (`sock_path` теперь читается) и error.rs (`AppError` теперь используется).
+> - **K (тип ошибки client):** RPC-методы client (кроме `connect`) возвращают `anyhow::Result<T>`, но routes вызывают `.map_err(AppError::from)` — а `AppError` имеет только `From<tonic::Status>`. Изменить возврат RPC-методов на `Result<T, tonic::Status>` (сохраняет gRPC-код маппинг 401/404/400). `connect` остаётся `anyhow::Result` (io-ошибки, только в main). Routes `create`/`list` тоже использовать `AppError::from` (не `Internal(e.to_string())`).
+> - **L (json!):** `json!({ "path": path.display() })` — `path::Display` не реализует `Serialize`. Использовать `path.display().to_string()`.
+> - **M (clippy let_underscore_future):** `let _ = tokio::fs::remove_file(&out_path);` не await-ит Future (и НЕ удаляет файл — баг). Исправить: `let _ = tokio::fs::remove_file(&out_path).await;`.
 
 **Files:**
 - Create: `crates/uefi-gateway/src/routes/mod.rs`
@@ -497,7 +540,6 @@ pub fn router(state: AppState) -> axum::Router {
         .route("/api/v1/image/:id/rebuild", axum::routing::post(edit::rebuild))
         .route("/api/v1/image/:id/set-visibility", axum::routing::post(setup::set_visibility))
         .route("/api/v1/image/:id/setup-items", axum::routing::get(setup::list_items))
-        .route("/api/v1/image/:id/add-formset", axum::routing::post(setup::add_formset))
         .route("/api/v1/image/:id/extract", axum::routing::post(artifact::extract))
         .route("/api/v1/artifact/:id/export", axum::routing::post(artifact::export))
         .route("/api/v1/artifact/import", axum::routing::post(artifact::import))
@@ -587,9 +629,12 @@ pub async fn dump(State(state): State<AppState>, jar: CookieJar, Path(id): Path<
     Ok(Json(json!({ "text": text })))
 }
 
-pub async fn items(State(state): State<AppState>, jar: CookieJar, Path(id): Path<String>, Query(q): Query<serde_json::Map<String, serde_json::Value>>) -> Result<Json<Value>, AppError> {
+#[derive(Deserialize)]
+pub struct ItemsQuery { pub filter: Option<String> }
+
+pub async fn items(State(state): State<AppState>, jar: CookieJar, Path(id): Path<String>, Query(q): Query<ItemsQuery>) -> Result<Json<Value>, AppError> {
     let sid = extract_session_id(&jar).ok_or(AppError::Auth)?;
-    let filter = q.get("filter").and_then(|v| v.as_str()).unwrap_or("");
+    let filter = q.filter.as_deref().unwrap_or("");
     let mut c = state.client.lock().await;
     let items = c.list_items(&state.sessions, &sid, &id, filter).await.map_err(AppError::from)?;
     Ok(Json(json!({ "items": items })))
@@ -692,15 +737,7 @@ pub async fn list_items(State(state): State<AppState>, jar: CookieJar, Path(id):
     let setup: Vec<_> = items.into_iter().filter(|i| i.r#type == 67).collect();
     Ok(Json(json!({ "items": setup })))
 }
-
-#[derive(Deserialize)]
-pub struct AddFormSetBody { pub schema_json: String, pub target_ffs_guid: String }
-pub async fn add_formset(State(state): State<AppState>, jar: CookieJar, Path(id): Path<String>, Json(body): Json<AddFormSetBody>) -> Result<Json<Value>, AppError> {
-    let sid = extract_session_id(&jar).ok_or(AppError::Auth)?;
-    let mut c = state.client.lock().await;
-    let r = c.add_setup_form_set(&state.sessions, &sid, &id, &body.schema_json, &body.target_ffs_guid).await.map_err(AppError::from)?;
-    Ok(Json(json!({ "new_ffs_id": r.new_ffs_id, "inserted_form_ids": r.inserted_form_ids, "string_ids": r.string_ids })))
-}
+// add_formset отложен до cycle 6 (add_setup_form_set defer, defect C)
 ```
 
 `crates/uefi-gateway/src/routes/upload.rs`:
@@ -725,7 +762,7 @@ pub async fn upload(State(_state): State<AppState>, _jar: CookieJar, mut multipa
             let id = Uuid::new_v4();
             let path = PathBuf::from(format!("/tmp/uefipatcher-upload-{id}.bin"));
             tokio::fs::write(&path, &data).await.map_err(|e| AppError::Internal(e.to_string()))?;
-            return Ok(Json(json!({ "path": path.display() })));
+            return Ok(Json(json!({ "path": path.display().to_string() })));
         }
     }
     Err(AppError::BadRequest("no file field in multipart".into()))
@@ -737,7 +774,7 @@ pub async fn download(State(state): State<AppState>, jar: CookieJar, Path(id): P
     let mut c = state.client.lock().await;
     c.save_image(&state.sessions, &sid, &id, &out_path).await.map_err(AppError::from)?;
     let data = tokio::fs::read(&out_path).await.map_err(|e| AppError::Internal(e.to_string()))?;
-    let _ = tokio::fs::remove_file(&out_path);
+    let _ = tokio::fs::remove_file(&out_path).await;
     Ok(Response::builder()
         .header(header::CONTENT_TYPE, "application/octet-stream")
         .header(header::CONTENT_DISPOSITION, "attachment; filename=\"patched.bin\"")
@@ -849,12 +886,14 @@ git commit -m "feat(gateway): add REST routes (session/image/edit/setup/upload/d
 ### Task 5: gateway/ws.rs — WebSocket для streaming dump
 
 **Files:**
-- Create: `crates/uefi-gateway/src/ws.rs`
+- Create: `crates/uefi-gateway/src/routes/ws.rs`
 - Modify: `crates/uefi-gateway/src/routes/mod.rs` (добавить WS route)
+
+> ⚠️ **Дефект N (исправлен):** путь к файлу был `crates/uefi-gateway/src/ws.rs`, но код использует `use super::AppState;` (только валиден, если файл — sibling `routes/mod.rs`) и Step 2 добавляет `pub mod ws;` в `routes/mod.rs` (резолвится только если файл — `src/routes/ws.rs`). Путь исправлен на `src/routes/ws.rs`; код и Step 2 корректны.
 
 - [ ] **Step 1: Реализовать ws.rs**
 
-`crates/uefi-gateway/src/ws.rs`:
+`crates/uefi-gateway/src/routes/ws.rs`:
 ```rust
 use axum::extract::ws::{WebSocket, WebSocketUpgrade, Message};
 use axum::extract::{Path, State, Query};
@@ -889,7 +928,7 @@ async fn handle_ws(mut socket: WebSocket, state: AppState, sid: String, image_id
             let _ = socket.send(Message::Text(format!("error: {e}"))).await;
         }
     }
-    let _ = socket.close(None).await;
+    let _ = socket.close().await;
 }
 ```
 
@@ -903,7 +942,7 @@ async fn handle_ws(mut socket: WebSocket, state: AppState, sid: String, image_id
 - [ ] **Step 3: Коммит**
 
 ```bash
-git add crates/uefi-gateway/src/ws.rs crates/uefi-gateway/src/routes/mod.rs
+git add crates/uefi-gateway/src/routes/ws.rs crates/uefi-gateway/src/routes/mod.rs
 git commit -m "feat(gateway): add WebSocket endpoint for streaming dump"
 ```
 
@@ -911,51 +950,109 @@ git commit -m "feat(gateway): add WebSocket endpoint for streaming dump"
 
 ### Task 6: Mock-сервер и integration-тесты gateway
 
+> ⚠️ **Дефекты (исправлены в плане):**
+> - **P (lib+bin split, наследник cycle-3 fix `014fc58`):** integration-тест вызывает `uefi_gateway::main_inner()`, но `uefi-gateway` — binary-only crate (только `src/main.rs`). Items бинарного crate'а НЕ импортируются из integration-тестов через `crate_name::item`. План "добавить `main_inner` в main.rs" недостаточен. Нужно создать `src/lib.rs` с модулями + `pub async fn main_inner()`, а `main.rs` сделать тонкой обёрткой `uefi_gateway::main_inner().await` (как `uefi-tui`: lib.rs+main.rs).
+> - **Q (unused import):** `use std::path::Path;` в integration.rs не используется → `cargo clippy -- -D warnings` / rustc fail. Убрать.
+> - **R (edition 2024):** workspace edition = 2024, где `std::env::set_var` стал `unsafe fn`. План-код `std::env::set_var(...)` без `unsafe {}` НЕ компилируется.
+> - **S (parallel port collision):** оба `#[tokio::test]` биндят фиксированный `127.0.0.1:18080` + глобально мутируют env → `Address already in use` и race при параллельном запуске (`cargo test` дефолтит на N потоков). Фикс: тест биндит `TcpListener::bind("127.0.0.1:0")` сам (OS выдаёт свободный порт), передаёт listener в `serve(listener, sock)` — нет env, нет коллизии. `#[tokio::test(flavor = "multi_thread")]` по образцу cycle-2/3 (`014fc58`).
+> - **T (missing dev-dep):** mock_server.rs использует `tokio_stream::wrappers::UnixListenerStream`, но в dev-deps gateway его нет. Добавить `tokio-stream = { version = "0.1", features = ["net"] }` (как `uefi-cli/Cargo.toml`).
+> - **U (reqwest feature):** integration-тест вызывает `resp.cookies()`, но этот метод в reqwest 0.12 gated за feature `cookies` (`#[cfg(feature = "cookies")] pub fn cookies(...)` в `async_impl/response.rs`), а в dev-deps gateway включены только `json`+`multipart`. Добавить `cookies` в features dev-deps reqwest.
+> - **Решение R+S:** добавить `pub async fn serve(listener: TcpListener, sock_path: &Path) -> Result<()>` в lib.rs (тест-friendly), `main_inner` делегирует в `serve` после чтения env и bind'а своего listener'а.
+
 **Files:**
 - Create: `crates/uefi-gateway/tests/mock_server.rs`
 - Create: `crates/uefi-gateway/tests/integration.rs`
+- Create: `crates/uefi-gateway/src/lib.rs` (defect P: lib+bin split для доступности `uefi_gateway::*` из integration-тестов)
+- Modify: `crates/uefi-gateway/src/main.rs` (тонкая обёртка над lib::main_inner)
+- Modify: `crates/uefi-gateway/Cargo.toml` (defect T: dev-dep `tokio-stream`)
 
 - [ ] **Step 1: Создать mock_server.rs (копия из uefi-cli/uefi-tUI)**
 
 `crates/uefi-gateway/tests/mock_server.rs` — копировать `crates/uefi-cli/tests/mock_server.rs` (MockEngine с заглушками EngineService, `start_mock(sock)`).
 
-- [ ] **Step 2: Написать integration-тесты**
+> **Note (defects T+U):** mock_server использует `tokio_stream::wrappers::UnixListenerStream` → добавить в `[dev-dependencies]` `tokio-stream = { version = "0.1", features = ["net"] }`. Также integration-тест вызывает `resp.cookies()` (gated за feature `cookies` в reqwest 0.12) → обновить dev-dep reqwest: `reqwest = { version = "0.12", features = ["json", "multipart", "cookies"] }`. Остальные deps — `tonic`/`tokio`/`uefi-proto`/`uuid`/`hyper-util`/`http`/`tower` — уже в `[dependencies]`, доступны в тестах.
 
-`crates/uefi-gateway/tests/integration.rs`:
+- [ ] **Step 2: lib.rs (lib+bin split) + main.rs thin wrapper**
+
+`crates/uefi-gateway/src/lib.rs` (defect P: делает модули и entry-point доступными из integration-тестов; defect R+S: `serve(listener, sock_path)` — тест-friendly API, нет env):
+```rust
+pub mod client;
+pub mod config;
+pub mod error;
+pub mod routes;
+pub mod session;
+
+use std::path::Path;
+use std::sync::Arc;
+
+use tower_http::cors::CorsLayer;
+
+pub async fn serve(
+    listener: tokio::net::TcpListener,
+    sock_path: &Path,
+) -> anyhow::Result<()> {
+    let engine = client::EngineClient::connect(sock_path).await?;
+    let state = routes::AppState {
+        client: Arc::new(tokio::sync::Mutex::new(engine)),
+        sessions: Arc::new(session::SessionMap::new()),
+    };
+    let app = routes::router(state).layer(CorsLayer::very_permissive());
+    axum::serve(listener, app).await?;
+    Ok(())
+}
+
+pub async fn main_inner() -> anyhow::Result<()> {
+    let cfg = config::load_config()?;
+    let listener = tokio::net::TcpListener::bind(cfg.listen).await?;
+    serve(listener, &cfg.sock_path).await
+}
+```
+
+`crates/uefi-gateway/src/main.rs` (тонкая обёртка, делегирует в lib):
+```rust
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    uefi_gateway::main_inner().await
+}
+```
+
+- [ ] **Step 3: Написать integration-тесты**
+
+`crates/uefi-gateway/tests/integration.rs` (defects Q+R+S: нет `use std::path::Path`; нет `env::set_var` — вместо этого `serve(listener, &sock)` с port 0; `flavor = "multi_thread"`):
 ```rust
 mod mock_server;
 
+use std::time::Duration;
+
 use reqwest::StatusCode;
 use serde_json::json;
-use std::path::Path;
 use tempfile::TempDir;
 
 async fn setup_gateway() -> (TempDir, String) {
     let td = TempDir::new().unwrap();
     let sock = td.path().join("test.sock");
     mock_server::start_mock(&sock).await;
-    std::env::set_var("UEFIPATCHER_SOCK", &sock);
-    std::env::set_var("UEFIPATCHER_GATEWAY_LISTEN", "127.0.0.1:18080");
-    let listen = "127.0.0.1:18080".to_string();
-    tokio::spawn(async {
-        let _ = uefi_gateway::main_inner().await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let _ = uefi_gateway::serve(listener, &sock).await;
     });
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    (td, listen)
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    (td, format!("http://{addr}"))
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn health() {
-    let (_td, listen) = setup_gateway().await;
-    let resp = reqwest::get(format!("http://{listen}/api/v1/health")).await.unwrap();
+    let (_td, base) = setup_gateway().await;
+    let resp = reqwest::get(format!("{base}/api/v1/health")).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn create_session_and_list() {
-    let (_td, listen) = setup_gateway().await;
+    let (_td, base) = setup_gateway().await;
     let client = reqwest::Client::new();
-    let resp = client.post(format!("http://{listen}/api/v1/session"))
+    let resp = client.post(format!("{base}/api/v1/session"))
         .json(&json!({}))
         .send().await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -964,39 +1061,22 @@ async fn create_session_and_list() {
     let body: serde_json::Value = resp.json().await.unwrap();
     assert!(body["session_id"].as_str().is_some());
 
-    let resp = client.get(format!("http://{listen}/api/v1/sessions"))
+    let resp = client.get(format!("{base}/api/v1/sessions"))
         .header("cookie", "uefipatcher_session=".to_string() + body["session_id"].as_str().unwrap())
         .send().await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 }
 ```
 
-Добавить в `crates/uefi-gateway/src/main.rs`:
-```rust
-pub async fn main_inner() -> anyhow::Result<()> {
-    let cfg = config::load_config()?;
-    let engine = client::EngineClient::connect(&cfg.sock_path).await?;
-    let state = routes::AppState {
-        client: Arc::new(tokio::sync::Mutex::new(engine)),
-        sessions: Arc::new(session::SessionMap::new()),
-    };
-    let app = routes::router(state).layer(CorsLayer::very_permissive());
-    let listener = tokio::net::TcpListener::bind(cfg.listen).await?;
-    axum::serve(listener, app).await?;
-    Ok(())
-}
-```
-И в `main()` просто вызвать `main_inner().await`.
-
-- [ ] **Step 3: Запустить integration-тесты**
+- [ ] **Step 4: Запустить integration-тесты**
 
 Run: `cargo test -p uefi-gateway --test integration`
-Expected: PASS
+Expected: PASS (2 теста: health, create_session_and_list)
 
-- [ ] **Step 4: Коммит**
+- [ ] **Step 5: Коммит**
 
 ```bash
-git add crates/uefi-gateway/tests/ crates/uefi-gateway/src/main.rs
+git add crates/uefi-gateway/tests/ crates/uefi-gateway/src/lib.rs crates/uefi-gateway/src/main.rs crates/uefi-gateway/Cargo.toml
 git commit -m "test(gateway): add mock server and integration tests (health, session flow)"
 ```
 
@@ -1022,6 +1102,8 @@ cd webui && npm create svelte@latest . -- --template skeleton --types typescript
 ```
 (или вручную создать файлы ниже)
 
+> **Note (defects V/W/X/Y):** выявлено при реализации. **(X)** `@sveltejs/vite-plugin-svelte@^4.0.0` имеет peer `vite@^5.0.0`, конфликтует с `vite@^6.0.0` из плана (`npm install` → ERESOLVE) → `^5.0.0`. **(Y)** типы Vite/Kit (`Buffer`, `http`, `node:fs`, namespace `NodeJS`) требуют `@types/node` → добавить `"@types/node": "^22.0.0"` в `devDependencies` (иначе svelte-check сообщает ~40 ошибок в `node_modules`). **(V)** `sveltekit()` экспортируется из `@sveltejs/kit/vite`, НЕ из `@sveltejs/vite-plugin-svelte` (там только `svelte`/`vitePreprocess`) — неверный импорт даёт SyntaxError `does not provide an export named 'sveltekit'`. **(W)** в Svelte 5 `children` это `Snippet`, рендер через `{@render children()}`, а не `{$children}` (svelte-check: «Cannot use 'children' as a store»). Правки внесены в Step 2/4/9 ниже.
+
 - [ ] **Step 2: package.json**
 
 `webui/package.json`:
@@ -1040,11 +1122,12 @@ cd webui && npm create svelte@latest . -- --template skeleton --types typescript
   "devDependencies": {
     "@sveltejs/adapter-static": "^3.0.0",
     "@sveltejs/kit": "^2.0.0",
-    "@sveltejs/vite-plugin-svelte": "^4.0.0",
+    "@sveltejs/vite-plugin-svelte": "^5.0.0",
     "svelte": "^5.0.0",
     "svelte-check": "^4.0.0",
     "typescript": "^5.5.0",
-    "vite": "^6.0.0"
+    "vite": "^6.0.0",
+    "@types/node": "^22.0.0"
   }
 }
 ```
@@ -1068,7 +1151,7 @@ export default {
 
 `webui/vite.config.ts`:
 ```typescript
-import { sveltekit } from '@sveltejs/vite-plugin-svelte';
+import { sveltekit } from '@sveltejs/kit/vite';
 import { defineConfig } from 'vite';
 
 export default defineConfig({
@@ -1243,7 +1326,7 @@ export async function addFormSet(imageId: string, schemaJson: string, targetFfsG
         <span>Session: {$sessionStore.slice(0, 8)}...</span>
     {/if}
 </header>
-<main>{$children}</main>
+<main>{@render children()}</main>
 ```
 
 `webui/src/routes/+page.svelte`:
@@ -1356,13 +1439,15 @@ git commit -m "feat(webui): scaffold SvelteKit (api.ts, stores, layout, upload p
     {#if node}
         <h3>Details</h3>
         <table>
-            <tr><td>Path</td><td>{node.path}</td></tr>
-            <tr><td>Type</td><td>{node.type}</td></tr>
-            <tr><td>Subtype</td><td>0x{node.subtype.toString(16)}</td></tr>
-            <tr><td>GUID</td><td>{node.guid || '(none)'}</td></tr>
-            <tr><td>Offset</td><td>0x{node.offset.toString(16)}</td></tr>
-            <tr><td>Size</td><td>0x{node.size.toString(16)}</td></tr>
-            <tr><td>Name</td><td>{node.name}</td></tr>
+            <tbody>
+                <tr><td>Path</td><td>{node.path}</td></tr>
+                <tr><td>Type</td><td>{node.type}</td></tr>
+                <tr><td>Subtype</td><td>0x{node.subtype.toString(16)}</td></tr>
+                <tr><td>GUID</td><td>{node.guid || '(none)'}</td></tr>
+                <tr><td>Offset</td><td>0x{node.offset.toString(16)}</td></tr>
+                <tr><td>Size</td><td>0x{node.size.toString(16)}</td></tr>
+                <tr><td>Name</td><td>{node.name}</td></tr>
+            </tbody>
         </table>
     {:else}
         <p>Select a node from the tree</p>
@@ -1488,6 +1573,8 @@ git commit -m "feat(webui): add image page (tree + details + operations + save/d
 
 ### Task 10: webui/setup/+page.svelte — setup (видимость + add-formset)
 
+> ⚠️ **Дефект BB (исправлен):** `placeholder='{"formset_guid":"...","forms":[...]}'` — Svelte парсит `{...}` внутри значений атрибутов как template-выражения **всегда**, даже в одиночных кавычках. Это даёт `expected_token }` (https://svelte.dev/e/expected_token) на `npm run check`. Фикс: использовать expression-форму атрибута `placeholder={'...'}` — тогда JSON-строка парсится как JS-строка внутри Svelte-выражения, без двусмысленности.
+
 **Files:**
 - Create: `webui/src/routes/setup/+page.svelte`
 
@@ -1540,7 +1627,7 @@ git commit -m "feat(webui): add image page (tree + details + operations + save/d
     </section>
     <section>
         <h3>Add FormSet (JSON schema)</h3>
-        <textarea bind:value={schemaText} rows="15" cols="60" placeholder='{"formset_guid":"...","title":"...","forms":[...]}'></textarea>
+        <textarea bind:value={schemaText} rows="15" cols="60" placeholder={'{"formset_guid":"...","title":"...","forms":[...]}'}></textarea>
         <br />
         <button onclick={doAddFormSet}>Add FormSet</button>
     </section>
@@ -1570,11 +1657,18 @@ git commit -m "feat(webui): add setup page (visibility toggle + add-formset)"
 - Create: `docker/gateway.containerfile`
 - Create: `docker/webui.containerfile`
 - Create: `docker/webui-nginx.conf`
+- Create: `docker/uefipatcher-pod.yaml` (альтернатива docker-compose для `podman-remote kube play`, AGENTS.md rule 12)
 - Modify: `docker/docker-compose.yml`
 
-> **Note:** Rust-сборки переиспользуют общий `docker/rust-builder.containerfile` (создан в Цикле 1, Task 18: `registry.fedoraproject.org/fedora:44` + `rust`/`cargo`/`protobuf-compiler`). Перед сборкой gateway образ нужно собрать базовый образ: `podman build -f docker/rust-builder.containerfile -t uefipatcher-rust-builder ..`
+> **Note:** Rust-сборки переиспользуют общие базовые образы из Цикла 1: builder-стадия — от `docker/rust-builder.containerfile` (создан в Цикле 1, Task 18: `registry.fedoraproject.org/fedora:44` + `rust`/`cargo`/`protobuf-compiler`), runtime-стадия — от `docker/runtime-base.containerfile` (`registry.fedoraproject.org/fedora:44` + `ca-certificates` + `sqlite-libs`). Перед сборкой gateway/webui нужно собрать базовые образы: `podman-remote build -f docker/rust-builder.containerfile -t uefipatcher-rust-builder .` и `podman-remote build -f docker/runtime-base.containerfile -t uefipatcher-runtime-base .`
 
 - [ ] **Step 1: gateway.containerfile**
+
+> ⚠️ **Дефекты (исправлены в плане, post-implementation sync):**
+> - **CC (runtime base):** runtime-стадия `FROM registry.fedoraproject.org/fedora:44` + `dnf install ca-certificates` дублировала `docker/runtime-base.containerfile` (cycle 1). Заменена на `FROM uefipatcher-runtime-base` для единой цепочки базовых образов (как уже сделано в `engine.containerfile`). Рекомендация AGENTS.md: все runtime-стадии наследуются от `uefipatcher-runtime-base`.
+> - **DD (unprivileged port):** nginx `listen 80` + `EXPOSE 80` + compose `ports: "3000:80"` — привилегированный порт 80 внутри контейнера это плохой тон (нужен root/CAP_NET_BIND_SERVICE если запускать от non-root user; неожиданный port-remap усложняет отладку). Заменено на симметричный `listen 3000` + `EXPOSE 3000` + `ports: "3000:3000"` — тот же порт внутри и снаружи.
+> - **EE (podman-remote alt):** добавлен `docker/uefipatcher-pod.yaml` (Kubernetes Pod manifest) как альтернатива docker-compose для `podman-remote kube play` согласно AGENTS.md rule 12 (внутри контейнера предпочитается podman-remote).
+> - **FF (webui builder base):** webui builder-стадия `FROM registry.fedoraproject.org/fedora:44 AS builder` заменена на `FROM uefipatcher-runtime-base AS builder` (cycle-1 reuse). Builder не требует rust/cargo из rust-builder, хватает dnf для `npm install`.
 
 `docker/gateway.containerfile`:
 ```dockerfile
@@ -1584,8 +1678,7 @@ WORKDIR /app
 COPY . .
 RUN cargo build --release -p uefi-gateway
 
-FROM registry.fedoraproject.org/fedora:44
-RUN dnf install -y ca-certificates && dnf clean all
+FROM uefipatcher-runtime-base
 COPY --from=builder /app/target/release/uefi-gateway /usr/local/bin/
 ENV UEFIPATCHER_GATEWAY_LISTEN=0.0.0.0:8080
 EXPOSE 8080
@@ -1596,7 +1689,7 @@ ENTRYPOINT ["uefi-gateway"]
 
 `docker/webui.containerfile`:
 ```dockerfile
-FROM registry.fedoraproject.org/fedora:44 AS builder
+FROM uefipatcher-runtime-base AS builder
 RUN dnf install -y nodejs npm && dnf clean all
 WORKDIR /app
 COPY webui/package*.json ./
@@ -1604,18 +1697,18 @@ RUN npm install
 COPY webui/ .
 RUN npm run build
 
-FROM registry.fedoraproject.org/fedora:44
+FROM uefipatcher-runtime-base
 RUN dnf install -y nginx && dnf clean all
 COPY --from=builder /app/build /usr/share/nginx/html
 COPY docker/webui-nginx.conf /etc/nginx/conf.d/default.conf
-EXPOSE 80
+EXPOSE 3000
 ENTRYPOINT ["nginx", "-g", "daemon off;"]
 ```
 
-`docker/webui-nginx.conf`:
+`docker/webui-nginx.conf` (defect DD: `listen 3000`, не `80` — unprivileged port):
 ```nginx
 server {
-    listen 80;
+    listen 3000;
     root /usr/share/nginx/html;
     location / {
         try_files $uri $uri/ /index.html;
@@ -1665,7 +1758,7 @@ services:
       context: ..
       dockerfile: docker/webui.containerfile
     ports:
-      - "3000:80"
+      - "3000:3000"
     depends_on:
       - gateway
 volumes:
@@ -1673,16 +1766,75 @@ volumes:
   uefi-sock:
 ```
 
-- [ ] **Step 4: Проверить валидность compose**
+> **Note (defect DD):** webui `ports: "3000:3000"` (не `"3000:80"`) — симметричный маппинг: nginx слушает 3000 внутри (см. `webui-nginx.conf`) и 3000 публикуется наружу.
+
+- [ ] **Step 4: uefipatcher-pod.yaml (альтернатива docker-compose)**
+
+`docker/uefipatcher-pod.yaml` (defect EE: Kubernetes Pod manifest для `podman-remote kube play`, AGENTS.md rule 12 — предпочтительный runtime внутри containerenv):
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: uefipatcher-pod
+  labels:
+    app: uefipatcher
+spec:
+  containers:
+    - name: engine
+      image: uefipatcher-engine:latest
+      env:
+        - name: UEFIPATCHER_DATA
+          value: /data
+        - name: UEFIPATCHER_SOCK
+          value: /run/uefipatcher/uefipatcher.sock
+        - name: UEFIPATCHER_SESSION_TTL_SECS
+          value: "864000"
+        - name: UEFIPATCHER_SESSION_GC_INTERVAL_SECS
+          value: "3600"
+        - name: UEFIPATCHER_PURGE_ARTIFACTS
+          value: "false"
+      volumeMounts:
+        - name: uefi-data
+          mountPath: /data
+        - name: uefi-sock
+          mountPath: /run/uefipatcher
+    - name: gateway
+      image: uefipatcher-gateway:latest
+      env:
+        - name: UEFIPATCHER_SOCK
+          value: /run/uefipatcher/uefipatcher.sock
+        - name: UEFIPATCHER_GATEWAY_LISTEN
+          value: 0.0.0.0:8080
+      ports:
+        - containerPort: 8080
+      volumeMounts:
+        - name: uefi-sock
+          mountPath: /run/uefipatcher
+    - name: webui
+      image: uefipatcher-webui:latest
+      ports:
+        - containerPort: 3000
+  volumes:
+    - name: uefi-data
+      emptyDir: {}
+    - name: uefi-sock
+      emptyDir: {}
+```
+
+> **Note:** Pod использует заранее собранные образы `uefipatcher-{engine,gateway,webui}:latest` (их нужно собрать через `podman-remote build` или загрузить в registry перед `kube play`). Все три контейнера делят один Pod → один network namespace → webuinginx `proxy_pass http://gateway:8080` резолвится через localhost-петлю Pod'а. Volume `uefi-sock` (emptyDir) расшаривает unix-сокет между engine и gateway.
+
+- [ ] **Step 5: Проверить валидность compose и pod-манифеста**
 
 Run: `podman-compose -f docker/docker-compose.yml config` (или `docker compose -f docker/docker-compose.yml config`)
 Expected: корректный вывод
 
-- [ ] **Step 5: Коммит**
+Альтернативно (AGENTS.md rule 12, если `/run/.containerenv` существует): `python3 -c "import yaml; yaml.safe_load(open('docker/uefipatcher-pod.yaml'))"` для синтаксической проверки Kubernetes-манифеста; полный запуск: `podman-remote kube play docker/uefipatcher-pod.yaml`.
+
+- [ ] **Step 6: Коммит**
 
 ```bash
 git add docker/
-git commit -m "feat: add gateway.containerfile, webui.containerfile (rust-builder + fedora:44), update docker-compose"
+git commit -m "feat: add gateway/webui containerfiles (rust-builder + runtime-base), nginx, compose + pod.yaml alternative"
 ```
 
 ---
@@ -1735,7 +1887,7 @@ git commit -m "chore: final checks — all tests pass, clippy clean, svelte-chec
 - Tree + Details компоненты: Task 8 ✓
 - Image page (tree + ops + save/download): Task 9 ✓
 - Setup page (visibility + add-formset): Task 10 ✓
-- Docker (gateway + webui + compose, fedora:44 + rust-builder.containerfile): Task 11 ✓
+- Docker (gateway + webui + compose + pod.yaml; runtime-base + nginx :3000): Task 11 ✓
 - Тесты (gateway integration + svelte-check): Tasks 6, 12 ✓
 - `/api/v1/` versioning: все routes Tasks 4-5 ✓
 - CORS: Task 1 (CorsLayer) ✓

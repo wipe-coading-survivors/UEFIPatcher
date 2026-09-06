@@ -1,0 +1,36 @@
+[package]
+name = "uefi-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+uefi-proto = { path = "../uefi-proto" }
+uefi-common = { path = "../uefi-common" }
+uguid.workspace = true
+r-efi.workspace = true
+binrw.workspace = true
+object.workspace = true
+lzma-rs = "0.3"
+liblzma.workspace = true
+uuid.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+num_enum.workspace = true
+rusqlite.workspace = true
+tokio.workspace = true
+tonic.workspace = true
+tokio-stream = { version = "0.1", features = ["net"] }
+clap.workspace = true
+tracing-subscriber.workspace = true
+directories.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+tower = { version = "0.4", features = ["util"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http = "1"
+tracing-test = "0.2"
