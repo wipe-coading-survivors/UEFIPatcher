@@ -344,7 +344,7 @@ git commit -m "feat(s1): UefiPatcherSerialPkg dsc/fdf + container build (SerialD
 - Create: `docker/edk2/UefiPatcherSerialPkg/SerialConsoleGlue/SerialConsoleGlue.inf`
 - Create: `docker/edk2/UefiPatcherSerialPkg/SerialConsoleGlue/SerialConsoleGlue.c`
 - Modify: `docker/edk2/UefiPatcherSerialPkg/UefiPatcherSerial.dsc` ([Components] +1 строка)
-- Modify: `docker/edk2/UefiPatcherSerialPkg/UefiPatcherSerial.fdf` ([FV] +1 INF)
+- Modify: `docker/edk2/UefiPatcherSerialPkg/UefiPatcherSerial.fdf` ([FV] +1 INF; [Rule.Common.DXE_DRIVER] +1 строка `DXE_DEPEX … Optional |.depex` — иначе depex glue молча теряется)
 - Modify: `docker/edk2/build_serial.sh` (+1 строка cp)
 
 **Interfaces:**
@@ -694,21 +694,29 @@ SerialConsoleGlueEntry (
 
 - [ ] **Step 3: Включить glue в DSC/FDF/скрипт**
 
-Три правки:
+Четыре правки:
 
 `UefiPatcherSerial.dsc`, секция [Components], после строки TerminalDxe:
 ```
   UefiPatcherSerialPkg/SerialConsoleGlue/SerialConsoleGlue.inf
 ```
 
-`UefiPatcherSerial.fdf`, [FV.SERIAL_CONSOLE_FV], после INF TerminalDxe:
+`UefiPatcherSerial.fdf`, две правки:
+
+1) [FV.SERIAL_CONSOLE_FV], после INF TerminalDxe:
 ```
 INF UefiPatcherSerialPkg/SerialConsoleGlue/SerialConsoleGlue.inf
 ```
 
-`build_serial.sh`, после cp TerminalDxe:
+2) [Rule.Common.DXE_DRIVER], первой секцией внутри `FILE DRIVER = $(NAMED_GUID) {` (rule-11, обнаружено при реализации: в правиле из Task 2 нет DXE_DEPEX-строки, а GenFds генерирует секции FFS только по statement'ам правила — `[Depex] gEfiSerialIoProtocolGuid` молча выпал бы из .ffs; образец — OvmfPkgX64.fdf, Rule.Common.DXE_DRIVER):
+```
+    DXE_DEPEX    DXE_DEPEX               Optional   |.depex
+```
+`Optional` обязателен: SerialDxe (`[Depex] TRUE`) под тем же правилом собирается и без .depex-файла.
+
+`build_serial.sh`, после cp TerminalDxe (rule-11: per-module .ffs лежит в `FV/Ffs/<FILE_GUID><BASE_NAME>/` — см. примечание к Task 2 Step 4, а не в `<модуль>/OUTPUT/`):
 ```bash
-cp "$BUILD_ROOT/UefiPatcherSerialPkg/SerialConsoleGlue/SerialConsoleGlue/OUTPUT/SerialConsoleGlue.ffs" "$OUT_DIR/"
+cp "$BUILD_ROOT/FV/Ffs/1EF3A7C2-9B64-4D58-8A31-5C0E9F2B7D43SerialConsoleGlue/1EF3A7C2-9B64-4D58-8A31-5C0E9F2B7D43.ffs" "$OUT_DIR/SerialConsoleGlue.ffs"
 ```
 
 - [ ] **Step 4: Собрать и проверить inline-питоном**
