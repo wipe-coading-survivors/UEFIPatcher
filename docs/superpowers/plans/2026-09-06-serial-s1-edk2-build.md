@@ -292,7 +292,7 @@ ls -la "$OUT_DIR"
 - [ ] **Step 4: Запустить сборку**
 
 Run: `bash docker/edk2/build_serial.sh /tmp/serial-s1-t2`
-Expected: лог BaseTools (`Finished building BaseTools C Tools`), затем `build` завершается `Done` (return code 0), в конце `ls -la` показывает `SerialDxe.ffs`, `TerminalDxe.ffs`, `SERIAL_CONSOLE_FV.Fv` и строку `artifacts: /tmp/serial-s1-t2`. Ожидаемый порядок размеров: SerialDxe ~6–12 КБ, TerminalDxe ~35–60 КБ.
+Expected: лог BaseTools (`Finished building BaseTools C Tools`), затем `build` завершается `Done` (return code 0), в конце `ls -la` показывает `SerialDxe.ffs`, `TerminalDxe.ffs`, `SERIAL_CONSOLE_FV.Fv` и строку `artifacts: /tmp/serial-s1-t2`. Фактические размеры (rule-11, зафиксировано по первой успешной сборке): SerialDxe ~32 КБ, TerminalDxe ~64 КБ, FV ~96 КБ; исходная оценка плана (6–12/35–60 КБ) не учитывала полное библиотечное замыкание GCC RELEASE (UefiLib/PrintLib/BaseLib/16550/PciCf8Lib линкуются статически) — порядок величины подтверждён, гейт по-прежнему Step 5 (инварианты FFS/PE), а не размер.
 
 Типовые проблемы:
 - permission denied на монтировании `/out` → проверить, что `/tmp/serial-s1-t2` создан тем же пользователем, что и сервис podman; при необходимости `chmod 777 /tmp/serial-s1-t2`;
