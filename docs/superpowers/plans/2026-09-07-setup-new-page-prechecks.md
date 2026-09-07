@@ -45,15 +45,19 @@
 ## Схема данных (контракт между задачами)
 
 LIVE-числа (NP-R §3): форма-цель **0x2775** (10101, свободна), REF-вопрос
-**q0x210** (528, свободен), вопросы **q0x258/q0x259** на varstore 1,
-офсеты **0x72/0x73** (занято до 0x71), родитель — форма 10019 (слот 8).
+**q0x210** (528, свободен), родитель — форма 10019 (слот 8).
+Вопросы q0x258/q0x259 — на **новом varstore 2** (поправка Task 5:
+varstore 1 объявлен размером ровно 0x72, т.е. полон — офсеты 0x72+
+вне границ; новый varstore additive, существующий Setup не трогаем):
+GUID `A9E7D5C2-341B-4A4F-8D90-27E4F10B2C58`, name `UefiPatcherSetup`,
+size 0x10, офсеты **0x0/0x1**.
 
 | элемент | id | строки | привязка |
 |---|---|---|---|
 | REF (goto) на 10019 | q0x210 | prompt `UEFIPatcher Setup`, help `UEFIPatcher serial console settings` | FormId 0x2775 |
-| форма-цель | 0x2775 | title `UEFIPatcher Serial Settings` | varstores: [] (varstore 1 уже объявлен в формсете — НЕ переизлучать) |
-| вопрос A | q0x258 | prompt `Serial Console`, help `Serial console output enable (demo)` | one_of [0 `Disabled`, 1 `Enabled`], vs 1 @0x72, default optimized 0 |
-| вопрос B | q0x259 | prompt `Verbose Boot`, help `Verbose boot messages (demo)` | one_of [0 `Off`, 1 `On`], vs 1 @0x73, default optimized 0 |
+| форма-цель | 0x2775 | title `UEFIPatcher Serial Settings` | varstores: [id 2, GUID A9E7D5C2-341B-4A4F-8D90-27E4F10B2C58, name `UefiPatcherSetup`, size 0x10] |
+| вопрос A | q0x258 | prompt `Serial Console`, help `Serial console output enable (demo)` | one_of [0 `Disabled`, 1 `Enabled`], vs 2 @0x0, default optimized 0 |
+| вопрос B | q0x259 | prompt `Verbose Boot`, help `Verbose boot messages (demo)` | one_of [0 `Off`, 1 `On`], vs 2 @0x1, default optimized 0 |
 | страница $SPF | слот 188 | title-id ← строка формы | клон-скелет страницы 10019: marker=1 (от родителя), fid=0x2775, seq=188, **B=8**, u18 от родителя, **cnt=0** |
 
 Порядок сборки кандидатов (гейты Task 5 повторяют его в точности):
@@ -67,7 +71,8 @@ E37 = E36-флоу + hii page add (после form add, до question add:
 ```
 
 Фикстуры: `tests/data/serial/np_form.json` (FormSetSchema: 1 форма, 2
-one_of, varstores []), `tests/data/serial/np_ref.json`
+one_of на varstore 2, varstores [id 2, GUID A9E7D5C2-…, size 0x10]),
+`tests/data/serial/np_ref.json`
 (`{"refs":[{form_id:10101, prompt:…, help:…, question_id:528}]}`).
 
 ---
@@ -260,8 +265,16 @@ one_of, varstores []), `tests/data/serial/np_ref.json`
 - переиспользовать хелперы гейта s4c (вставка тройки в FV1-хвост,
   q512/q513); новые шаги — `hii::form_add` (np_form.json, target
   Setup-формсета) и `hii::add_ref` (np_ref.json);
-- байтовый дифф против LIVE — только 3 зоны: FV1-хвост, слот Setup,
-  слот SetupData;
+- байтовый дифф против LIVE — 3 зоны правки (FV1-хвост, слот Setup,
+  слот SetupData) + **зона детерминированного сдвига** (поправка
+  Task 5: слот Setup имеет 7Б слэка, рост PE при form add переполняет
+  его; FFS без экстентов → билдер сдвигает последующие файлы FV1 на
+  константу, by-design — юнит-тест
+  `guided_lzma_growth_layout_when_payload_exceeds_slot`). Инвариант
+  сдвига — на уровне файлов FV1: то же число файлов, тот же порядок,
+  те же GUID; смещение старта каждого файла ∈ {0, +Δ} с одним Δ по
+  всем сдвинутым; тело каждого файла байт-в-байт (кроме Setup/
+  SetupData — их собственные зоны);
 - $SPF: count == 188, container_len не вырос, записей/контролов столько
   же (фиксапы ifr-полей допустимы — проверяются отдельно: записи выше
   точки вставки смещены на delta);
@@ -278,10 +291,11 @@ one_of, varstores []), `tests/data/serial/np_ref.json`
   длина контейнера выросла ровно на 0x20 (+ bump-поле);
 - вопрос add (S3-механика) на форме 0x2775 теперь находит страницу
   (план по form_id) — smoke через публичный `check_question_add` с
-  throwaway-вопросом (qid 0x25A, vs 1 @0x74, one_of 2 опции): Ok(())
-  после page add (`plan_spf_append` вызывается внутри — резолв
-  доказан), в np1 без страницы тот же вызов → NotFound; мутаций нет
-  (вопросы уже в IFR через form add; $SPF-запись = E38-косметика);
+  throwaway-вопросом (qid 0x25A, vs 2 @0x2 — в границах нового
+  varstore, one_of 2 опции): Ok(()) после page add
+  (`plan_spf_append` вызывается внутри — резолв доказан), в np1 без
+  страницы тот же вызов → NotFound; мутаций нет (вопросы уже в IFR
+  через form add; $SPF-запись = E38-косметика);
 - дифф-зоны и round-trip — как np1.
 
 - [ ] **Step 1:** фикстуры np_form.json/np_ref.json (данные §«Схема
@@ -307,10 +321,13 @@ one_of, varstores []), `tests/data/serial/np_ref.json`
   sha256, размер; E37 → sha256. Постоянные копии `~/E36/`, `~/E37/`
   (вне git), sha сверить после копирования.
 - [ ] **Step 2:** Независимая валидация: `hack/fv_audit.py` (FV1 216→219,
-  used/free_tail дельты), зонный дифф против LIVE (вне зон 0),
-  повтор ParseImage живым движком.
+  used/free_tail дельты), зонный дифф против LIVE (вне зон 0; зоны =
+  FV1-хвост + слот Setup + слот SetupData + детерминированный сдвиг
+  FV1-файлов — сверка на уровне файлов: порядок/GUID/тела, константный
+  Δ), повтор ParseImage живым движком.
 - [ ] **Step 3:** Pack-отчёт: состав каждого кандидата (таблица стартов
-  FV1-хвоста), инварианты (сводка гейтов), протокол приёмки с деревом
+  FV1-хвоста; явно указать FV1-сдвиг последующих файлов — Δ и число
+  файлов, в рисках прошивки), инварианты (сводка гейтов), протокол приёмки с деревом
   исходов E36 (a–d по спеке §6) и E37, ветка отката (E32
   `~/E32/E32-candidate-8def2850.bin`, E5C88C6F), инструкция прошивки
   владельцу (прецедент E31-pack §5).
@@ -339,6 +356,7 @@ one_of, varstores []), `tests/data/serial/np_ref.json`
 - **goto без fallback-рендера** (0/89 стока): ожидаемый исход E36 — (b);
   это план (E37 готов в том же пакете), не авария.
 - **PE32-resource рост** (обе правки Setup-модуля): механика
-  `try_grow_rsrc_tail` доказана E16/E30/E31; P4-запас LZMA-слота
-  проверяется гейтом np2 неявно (сборка либо влезает, либо падает
-  до прошивки).
+  `try_grow_rsrc_tail` доказана E16/E30/E31; на LIVE рост при form add
+  НЕ влезает в слот (7Б слэка) — билдер сдвигает последующие файлы FV1
+  (by-design, см. инвариант зон np1); гейты проверяют сдвиг
+  детерминированным (константный Δ, порядок/тела сохранены).
