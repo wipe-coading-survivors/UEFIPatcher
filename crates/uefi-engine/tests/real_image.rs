@@ -4595,3 +4595,141 @@ fn real_image_ops_insert_serial_np2() {
         page.slot, page.page_offset, page.title_string_id, parent_off
     );
 }
+
+#[test]
+#[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
+fn real_image_ops_insert_serial_np3() {
+    use uefi_engine::builder::build_image;
+    use uefi_engine::hii::add_page;
+    use uefi_engine::hii::add_question;
+    use uefi_engine::hii::add_ref;
+    use uefi_engine::hii::form_add::add_form;
+    use uefi_engine::hii::schema::{parse_question_add_schema, parse_schema};
+    use uefi_engine::hii::spf;
+    use uefi_engine::ops::{InsertMode, insert};
+    use uefi_engine::types::{ImageMode, Target};
+
+    let data = load_fw();
+    let mut img = parse_image(&data, ImageMode::Write, "i1", "s").unwrap();
+    let vol_idx = img
+        .root
+        .children
+        .iter()
+        .position(|c| c.offset == NP_MAIN_FV_OFF as u32)
+        .unwrap();
+    let files_before = img.root.children[vol_idx].children.len();
+    let mut anchor = Target::Path(vec![vol_idx, files_before - 1]);
+    for name in NP_SERIAL_FILES {
+        let path = std::path::Path::new(NP_SERIAL_DIR).join(name);
+        let ffs = std::fs::read(&path).unwrap();
+        insert(&mut img.root, &anchor, &ffs, InsertMode::After).unwrap();
+        let last = img.root.children[vol_idx].children.len() - 1;
+        anchor = Target::Path(vec![vol_idx, last]);
+    }
+    let triple = build_image(&img).unwrap();
+
+    let mut img2 = parse_image(&triple, ImageMode::Write, "i2", "e39").unwrap();
+    let s3_json =
+        std::fs::read_to_string(std::path::Path::new(NP_SERIAL_DIR).join("s3_questions.json"))
+            .unwrap();
+    let s3_list = parse_question_add_schema(&s3_json).unwrap();
+    let item_10019 = format!("{NP_SETUP_MODULE_GUID}:0x10:0#{NP_PARENT_FORM_ID}");
+    for q in &s3_list.questions {
+        add_question(&mut img2, &item_10019, q).unwrap();
+    }
+    let s3 = build_image(&img2).unwrap();
+
+    let mut img3 = parse_image(&s3, ImageMode::Write, "i3", "e39").unwrap();
+    let form_json =
+        std::fs::read_to_string(std::path::Path::new(NP_SERIAL_DIR).join("np_form_e16p.json"))
+            .unwrap();
+    let form_schema = parse_schema(&form_json).unwrap();
+    let setup_item = format!("{NP_SETUP_MODULE_GUID}:0x10:0");
+    add_form(&mut img3, &setup_item, &form_schema).expect("form add 10101 (e16p, varstore-free)");
+    add_page(
+        &mut img3,
+        &item_10019,
+        &uefi_engine::hii::schema::PageAddSchema {
+            form_id: NP_NEW_FORM_ID,
+            title: NP_PAGE_TITLE.into(),
+        },
+    )
+    .expect("page add 10101");
+
+    let q_json =
+        std::fs::read_to_string(std::path::Path::new(NP_SERIAL_DIR).join("np_questions_v1.json"))
+            .unwrap();
+    let q_list = parse_question_add_schema(&q_json).unwrap();
+    let item_10101 = format!("{NP_SETUP_MODULE_GUID}:0x10:0#{NP_NEW_FORM_ID}");
+    for q in &q_list.questions {
+        add_question(&mut img3, &item_10101, q)
+            .unwrap_or_else(|e| panic!("add_question q{}: {e:?}", q.question_id));
+    }
+
+    let ref_json =
+        std::fs::read_to_string(std::path::Path::new(NP_SERIAL_DIR).join("np_ref.json")).unwrap();
+    let ref_list = parse_question_add_schema(&ref_json).unwrap();
+    add_ref(&mut img3, &item_10019, &ref_list.refs[0]).expect("ref add q0x210");
+
+    let built = build_image(&img3).expect("build E39");
+    assert_eq!(built.len(), data.len());
+    let re = parse_image(&built, ImageMode::Read, "re", "e39").unwrap();
+    np_assert_fv1_layout(&re, &data);
+
+    let final_pkg = module_form_package(&re, &module_pe32_node_path(&re, NP_SETUP_MODULE_GUID));
+    let r = np_find_ref_op(&final_pkg, NP_PARENT_FORM_ID, 528).expect("REF in 10019");
+    assert_eq!(final_pkg[r + 1] & 0x7F, 15);
+    assert_eq!(np_pkg_u16(&final_pkg, r + 10), 0xFFFF, "voff sentinel");
+    assert_eq!(
+        final_pkg[r + 15],
+        r_efi::hii::IFR_END_OP,
+        "stock form END after REF"
+    );
+
+    let stock_img = parse_image(&data, ImageMode::Read, "st", "e39").unwrap();
+    let stock_pkg = module_form_package(
+        &stock_img,
+        &module_pe32_node_path(&stock_img, NP_SETUP_MODULE_GUID),
+    );
+    let stock_spf = find_spf_leaf_body(&stock_img, NP_SETUPDATA_GUID);
+    let final_spf = find_spf_leaf_body(&re, NP_SETUPDATA_GUID);
+    let stock_recs = spf::scan_question_records(&stock_spf);
+    let final_recs = spf::scan_question_records(&final_spf);
+    assert_eq!(final_recs.len(), 393, "389 stock + q512/q513 + q600/q601");
+
+    let mut checked = 0;
+    for sr in &stock_recs {
+        if !uefi_engine::hii::spf_record_resolves(&stock_pkg, sr.question_id, sr.ifr_offset) {
+            continue;
+        }
+        let fr = final_recs
+            .iter()
+            .find(|f| f.question_id == sr.question_id)
+            .expect("stock live record must survive");
+        assert!(
+            uefi_engine::hii::spf_record_resolves(&final_pkg, fr.question_id, fr.ifr_offset),
+            "record q{}: ifr {:#x} must resolve to its own question op in the final package (round-11 invariant)",
+            fr.question_id,
+            fr.ifr_offset
+        );
+        checked += 1;
+    }
+    println!("round-11 invariant: {checked} live records stay IFR-consistent");
+    assert!(
+        checked > 25,
+        "expected the LIVE subset of stock records, got {checked}"
+    );
+
+    for qid in [600u16, 601] {
+        assert!(
+            final_recs.iter().any(|x| x.question_id == qid),
+            "q{qid} must carry a $SPF record"
+        );
+        let qi = uefi_engine::hii::question_info(&re, &format!("{item_10101}:{qid}")).unwrap();
+        assert_eq!(
+            qi.var_offset,
+            u32::from(qid) - 505,
+            "q600@95/q601@96 on stock varstore 1"
+        );
+    }
+}

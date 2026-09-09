@@ -2302,3 +2302,17 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   следующем выборе нового varstore id. Метод: движковый
   `check_question_add` с var_offset 0xFFFE на чистом LIVE — текст
   ошибки различает «not declared» и «exceeds var store size 0xNN».
+* [ ] **uefi-engine/add_form: varstore-декларация без $SPF
+  ifr-фиксапа** (раунд 11 NP-E, stage-track вердикт §16.2):
+  `add_form` при varstores≠[] вставляет IFR_VARSTORE_EFI (~39 Б) в
+  НАЧАЛО формс-пакета (форма — в конец), сдвигая все вопросы
+  формсета; записи $SPF (общая Setup DB) не фиксапятся → ~34 записи
+  LIVE-вопросов разсогласованы с IFR (TSE: значения не коммитятся,
+  страницы с битыми записями деградируют). На e16p-форме
+  (varstores=[]) не проявляется. Фикс: применить
+  fixup_selected_record_ifr_offsets (threshold=точка вставки
+  varstore, delta=длина) по плану резолвящихся записей — как в
+  add_question/add_ref; помеха: plan_spf_append требует страницу
+  формы, которой на момент form add ещё нет → фиксап-план отделить
+  от page-требования. Обход дуги: E39 сажает вопросы на сток
+  varstore 1 (прецедент E30–E32), varstore 31 не используется.
