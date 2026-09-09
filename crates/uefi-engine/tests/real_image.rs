@@ -3756,6 +3756,7 @@ const NP_SETUPDATA_GUID: &str = "FE612B72-203C-47B1-8560-A66D946EB371";
 const NP_SETUP_FORMSET_GUID: &str = "7B59104A-C00D-4158-87FF-F04D6396A915";
 const NP_PARENT_FORM_ID: u16 = 10019;
 const NP_NEW_FORM_ID: u16 = 10101;
+const NP_NEW_VARSTORE_ID: u16 = 31;
 const NP_PAGE_TITLE: &str = "UEFIPatcher Serial Settings";
 const NP_MAIN_FV_OFF: usize = 0x890000;
 const NP_FIRST_SLOT: usize = 0xB63B18;
@@ -3805,7 +3806,7 @@ fn np_smoke_schema() -> uefi_engine::hii::schema::QuestionAddSchema {
         prompt: "np smoke".into(),
         help: "np smoke help".into(),
         question_id: 602,
-        var_store_id: 2,
+        var_store_id: NP_NEW_VARSTORE_ID,
         var_offset: 0x2,
         size: 1,
         options: vec![
@@ -3914,7 +3915,10 @@ fn np_assemble(with_page: bool) -> NpAssembly {
         1,
         "the added form must declare exactly the new varstore"
     );
-    assert_eq!(form_schema.varstores[0].id, 2);
+    assert_eq!(
+        form_schema.varstores[0].id, NP_NEW_VARSTORE_ID,
+        "stock LIVE declares varstore ids up to 20; 31 is verified free"
+    );
     assert_eq!(form_schema.varstores[0].name, "UefiPatcherSetup");
     assert_eq!(form_schema.varstores[0].size, 0x10);
     assert_eq!(form_schema.forms.len(), 1);
@@ -4173,7 +4177,7 @@ fn np_assert_ref_stage(asm: &NpAssembly, expected_page_count: u32) {
         assert_eq!(qi.form_id, u32::from(NP_NEW_FORM_ID));
         assert_eq!(qi.question_id, u32::from(qid));
         assert_eq!(qi.kind, "one_of");
-        assert_eq!(qi.var_store_id, 2);
+        assert_eq!(qi.var_store_id, u32::from(NP_NEW_VARSTORE_ID));
         assert_eq!(qi.var_offset, voff);
         assert_eq!(qi.width, 1);
         assert_eq!(qi.options.len(), 2, "{prompt} options");

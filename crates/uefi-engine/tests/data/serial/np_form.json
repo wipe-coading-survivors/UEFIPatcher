@@ -5,7 +5,7 @@
   "class_guids": [],
   "varstores": [
     {
-      "id": 2,
+      "id": 31,
       "guid": "A9E7D5C2-341B-4A4F-8D90-27E4F10B2C58",
       "size": 16,
       "name": "UefiPatcherSetup",
@@ -23,7 +23,7 @@
           "prompt": "Serial Console",
           "help": "Serial console output enable (demo)",
           "question_id": 600,
-          "var_store_id": 2,
+          "var_store_id": 31,
           "var_offset": 0,
           "size": 1,
           "options": [
@@ -37,7 +37,7 @@
           "prompt": "Verbose Boot",
           "help": "Verbose boot messages (demo)",
           "question_id": 601,
-          "var_store_id": 2,
+          "var_store_id": 31,
           "var_offset": 1,
           "size": 1,
           "options": [
