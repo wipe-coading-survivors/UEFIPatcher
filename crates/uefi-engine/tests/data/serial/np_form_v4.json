@@ -1,0 +1,52 @@
+{
+ "formset_guid": "7B59104A-C00D-4158-87FF-F04D6396A915",
+ "title": "UEFIPatcher Serial Settings",
+ "help": "UEFIPatcher serial console settings",
+ "class_guids": [],
+ "varstores": [],
+ "default_stores": [],
+ "forms": [
+  {
+   "id": 10101,
+   "title": "UEFIPatcher Serial Settings",
+   "items": [
+    {
+     "type": "text",
+     "prompt": "NP pad 0 2253F0907FCE659BD60FE7B7FF67151E9F0142154F3DBF13",
+     "help": "NP pad help 0",
+     "text_two": "7A9AA6D58697F78B7640CF5A0CC821EF68367835B6F4F46D"
+    },
+    {
+     "type": "text",
+     "prompt": "NP pad 1 FB9E24BFE844213E68C59C816E7DC5B126AF74615B01E9EC",
+     "help": "NP pad help 1",
+     "text_two": "BF20CFA08F020FC86706CD5602E8D2BFA04CCA642CA93FA9"
+    },
+    {
+     "type": "text",
+     "prompt": "NP pad 2 9297993936F98964DCE0C655CB12FF94443A1A24B753752C",
+     "help": "NP pad help 2",
+     "text_two": "F1E9D5B4EFE2853094532AC273FB5003EACBE306BD52EDEB"
+    },
+    {
+     "type": "text",
+     "prompt": "NP pad 3 33680CAF68333BD1F14826BA8AC5C7D9C5B82F8AFEC6B53D",
+     "help": "NP pad help 3",
+     "text_two": "1EA6ABAA0D5F655E2DB85B36B03AC89D8E04F6328D3ABFA1"
+    },
+    {
+     "type": "text",
+     "prompt": "NP pad 4 1417B01B6982870C2410FCDD2EFC6A51B5C8DD434C6BEF07",
+     "help": "NP pad help 4",
+     "text_two": "4DC5FD9C4C1EEC88E735AFB390AFF66D23452F783B31C165"
+    },
+    {
+     "type": "text",
+     "prompt": "NP pad 5 38F4E35DD675DC1929626F789C6789B37A74E2E2EF2E4054",
+     "help": "NP pad help 5",
+     "text_two": "169E8141C6EEC3C5BF75068C057417DC4ABC6B49E7B03F64"
+    }
+   ]
+  }
+ ]
+}
