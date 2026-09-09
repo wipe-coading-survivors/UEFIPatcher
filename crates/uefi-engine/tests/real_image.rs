@@ -4733,3 +4733,157 @@ fn real_image_ops_insert_serial_np3() {
         );
     }
 }
+
+#[test]
+#[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
+fn real_image_ops_insert_serial_np4() {
+    use uefi_engine::builder::build_image;
+    use uefi_engine::hii::add_question;
+    use uefi_engine::hii::add_ref;
+    use uefi_engine::hii::schema::parse_question_add_schema;
+    use uefi_engine::hii::spf;
+    use uefi_engine::ops::{InsertMode, insert};
+    use uefi_engine::types::{ImageMode, Target};
+
+    let data = load_fw();
+    let mut img = parse_image(&data, ImageMode::Write, "i1", "s").unwrap();
+    let vol_idx = img
+        .root
+        .children
+        .iter()
+        .position(|c| c.offset == NP_MAIN_FV_OFF as u32)
+        .unwrap();
+    let files_before = img.root.children[vol_idx].children.len();
+    let mut anchor = Target::Path(vec![vol_idx, files_before - 1]);
+    for name in NP_SERIAL_FILES {
+        let path = std::path::Path::new(NP_SERIAL_DIR).join(name);
+        let ffs = std::fs::read(&path).unwrap();
+        insert(&mut img.root, &anchor, &ffs, InsertMode::After).unwrap();
+        let last = img.root.children[vol_idx].children.len() - 1;
+        anchor = Target::Path(vec![vol_idx, last]);
+    }
+    let triple = build_image(&img).unwrap();
+
+    let mut img2 = parse_image(&triple, ImageMode::Write, "i2", "e43").unwrap();
+    let s3_json =
+        std::fs::read_to_string(std::path::Path::new(NP_SERIAL_DIR).join("s3_questions.json"))
+            .unwrap();
+    let s3_list = parse_question_add_schema(&s3_json).unwrap();
+    let item_10019 = format!("{NP_SETUP_MODULE_GUID}:0x10:0#{NP_PARENT_FORM_ID}");
+    for q in &s3_list.questions {
+        add_question(&mut img2, &item_10019, q).unwrap();
+    }
+    let s3 = build_image(&img2).unwrap();
+
+    let mut img3 = parse_image(&s3, ImageMode::Write, "i3", "e43").unwrap();
+    let q_json = std::fs::read_to_string(
+        std::path::Path::new(NP_SERIAL_DIR).join("np_questions_10009.json"),
+    )
+    .unwrap();
+    let q_list = parse_question_add_schema(&q_json).unwrap();
+    let item_10009 = format!("{NP_SETUP_MODULE_GUID}:0x10:0#10009");
+    for q in &q_list.questions {
+        add_question(&mut img3, &item_10009, q)
+            .unwrap_or_else(|e| panic!("add_question q{}: {e:?}", q.question_id));
+    }
+    let ref_json =
+        std::fs::read_to_string(std::path::Path::new(NP_SERIAL_DIR).join("np_ref_10009.json"))
+            .unwrap();
+    let ref_list = parse_question_add_schema(&ref_json).unwrap();
+    let ref_res =
+        add_ref(&mut img3, &item_10019, &ref_list.refs[0]).expect("ref add q0x210 -> 10009");
+    assert_eq!(ref_res.question_id, 528);
+
+    let built = build_image(&img3).expect("build E43");
+    assert_eq!(built.len(), data.len());
+    let re = parse_image(&built, ImageMode::Read, "re", "e43").unwrap();
+
+    np_assert_fv1_layout(&re, &data);
+    let live_img = parse_image(&data, ImageMode::Read, "live", "e43").unwrap();
+
+    let final_pkg = module_form_package(&re, &module_pe32_node_path(&re, NP_SETUP_MODULE_GUID));
+    let r = np_find_ref_op(&final_pkg, NP_PARENT_FORM_ID, 528).expect("REF in 10019");
+    assert_eq!(final_pkg[r + 1] & 0x7F, 15);
+    assert_eq!(np_pkg_u16(&final_pkg, r + 10), 0xFFFF, "voff sentinel");
+    assert_eq!(
+        np_pkg_u16(&final_pkg, r + 13),
+        10009,
+        "REF target = stock form 10009"
+    );
+    assert_eq!(
+        final_pkg[r + 15],
+        r_efi::hii::IFR_END_OP,
+        "stock form END after REF"
+    );
+
+    let span = uefi_engine::hii::form_hijack::locate_form(&final_pkg, 10009).unwrap();
+    let mut q600 = false;
+    let mut q601 = false;
+    let mut i = span.form_op;
+    while i + 2 <= span.next_form_op {
+        let len = (final_pkg[i + 1] & 0x7F) as usize;
+        if len < 2 {
+            break;
+        }
+        if final_pkg[i] == 0x05 && len >= 13 {
+            match np_pkg_u16(&final_pkg, i + 6) {
+                600 => q600 = true,
+                601 => q601 = true,
+                _ => {}
+            }
+        }
+        i += len;
+    }
+    assert!(q600 && q601, "form 10009 must carry both one_of questions");
+
+    let stock_pkg = module_form_package(
+        &live_img,
+        &module_pe32_node_path(&live_img, NP_SETUP_MODULE_GUID),
+    );
+    let stock_spf = find_spf_leaf_body(&live_img, NP_SETUPDATA_GUID);
+    let final_spf = find_spf_leaf_body(&re, NP_SETUPDATA_GUID);
+    let stock_recs = spf::scan_question_records(&stock_spf);
+    let final_recs = spf::scan_question_records(&final_spf);
+    assert_eq!(final_recs.len(), 393, "389 + q512/q513 + q600/q601");
+    let base = spf::container_start(&final_spf).unwrap();
+    assert_eq!(
+        np_spf_u32(&final_spf, base + spf::SPF_PAGE_COUNT_OFFSET),
+        188,
+        "E43 must not touch the page table"
+    );
+    for qid in [600u16, 601] {
+        assert!(
+            final_recs.iter().any(|x| x.question_id == qid),
+            "q{qid} record"
+        );
+    }
+    let mut checked = 0;
+    for sr in &stock_recs {
+        if !uefi_engine::hii::spf_record_resolves(&stock_pkg, sr.question_id, sr.ifr_offset) {
+            continue;
+        }
+        let fr = final_recs
+            .iter()
+            .find(|f| f.question_id == sr.question_id)
+            .unwrap();
+        assert!(
+            uefi_engine::hii::spf_record_resolves(&final_pkg, fr.question_id, fr.ifr_offset),
+            "record q{} ifr {:#x} must stay IFR-consistent",
+            fr.question_id,
+            fr.ifr_offset
+        );
+        checked += 1;
+    }
+    assert!(checked > 25, "LIVE record subset expected, got {checked}");
+
+    for (qid, voff) in [(600u16, 0x5Fu32), (601u16, 0x60u32)] {
+        let qi = uefi_engine::hii::question_info(&re, &format!("{item_10009}:{qid}")).unwrap();
+        assert_eq!(qi.var_offset, voff, "q600@95/q601@96 on stock varstore 1");
+    }
+
+    std::fs::write("/tmp/np14_E43.bin", &built).unwrap();
+    println!(
+        "wrote /tmp/np14_E43.bin ({} bytes, {checked} records consistent)",
+        built.len()
+    );
+}

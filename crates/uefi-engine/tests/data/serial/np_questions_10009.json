@@ -1,0 +1,30 @@
+{
+  "questions": [
+    {
+      "form_id": 10009,
+      "prompt": "Serial Console",
+      "help": "Serial console output enable (demo)",
+      "question_id": 600,
+      "var_store_id": 1,
+      "var_offset": 95,
+      "size": 1,
+      "options": [
+        {"text": "Disabled", "value": 0, "default": "optimized"},
+        {"text": "Enabled", "value": 1}
+      ]
+    },
+    {
+      "form_id": 10009,
+      "prompt": "Verbose Boot",
+      "help": "Verbose boot messages (demo)",
+      "question_id": 601,
+      "var_store_id": 1,
+      "var_offset": 96,
+      "size": 1,
+      "options": [
+        {"text": "Off", "value": 0, "default": "optimized"},
+        {"text": "On", "value": 1}
+      ]
+    }
+  ]
+}
