@@ -1328,7 +1328,14 @@ pub fn check_question_add(
 
 fn build_ref_ops(schema: &schema::QuestionAddRefSchema, prompt_id: u16, help_id: u16) -> Vec<u8> {
     let mut b = ifr_builder::IfrBuilder::new();
-    b.emit_ref(prompt_id, help_id, schema.question_id, 0, 0, schema.form_id);
+    b.emit_ref(
+        prompt_id,
+        help_id,
+        schema.question_id,
+        0,
+        0xFFFF,
+        schema.form_id,
+    );
     b.emit_end();
     b.build()
 }
@@ -3640,8 +3647,12 @@ mod tests {
                 assert_eq!(pkg_u16(&pkg_after, r + 6), 0x300, "qid at +6");
                 assert_eq!(pkg_u16(&pkg_after, r + 2), prompt_id, "prompt at +2");
                 assert_eq!(pkg_u16(&pkg_after, r + 4), help_id, "help at +4");
-                assert_eq!(pkg_after[r + 8], 0, "var store id is zero");
-                assert_eq!(pkg_after[r + 10], 0, "var offset is zero");
+                assert_eq!(pkg_u16(&pkg_after, r + 8), 0, "var store id is zero");
+                assert_eq!(
+                    pkg_u16(&pkg_after, r + 10),
+                    0xFFFF,
+                    "var offset carries the stock no-storage sentinel (all 31 stock REFs: 0xFFFF)"
+                );
                 assert_eq!(
                     pkg_after[r + 15],
                     OP_END,

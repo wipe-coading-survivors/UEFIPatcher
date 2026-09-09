@@ -4132,6 +4132,16 @@ fn np_assert_ref_stage(asm: &NpAssembly, expected_page_count: u32) {
     );
     assert_eq!(np_pkg_u16(&final_pkg, ref_off + 6), 528, "REF qid@+6");
     assert_eq!(
+        np_pkg_u16(&final_pkg, ref_off + 8),
+        0,
+        "REF var store id@+8 (stock: 0)"
+    );
+    assert_eq!(
+        np_pkg_u16(&final_pkg, ref_off + 10),
+        0xFFFF,
+        "REF var offset@+10 carries the stock no-storage sentinel (all 31 stock REFs: 0xFFFF)"
+    );
+    assert_eq!(
         np_pkg_u16(&final_pkg, ref_off + 2),
         *asm.ref_string_ids.get("UEFIPatcher Setup").unwrap(),
         "REF prompt@+2"
