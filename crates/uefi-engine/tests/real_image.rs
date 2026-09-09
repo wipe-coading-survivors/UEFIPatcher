@@ -3763,7 +3763,7 @@ const NP_SERIAL_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/ser
 const NP_SERIAL_FILES: [&str; 3] = [
     "SerialIoAmiDxe.ffs",
     "TerminalDxe.ffs",
-    "SerialConsoleGlueV3.ffs",
+    "SerialConsoleGlue.ffs",
 ];
 const NP_EXPECT_TAIL: [&str; 3] = [
     "97C81E5D-8FA0-486A-AAEA-0EFDF090FE4F",
