@@ -3750,3 +3750,811 @@ fn real_image_add_question_selective_ifr_fixup() {
         foreign_base.len()
     );
 }
+
+const NP_SETUP_MODULE_GUID: &str = "899407D7-99FE-43D8-9A21-79EC328CAC21";
+const NP_SETUPDATA_GUID: &str = "FE612B72-203C-47B1-8560-A66D946EB371";
+const NP_SETUP_FORMSET_GUID: &str = "7B59104A-C00D-4158-87FF-F04D6396A915";
+const NP_PARENT_FORM_ID: u16 = 10019;
+const NP_NEW_FORM_ID: u16 = 10101;
+const NP_PAGE_TITLE: &str = "UEFIPatcher Serial Settings";
+const NP_MAIN_FV_OFF: usize = 0x890000;
+const NP_FIRST_SLOT: usize = 0xB63B18;
+const NP_SERIAL_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/serial");
+const NP_SERIAL_FILES: [&str; 3] = [
+    "SerialIoAmiDxe.ffs",
+    "TerminalDxe.ffs",
+    "SerialConsoleGlueV3.ffs",
+];
+const NP_EXPECT_TAIL: [&str; 3] = [
+    "97C81E5D-8FA0-486A-AAEA-0EFDF090FE4F",
+    "9E863906-A40F-4875-977F-5B93FF237FC6",
+    "1EF3A7C2-9B64-4D58-8A31-5C0E9F2B7D43",
+];
+
+fn np_pkg_u16(pkg: &[u8], off: usize) -> u16 {
+    u16::from_le_bytes([pkg[off], pkg[off + 1]])
+}
+
+fn np_spf_u32(body: &[u8], at: usize) -> u32 {
+    u32::from_le_bytes(body[at..at + 4].try_into().unwrap())
+}
+
+fn np_spf_u16(body: &[u8], at: usize) -> u16 {
+    u16::from_le_bytes([body[at], body[at + 1]])
+}
+
+fn np_find_ref_op(pkg: &[u8], form_id: u16, qid: u16) -> Option<usize> {
+    let span = uefi_engine::hii::form_hijack::locate_form(pkg, form_id)?;
+    let mut i = span.form_op;
+    while i + 2 <= span.next_form_op {
+        let len = (pkg[i + 1] & 0x7F) as usize;
+        if len < 2 {
+            return None;
+        }
+        if pkg[i] == r_efi::hii::IFR_REF_OP && np_pkg_u16(pkg, i + 6) == qid {
+            return Some(i);
+        }
+        i += len;
+    }
+    None
+}
+
+fn np_smoke_schema() -> uefi_engine::hii::schema::QuestionAddSchema {
+    uefi_engine::hii::schema::QuestionAddSchema {
+        form_id: NP_NEW_FORM_ID,
+        prompt: "np smoke".into(),
+        help: "np smoke help".into(),
+        question_id: 602,
+        var_store_id: 2,
+        var_offset: 0x2,
+        size: 1,
+        options: vec![
+            uefi_engine::hii::schema::QuestionAddOption {
+                text: "A".into(),
+                value: 0,
+                default: None,
+            },
+            uefi_engine::hii::schema::QuestionAddOption {
+                text: "B".into(),
+                value: 1,
+                default: None,
+            },
+        ],
+        defaults: None,
+    }
+}
+
+struct NpAssembly {
+    data: Vec<u8>,
+    built: Vec<u8>,
+    spf_pre_page: Vec<u8>,
+    spf_pre_refs: Vec<u8>,
+    pkg_pre_refs: Vec<u8>,
+    page: Option<uefi_engine::hii::AddPageResult>,
+    form_string_ids: std::collections::HashMap<String, u16>,
+    ref_string_ids: std::collections::HashMap<String, u16>,
+    negative_smoke: Result<(), uefi_engine::hii::HiiError>,
+    positive_smoke: Option<Result<(), uefi_engine::hii::HiiError>>,
+}
+
+fn np_assemble(with_page: bool) -> NpAssembly {
+    use uefi_engine::builder::build_image;
+    use uefi_engine::hii::add_page;
+    use uefi_engine::hii::add_question;
+    use uefi_engine::hii::add_ref;
+    use uefi_engine::hii::check_question_add;
+    use uefi_engine::hii::form_add::add_form;
+    use uefi_engine::hii::schema::{parse_question_add_schema, parse_schema};
+    use uefi_engine::ops::{InsertMode, insert};
+    use uefi_engine::types::{ImageMode, Target};
+
+    const MAIN_FV_OFF: usize = NP_MAIN_FV_OFF;
+
+    let data = load_fw();
+    assert_eq!(data.len(), 0x0100_0000, "16 MiB image expected");
+    let serial: Vec<&str> = NP_SERIAL_FILES.to_vec();
+
+    let mut img = parse_image(&data, ImageMode::Write, "img1", "s1").unwrap();
+    let vol_idx = img
+        .root
+        .children
+        .iter()
+        .position(|c| c.offset == MAIN_FV_OFF as u32)
+        .expect("main FV @0x890000");
+    let files_before = img.root.children[vol_idx].children.len();
+    assert!(files_before > 100, "main FV files: {files_before}");
+
+    let mut anchor = Target::Path(vec![vol_idx, files_before - 1]);
+    for name in &serial {
+        let path = std::path::Path::new(NP_SERIAL_DIR).join(name);
+        let ffs = std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        insert(&mut img.root, &anchor, &ffs, InsertMode::After).unwrap();
+        let last = img.root.children[vol_idx].children.len() - 1;
+        anchor = Target::Path(vec![vol_idx, last]);
+    }
+    let e35_triple = build_image(&img).expect("build after E35 triple inserts");
+    assert_eq!(e35_triple.len(), data.len(), "total flash length preserved");
+
+    let mut img2 = parse_image(&e35_triple, ImageMode::Write, "img2", "np").unwrap();
+    let s3_json =
+        std::fs::read_to_string(std::path::Path::new(NP_SERIAL_DIR).join("s3_questions.json"))
+            .unwrap();
+    let s3_list = parse_question_add_schema(&s3_json).expect("s3 fixture parses");
+    let item_10019 = format!("{NP_SETUP_MODULE_GUID}:0x10:0#{NP_PARENT_FORM_ID}");
+    for q in &s3_list.questions {
+        let res = add_question(&mut img2, &item_10019, q)
+            .unwrap_or_else(|e| panic!("add_question q{}: {e:?}", q.question_id));
+        assert_eq!(res.question_id, q.question_id);
+    }
+    let e35 = build_image(&img2).expect("build after q512/q513 adds");
+    assert_eq!(e35.len(), data.len(), "total flash length preserved");
+
+    let mut img3 = parse_image(&e35, ImageMode::Write, "img3", "np").unwrap();
+    let spf_e35 = find_spf_leaf_body(&img3, NP_SETUPDATA_GUID);
+    let e35_base = uefi_engine::hii::spf::container_start(&spf_e35).expect("$SPF in E35");
+    assert_eq!(
+        np_spf_u32(
+            &spf_e35,
+            e35_base + uefi_engine::hii::spf::SPF_PAGE_COUNT_OFFSET
+        ),
+        188,
+        "E35 candidate must keep the live page count"
+    );
+    assert_eq!(
+        uefi_engine::hii::spf::scan_question_records(&spf_e35).len(),
+        391,
+        "E35 = live 389 + q512/q513"
+    );
+
+    let form_json =
+        std::fs::read_to_string(std::path::Path::new(NP_SERIAL_DIR).join("np_form.json")).unwrap();
+    let form_schema = parse_schema(&form_json).expect("np_form fixture parses");
+    assert_eq!(
+        form_schema.varstores.len(),
+        1,
+        "the added form must declare exactly the new varstore"
+    );
+    assert_eq!(form_schema.varstores[0].id, 2);
+    assert_eq!(form_schema.varstores[0].name, "UefiPatcherSetup");
+    assert_eq!(form_schema.varstores[0].size, 0x10);
+    assert_eq!(form_schema.forms.len(), 1);
+    assert_eq!(form_schema.forms[0].id, NP_NEW_FORM_ID);
+    let setup_item = format!("{NP_SETUP_MODULE_GUID}:0x10:0");
+    let form_res = add_form(&mut img3, &setup_item, &form_schema).expect("form add 10101");
+    assert_eq!(form_res.inserted_form_ids, vec![NP_NEW_FORM_ID]);
+
+    let pe_path = module_pe32_node_path(&img3, NP_SETUP_MODULE_GUID);
+    let pkg_pre_refs = module_form_package(&img3, &pe_path);
+    let item_10101 = format!("{NP_SETUP_MODULE_GUID}:0x10:0#{NP_NEW_FORM_ID}");
+    let negative_smoke = check_question_add(&img3, &item_10101, &[np_smoke_schema()]);
+
+    let spf_pre_page = find_spf_leaf_body(&img3, NP_SETUPDATA_GUID);
+    let (page, positive_smoke, spf_pre_refs) = if with_page {
+        let res = add_page(
+            &mut img3,
+            &item_10019,
+            &uefi_engine::hii::schema::PageAddSchema {
+                form_id: NP_NEW_FORM_ID,
+                title: NP_PAGE_TITLE.into(),
+            },
+        )
+        .expect("page add 10101");
+        let spf_after = find_spf_leaf_body(&img3, NP_SETUPDATA_GUID);
+        let smoke = check_question_add(&img3, &item_10101, &[np_smoke_schema()]);
+        (Some(res), Some(smoke), spf_after)
+    } else {
+        (None, None, spf_pre_page.clone())
+    };
+
+    let ref_json =
+        std::fs::read_to_string(std::path::Path::new(NP_SERIAL_DIR).join("np_ref.json")).unwrap();
+    let ref_list = parse_question_add_schema(&ref_json).expect("np_ref fixture parses");
+    assert!(ref_list.questions.is_empty());
+    assert_eq!(ref_list.refs.len(), 1);
+    let ref_schema = &ref_list.refs[0];
+    assert_eq!(ref_schema.form_id, NP_NEW_FORM_ID);
+    assert_eq!(ref_schema.question_id, 528);
+    let ref_res = add_ref(&mut img3, &item_10019, ref_schema).expect("ref add q0x210");
+    assert_eq!(ref_res.question_id, 528);
+
+    let built = build_image(&img3).expect("build final candidate");
+    assert_eq!(built.len(), data.len(), "total flash length preserved");
+
+    NpAssembly {
+        data,
+        built,
+        spf_pre_page,
+        spf_pre_refs,
+        pkg_pre_refs,
+        page,
+        form_string_ids: form_res.string_ids,
+        ref_string_ids: ref_res.string_ids,
+        negative_smoke,
+        positive_smoke,
+    }
+}
+
+fn np_fv1_files(img: &Image) -> Vec<&FfsNode> {
+    img.root
+        .children
+        .iter()
+        .find(|c| c.offset == NP_MAIN_FV_OFF as u32)
+        .expect("main FV @0x890000")
+        .children
+        .iter()
+        .collect()
+}
+
+fn np_file_bytes(node: &FfsNode) -> Vec<u8> {
+    let mut out = node.header.clone();
+    out.extend_from_slice(&node.body);
+    out.extend_from_slice(&node.tail);
+    out
+}
+
+fn np_guid_of(node: &FfsNode) -> String {
+    node.guid
+        .map(|g| g.to_string().to_ascii_uppercase())
+        .unwrap_or_default()
+}
+
+fn np_assert_fv1_layout(final_img: &Image, data: &[u8]) {
+    let live_img = parse_image(data, ImageMode::Read, "live", "np").unwrap();
+    let live = np_fv1_files(&live_img);
+    let files = np_fv1_files(final_img);
+    assert_eq!(
+        files.len(),
+        live.len() + NP_SERIAL_FILES.len(),
+        "FV1 must hold the live stock files plus the serial triple"
+    );
+
+    for (i, (l, f)) in live.iter().zip(files.iter()).enumerate() {
+        assert_eq!(
+            np_guid_of(f),
+            np_guid_of(l),
+            "stock file order/GUIDs must be preserved at index {i}"
+        );
+    }
+
+    let mut shift: Option<isize> = None;
+    let mut shifted = 0usize;
+    for (i, (l, f)) in live.iter().zip(files.iter()).enumerate() {
+        let d = f.offset as isize - l.offset as isize;
+        assert!(
+            d >= 0,
+            "stock file {i} must not move backwards ({} -> {})",
+            l.offset,
+            f.offset
+        );
+        if d != 0 {
+            if let Some(want) = shift {
+                assert_eq!(
+                    d, want,
+                    "all shifted FV1 files must move by one constant delta (file {i})"
+                );
+            } else {
+                shift = Some(d);
+            }
+            assert_eq!(
+                f.offset as usize,
+                l.offset as usize + d as usize,
+                "shifted file {i} must sit exactly at live offset + delta"
+            );
+            shifted += 1;
+        }
+    }
+    let delta = shift.expect("at least the files after Setup must shift by the growth delta");
+    assert!(delta > 0);
+    assert_eq!(
+        delta % 8,
+        0,
+        "FV1 files are 8-aligned, the push must be too"
+    );
+    eprintln!(
+        "np fv1 layout: {shifted}/{} stock files shifted by constant delta {delta}",
+        live.len()
+    );
+
+    for (i, (l, f)) in live.iter().zip(files.iter()).enumerate() {
+        let guid = np_guid_of(f);
+        if guid == NP_SETUP_MODULE_GUID || guid == NP_SETUPDATA_GUID {
+            continue;
+        }
+        assert_eq!(
+            np_file_bytes(f),
+            np_file_bytes(l),
+            "stock file {i} ({guid}) must stay byte-identical to LIVE"
+        );
+    }
+
+    let tail = &files[live.len()..];
+    for (i, f) in tail.iter().enumerate() {
+        assert_eq!(
+            np_guid_of(f),
+            NP_EXPECT_TAIL[i],
+            "serial triple order at chain end"
+        );
+        assert_eq!(
+            f.header[23], 0xF8,
+            "inserted file state must be polarity-1 valid"
+        );
+        assert_eq!(
+            f.offset % 8,
+            0,
+            "FFS file must be 8-aligned, got @{:#x}",
+            f.offset
+        );
+        assert!(
+            f.offset as usize >= NP_FIRST_SLOT,
+            "triple must sit in the FV1 free tail, got @{:#x}",
+            f.offset
+        );
+        let ffs =
+            std::fs::read(std::path::Path::new(NP_SERIAL_DIR).join(NP_SERIAL_FILES[i])).unwrap();
+        assert_eq!(
+            f.body,
+            ffs[f.header.len()..f.header.len() + f.body.len()],
+            "inserted body must be byte-identical to the fixture file"
+        );
+        let extent = f.offset as usize..f.offset as usize + f.header.len() + f.body.len();
+        assert!(
+            data[extent].iter().all(|&b| b == 0xFF),
+            "triple file {i} must lie over 0xFF free tail in LIVE"
+        );
+    }
+}
+
+fn np_assert_ref_stage(asm: &NpAssembly, expected_page_count: u32) {
+    use std::collections::HashMap;
+    use uefi_engine::builder::build_image;
+    use uefi_engine::hii::spf;
+    use uefi_engine::hii::spf_record_resolves;
+
+    assert_ne!(asm.built, asm.data, "candidate must differ from LIVE");
+
+    let re = parse_image(&asm.built, ImageMode::Read, "re", "np").unwrap();
+    np_assert_fv1_layout(&re, &asm.data);
+    let final_pkg = module_form_package(&re, &module_pe32_node_path(&re, NP_SETUP_MODULE_GUID));
+
+    let delta = final_pkg.len() - asm.pkg_pre_refs.len();
+    assert_eq!(delta, 17, "ref add must splice exactly REF(15) + END(2)");
+    let ref_off =
+        np_find_ref_op(&final_pkg, NP_PARENT_FORM_ID, 528).expect("REF q0x210 inside form 10019");
+    assert_eq!(final_pkg[ref_off + 1] & 0x7F, 15, "REF op length");
+    assert_eq!(
+        np_pkg_u16(&final_pkg, ref_off + 13),
+        NP_NEW_FORM_ID,
+        "REF FormId@+13 must target 0x2775"
+    );
+    assert_eq!(np_pkg_u16(&final_pkg, ref_off + 6), 528, "REF qid@+6");
+    assert_eq!(
+        np_pkg_u16(&final_pkg, ref_off + 2),
+        *asm.ref_string_ids.get("UEFIPatcher Setup").unwrap(),
+        "REF prompt@+2"
+    );
+    assert_eq!(
+        np_pkg_u16(&final_pkg, ref_off + 4),
+        *asm.ref_string_ids
+            .get("UEFIPatcher serial console settings")
+            .unwrap(),
+        "REF help@+4"
+    );
+    assert_eq!(
+        final_pkg[ref_off + 15],
+        r_efi::hii::IFR_END_OP,
+        "REF must sit directly before the form END op"
+    );
+
+    assert!(
+        uefi_engine::hii::form_hijack::locate_form(&final_pkg, NP_NEW_FORM_ID).is_some(),
+        "form 0x2775 must be present in the forms package"
+    );
+    let forms = uefi_engine::hii::forms::collect_forms(&re);
+    let added: Vec<_> = forms
+        .iter()
+        .filter(|f| {
+            f.formset_guid == NP_SETUP_FORMSET_GUID && f.form_id_ifr == u32::from(NP_NEW_FORM_ID)
+        })
+        .collect();
+    assert_eq!(added.len(), 1, "form 10101 must appear exactly once");
+    assert_eq!(
+        added[0].title, NP_PAGE_TITLE,
+        "form title string must resolve"
+    );
+    assert!(added[0].visible, "added form must not be suppressed");
+
+    let item_10101 = format!("{NP_SETUP_MODULE_GUID}:0x10:0#{NP_NEW_FORM_ID}");
+    for (qid, voff, prompt) in [
+        (600u16, 0x0u32, "Serial Console"),
+        (601u16, 0x1u32, "Verbose Boot"),
+    ] {
+        let qi = uefi_engine::hii::question_info(&re, &format!("{item_10101}:{qid}"))
+            .unwrap_or_else(|e| panic!("question_info q{qid}: {e:?}"));
+        assert_eq!(qi.form_id, u32::from(NP_NEW_FORM_ID));
+        assert_eq!(qi.question_id, u32::from(qid));
+        assert_eq!(qi.kind, "one_of");
+        assert_eq!(qi.var_store_id, 2);
+        assert_eq!(qi.var_offset, voff);
+        assert_eq!(qi.width, 1);
+        assert_eq!(qi.options.len(), 2, "{prompt} options");
+        assert_eq!(qi.options[0].value, 0);
+        assert_eq!(qi.options[1].value, 1);
+        assert_eq!(qi.options[0].flags, 0);
+        assert_eq!(qi.options[1].flags, 0);
+        assert_eq!(qi.defaults.len(), 1, "optimized default must round-trip");
+        assert_eq!(qi.defaults[0].value, 0);
+    }
+
+    {
+        let strings = uefi_engine::hii::strings::collect_strings(&re);
+        let pe = &node_at_path(&re, &module_pe32_node_path(&re, NP_SETUP_MODULE_GUID)).body;
+        for ids in [&asm.form_string_ids, &asm.ref_string_ids] {
+            for (text, id) in ids {
+                assert!(
+                    strings
+                        .iter()
+                        .any(|s| s.string_id == u32::from(*id) && &s.text == text),
+                    "string id {id} must resolve to '{text}' verbatim"
+                );
+                assert!(
+                    pe.windows(text.len()).any(|w| w == text.as_bytes()),
+                    "'{text}' must be present verbatim in the Setup module string package"
+                );
+            }
+        }
+    }
+
+    let final_spf = find_spf_leaf_body(&re, NP_SETUPDATA_GUID);
+    let fbase = spf::container_start(&final_spf).expect("$SPF survives the ref add");
+    let pbase = spf::container_start(&asm.spf_pre_refs).expect("$SPF baseline");
+    assert_eq!(fbase, pbase, "container start must stay put");
+    assert_eq!(
+        final_spf.len(),
+        asm.spf_pre_refs.len(),
+        "form add + ref add must not grow the $SPF container"
+    );
+    assert_eq!(
+        np_spf_u32(&final_spf, fbase + spf::SPF_PAGE_COUNT_OFFSET),
+        expected_page_count,
+        "page count"
+    );
+    let container_len_field = (spf::SPF_HEADER_REGION_OFFSETS..spf::SPF_PAGE_COUNT_OFFSET)
+        .step_by(4)
+        .map(|p| np_spf_u32(&final_spf, fbase + p))
+        .max()
+        .expect("header zone u32 fields");
+    assert_eq!(
+        container_len_field as usize,
+        final_spf.len() - fbase,
+        "container-length header field must equal the container length"
+    );
+
+    let page_count = expected_page_count as usize;
+    for slot in 0..page_count {
+        assert_eq!(
+            np_spf_u32(&final_spf, fbase + spf::SPF_PAGE_TABLE_OFFSET + 4 * slot),
+            np_spf_u32(
+                &asm.spf_pre_refs,
+                pbase + spf::SPF_PAGE_TABLE_OFFSET + 4 * slot
+            ),
+            "page table slot {slot} must stay untouched by the ref add"
+        );
+    }
+
+    let base_records = spf::scan_question_records(&asm.spf_pre_refs);
+    let final_records = spf::scan_question_records(&final_spf);
+    assert_eq!(
+        final_records.len(),
+        base_records.len(),
+        "ref add must not append question records"
+    );
+    assert_eq!(
+        spf::scan_string_controls(&final_spf).len(),
+        spf::scan_string_controls(&asm.spf_pre_refs).len(),
+        "ref add must not append string controls"
+    );
+    assert!(
+        !final_records.iter().any(|r| r.question_id == 528),
+        "the REF must not gain a $SPF record"
+    );
+    let final_by_offset: HashMap<usize, spf::SpfQuestionRecord> = final_records
+        .iter()
+        .copied()
+        .map(|r| (r.offset, r))
+        .collect();
+    let insert_at = ref_off as u32;
+    let mut shifted = 0usize;
+    for r in &base_records {
+        let fr = final_by_offset
+            .get(&r.offset)
+            .expect("append-only stage keeps record offsets stable");
+        let resolves = spf_record_resolves(&asm.pkg_pre_refs, r.question_id, r.ifr_offset);
+        if resolves && r.ifr_offset >= insert_at {
+            assert_eq!(
+                fr.ifr_offset,
+                r.ifr_offset + delta as u32,
+                "Setup record qid={:#x} must shift by the ref delta",
+                r.question_id
+            );
+            assert!(
+                spf_record_resolves(&final_pkg, r.question_id, fr.ifr_offset),
+                "Setup record qid={:#x} must still resolve post-splice",
+                r.question_id
+            );
+            shifted += 1;
+        } else {
+            assert_eq!(
+                fr.ifr_offset, r.ifr_offset,
+                "record qid={:#x} must keep its ifr offset",
+                r.question_id
+            );
+        }
+    }
+    let expected_shifted = base_records
+        .iter()
+        .filter(|r| {
+            spf_record_resolves(&asm.pkg_pre_refs, r.question_id, r.ifr_offset)
+                && r.ifr_offset >= insert_at
+        })
+        .count();
+    assert_eq!(shifted, expected_shifted);
+    assert!(
+        base_records.iter().all(|r| {
+            !spf_record_resolves(&asm.pkg_pre_refs, r.question_id, r.ifr_offset)
+                || r.ifr_offset < insert_at
+                || final_by_offset[&r.offset].ifr_offset == r.ifr_offset + delta as u32
+        }),
+        "every resolving record above the ref insertion must shift by delta, others must not"
+    );
+    let shifted_ifr_fields: Vec<std::ops::Range<usize>> = base_records
+        .iter()
+        .filter(|r| {
+            spf_record_resolves(&asm.pkg_pre_refs, r.question_id, r.ifr_offset)
+                && r.ifr_offset >= insert_at
+        })
+        .map(|r| {
+            (r.offset + spf::SPF_RECORD_IFR_OFFSET)..(r.offset + spf::SPF_RECORD_IFR_OFFSET + 4)
+        })
+        .collect();
+    for (i, (a, b)) in asm.spf_pre_refs.iter().zip(final_spf.iter()).enumerate() {
+        if !shifted_ifr_fields.iter().any(|rng| rng.contains(&i)) {
+            assert_eq!(
+                a, b,
+                "byte {i:#x} outside shifted ifr fields must stay identical across the ref add"
+            );
+        }
+    }
+
+    if let Some(page) = &asm.page {
+        assert_eq!(
+            np_spf_u32(
+                &final_spf,
+                fbase + spf::SPF_PAGE_TABLE_OFFSET + 4 * page.slot
+            ),
+            page.page_offset as u32,
+            "registered slot must survive the rebuild"
+        );
+        let skeleton = fbase + page.page_offset;
+        assert_eq!(
+            np_spf_u16(&final_spf, skeleton + spf::SPF_PAGE_FORM_ID_OFFSET),
+            NP_NEW_FORM_ID,
+            "skeleton form id must survive the rebuild"
+        );
+        assert_eq!(
+            np_spf_u32(&final_spf, skeleton + spf::SPF_PAGE_CNT_OFFSET),
+            0,
+            "skeleton cnt must stay zero"
+        );
+    }
+
+    let re2 = parse_image(&asm.built, ImageMode::Read, "re2", "npb").unwrap();
+    let again = build_image(&re2).expect("stable rebuild");
+    assert_eq!(again, asm.built, "save -> open -> save must be byte-stable");
+
+    eprintln!(
+        "np ref stage: delta={delta:#x} ref@{ref_off:#x} records={} shifted={shifted} container={:#x}",
+        final_records.len(),
+        final_spf.len() - fbase
+    );
+}
+
+#[test]
+#[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
+fn real_image_ops_insert_serial_np1() {
+    let asm = np_assemble(false);
+    assert!(asm.page.is_none(), "np1 candidate must not register a page");
+    assert!(
+        matches!(
+            asm.negative_smoke,
+            Err(uefi_engine::hii::HiiError::NotFound)
+        ),
+        "without a registered page check_question_add must stop at plan_spf_append (NotFound), got {:?}",
+        asm.negative_smoke
+    );
+    assert!(asm.positive_smoke.is_none());
+    np_assert_ref_stage(&asm, 188);
+}
+
+#[test]
+#[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
+fn real_image_ops_insert_serial_np2() {
+    use uefi_engine::hii::spf;
+
+    let asm = np_assemble(true);
+    let page = asm
+        .page
+        .as_ref()
+        .expect("np2 candidate must register the page");
+
+    assert!(
+        matches!(
+            asm.negative_smoke,
+            Err(uefi_engine::hii::HiiError::NotFound)
+        ),
+        "before page add the same call must return NotFound, got {:?}",
+        asm.negative_smoke
+    );
+    let positive = asm
+        .positive_smoke
+        .as_ref()
+        .expect("np2 smoke after page add");
+    assert!(
+        positive.is_ok(),
+        "in-bounds throwaway (q0x25A, vs 2 @0x2) must pass the whole preflight once the page resolves, got {:?}",
+        positive
+    );
+
+    let before = &asm.spf_pre_page;
+    let after = &asm.spf_pre_refs;
+    let bbase = spf::container_start(before).expect("$SPF before page add");
+    let abase = spf::container_start(after).expect("$SPF after page add");
+    assert_eq!(bbase, abase);
+    assert_eq!(
+        np_spf_u32(before, bbase + spf::SPF_PAGE_COUNT_OFFSET),
+        188,
+        "page count before registration"
+    );
+    assert_eq!(
+        page.slot, 188,
+        "registration slot = count read before the bump"
+    );
+    assert_eq!(
+        np_spf_u32(after, abase + spf::SPF_PAGE_COUNT_OFFSET),
+        189,
+        "page count 188 -> 189"
+    );
+    assert_eq!(
+        np_spf_u32(after, abase + spf::SPF_PAGE_TABLE_OFFSET + 4 * 188),
+        page.page_offset as u32,
+        "slot[188] must hold the skeleton offset"
+    );
+    assert_eq!(
+        page.page_offset,
+        before.len() - bbase,
+        "skeleton must be appended at the container end"
+    );
+    assert_eq!(
+        after.len(),
+        before.len() + 0x20,
+        "container grows exactly 0x20"
+    );
+
+    let parent_slot = (0..188).find(|&slot| {
+        let off = np_spf_u32(before, bbase + spf::SPF_PAGE_TABLE_OFFSET + 4 * slot) as usize;
+        off != 0
+            && np_spf_u16(before, bbase + off + spf::SPF_PAGE_FORM_ID_OFFSET) == NP_PARENT_FORM_ID
+    });
+    assert_eq!(parent_slot, Some(8), "parent page slot per plan");
+    let parent_off = np_spf_u32(before, bbase + spf::SPF_PAGE_TABLE_OFFSET + 4 * 8) as usize;
+
+    let skeleton = abase + page.page_offset;
+    assert!(
+        after[skeleton..skeleton + 8].iter().all(|&b| b == 0),
+        "skeleton must carry the 8-zero prefix"
+    );
+    assert_eq!(
+        after[skeleton + spf::SPF_PAGE_MARKER_OFFSET],
+        before[bbase + parent_off + spf::SPF_PAGE_MARKER_OFFSET],
+        "marker must be cloned from the parent page"
+    );
+    assert_eq!(
+        np_spf_u16(after, skeleton + spf::SPF_PAGE_FORM_ID_OFFSET),
+        NP_NEW_FORM_ID,
+        "skeleton fid"
+    );
+    assert_eq!(
+        np_spf_u16(after, skeleton + spf::SPF_PAGE_TITLE_ID_OFFSET),
+        page.title_string_id,
+        "skeleton title-id = appended page-add title string"
+    );
+    assert_eq!(
+        np_spf_u16(after, skeleton + spf::SPF_PAGE_SEQ_OFFSET),
+        188,
+        "skeleton seq"
+    );
+    assert_eq!(
+        np_spf_u16(after, skeleton + spf::SPF_PAGE_PARENT_OFFSET),
+        8,
+        "skeleton B = parent page slot"
+    );
+    assert_eq!(
+        np_spf_u32(after, skeleton + spf::SPF_PAGE_IMAGE_OFFSET),
+        np_spf_u32(before, bbase + parent_off + spf::SPF_PAGE_IMAGE_OFFSET),
+        "u18 must be cloned from the parent page"
+    );
+    assert_eq!(
+        np_spf_u32(after, skeleton + spf::SPF_PAGE_CNT_OFFSET),
+        0,
+        "skeleton cnt = 0"
+    );
+
+    for slot in 0..188 {
+        assert_eq!(
+            np_spf_u32(after, abase + spf::SPF_PAGE_TABLE_OFFSET + 4 * slot),
+            np_spf_u32(before, bbase + spf::SPF_PAGE_TABLE_OFFSET + 4 * slot),
+            "pre-existing slot {slot} must stay identical"
+        );
+    }
+    for slot in 0..188 {
+        let off = np_spf_u32(before, bbase + spf::SPF_PAGE_TABLE_OFFSET + 4 * slot) as usize;
+        if off == 0 {
+            continue;
+        }
+        let cnt = np_spf_u32(before, bbase + off + spf::SPF_PAGE_CNT_OFFSET) as usize;
+        let span = spf::SPF_PAGE_HEADER_SIZE + 4 * cnt;
+        assert_eq!(
+            &after[abase + off..abase + off + span],
+            &before[bbase + off..bbase + off + span],
+            "pre-existing page body at slot {slot} must stay byte-identical"
+        );
+    }
+
+    let mut len_pos = bbase + spf::SPF_HEADER_REGION_OFFSETS;
+    let mut len_max = np_spf_u32(before, len_pos);
+    for p in (spf::SPF_HEADER_REGION_OFFSETS..spf::SPF_PAGE_COUNT_OFFSET)
+        .step_by(4)
+        .skip(1)
+    {
+        let v = np_spf_u32(before, bbase + p);
+        if v >= len_max {
+            len_max = v;
+            len_pos = bbase + p;
+        }
+    }
+    assert_eq!(
+        np_spf_u32(after, len_pos),
+        np_spf_u32(before, len_pos) + 0x20,
+        "container-length header field must grow by 0x20"
+    );
+    let count_field = bbase + spf::SPF_PAGE_COUNT_OFFSET..bbase + spf::SPF_PAGE_COUNT_OFFSET + 4;
+    let gap_field = bbase + spf::SPF_PAGE_TABLE_OFFSET + 4 * 188
+        ..bbase + spf::SPF_PAGE_TABLE_OFFSET + 4 * 188 + 4;
+    let len_field = len_pos..len_pos + 4;
+    for (i, (a, b)) in before.iter().zip(after.iter()).enumerate() {
+        if !count_field.contains(&i) && !gap_field.contains(&i) && !len_field.contains(&i) {
+            assert_eq!(
+                a, b,
+                "page add may only touch count, the zero gap slot and the length field at {i:#x}"
+            );
+        }
+    }
+
+    {
+        let strings = uefi_engine::hii::strings::collect_strings(
+            &parse_image(&asm.built, ImageMode::Read, "re", "np2").unwrap(),
+        );
+        assert!(
+            strings
+                .iter()
+                .any(|s| s.string_id == u32::from(page.title_string_id) && s.text == NP_PAGE_TITLE),
+            "the page title string must resolve to '{NP_PAGE_TITLE}'"
+        );
+    }
+
+    np_assert_ref_stage(&asm, 189);
+
+    eprintln!(
+        "np2 page add: slot={} skeleton=container+{:#x} title-id={} parent=slot8@{:#x}",
+        page.slot, page.page_offset, page.title_string_id, parent_off
+    );
+}
