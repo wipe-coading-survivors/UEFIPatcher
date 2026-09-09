@@ -1,0 +1,15 @@
+{
+ "formset_guid": "7B59104A-C00D-4158-87FF-F04D6396A915",
+ "title": "UEFIPatcher",
+ "help": "shift probe short title",
+ "class_guids": [],
+ "varstores": [],
+ "default_stores": [],
+ "forms": [
+  {
+   "id": 10041,
+   "title": "UEFIPatcher",
+   "items": []
+  }
+ ]
+}
