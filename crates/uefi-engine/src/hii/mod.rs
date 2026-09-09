@@ -892,6 +892,14 @@ fn record_counter(body: &[u8], offset: usize) -> u32 {
     )
 }
 
+fn select_resolving_records(records: &[spf::SpfQuestionRecord], pkg: &[u8]) -> Vec<usize> {
+    records
+        .iter()
+        .filter(|r| spf_record_resolves(pkg, r.question_id, r.ifr_offset))
+        .map(|r| r.offset)
+        .collect()
+}
+
 fn plan_spf_append(
     body: &[u8],
     pkg: &[u8],
@@ -912,11 +920,7 @@ fn plan_spf_append(
         .max()
         .unwrap_or(0);
     let counter = (0x0001u32 << 16) | (1 + max_low);
-    let selected_records = records
-        .iter()
-        .filter(|r| spf_record_resolves(pkg, r.question_id, r.ifr_offset))
-        .map(|r| r.offset)
-        .collect();
+    let selected_records = select_resolving_records(&records, pkg);
     let count_at = base + spf::SPF_PAGE_COUNT_OFFSET;
     let count_bytes = body.get(count_at..count_at + 4).ok_or(HiiError::NotFound)?;
     let page_count = u32::from_le_bytes(count_bytes.try_into().unwrap()) as usize;
@@ -3965,6 +3969,192 @@ mod tests {
                     flash,
                     "rejection must not mutate the image"
                 );
+            }
+        }
+
+        mod form_varstore_tests {
+            use super::*;
+            use crate::hii::form_add::add_form;
+
+            const ITEM_FORMSET: &str = "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x10:0";
+            const ITEM_FORMSET_BARE: &str = "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:0";
+
+            fn varstore_form_schema() -> schema::FormSetSchema {
+                schema::FormSetSchema {
+                    formset_guid: "11111111-2222-3333-4444-555555555555".into(),
+                    title: "T".into(),
+                    help: "H".into(),
+                    class_guids: vec![],
+                    varstores: vec![schema::VarStoreSchema {
+                        id: 7,
+                        guid: "22222222-3333-4444-5555-666666666666".into(),
+                        size: 64,
+                        name: "VStore".into(),
+                        var_type: schema::VarStoreType::Buffer,
+                    }],
+                    default_stores: vec![],
+                    forms: vec![schema::FormSchema {
+                        id: 42,
+                        title: "NewForm".into(),
+                        items: vec![schema::ItemSchema::Text(schema::TextItem {
+                            prompt: "P".into(),
+                            help: "H".into(),
+                            text_two: "X".into(),
+                        })],
+                    }],
+                    setupdata_guid: None,
+                    amitse_guid: None,
+                }
+            }
+
+            fn varstore_op_len(pkg: &[u8]) -> usize {
+                let at = pkg
+                    .windows(6)
+                    .position(|w| w == b"VStore")
+                    .expect("varstore name in the forms package");
+                (pkg[at - 22 + 1] & 0x7F) as usize
+            }
+
+            #[test]
+            fn add_form_varstore_declaration_fixups_spf_ifr_offsets() {
+                let (flash, pkg_before, spf_before) = question_add_flash_image();
+                let before_recs = spf::scan_question_records(&spf_before);
+                let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+                add_form(&mut img, ITEM_FORMSET, &varstore_form_schema())
+                    .expect("form add with a varstore declaration");
+
+                let pkg_after = pkg_of(&img, ITEM_FORMSET);
+                let spf_after = spf_leaf_of(&img).to_vec();
+                assert_eq!(
+                    spf_after.len(),
+                    spf_before.len(),
+                    "the fixup must not grow the $SPF container"
+                );
+                let delta = varstore_op_len(&pkg_after);
+                assert!(delta > 0);
+
+                let mut expected_spf = spf_before.clone();
+                let mut live = 0usize;
+                for b in &before_recs {
+                    if !spf_record_resolves(&pkg_before, b.question_id, b.ifr_offset) {
+                        continue;
+                    }
+                    live += 1;
+                    let at = b.offset + spf::SPF_RECORD_IFR_OFFSET;
+                    let shifted: [u8; 4] = (b.ifr_offset + delta as u32).to_le_bytes();
+                    expected_spf[at..at + 4].copy_from_slice(&shifted);
+                }
+                assert_eq!(
+                    live, 2,
+                    "the fixture carries exactly two live records (q0x3B, q0x55)"
+                );
+                assert_eq!(
+                    spf_after, expected_spf,
+                    "round-11 invariant: only the live records' ifr_offset u32s may differ after the varstore insert"
+                );
+                for b in &before_recs {
+                    if !spf_record_resolves(&pkg_before, b.question_id, b.ifr_offset) {
+                        continue;
+                    }
+                    let a = spf::scan_question_records(&spf_after)
+                        .into_iter()
+                        .find(|r| r.question_id == b.question_id)
+                        .expect("stock live record must survive the form add");
+                    assert!(
+                        spf_record_resolves(&pkg_after, a.question_id, a.ifr_offset),
+                        "record q{:#x} must resolve to its own question op after the varstore insert",
+                        a.question_id
+                    );
+                }
+            }
+
+            #[test]
+            fn add_form_varstore_declaration_fixups_spf_ifr_offsets_bare() {
+                let (flash, pkg_before, spf_before) = question_add_bare_flash_image();
+                let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+                add_form(&mut img, ITEM_FORMSET_BARE, &varstore_form_schema())
+                    .expect("form add with a varstore declaration (bare channel)");
+
+                let t = crate::parser::target::parse_target(ITEM_FORMSET_BARE).unwrap();
+                let pkg_after = crate::parser::target::find_item(&img.root, &t)
+                    .unwrap()
+                    .body
+                    .clone();
+                let spf_after = spf_leaf_of(&img).to_vec();
+                let delta = varstore_op_len(&pkg_after);
+                let mut live = 0usize;
+                for b in spf::scan_question_records(&spf_before) {
+                    if !spf_record_resolves(&pkg_before, b.question_id, b.ifr_offset) {
+                        continue;
+                    }
+                    live += 1;
+                    let a = spf::scan_question_records(&spf_after)
+                        .into_iter()
+                        .find(|r| r.question_id == b.question_id)
+                        .unwrap();
+                    assert_eq!(
+                        a.ifr_offset,
+                        b.ifr_offset + delta as u32,
+                        "bare channel must shift live record q{:#x} by the varstore length",
+                        b.question_id
+                    );
+                    assert!(spf_record_resolves(&pkg_after, a.question_id, a.ifr_offset));
+                }
+                assert_eq!(live, 2);
+            }
+
+            #[test]
+            fn add_form_varstores_refuse_when_spf_behind_bad_wrapper() {
+                let pkg = question_add_forms_pkg();
+                let spf_body = question_add_spf_body_for(&pkg);
+                let mk = |node_type: FfsType, body: Vec<u8>, children: Vec<FfsNode>| FfsNode {
+                    guid: None,
+                    node_type,
+                    subtype: 0,
+                    offset: 0,
+                    header: vec![],
+                    body,
+                    tail: vec![],
+                    children,
+                    action: Action::NoAction,
+                    parsing_data: ParsingData::None,
+                    fixed: false,
+                    compressed: false,
+                    alignment_bytes: vec![],
+                };
+                let mut forms_sec = mk(FfsType::Section, pkg.clone(), vec![]);
+                forms_sec.subtype = crate::ffs::EFI_SECTION_RAW;
+                let mut setup_file = mk(FfsType::File, vec![], vec![forms_sec]);
+                setup_file.guid =
+                    Some(Guid::from_str("5C60F367-A505-419A-859E-2A4FF6CA6FE5").unwrap());
+                let mut spf_sec = mk(FfsType::Section, spf_body, vec![]);
+                spf_sec.subtype = crate::ffs::EFI_SECTION_FREEFORM_SUBTYPE_GUID;
+                let mut tiano = mk(FfsType::Section, vec![], vec![spf_sec]);
+                tiano.subtype = crate::ffs::EFI_SECTION_GUID_DEFINED;
+                tiano.parsing_data = ParsingData::GuidedSection(GuidedSectionParsingData {
+                    guid: crate::ffs::tiano_guid(),
+                    dictionary_size: 0x0080_0000,
+                });
+                let mut sd_file = mk(FfsType::File, vec![], vec![tiano]);
+                sd_file.guid = Some(Guid::from_str(SETUPDATA_GUID_STR).unwrap());
+                let volume = mk(FfsType::Volume, vec![], vec![setup_file, sd_file]);
+                let root = mk(FfsType::Image, vec![], vec![volume]);
+                let mut img = Image {
+                    image_id: "i".into(),
+                    session_id: "s".into(),
+                    root,
+                    mode: ImageMode::Write,
+                };
+
+                let err =
+                    add_form(&mut img, ITEM_FORMSET_BARE, &varstore_form_schema()).unwrap_err();
+                assert!(
+                    matches!(err, HiiError::MutationBehindCompression),
+                    "a reachable-but-blocked $SPF must refuse the varstore insert instead of desyncing it, got {err:?}"
+                );
+                let forms = &img.root.children[0].children[0].children[0];
+                assert_eq!(forms.body, pkg, "the forms package must stay untouched");
+                assert_eq!(forms.action, Action::NoAction);
             }
         }
     }

@@ -4409,7 +4409,41 @@ fn real_image_ops_insert_serial_np1() {
         asm.negative_smoke
     );
     assert!(asm.positive_smoke.is_none());
+    np_assert_form_stage_records(&asm);
     np_assert_ref_stage(&asm, 188);
+}
+
+fn np_assert_form_stage_records(asm: &NpAssembly) {
+    let stock_img = parse_image(&asm.data, ImageMode::Read, "st", "np1").unwrap();
+    let stock_pkg = module_form_package(
+        &stock_img,
+        &module_pe32_node_path(&stock_img, NP_SETUP_MODULE_GUID),
+    );
+    let stock_spf = find_spf_leaf_body(&stock_img, NP_SETUPDATA_GUID);
+    let stock_recs = uefi_engine::hii::spf::scan_question_records(&stock_spf);
+    let post_recs = uefi_engine::hii::spf::scan_question_records(&asm.spf_pre_page);
+    let mut checked = 0usize;
+    for sr in &stock_recs {
+        if !uefi_engine::hii::spf_record_resolves(&stock_pkg, sr.question_id, sr.ifr_offset) {
+            continue;
+        }
+        let fr = post_recs
+            .iter()
+            .find(|r| r.question_id == sr.question_id)
+            .expect("stock live record must survive the form add");
+        assert!(
+            uefi_engine::hii::spf_record_resolves(&asm.pkg_pre_refs, fr.question_id, fr.ifr_offset),
+            "round-11 invariant at the form-add stage: record q{} ifr {:#x} must resolve to its own question op after the varstore insert",
+            fr.question_id,
+            fr.ifr_offset
+        );
+        checked += 1;
+    }
+    assert!(
+        checked > 25,
+        "expected the LIVE subset of stock records on the real image, got {checked}"
+    );
+    eprintln!("np1 form-add stage: {checked} live records stay IFR-consistent");
 }
 
 #[test]
