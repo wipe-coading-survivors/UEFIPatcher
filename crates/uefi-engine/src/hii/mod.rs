@@ -1336,7 +1336,6 @@ fn build_ref_ops(schema: &schema::QuestionAddRefSchema, prompt_id: u16, help_id:
         0xFFFF,
         schema.form_id,
     );
-    b.emit_end();
     b.build()
 }
 
@@ -3628,6 +3627,24 @@ mod tests {
                 u16::from_le_bytes([pkg[off], pkg[off + 1]])
             }
 
+            fn scope_balance(pkg: &[u8]) -> i32 {
+                let mut bal = 0i32;
+                let mut i = 4;
+                while i + 2 <= pkg.len() {
+                    let len = (pkg[i + 1] & 0x7F) as usize;
+                    if len < 2 {
+                        break;
+                    }
+                    if pkg[i] == OP_END {
+                        bal -= 1;
+                    } else if pkg[i + 1] & 0x80 != 0 {
+                        bal += 1;
+                    }
+                    i += len;
+                }
+                bal
+            }
+
             #[test]
             fn add_ref_inserts_goto_before_form_end() {
                 let (flash, pkg_before, _) = question_add_flash_image();
@@ -3640,7 +3657,12 @@ mod tests {
                 assert_ne!(prompt_id, help_id);
 
                 let pkg_after = pkg_of(&img, "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x10:0");
-                assert_eq!(pkg_after.len() - pkg_before.len(), 17);
+                assert_eq!(pkg_after.len() - pkg_before.len(), 15);
+                assert_eq!(
+                    scope_balance(&pkg_after),
+                    scope_balance(&pkg_before),
+                    "REF is not a scope op: the splice must not change the IFR scope balance"
+                );
                 let r = find_ref_op(&pkg_after, 10019).expect("REF op in form 10019");
                 assert_eq!(pkg_after[r + 1] & 0x7F, 15, "REF op total length is 15");
                 assert_eq!(pkg_u16(&pkg_after, r + 13), 10020, "FormId at +13");
@@ -3712,7 +3734,7 @@ mod tests {
 
                 let delta = pkg_of(&img, "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x10:0").len()
                     - pkg_before.len();
-                assert_eq!(delta, 17);
+                assert_eq!(delta, 15);
                 let recs_after = spf::scan_question_records(&spf_after);
                 let rec0_after = recs_after.iter().find(|r| r.question_id == 0x3B).unwrap();
                 assert_eq!(
