@@ -112,7 +112,12 @@ one_of на varstore 2, varstores [id 2, GUID A9E7D5C2-…, size 0x10]),
 
 **Interfaces:**
 - `fn build_ref_ops(schema: &schema::QuestionAddRefSchema, prompt_id: u16, help_id: u16) -> Vec<u8>` —
-  `IfrBuilder::emit_ref(prompt_id, help_id, qid, 0, 0, form_id)` + `emit_end`.
+  только `IfrBuilder::emit_ref(prompt_id, help_id, qid, 0, 0, form_id)`.
+  Rule-11 fix (NP-E раунд 8): исходная формулировка «+ `emit_end`» —
+  дефект: сплайн вставляет ops ПЕРЕД сток form-END, собственный END
+  после REF дисбалансирует скоуп-стек IFR-пакета (TSE-краш на
+  Entering Setup; сток-REF #14 живёт «между END и END» без своего
+  END). Пакет растёт на 15, не на 17.
 - `fn check_ref_slots(schema: &schema::QuestionAddRefSchema, pkg: &[u8], pending_qids: &[u16]) -> Result<(), HiiError>` —
   только уникальность qid (существующий в формсете `values::scan_question_slots`
   + уже заявленные в том же запросе); varstore-проверки НЕ применяются
