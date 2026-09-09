@@ -4104,6 +4104,98 @@ mod tests {
             }
 
             #[test]
+            fn add_form_varstore_fixups_records_in_later_formsets() {
+                use crate::hii::form_hijack::test_fixtures::{
+                    ffs_file_bytes, file_sections, flash_with_files, section_bytes,
+                    string_package_bytes,
+                };
+                use crate::hii::ifr_builder::{IfrBuilder, TYPE_NUM_SIZE_8};
+
+                let mut b = IfrBuilder::new();
+                let g1 = Guid::from_str("A1B2C3D4-E5F6-7890-ABCD-EF1234567890").unwrap();
+                let g2 = Guid::from_str("B1B2C3D4-E5F6-7890-ABCD-EF1234567890").unwrap();
+                b.emit_form_set(&g1, 1, 1, &[]);
+                b.emit_var_store(1, &g1, 0x100, "Setup");
+                b.emit_form(10019, 1);
+                b.emit_one_of(0x01A3, 0x01A4, 0x3B, 1, 0x3A, 0, 1);
+                b.emit_one_of_option(4, 0x30, TYPE_NUM_SIZE_8, 0, 1);
+                b.emit_end();
+                b.emit_end();
+                b.emit_end();
+                b.emit_form_set(&g2, 2, 2, &[]);
+                b.emit_form(10020, 2);
+                b.emit_one_of(0x01A5, 0x01A6, 0x55, 1, 0x40, 0, 1);
+                b.emit_one_of_option(5, 0x00, TYPE_NUM_SIZE_8, 0, 1);
+                b.emit_end();
+                b.emit_end();
+                b.emit_end();
+                let ifr = b.build();
+                let mut pkg = vec![0u8; 4];
+                let len = 4 + ifr.len() as u32;
+                pkg[0] = (len & 0xFF) as u8;
+                pkg[1] = ((len >> 8) & 0xFF) as u8;
+                pkg[2] = ((len >> 16) & 0xFF) as u8;
+                pkg[3] = r_efi::hii::PACKAGE_FORMS;
+                pkg.extend_from_slice(&ifr);
+
+                let spf_body = question_add_spf_body_for(&pkg);
+                let before = spf::scan_question_records(&spf_body);
+                let flash = flash_with_files(vec![
+                    ffs_file_bytes(
+                        &Guid::from_str("5C60F367-A505-419A-859E-2A4FF6CA6FE5").unwrap(),
+                        &file_sections(&[
+                            section_bytes(crate::ffs::EFI_SECTION_RAW, &pkg),
+                            section_bytes(crate::ffs::EFI_SECTION_RAW, &string_package_bytes()),
+                        ]),
+                    ),
+                    sd_file_direct(&spf_body),
+                ]);
+                let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+                add_form(
+                    &mut img,
+                    "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:0#0",
+                    &varstore_form_schema(),
+                )
+                .expect("form add into formset 0");
+
+                let t = crate::parser::target::parse_target(ITEM_FORMSET_BARE).unwrap();
+                let pkg_after = crate::parser::target::find_item(&img.root, &t)
+                    .unwrap()
+                    .body
+                    .clone();
+                let spf_after = spf_leaf_of(&img).to_vec();
+                let v = varstore_op_len(&pkg_after) as u32;
+                let f = (pkg_after.len() - pkg.len() - v as usize) as u32;
+                assert!(f > 0);
+
+                let after = spf::scan_question_records(&spf_after);
+                let b0 = before.iter().find(|r| r.question_id == 0x3B).unwrap();
+                let b1 = before.iter().find(|r| r.question_id == 0x55).unwrap();
+                let a0 = after.iter().find(|r| r.question_id == 0x3B).unwrap();
+                let a1 = after.iter().find(|r| r.question_id == 0x55).unwrap();
+                assert_eq!(
+                    a0.ifr_offset,
+                    b0.ifr_offset + v,
+                    "records inside the targeted formset shift by the varstore length only"
+                );
+                assert_eq!(
+                    a1.ifr_offset,
+                    b1.ifr_offset + v + f,
+                    "records in later formsets shift by varstore + form lengths"
+                );
+                assert!(spf_record_resolves(
+                    &pkg_after,
+                    a0.question_id,
+                    a0.ifr_offset
+                ));
+                assert!(spf_record_resolves(
+                    &pkg_after,
+                    a1.question_id,
+                    a1.ifr_offset
+                ));
+            }
+
+            #[test]
             fn add_form_varstores_refuse_when_spf_behind_bad_wrapper() {
                 let pkg = question_add_forms_pkg();
                 let spf_body = question_add_spf_body_for(&pkg);

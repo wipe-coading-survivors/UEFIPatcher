@@ -106,14 +106,15 @@ pub fn add_form(
         None
     } else {
         let pkg_pre = question_forms_package(&image.root, &target, bare_channel)?.to_vec();
-        let threshold = ifr::formset_varstore_insert_offset(&pkg_pre, formset_idx)
-            .ok_or(HiiError::InvalidIfr)? as u32;
+        let (after_header, formset_end) =
+            ifr::formset_insert_points(&pkg_pre, formset_idx).ok_or(HiiError::InvalidIfr)?;
         match ami_patcher::discover_pfs_payload_path(image) {
             Ok(sd_path) => {
                 let spf_body = node_at(&image.root, &sd_path).body.clone();
                 Some((
                     sd_path,
-                    threshold,
+                    after_header as u32,
+                    formset_end as u32,
                     select_resolving_records(&spf::scan_question_records(&spf_body), &pkg_pre),
                 ))
             }
@@ -150,12 +151,18 @@ pub fn add_form(
             insert_form_into_resource(&mut node.body, formset_idx, &form_ifr, &varstores)?;
         }
     }
-    if let Some((sd_path, threshold, selected)) = spf_fixup {
+    if let Some((sd_path, after_header, formset_end, selected)) = spf_fixup {
         let node = node_at_mut(&mut image.root, &sd_path);
         spf::fixup_selected_record_ifr_offsets(
             &mut node.body,
             &selected,
-            threshold,
+            formset_end,
+            form_ifr.len() as u32,
+        );
+        spf::fixup_selected_record_ifr_offsets(
+            &mut node.body,
+            &selected,
+            after_header,
             varstores.len() as u32,
         );
         ops::mark_rebuild_to_root_by_path(&mut image.root, &sd_path);

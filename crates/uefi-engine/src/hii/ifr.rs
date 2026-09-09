@@ -237,8 +237,8 @@ pub(crate) fn formset_at(pkg: &[u8], formset_idx: usize) -> bool {
     locate_formset_insert_points(pkg, formset_idx).is_some()
 }
 
-pub(crate) fn formset_varstore_insert_offset(pkg: &[u8], formset_idx: usize) -> Option<usize> {
-    locate_formset_insert_points(pkg, formset_idx).map(|(after_header, _)| after_header)
+pub(crate) fn formset_insert_points(pkg: &[u8], formset_idx: usize) -> Option<(usize, usize)> {
+    locate_formset_insert_points(pkg, formset_idx)
 }
 
 fn locate_formset_insert_points(body: &[u8], formset_idx: usize) -> Option<(usize, usize)> {
