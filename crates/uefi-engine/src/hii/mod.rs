@@ -2658,7 +2658,7 @@ mod tests {
     #[test]
     fn gates_and_unlock_print_pkg_relative_offsets_in_second_package() {
         let list_guid = Guid::try_parse("ABBCE13D-E25A-4D9F-A1F9-2F7710786892").unwrap();
-        let pkg1 = forms_pkg(vec![g_form(9), g_end(), g_end()].concat());
+        let pkg1 = forms_pkg([g_form(9), g_end(), g_end()].concat());
         let pkg2 = vendor_forms_pkg();
         let mut list = list_guid.to_bytes().to_vec();
         let total = 20 + pkg1.len() + pkg2.len() + 4;
