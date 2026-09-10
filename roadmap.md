@@ -433,7 +433,9 @@ hijack-v2.1 (E24–E29).
 Forms View для работы с HII-формами. Решение владельца 2026-09-11: два цикла.
 Revival — «максимум всего» (метки узлов, FIND/GO, tab-completion + общий парсер
 флагов, engine name-lift через обёртки, prune Remove-узлов после flush,
-ME/FTPR-регион, `ImageUpload` RPC + `:upload`). Forms View — дуга малых ступеней
+регионы flash-дескриптора: полная таблица FLREG + ME/FTPR-парсер + read-only
+индикация, `ImageUpload` RPC + `:upload`, мутационный журнал — pending-операции
+переживают рестарт движка). Forms View — дуга малых ступеней
 V1 просмотр → V2 правки на месте → V3 schema-операции добавления; полноэкранные
 вкладки Tab/Shift-Tab (AMIBCP-канон «отдельный экран», TODO:151).
 
