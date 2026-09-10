@@ -58,22 +58,27 @@ enum SearchModeCli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    #[command(about = "manage engine sessions")]
     Session {
         #[command(subcommand)]
         sub: SessionCmd,
     },
+    #[command(about = "open and manage BIOS images on the engine")]
     Image {
         #[command(subcommand)]
         sub: ImageCmd,
     },
+    #[command(about = "inspect and edit firmware tree nodes")]
     Node {
         #[command(subcommand)]
         sub: NodeCmd,
     },
+    #[command(about = "manage stored artifacts")]
     Artifact {
         #[command(subcommand)]
         sub: ArtifactCmd,
     },
+    #[command(about = "read and edit HII forms, strings and questions")]
     Hii {
         #[command(subcommand)]
         sub: HiiCmd,
@@ -82,18 +87,22 @@ enum Cmd {
 
 #[derive(Subcommand)]
 enum SessionCmd {
+    #[command(about = "create a session and write client state")]
     Init {
         #[arg(long)]
         name: Option<String>,
         #[arg(long)]
         force: bool,
     },
+    #[command(about = "list active sessions")]
     List,
+    #[command(about = "destroy the session and remove client state")]
     Destroy,
 }
 
 #[derive(Subcommand)]
 enum ImageCmd {
+    #[command(about = "open a BIOS image from the server filesystem")]
     Open {
         path: String,
         #[arg(long)]
@@ -101,27 +110,28 @@ enum ImageCmd {
         #[arg(long, value_enum, default_value_t = ImageModeCli::Read)]
         mode: ImageModeCli,
     },
-    Switch {
-        image_id: String,
-    },
-    Close {
-        image_id: Option<String>,
-    },
-    Save {
-        output: String,
-    },
+    #[command(about = "set the active image for subsequent commands")]
+    Switch { image_id: String },
+    #[command(about = "close an opened image")]
+    Close { image_id: Option<String> },
+    #[command(about = "write the active image to a file on the server")]
+    Save { output: String },
+    #[command(about = "list images opened in the session")]
     List,
+    #[command(about = "show details of the active image")]
     Status,
 }
 
 #[derive(Subcommand)]
 enum NodeCmd {
+    #[command(about = "list nodes of the active image")]
     List {
         #[arg(long)]
         filter: Option<String>,
         #[arg(long)]
         tree: bool,
     },
+    #[command(about = "search nodes by name or data")]
     Search {
         query: String,
         #[arg(long, value_enum, num_args = 0.., default_values_t = vec![SearchModeCli::Name])]
@@ -129,43 +139,61 @@ enum NodeCmd {
         #[arg(long, default_value = "100")]
         limit: u32,
     },
+    #[command(about = "insert a file or artifact as a new node")]
     Insert {
         target: String,
-        #[arg(long, group = "source")]
+        #[arg(
+            long,
+            group = "source",
+            help = "read the new node body from a server-side file"
+        )]
         file: Option<String>,
-        #[arg(long, group = "source")]
+        #[arg(
+            long,
+            group = "source",
+            help = "reuse a stored artifact as the new node body"
+        )]
         artifact: Option<String>,
-        #[arg(long, value_enum, default_value_t = InsertModeCli::Into)]
+        #[arg(long, value_enum, default_value_t = InsertModeCli::Into, help = "placement relative to the target")]
         mode: InsertModeCli,
     },
-    Remove {
-        target: String,
-    },
+    #[command(about = "remove a node")]
+    Remove { target: String },
+    #[command(about = "replace a node body from a file or artifact")]
     Replace {
         target: String,
-        #[arg(long, group = "source")]
+        #[arg(
+            long,
+            group = "source",
+            help = "read the new node body from a server-side file"
+        )]
         file: Option<String>,
-        #[arg(long, group = "source")]
+        #[arg(
+            long,
+            group = "source",
+            help = "reuse a stored artifact as the new node body"
+        )]
         artifact: Option<String>,
-        #[arg(long)]
+        #[arg(long, help = "replace the body only, keep the node header")]
         body_only: bool,
     },
-    Rebuild {
-        target: String,
-    },
+    #[command(about = "rebuild a node from its children")]
+    Rebuild { target: String },
+    #[command(about = "extract a node body into a new artifact")]
     Extract {
         target: String,
-        #[arg(long)]
+        #[arg(long, help = "extract the body without the section header")]
         body_only: bool,
     },
 }
 
 #[derive(Subcommand)]
 enum ArtifactCmd {
+    #[command(about = "list stored artifacts")]
     List,
-    Import {
-        path: String,
-    },
+    #[command(about = "import a local file as an artifact")]
+    Import { path: String },
+    #[command(about = "export an artifact to the server filesystem")]
     Export {
         artifact_id: String,
         output_path: Option<String>,
@@ -174,23 +202,27 @@ enum ArtifactCmd {
 
 #[derive(Subcommand)]
 enum HiiCmd {
+    #[command(about = "form-level HII operations")]
     Form {
         #[command(subcommand)]
         sub: HiiFormCmd,
     },
-    #[command(name = "formset")]
+    #[command(name = "formset", about = "formset-level HII operations")]
     FormSet {
         #[command(subcommand)]
         sub: HiiFormSetCmd,
     },
+    #[command(about = "question-level HII operations")]
     Question {
         #[command(subcommand)]
         sub: HiiQuestionCmd,
     },
+    #[command(about = "$SPF page-table operations")]
     Page {
         #[command(subcommand)]
         sub: HiiPageCmd,
     },
+    #[command(about = "HII string operations")]
     String {
         #[command(subcommand)]
         sub: HiiStringCmd,
@@ -199,7 +231,9 @@ enum HiiCmd {
 
 #[derive(Subcommand)]
 enum HiiFormCmd {
+    #[command(about = "list HII forms")]
     List,
+    #[command(about = "show or hide a form via its suppress scope")]
     SetVisibility {
         form_id: String,
         #[arg(long, conflicts_with = "hidden")]
@@ -207,18 +241,18 @@ enum HiiFormCmd {
         #[arg(long)]
         hidden: bool,
     },
-    Gates {
-        item_id: String,
-    },
-    Unlock {
-        item_id: String,
-    },
+    #[command(about = "list gates (suppress/grayout) guarding a form")]
+    Gates { item_id: String },
+    #[command(about = "flip gates to unlock a form")]
+    Unlock { item_id: String },
+    #[command(about = "insert a form from a schema file into a live formset")]
     Add {
         #[arg(long)]
         target: String,
         #[arg(long)]
         file: String,
     },
+    #[command(about = "replace a form via AMI SetupData hijack")]
     Hijack {
         #[arg(long)]
         target: String,
@@ -231,6 +265,7 @@ enum HiiFormCmd {
 
 #[derive(Subcommand)]
 enum HiiFormSetCmd {
+    #[command(about = "append a new formset from a schema file")]
     Add {
         #[arg(long)]
         file: String,
@@ -241,21 +276,14 @@ enum HiiFormSetCmd {
 
 #[derive(Subcommand)]
 enum HiiQuestionCmd {
-    Gates {
-        item_id: String,
-    },
-    Unlock {
-        item_id: String,
-    },
+    #[command(about = "list gates (suppress/grayout) guarding a question")]
+    Gates { item_id: String },
+    #[command(about = "flip gates to unlock a question")]
+    Unlock { item_id: String },
     #[command(about = "show question value map (varstore/offset/width/options)")]
-    Info {
-        item_id: String,
-    },
+    Info { item_id: String },
     #[command(about = "seed a default value via NVAR StdDefaults stores")]
-    SetValue {
-        item_id: String,
-        value: String,
-    },
+    SetValue { item_id: String, value: String },
     #[command(about = "insert a OneOf question into a live form")]
     Add {
         item_id: String,
@@ -266,7 +294,9 @@ enum HiiQuestionCmd {
 
 #[derive(Subcommand)]
 enum HiiPageCmd {
-    #[command(about = "register a form as a page in the $SPF page table")]
+    #[command(
+        about = "add a form to the $SPF page table (no IFR validation; create the form first)"
+    )]
     Add {
         target: String,
         #[arg(long)]
@@ -276,6 +306,7 @@ enum HiiPageCmd {
 
 #[derive(Subcommand)]
 enum HiiStringCmd {
+    #[command(about = "list HII strings")]
     List,
 }
 
