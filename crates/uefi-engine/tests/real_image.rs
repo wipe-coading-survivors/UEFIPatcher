@@ -1598,7 +1598,7 @@ fn real_image_hii_unlock_matches_e12() {
             if gi.gate_kind == "suppress" {
                 0x0A
             } else {
-                0x0D
+                0x19
             },
             "scope_offset указывает на опкод гейта (контракт pkg+)"
         );
