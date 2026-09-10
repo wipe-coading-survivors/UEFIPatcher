@@ -354,7 +354,6 @@ fn find_suppress_if_scopes_returns_only_outermost_scope() {
     ifr.extend(end());
     let scopes = find_suppress_if_scopes(&package(&ifr));
     assert_eq!(scopes.len(), 1, "вложенный SUPPRESS_IF покрывается внешним скоупом");
-    // внешний SUPPRESS @27 (контент с 29), внутренний END @31, внешний END @33
     assert_eq!(scopes[0].start, 29);
     assert_eq!(scopes[0].end, 33);
 }

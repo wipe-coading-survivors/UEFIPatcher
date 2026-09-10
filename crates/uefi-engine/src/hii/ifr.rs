@@ -797,7 +797,6 @@ mod tests {
             1,
             "вложенный SUPPRESS_IF покрывается внешним скоупом"
         );
-        // внешний SUPPRESS @27 (контент с 29), внутренний END @31, внешний END @33
         assert_eq!(scopes[0].start, 29);
         assert_eq!(scopes[0].end, 33);
     }
