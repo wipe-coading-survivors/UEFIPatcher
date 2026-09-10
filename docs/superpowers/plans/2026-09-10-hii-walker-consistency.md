@@ -763,10 +763,12 @@ let parse_flip_str = |s: &str| -> (usize, Vec<u8>, Vec<u8>) {
 };
 for gi in [&form_gates[0], &question_gates[0]] {
     // литералы опкодов — проверка самого байтового формата (IFR_SUPPRESS_IF_OP
-    // = 0x0A, IFR_GRAY_OUT_IF_OP = 0x0D)
+    // = 0x0A, IFR_GRAY_OUT_IF_OP = 0x19 — r-efi hii.rs:285; 0x0D в исходном
+    // плане был неверным литералом и ломал ассерт на живом образе: байт по
+    // scope_offset grayout-гейта равен 0x19)
     assert_eq!(
         pkg_before[gi.scope_offset as usize],
-        if gi.gate_kind == "suppress" { 0x0A } else { 0x0D },
+        if gi.gate_kind == "suppress" { 0x0A } else { 0x19 },
         "scope_offset указывает на опкод гейта (контракт pkg+)"
     );
     let (off, from, _to) = parse_flip_str(&gi.flip);
