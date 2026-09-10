@@ -96,7 +96,8 @@ setup-new-page).
 
 - `find_form_suppress_scope`/`find_suppress_if_scopes`/`parse_form_package`:
   stray END на пустом стеке, `length < 2`, короткий IfrFormSet (`length` 2..23),
-  порядок nested-suppress (внешний скоуп возвращается раньше внутреннего);
+  nested-suppress: внешний скоуп покрывает внутренний, возвращается только
+  внешний (outermost-only — контракт «не меняется» из §3.1);
 - `decode_expr`: тест-фиксация «ровно один мусорный байт после валидного префикса
   операндов допустим» (текущее поведение, END-quirk) — до появления новых quirk'ов.
 

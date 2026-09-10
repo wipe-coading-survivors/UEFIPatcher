@@ -23,8 +23,10 @@ pub(crate) fn package_bounds(body: &[u8]) -> (usize, usize) {
 /// Обход: opcode-aligned (`i += length`), границы — `package_bounds`
 /// (u24-длина пакета); глубина +1 на любой scoped-оп (бит 0x80), −1 на END —
 /// AMI-quirk операнды с END-терминаторами и вложенные FORM/GRAYOUT не ломают
-/// баланс. Возвращает контент всех SUPPRESS_IF пакета: [start, end) — между
-/// заголовком SUPPRESS_IF и его END. Спека hii-walker-consistency §3.1.
+/// баланс. Возвращает контент всех неперекрытых (outermost) SUPPRESS_IF
+/// пакета: [start, end) — между заголовком SUPPRESS_IF и его END; вложенные
+/// покрываются внешним и отдельно не возвращаются. Спека
+/// hii-walker-consistency §3.1.
 pub fn find_suppress_if_scopes(body: &[u8]) -> Vec<SuppressScope> {
     let (start, end) = package_bounds(body);
     let mut scopes = vec![];

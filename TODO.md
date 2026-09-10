@@ -1244,6 +1244,15 @@ atomic_write. После первой мутации хранимый файл �
   unlock; расширение осознанно не вошло в цикл hii-walker-consistency
   (спека §4): меняет класс мутации существующего RPC. Контекст: отдельный
   мини-цикл при живом прецеденте.
+* [ ] **hii/values: приватный дубль `package_bounds` (values.rs:55)** — третий
+  экземпляр того же bounds-хелпера после выноса в `hii::ifr::package_bounds`
+  (pub(crate), цикл hii-walker-consistency §3.8 дедуплицировал только
+  gates.rs). Контекст: выровнять при следующем касании values.rs.
+* [ ] **set_item_visibility: precedence HidingUnsupported/NotASetupItem для
+  не-HII PE32** — `visible=false` на PE32-секции без form-пакетов теперь
+  даёт HidingUnsupported (ранний возврат до каналов, спека §3.2) вместо
+  NotASetupItem. Контекст: плановое поведение цикла hii-walker-consistency;
+  пересмотреть при пересадке op на gates-слой.
 * [ ] **rpc/server hii_unlock: get_or_load_image-клон используется только
   для touch** — полный clone образа берётся ради `img.session_id`
   (`sm.touch`), мутация идёт через повторный lock `images.get_mut`.
