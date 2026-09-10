@@ -294,36 +294,7 @@ impl EngineService for MockEngine {
         _req: Request<HiiQuestionInfoRequest>,
     ) -> Result<Response<HiiQuestionInfoResponse>, Status> {
         Ok(Response::new(HiiQuestionInfoResponse {
-            question: Some(QuestionInfo {
-                form_id: 10029,
-                question_id: 0x3B,
-                kind: "one_of".into(),
-                var_store_id: 1,
-                varstore: Some(VarStoreInfo {
-                    id: 1,
-                    guid: "EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9".into(),
-                    size: 0x72,
-                    name: "Setup".into(),
-                }),
-                var_offset: 0x3A,
-                width: 1,
-                min: 0,
-                max: 0,
-                step: 0,
-                options: vec![
-                    OptionEntry {
-                        string_id: 4,
-                        value: 0,
-                        flags: 0x30,
-                    },
-                    OptionEntry {
-                        string_id: 3,
-                        value: 1,
-                        flags: 0x00,
-                    },
-                ],
-                defaults: vec![],
-            }),
+            question: Some(mock_question()),
         }))
     }
     async fn hii_set_value(
@@ -331,36 +302,7 @@ impl EngineService for MockEngine {
         _req: Request<HiiSetValueRequest>,
     ) -> Result<Response<HiiSetValueResponse>, Status> {
         Ok(Response::new(HiiSetValueResponse {
-            question: Some(QuestionInfo {
-                form_id: 10029,
-                question_id: 0x3B,
-                kind: "one_of".into(),
-                var_store_id: 1,
-                varstore: Some(VarStoreInfo {
-                    id: 1,
-                    guid: "EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9".into(),
-                    size: 0x72,
-                    name: "Setup".into(),
-                }),
-                var_offset: 0x3A,
-                width: 1,
-                min: 0,
-                max: 0,
-                step: 0,
-                options: vec![
-                    OptionEntry {
-                        string_id: 4,
-                        value: 0,
-                        flags: 0x30,
-                    },
-                    OptionEntry {
-                        string_id: 3,
-                        value: 1,
-                        flags: 0x00,
-                    },
-                ],
-                defaults: vec![],
-            }),
+            question: Some(mock_question()),
             applied_flips: vec!["file …raw body store+0x62: 00 -> 01".into()],
             stores: vec!["mock store".into()],
         }))
@@ -390,6 +332,43 @@ impl EngineService for MockEngine {
             page_offset: 0x178,
             title_string_id: 0x1A7,
         }))
+    }
+}
+
+fn mock_question() -> QuestionInfo {
+    QuestionInfo {
+        form_id: 10029,
+        question_id: 0x3B,
+        kind: "one_of".into(),
+        var_store_id: 1,
+        varstore: Some(VarStoreInfo {
+            id: 1,
+            guid: "EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9".into(),
+            size: 0x72,
+            name: "Setup".into(),
+        }),
+        var_offset: 0x3A,
+        width: 1,
+        min: 0,
+        max: 0,
+        step: 0,
+        options: vec![
+            OptionEntry {
+                string_id: 4,
+                value: 0,
+                flags: 0x30,
+            },
+            OptionEntry {
+                string_id: 3,
+                value: 1,
+                flags: 0x00,
+            },
+        ],
+        defaults: vec![DefaultEntry {
+            default_id: 0,
+            r#type: 0,
+            value: 1,
+        }],
     }
 }
 

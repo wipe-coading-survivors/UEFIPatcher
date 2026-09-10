@@ -163,7 +163,8 @@ async fn hii_question_info_and_set_value_flow() {
         .stdout(predicates::str::contains("Setup"))
         .stdout(predicates::str::contains("0x3a"))
         .stdout(predicates::str::contains("58"))
-        .stdout(predicates::str::contains("value = 1"));
+        .stdout(predicates::str::contains("value = 1"))
+        .stdout(predicates::str::contains("default = 1 (id 0, type 0)"));
 
     cli(&sock, cwd)
         .args([

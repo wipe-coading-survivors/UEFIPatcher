@@ -252,36 +252,41 @@ pub fn print_question_info(q: &QuestionInfo, format: OutputFormat) {
                 println!("option\t{}\t{}\t{}", o.string_id, o.value, o.flags);
             }
         }
-        OutputFormat::Text => {
-            println!("question {} #{}:{:#x}", q.kind, q.form_id, q.question_id);
-            match &q.varstore {
-                Some(vs) => println!(
-                    "varstore {} ({}) id {} size {:#x}",
-                    vs.name, vs.guid, vs.id, vs.size
-                ),
-                None => println!("varstore id {} (undeclared)", q.var_store_id),
-            }
-            println!(
-                "width {}, offset {:#x} ({})",
-                q.width, q.var_offset, q.var_offset
-            );
-            if q.options.is_empty() {
-                println!("no options");
-            }
-            for o in &q.options {
-                println!(
-                    "value = {} (string {}, flags {:#x})",
-                    o.value, o.string_id, o.flags
-                );
-            }
-            for d in &q.defaults {
-                println!(
-                    "default = {} (id {}, type {})",
-                    d.value, d.default_id, d.r#type
-                );
-            }
-        }
+        OutputFormat::Text => print!("{}", question_info_text(q)),
     }
+}
+
+fn question_info_text(q: &QuestionInfo) -> String {
+    let mut s = format!("question {} #{}:{:#x}\n", q.kind, q.form_id, q.question_id);
+    match &q.varstore {
+        Some(vs) => {
+            s.push_str(&format!(
+                "varstore {} ({}) id {} size {:#x}\n",
+                vs.name, vs.guid, vs.id, vs.size
+            ));
+        }
+        None => s.push_str(&format!("varstore id {} (undeclared)\n", q.var_store_id)),
+    }
+    s.push_str(&format!(
+        "width {}, offset {:#x} ({})\n",
+        q.width, q.var_offset, q.var_offset
+    ));
+    if q.options.is_empty() {
+        s.push_str("no options\n");
+    }
+    for o in &q.options {
+        s.push_str(&format!(
+            "value = {} (string {}, flags {:#x})\n",
+            o.value, o.string_id, o.flags
+        ));
+    }
+    for d in &q.defaults {
+        s.push_str(&format!(
+            "default = {} (id {}, type {})\n",
+            d.value, d.default_id, d.r#type
+        ));
+    }
+    s
 }
 
 pub fn print_set_value(
@@ -519,7 +524,9 @@ pub fn print_ok(format: OutputFormat) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use uefi_proto::{HiiHelpControlEdit, HiiHelpRecordEdit};
+    use uefi_proto::{
+        DefaultEntry, HiiHelpControlEdit, HiiHelpRecordEdit, OptionEntry, VarStoreInfo,
+    };
 
     #[test]
     fn session_created_json() {
@@ -687,6 +694,42 @@ mod tests {
         q.varstore = None;
         print_question_info(&q, OutputFormat::Text);
         print_question_info(&q, OutputFormat::Tsv);
+    }
+
+    #[test]
+    fn question_info_text_prints_defaults_and_varstore() {
+        let q = QuestionInfo {
+            form_id: 10029,
+            question_id: 0x3B,
+            kind: "one_of".into(),
+            var_store_id: 1,
+            varstore: Some(VarStoreInfo {
+                id: 1,
+                guid: "EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9".into(),
+                size: 0x72,
+                name: "Setup".into(),
+            }),
+            var_offset: 0x3A,
+            width: 1,
+            min: 0,
+            max: 0,
+            step: 0,
+            options: vec![OptionEntry {
+                string_id: 3,
+                value: 1,
+                flags: 0x00,
+            }],
+            defaults: vec![DefaultEntry {
+                default_id: 0,
+                r#type: 0,
+                value: 1,
+            }],
+        };
+        let text = question_info_text(&q);
+        assert!(
+            text.contains("varstore Setup (EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9) id 1 size 0x72")
+        );
+        assert!(text.contains("default = 1 (id 0, type 0)"));
     }
 
     #[test]
