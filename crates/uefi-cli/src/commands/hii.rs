@@ -190,12 +190,7 @@ pub async fn question_add(
     let resp = client
         .hii_question_add(&image_id, item_id, &schema_json)
         .await?;
-    if !resp.questions.is_empty() || resp.refs.is_empty() {
-        crate::output::print_question_add(&resp.questions, format);
-    }
-    if !resp.refs.is_empty() {
-        crate::output::print_question_add(&resp.refs, format);
-    }
+    crate::output::print_question_add_result(&resp.questions, &resp.refs, format);
     Ok(())
 }
 

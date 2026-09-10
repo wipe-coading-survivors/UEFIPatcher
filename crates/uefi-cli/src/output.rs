@@ -422,35 +422,68 @@ pub fn print_form_hijack(resp: &HiiFormHijackResponse, format: OutputFormat) {
     }
 }
 
-pub fn print_question_add(outcomes: &[HiiQuestionAddOutcome], format: OutputFormat) {
-    match format {
-        OutputFormat::Json => {
-            let items = outcomes
-                .iter()
-                .map(|o| {
-                    let sids = serde_json::to_string(&o.string_ids).unwrap_or_else(|_| "{}".into());
+pub fn question_add_json(
+    questions: &[HiiQuestionAddOutcome],
+    refs: &[HiiQuestionAddOutcome],
+) -> String {
+    fn outcomes_json(outcomes: &[HiiQuestionAddOutcome], with_spf_record: bool) -> Vec<String> {
+        outcomes
+            .iter()
+            .map(|o| {
+                let sids = serde_json::to_string(&o.string_ids).unwrap_or_else(|_| "{}".into());
+                if with_spf_record {
                     format!(
                         "{{\"question_id\":{},\"string_ids\":{sids},\"spf_record_offset\":{}}}",
                         o.question_id, o.spf_record_offset
                     )
-                })
-                .collect::<Vec<_>>()
-                .join(",");
-            println!("{{\"questions\":[{items}]}}");
-        }
-        _ => {
-            println!("question_id\tspf_record_offset\tstring_id\tname");
-            for o in outcomes {
-                println!("{:#X}\t{:#X}\t-\t-", o.question_id, o.spf_record_offset);
-                let mut sids: Vec<(&String, &u32)> = o.string_ids.iter().collect();
-                sids.sort_by_key(|&(name, sid)| (*sid, name));
-                for (name, sid) in sids {
-                    println!(
-                        "{:#X}\t{:#X}\t{sid}\t{name}",
-                        o.question_id, o.spf_record_offset
-                    );
+                } else {
+                    format!(
+                        "{{\"question_id\":{},\"string_ids\":{sids}}}",
+                        o.question_id
+                    )
                 }
+            })
+            .collect()
+    }
+    let questions = outcomes_json(questions, true).join(",");
+    let refs = outcomes_json(refs, false).join(",");
+    format!("{{\"questions\":[{questions}],\"refs\":[{refs}]}}")
+}
+
+pub fn print_question_add_result(
+    questions: &[HiiQuestionAddOutcome],
+    refs: &[HiiQuestionAddOutcome],
+    format: OutputFormat,
+) {
+    fn print_table(outcomes: &[HiiQuestionAddOutcome]) {
+        if outcomes.is_empty() {
+            return;
+        }
+        println!("question_id\tspf_record_offset\tstring_id\tname");
+        for o in outcomes {
+            println!("{:#X}\t{:#X}\t-\t-", o.question_id, o.spf_record_offset);
+            let mut sids: Vec<(&String, &u32)> = o.string_ids.iter().collect();
+            sids.sort_by_key(|&(name, sid)| (*sid, name));
+            for (name, sid) in sids {
+                println!(
+                    "{:#X}\t{:#X}\t{sid}\t{name}",
+                    o.question_id, o.spf_record_offset
+                );
             }
+        }
+    }
+    match format {
+        OutputFormat::Json => println!("{}", question_add_json(questions, refs)),
+        _ => {
+            let sectioned = !questions.is_empty() && !refs.is_empty();
+            if sectioned {
+                println!("questions");
+            }
+            print_table(questions);
+            if sectioned {
+                println!("refs");
+            }
+            print_table(refs);
         }
     }
 }
@@ -491,6 +524,39 @@ mod tests {
     #[test]
     fn session_created_json() {
         print_session_created("s1", "t1", OutputFormat::Json);
+    }
+
+    #[test]
+    fn question_add_json_is_one_document_with_refs() {
+        let mut sids = std::collections::HashMap::new();
+        sids.insert("Serial Console".to_string(), 9u32);
+        let q = HiiQuestionAddOutcome {
+            question_id: 600,
+            string_ids: sids,
+            spf_record_offset: 0x1A4,
+        };
+        let mut rsids = std::collections::HashMap::new();
+        rsids.insert("UEFIPatcher Setup".to_string(), 11u32);
+        let r = HiiQuestionAddOutcome {
+            question_id: 528,
+            string_ids: rsids,
+            spf_record_offset: 0,
+        };
+        let doc: serde_json::Value = serde_json::from_str(&question_add_json(&[q], &[r])).unwrap();
+        assert_eq!(doc["questions"][0]["question_id"].as_u64(), Some(600));
+        assert_eq!(
+            doc["questions"][0]["spf_record_offset"].as_u64(),
+            Some(0x1A4)
+        );
+        assert_eq!(
+            doc["questions"][0]["string_ids"]["Serial Console"].as_u64(),
+            Some(9)
+        );
+        assert_eq!(doc["refs"][0]["question_id"].as_u64(), Some(528));
+        assert!(
+            doc["refs"][0].get("spf_record_offset").is_none(),
+            "refs carry no $SPF record and must not report a bogus offset"
+        );
     }
 
     #[test]
@@ -547,9 +613,17 @@ mod tests {
             string_ids,
             spf_record_offset: 0x13C,
         }];
-        print_question_add(&outcomes, OutputFormat::Json);
-        print_question_add(&outcomes, OutputFormat::Text);
-        print_question_add(&[], OutputFormat::Tsv);
+        let mut ref_sids = std::collections::HashMap::new();
+        ref_sids.insert("UEFIPatcher Setup".to_string(), 7u32);
+        let refs = vec![HiiQuestionAddOutcome {
+            question_id: 528,
+            string_ids: ref_sids,
+            spf_record_offset: 0,
+        }];
+        print_question_add_result(&outcomes, &refs, OutputFormat::Json);
+        print_question_add_result(&outcomes, &refs, OutputFormat::Text);
+        print_question_add_result(&[], &[], OutputFormat::Tsv);
+        print_question_add_result(&outcomes, &[], OutputFormat::Text);
     }
 
     #[test]
