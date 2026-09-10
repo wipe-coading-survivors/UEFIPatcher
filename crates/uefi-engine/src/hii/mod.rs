@@ -56,6 +56,12 @@ pub enum HiiError {
     GateExpressionUnsupported(String),
     #[error("value operation not supported: {0}")]
     ValueOpUnsupported(String),
+    #[error(
+        "form has no suppress-if scope of its own; REF-parent gates are the unlock op's domain"
+    )]
+    NoSuppressScope,
+    #[error("hiding (visible=false) is not implemented: only unsuppress exists")]
+    HidingUnsupported,
 }
 
 #[tracing::instrument(level = "debug", skip(image), fields(item_id = %item_id, visible), err)]
@@ -85,35 +91,34 @@ pub fn set_item_visibility(
         if node.node_type != FfsType::Section {
             return Err(HiiError::NotASetupItem);
         }
+        if !visible {
+            return Err(HiiError::HidingUnsupported);
+        }
         if node.subtype == EFI_SECTION_RAW || ifr::is_form_package(&node.body) {
-            if visible {
-                let scope = match form_id {
-                    Some(fid) => ifr::find_form_suppress_scope(&node.body, fid),
-                    None => ifr::find_suppress_if_scopes(&node.body).into_iter().next(),
-                };
-                if let Some(scope) = scope {
-                    ifr::unsuppress(&mut node.body, &scope);
-                    changed = true;
-                }
+            let scope = match form_id {
+                Some(fid) => ifr::find_form_suppress_scope(&node.body, fid),
+                None => ifr::find_suppress_if_scopes(&node.body).into_iter().next(),
+            };
+            if let Some(scope) = scope {
+                ifr::unsuppress(&mut node.body, &scope);
+                changed = true;
             }
         } else if node.subtype == EFI_SECTION_PE32 {
             let Some(packages) = pe_resource_form_packages(&node.body) else {
                 return Err(HiiError::NotASetupItem);
             };
-            if visible {
-                for (start, len) in packages {
-                    let scope = {
-                        let seg = &node.body[start..start + len];
-                        match form_id {
-                            Some(fid) => ifr::find_form_suppress_scope(seg, fid),
-                            None => ifr::find_suppress_if_scopes(seg).into_iter().next(),
-                        }
-                    };
-                    if let Some(scope) = scope {
-                        ifr::unsuppress(&mut node.body[start..start + len], &scope);
-                        changed = true;
-                        break;
+            for (start, len) in packages {
+                let scope = {
+                    let seg = &node.body[start..start + len];
+                    match form_id {
+                        Some(fid) => ifr::find_form_suppress_scope(seg, fid),
+                        None => ifr::find_suppress_if_scopes(seg).into_iter().next(),
                     }
+                };
+                if let Some(scope) = scope {
+                    ifr::unsuppress(&mut node.body[start..start + len], &scope);
+                    changed = true;
+                    break;
                 }
             }
         } else {
@@ -122,6 +127,8 @@ pub fn set_item_visibility(
     }
     if changed {
         ops::mark_rebuild_to_root_by_path(&mut image.root, &path);
+    } else {
+        return Err(HiiError::NoSuppressScope);
     }
     tracing::debug!(changed, "set_item_visibility done");
     Ok(())
@@ -238,16 +245,24 @@ fn hex(bytes: &[u8]) -> String {
         .join(" ")
 }
 
-pub(crate) fn flip_text(base: usize, flip: &gates::PlannedFlip) -> String {
+/// Все печатаемые смещения — pkg+: от начала form-пакета, включая его
+/// 4-байтовый заголовок (u24 length + kind). Единая точка истины для
+/// GateInfo.flip/scope_offset, UnlockOutcome.applied и текстов ошибок
+/// планировщика. Спека hii-walker-consistency §3.3.
+pub(crate) fn pkg_off(off: usize) -> String {
+    format!("pkg+{off:#x}")
+}
+
+pub(crate) fn flip_text(flip: &gates::PlannedFlip) -> String {
     format!(
-        "pkg+{:#x}: {} -> {}",
-        base + flip.offset,
+        "{}: {} -> {}",
+        pkg_off(flip.offset),
         hex(&flip.from),
         hex(&flip.to)
     )
 }
 
-fn gate_info(pkg: &[u8], gate: &gates::Gate, base: usize) -> uefi_proto::GateInfo {
+fn gate_info(pkg: &[u8], gate: &gates::Gate) -> uefi_proto::GateInfo {
     let region = &pkg[gate.expr_offset..gate.expr_end.min(pkg.len())];
     let flip = gates::plan_flip(pkg, gate);
     let (wraps, form_id, host_form_id, question_id) = match gate.wraps {
@@ -274,11 +289,8 @@ fn gate_info(pkg: &[u8], gate: &gates::Gate, base: usize) -> uefi_proto::GateInf
         question_id,
         expression: expr_text(&gate.expr, region),
         flippable: flip.is_some(),
-        flip: flip
-            .as_ref()
-            .map(|f| flip_text(base, f))
-            .unwrap_or_default(),
-        scope_offset: (base + gate.scope_offset) as u32,
+        flip: flip.as_ref().map(flip_text).unwrap_or_default(),
+        scope_offset: gate.scope_offset as u32,
     }
 }
 
@@ -297,7 +309,7 @@ pub fn gates_list(image: &Image, item_id: &str) -> Result<Vec<uefi_proto::GateIn
     for (start, len) in form_package_ranges(node) {
         let pkg = &node.body[start..start + len];
         for gate in gates::find_gates(pkg, &gt) {
-            out.push(gate_info(pkg, &gate, start));
+            out.push(gate_info(pkg, &gate));
         }
     }
     Ok(out)
@@ -338,8 +350,9 @@ pub fn unlock(image: &mut Image, item_id: &str) -> Result<UnlockOutcome, HiiErro
             match gates::plan_gates(pkg, &found) {
                 Ok(flips) => {
                     for gate in &found {
-                        infos.push(gate_info(pkg, gate, start));
+                        infos.push(gate_info(pkg, gate));
                     }
+                    applied.extend(flips.iter().map(flip_text));
                     absolute_flips.extend(flips.into_iter().map(|f| gates::PlannedFlip {
                         offset: start + f.offset,
                         from: f.from,
@@ -369,7 +382,6 @@ pub fn unlock(image: &mut Image, item_id: &str) -> Result<UnlockOutcome, HiiErro
             return Err(HiiError::GateExpressionUnsupported(e));
         }
         assert_eq!(body.len(), body_len, "unlock is length-preserving");
-        applied = absolute_flips.iter().map(|f| flip_text(0, f)).collect();
         node.body = body;
         true
     };
@@ -2128,8 +2140,14 @@ mod tests {
     #[test]
     fn set_item_visibility_patches_form_inside_pe_resource() {
         let list_guid = Guid::from_str(FILE_GUID_STR).unwrap();
-        let mut form_pkg = vec![11u8, 0, 0, r_efi::hii::PACKAGE_FORMS];
+        let mut form_pkg = vec![36u8, 0, 0, r_efi::hii::PACKAGE_FORMS];
+        form_pkg.extend_from_slice(&[r_efi::hii::IFR_FORM_SET_OP, 0x97]);
+        form_pkg.extend_from_slice(&list_guid.to_bytes());
+        form_pkg.extend_from_slice(&7u16.to_le_bytes());
+        form_pkg.extend_from_slice(&0u16.to_le_bytes());
+        form_pkg.push(0u8);
         form_pkg.extend_from_slice(&[0x0A, 0x82, 0x12, 0x03, 0x40, 0x29, 0x02]);
+        form_pkg.extend_from_slice(&[0x29, 0x02]);
         let mut list = list_guid.to_bytes().to_vec();
         let total = 20 + form_pkg.len() + 4;
         list.extend_from_slice(&(total as u32).to_le_bytes());
@@ -2172,7 +2190,7 @@ mod tests {
         assert_eq!(ranges.len(), 1);
         let (off, len) = ranges[0];
         let blob = &section.body[off..off + len];
-        assert_eq!(&blob[24..28], &[0x0A, 0x82, 0x29, 0x02]);
+        assert_eq!(&blob[47..51], &[0x0A, 0x82, 0x29, 0x02]);
     }
 
     #[test]
@@ -2525,6 +2543,20 @@ mod tests {
     }
 
     #[test]
+    fn set_item_visibility_false_is_hiding_unsupported() {
+        let mut image = vendor_image_with(0x19, vendor_forms_pkg());
+        let err = set_item_visibility(&mut image, VENDOR_FORM_ITEM, false).unwrap_err();
+        assert!(matches!(err, HiiError::HidingUnsupported));
+    }
+
+    #[test]
+    fn set_item_visibility_without_own_scope_is_no_suppress_scope() {
+        let mut image = vendor_image_with(0x19, vendor_forms_pkg());
+        let err = set_item_visibility(&mut image, VENDOR_FORM_ITEM, true).unwrap_err();
+        assert!(matches!(err, HiiError::NoSuppressScope));
+    }
+
+    #[test]
     fn gates_list_bare_channel_reports_form_and_question_gates() {
         let mut image = vendor_image_with(0x19, vendor_forms_pkg());
         image.mode = ImageMode::Read;
@@ -2535,15 +2567,14 @@ mod tests {
         assert_eq!(gates[0].host_form_id, 10002);
         assert_eq!(gates[0].expression, "1 == 1");
         assert!(gates[0].flippable);
-        assert!(gates[0].flip.contains("-> 02"));
+        assert_eq!(gates[0].scope_offset, 0x21);
+        assert_eq!(gates[0].flip, "pkg+0x2f: 01 -> 02");
         let qgates = gates_list(&image, VENDOR_QUESTION_ITEM).unwrap();
         assert_eq!(qgates.len(), 1);
         assert_eq!(qgates[0].gate_kind, "grayout");
         assert_eq!(qgates[0].expression, "0x009A == 0x0001");
-        assert_eq!(
-            qgates[0].flip,
-            format!("pkg+{:#x}: 01 00 -> ff ff", qgates[0].scope_offset + 6)
-        );
+        assert_eq!(qgates[0].scope_offset, 0x52);
+        assert_eq!(qgates[0].flip, "pkg+0x58: 01 00 -> ff ff");
     }
 
     #[test]
@@ -2642,6 +2673,52 @@ mod tests {
         assert_eq!(
             diff, 2,
             "eq_id_val flip touches exactly the two value bytes"
+        );
+    }
+
+    #[test]
+    fn gates_and_unlock_print_pkg_relative_offsets_in_second_package() {
+        let list_guid = Guid::try_parse("ABBCE13D-E25A-4D9F-A1F9-2F7710786892").unwrap();
+        let pkg1 = forms_pkg([g_form(9), g_end(), g_end()].concat());
+        let pkg2 = vendor_forms_pkg();
+        let mut list = list_guid.to_bytes().to_vec();
+        let total = 20 + pkg1.len() + pkg2.len() + 4;
+        list.extend_from_slice(&(total as u32).to_le_bytes());
+        list.extend_from_slice(&pkg1);
+        list.extend_from_slice(&pkg2);
+        list.extend_from_slice(&[4, 0, 0, r_efi::hii::PACKAGE_END]);
+        let pe = crate::hii::pe_resource::synth_hii_pe("HII", &list);
+        let mut image = vendor_image_with(0x10, pe);
+        let item = "5c60f367-a505-419a-859e-2a4ff6ca6fe5:0x10:0#10029:0x3B";
+
+        let gates = gates_list(&image, item).unwrap();
+        assert_eq!(gates.len(), 1);
+        assert_eq!(gates[0].scope_offset, 0x52);
+        assert_eq!(gates[0].flip, "pkg+0x58: 01 00 -> ff ff");
+
+        let node = &image.root.children[0].children[0].children[0];
+        let ranges = form_package_ranges(node);
+        assert_eq!(ranges.len(), 2);
+        let (start2, _) = ranges[1];
+        assert_eq!(
+            &node.body[start2 + 0x58..start2 + 0x5A],
+            &[0x01, 0x00],
+            "байт по напечатанному смещению == from"
+        );
+
+        let outcome = unlock(&mut image, item).unwrap();
+        assert_eq!(
+            outcome.applied,
+            vec!["pkg+0x58: 01 00 -> ff ff".to_string()]
+        );
+        let node = &image.root.children[0].children[0].children[0];
+        assert_eq!(&node.body[start2 + 0x58..start2 + 0x5A], &[0xFF, 0xFF]);
+        let ranges_after = form_package_ranges(node);
+        let (start1, len1) = ranges_after[0];
+        assert_eq!(
+            &node.body[start1..start1 + len1],
+            &pkg1[..],
+            "первый пакет нетронут"
         );
     }
 
@@ -3631,24 +3708,6 @@ mod tests {
                 u16::from_le_bytes([pkg[off], pkg[off + 1]])
             }
 
-            fn scope_balance(pkg: &[u8]) -> i32 {
-                let mut bal = 0i32;
-                let mut i = 4;
-                while i + 2 <= pkg.len() {
-                    let len = (pkg[i + 1] & 0x7F) as usize;
-                    if len < 2 {
-                        break;
-                    }
-                    if pkg[i] == OP_END {
-                        bal -= 1;
-                    } else if pkg[i + 1] & 0x80 != 0 {
-                        bal += 1;
-                    }
-                    i += len;
-                }
-                bal
-            }
-
             #[test]
             fn add_ref_inserts_goto_before_form_end() {
                 let (flash, pkg_before, _) = question_add_flash_image();
@@ -3663,8 +3722,8 @@ mod tests {
                 let pkg_after = pkg_of(&img, "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x10:0");
                 assert_eq!(pkg_after.len() - pkg_before.len(), 15);
                 assert_eq!(
-                    scope_balance(&pkg_after),
-                    scope_balance(&pkg_before),
+                    crate::hii::ifr::scope_balance(&pkg_after),
+                    crate::hii::ifr::scope_balance(&pkg_before),
                     "REF is not a scope op: the splice must not change the IFR scope balance"
                 );
                 let r = find_ref_op(&pkg_after, 10019).expect("REF op in form 10019");

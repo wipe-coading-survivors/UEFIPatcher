@@ -11,18 +11,42 @@ pub struct SuppressScope {
     pub end: usize,
 }
 
+pub(crate) fn package_bounds(body: &[u8]) -> (usize, usize) {
+    if is_form_package(body) {
+        let plen = body[0] as usize | (body[1] as usize) << 8 | (body[2] as usize) << 16;
+        (4, plen.min(body.len()))
+    } else {
+        (0, body.len())
+    }
+}
+
+/// Обход: opcode-aligned (`i += length`), границы — `package_bounds`
+/// (u24-длина пакета); глубина +1 на любой scoped-оп (бит 0x80), −1 на END —
+/// AMI-quirk операнды с END-терминаторами и вложенные FORM/GRAYOUT не ломают
+/// баланс. Возвращает контент всех неперекрытых (outermost) SUPPRESS_IF
+/// пакета: [start, end) — между заголовком SUPPRESS_IF и его END; вложенные
+/// покрываются внешним и отдельно не возвращаются. Спека
+/// hii-walker-consistency §3.1.
 pub fn find_suppress_if_scopes(body: &[u8]) -> Vec<SuppressScope> {
+    let (start, end) = package_bounds(body);
     let mut scopes = vec![];
-    let mut i = 0;
-    while i + 2 <= body.len() {
-        if body[i] == 0x0A && body[i + 1] & 0x80 != 0 {
+    let mut i = start;
+    while i + 2 <= end {
+        let op = body[i];
+        let length = (body[i + 1] & 0x7F) as usize;
+        if length < 2 || i + length > end {
+            break;
+        }
+        if op == IFR_SUPPRESS_IF_OP && body[i + 1] & 0x80 != 0 {
             let scope_start = i + 2;
-            let mut depth = 1;
+            let mut depth = 1usize;
             let mut j = scope_start;
-            while j + 2 <= body.len() {
-                if body[j] == 0x0A && body[j + 1] & 0x80 != 0 {
-                    depth += 1;
-                } else if body[j] == 0x29 && body[j + 1] == 0x02 {
+            while j + 2 <= end {
+                let inner_len = (body[j + 1] & 0x7F) as usize;
+                if inner_len < 2 || j + inner_len > end {
+                    return scopes;
+                }
+                if body[j] == IFR_END_OP {
                     depth -= 1;
                     if depth == 0 {
                         scopes.push(SuppressScope {
@@ -31,22 +55,25 @@ pub fn find_suppress_if_scopes(body: &[u8]) -> Vec<SuppressScope> {
                         });
                         break;
                     }
+                } else if body[j + 1] & 0x80 != 0 {
+                    depth += 1;
                 }
-                let len = if body.len() > j + 1 {
-                    body[j + 1] as usize & 0x7F
-                } else {
-                    2
-                };
-                j += len.max(2);
+                j += inner_len;
             }
             i = j + 2;
         } else {
-            i += 1;
+            i += length;
         }
     }
     scopes
 }
 
+/// Структурный rewrite: скоуп становится пустым (END сразу после заголовка
+/// SUPPRESS_IF), выражение сдвигается на 2 байта вправо, за END.
+/// Железо-валиден только на Platform-формсете (901, E7/E8); на setup-модуле
+/// этот класс байтов («пустой скоуп + stray-опкоды») E11-фатален (виснет
+/// AMITSE) — hardware-валидный путь для setup-модуля: unlock (флипы
+/// литералов). Спека hii-walker-consistency §2/§3.7.
 pub fn unsuppress(ifr: &mut [u8], scope: &SuppressScope) {
     if scope.end + 2 > ifr.len() || ifr[scope.end] != 0x29 || ifr[scope.end + 1] != 0x02 {
         return;
@@ -58,13 +85,13 @@ pub fn unsuppress(ifr: &mut [u8], scope: &SuppressScope) {
     ifr[scope.start + 1] = 0x02;
 }
 
+/// Ищет только suppress-скоуп, оборачивающий саму форму (железо:
+/// Platform-формсет 901, E7/E8). Гейты вокруг REF в родительской форме
+/// НЕ ищет — это территория gates-слоя/unlock (E12); no-op-скрытие
+/// setup-модуля отдаётся наверх как NoSuppressScope. Спека
+/// hii-walker-consistency §3.7.
 pub fn find_form_suppress_scope(body: &[u8], form_id: u16) -> Option<SuppressScope> {
-    let (start, end) = if is_form_package(body) {
-        let plen = body[0] as usize | (body[1] as usize) << 8 | (body[2] as usize) << 16;
-        (4, plen.min(body.len()))
-    } else {
-        (0, body.len())
-    };
+    let (start, end) = package_bounds(body);
     let mut open: Vec<(u8, usize)> = Vec::new();
     let mut i = start;
     while i + 2 <= end {
@@ -119,12 +146,7 @@ pub fn collect_form_string_ids(body: &[u8], form_id: u16) -> Vec<u16> {
         IFR_ONE_OF_OPTION_OP, IFR_ORDERED_LIST_OP, IFR_PASSWORD_OP, IFR_REF_OP, IFR_STRING_OP,
         IFR_SUBTITLE_OP, IFR_TEXT_OP, IFR_TIME_OP,
     };
-    let (start, end) = if is_form_package(body) {
-        let plen = body[0] as usize | (body[1] as usize) << 8 | (body[2] as usize) << 16;
-        (4, plen.min(body.len()))
-    } else {
-        (0, body.len())
-    };
+    let (start, end) = package_bounds(body);
     let mut out: Vec<u16> = Vec::new();
     let mut seen = std::collections::HashSet::new();
     let push = |out: &mut Vec<u16>, seen: &mut std::collections::HashSet<u16>, id: u16| {
@@ -399,13 +421,12 @@ pub fn parse_form_package(body: &[u8]) -> Option<FormSetInfo> {
     if !is_form_package(body) {
         return None;
     }
-    let plen = body[0] as usize | (body[1] as usize) << 8 | (body[2] as usize) << 16;
-    let end = plen.min(body.len());
+    let (start, end) = package_bounds(body);
     let mut guid = None;
     let mut title: StringId = 0;
     let mut forms = Vec::new();
     let mut scope_stack: Vec<u8> = Vec::new();
-    let mut i = 4;
+    let mut i = start;
     while i + 2 <= end {
         let op_code = body[i];
         let length_and_scope = body[i + 1];
@@ -450,6 +471,28 @@ pub fn parse_form_package(body: &[u8]) -> Option<FormSetInfo> {
         title,
         forms,
     })
+}
+
+/// Баланс скоупов IFR form-пакета: +1 на scoped-опкод (бит 0x80 в байте
+/// length/scope), −1 на END. 0 на корректном пакете. Инвариант
+/// железо-доказан раундом 8 дуги setup-new-page; спека
+/// hii-walker-consistency §3.5. `pkg` — form-пакет с 4-байтовым заголовком.
+pub fn scope_balance(pkg: &[u8]) -> i32 {
+    let mut bal = 0i32;
+    let mut i = 4;
+    while i + 2 <= pkg.len() {
+        let len = (pkg[i + 1] & 0x7F) as usize;
+        if len < 2 {
+            break;
+        }
+        if pkg[i] == IFR_END_OP {
+            bal -= 1;
+        } else if pkg[i + 1] & 0x80 != 0 {
+            bal += 1;
+        }
+        i += len;
+    }
+    bal
 }
 
 #[cfg(test)]
@@ -601,6 +644,13 @@ mod tests {
     }
 
     #[test]
+    fn parse_form_package_rejects_short_formset_opcode() {
+        let mut ifr = vec![IFR_FORM_SET_OP, 0x04, 0xAA, 0xBB];
+        ifr.extend(end());
+        assert!(parse_form_package(&package(&ifr)).is_none());
+    }
+
+    #[test]
     fn unsuppress_rewrites_slice_in_place_preserving_length() {
         let mut buf = vec![0xEE; 4];
         buf.extend_from_slice(&[0x0A, 0x82, 0x12, 0x03, 0x40, 0x29, 0x02]);
@@ -657,6 +707,112 @@ mod tests {
         let scope = find_form_suppress_scope(&pkg, 5).unwrap();
         assert_eq!(scope.start, find_suppress_if_scopes(&pkg)[0].start);
         assert!(find_form_suppress_scope(&pkg, 6).is_none());
+    }
+
+    #[test]
+    fn find_form_suppress_scope_ignores_stray_end_on_empty_stack() {
+        let g = Guid::from_str(FORMSET_GUID).unwrap();
+        let mut ifr = form_set(&g, 7);
+        ifr.extend(end());
+        ifr.extend(suppress_if());
+        ifr.extend(form(5, 15));
+        ifr.extend(end());
+        ifr.extend(end());
+        let scope = find_form_suppress_scope(&package(&ifr), 5);
+        assert!(
+            scope.is_some(),
+            "stray END до скоупа — pop пустого стека, no-op"
+        );
+    }
+
+    #[test]
+    fn find_form_suppress_scope_returns_none_on_length_below_two() {
+        let mut ifr = form_set(&Guid::from_str(FORMSET_GUID).unwrap(), 7);
+        ifr.push(0x01);
+        ifr.push(0x01);
+        assert!(find_form_suppress_scope(&package(&ifr), 5).is_none());
+    }
+
+    fn suppress_if() -> Vec<u8> {
+        opcode(IFR_SUPPRESS_IF_OP, true, &[])
+    }
+
+    #[test]
+    fn find_suppress_if_scopes_closes_on_own_end_with_nested_form() {
+        let g = Guid::from_str(FORMSET_GUID).unwrap();
+        let mut ifr = form_set(&g, 7);
+        ifr.extend(suppress_if());
+        ifr.extend(form(9, 19));
+        ifr.extend(end());
+        ifr.extend(end());
+        ifr.extend(end());
+        let pkg = package(&ifr);
+        let scopes = find_suppress_if_scopes(&pkg);
+        assert_eq!(scopes.len(), 1);
+        assert_eq!(scopes[0].start, 29);
+        assert_eq!(scopes[0].end, 37);
+    }
+
+    #[test]
+    fn find_suppress_if_scopes_survives_scoped_operand_end_terminators() {
+        let g = Guid::from_str(FORMSET_GUID).unwrap();
+        let mut ifr = form_set(&g, 7);
+        ifr.extend(suppress_if());
+        let mut operand = vec![0x45u8, 0x8A];
+        operand.extend_from_slice(&1u64.to_le_bytes());
+        ifr.extend(operand);
+        ifr.extend(end());
+        ifr.extend(end());
+        ifr.extend(end());
+        let pkg = package(&ifr);
+        let scopes = find_suppress_if_scopes(&pkg);
+        assert_eq!(scopes.len(), 1);
+        assert_eq!(scopes[0].start, 29);
+        assert_eq!(scopes[0].end, 41);
+    }
+
+    #[test]
+    fn find_suppress_if_scopes_ignores_tail_beyond_declared_length() {
+        let g = Guid::from_str(FORMSET_GUID).unwrap();
+        let mut ifr = form_set(&g, 7);
+        ifr.extend(suppress_if());
+        ifr.extend(end());
+        ifr.extend(end());
+        let mut pkg = package(&ifr);
+        pkg.extend(vec![0x0A, 0x82, 0x29, 0x02]);
+        let scopes = find_suppress_if_scopes(&pkg);
+        assert_eq!(scopes.len(), 1, "хвост за пределами plen не читается");
+    }
+
+    #[test]
+    fn find_suppress_if_scopes_returns_only_outermost_scope() {
+        let g = Guid::from_str(FORMSET_GUID).unwrap();
+        let mut ifr = form_set(&g, 7);
+        ifr.extend(suppress_if());
+        ifr.extend(suppress_if());
+        ifr.extend(end());
+        ifr.extend(end());
+        ifr.extend(end());
+        let scopes = find_suppress_if_scopes(&package(&ifr));
+        assert_eq!(
+            scopes.len(),
+            1,
+            "вложенный SUPPRESS_IF покрывается внешним скоупом"
+        );
+        assert_eq!(scopes[0].start, 29);
+        assert_eq!(scopes[0].end, 33);
+    }
+
+    #[test]
+    fn find_suppress_if_scopes_does_not_match_payload_bytes() {
+        let g = Guid::from_str(FORMSET_GUID).unwrap();
+        let mut ifr = form_set(&g, 7);
+        ifr.extend(suppress_if());
+        ifr.extend(end());
+        ifr.extend(opcode(IFR_TEXT_OP, false, &[0x0A, 0x82, 0x00]));
+        ifr.extend(end());
+        let scopes = find_suppress_if_scopes(&package(&ifr));
+        assert_eq!(scopes.len(), 1);
     }
 
     fn varstore_bytes() -> Vec<u8> {
@@ -1080,5 +1236,24 @@ mod tests {
             Err(HiiError::InvalidSchema(_))
         ));
         assert_eq!(pkg, before);
+    }
+
+    #[test]
+    fn scope_balance_is_zero_for_balanced_package() {
+        let g = Guid::from_str(FORMSET_GUID).unwrap();
+        let mut ifr = form_set(&g, 7);
+        ifr.extend(form(1, 10));
+        ifr.extend(end());
+        ifr.extend(end());
+        assert_eq!(scope_balance(&package(&ifr)), 0);
+    }
+
+    #[test]
+    fn scope_balance_counts_unclosed_scope() {
+        let g = Guid::from_str(FORMSET_GUID).unwrap();
+        let mut ifr = form_set(&g, 7);
+        ifr.extend(form(1, 10));
+        ifr.extend(end());
+        assert_eq!(scope_balance(&package(&ifr)), 1);
     }
 }

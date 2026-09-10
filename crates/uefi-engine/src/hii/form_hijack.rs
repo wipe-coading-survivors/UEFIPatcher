@@ -303,10 +303,7 @@ pub fn hijack_form(
     tracing::debug!(questions = hijack.questions.len(), "hijack_form done");
     Ok(HijackResult {
         string_ids,
-        unlock_flips: unlock_flips
-            .iter()
-            .map(|f| crate::hii::flip_text(0, f))
-            .collect(),
+        unlock_flips: unlock_flips.iter().map(crate::hii::flip_text).collect(),
         help_controls,
         help_records,
         form_ifr_start,
