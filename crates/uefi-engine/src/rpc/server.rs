@@ -39,6 +39,15 @@ fn builder_error_status(e: crate::builder::BuilderError) -> Status {
     }
 }
 
+fn ops_error_status(e: crate::ops::OpsError) -> Status {
+    match e {
+        crate::ops::OpsError::MutationBehindCompression => {
+            Status::failed_precondition(e.to_string())
+        }
+        _ => Status::internal(e.to_string()),
+    }
+}
+
 fn hii_error_status(e: crate::hii::HiiError) -> Status {
     match e {
         crate::hii::HiiError::NotFound
@@ -96,6 +105,11 @@ impl EngineServer {
             }
         }
         atomic_write(&path, &bytes).map_err(|e| Status::internal(e.to_string()))?;
+        let mut images = self.images.lock().await;
+        if let Some(img) = images.get_mut(image_id) {
+            crate::ops::prune_applied(&mut img.root);
+        }
+        drop(images);
         self.sm
             .db
             .lock()
@@ -401,7 +415,7 @@ impl EngineService for EngineServer {
                 .get_mut(&r.image_id)
                 .ok_or_else(|| Status::not_found("image not found"))?;
             crate::ops::insert(&mut img_slot.root, &t, &ffs_bytes, mode)
-                .map_err(|e| Status::internal(e.to_string()))?;
+                .map_err(ops_error_status)?;
         }
         self.flush_image(&r.image_id).await?;
         let _ = self.sm.touch(&img.session_id);
@@ -431,8 +445,7 @@ impl EngineService for EngineServer {
                 .get_mut(&r.image_id)
                 .ok_or_else(|| Status::not_found("image not found"))?;
             let t = parse_target(&r.target).map_err(|e| Status::invalid_argument(e.to_string()))?;
-            crate::ops::remove(&mut img_slot.root, &t)
-                .map_err(|e| Status::internal(e.to_string()))?;
+            crate::ops::remove(&mut img_slot.root, &t).map_err(ops_error_status)?;
         }
         self.flush_image(&r.image_id).await?;
         let _ = self.sm.touch(&img.session_id);
@@ -468,7 +481,7 @@ impl EngineService for EngineServer {
                 .ok_or_else(|| Status::not_found("image not found"))?;
             let t = parse_target(&r.target).map_err(|e| Status::invalid_argument(e.to_string()))?;
             crate::ops::replace(&mut img_slot.root, &t, &data, r.body_only)
-                .map_err(|e| Status::internal(e.to_string()))?;
+                .map_err(ops_error_status)?;
         }
         self.flush_image(&r.image_id).await?;
         let _ = self.sm.touch(&img.session_id);
@@ -498,8 +511,7 @@ impl EngineService for EngineServer {
                 .get_mut(&r.image_id)
                 .ok_or_else(|| Status::not_found("image not found"))?;
             let t = parse_target(&r.target).map_err(|e| Status::invalid_argument(e.to_string()))?;
-            crate::ops::rebuild(&mut img_slot.root, &t)
-                .map_err(|e| Status::internal(e.to_string()))?;
+            crate::ops::rebuild(&mut img_slot.root, &t).map_err(ops_error_status)?;
         }
         self.flush_image(&r.image_id).await?;
         let _ = self.sm.touch(&img.session_id);
@@ -2070,6 +2082,81 @@ mod tests {
         assert!(img_path.exists(), "image bytes must be persisted on open");
         let saved = std::fs::read(&img_path).unwrap();
         assert_eq!(saved, fixture_volume());
+    }
+
+    async fn create_session(client: &mut EngineServiceClient<Channel>) -> String {
+        client
+            .session_create(SessionCreateRequest::default())
+            .await
+            .unwrap()
+            .into_inner()
+            .session_id
+    }
+
+    fn fv_image_with_two_files() -> Vec<u8> {
+        let mut buf = vec![0xFFu8; 256];
+        buf[32..40].copy_from_slice(&256u64.to_le_bytes());
+        buf[40..44].copy_from_slice(&crate::ffs::EFI_FVH_SIGNATURE.to_le_bytes());
+        buf[44..48].copy_from_slice(&crate::ffs::EFI_FVB2_ERASE_POLARITY.to_le_bytes());
+        buf[48..50].copy_from_slice(&56u16.to_le_bytes());
+        buf[55] = 2;
+        let guid = uuid::Uuid::new_v4();
+        for (k, at) in [56usize, 88].iter().enumerate() {
+            let mut f = vec![0u8; 32];
+            f[0..16].copy_from_slice(guid.as_bytes());
+            f[18] = 0x01;
+            f[20..23].copy_from_slice(&crate::ffs::size_to_uint24(32));
+            f[24 + k] = 0xAA;
+            buf[*at..*at + 32].copy_from_slice(&f);
+        }
+        buf
+    }
+
+    #[tokio::test]
+    async fn remove_rpc_leaves_clean_tree() {
+        let (_td, mut client) = setup().await;
+        let sid = create_session(&mut client).await;
+        let dir = _td.path().join("src.bin");
+        std::fs::write(&dir, fv_image_with_two_files()).unwrap();
+        let open = client
+            .image_open(tonic::Request::new(ImageOpenRequest {
+                session_id: sid.clone(),
+                path: dir.display().to_string(),
+                mode: 1,
+                name: "t".into(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        client
+            .image_node_remove(tonic::Request::new(ImageNodeRemoveRequest {
+                image_id: open.image_id.clone(),
+                target: "0/0".into(),
+            }))
+            .await
+            .unwrap();
+        let nodes = client
+            .image_nodes_list(tonic::Request::new(ImageNodesListRequest {
+                image_id: open.image_id.clone(),
+                filter: String::new(),
+            }))
+            .await
+            .unwrap()
+            .into_inner()
+            .nodes;
+        assert!(
+            nodes.iter().all(|n| n.action == 50),
+            "no pending markers after write-through flush"
+        );
+        let files: Vec<_> = nodes
+            .iter()
+            .filter(|n| n.r#type == FfsType::File as u32)
+            .collect();
+        assert_eq!(files.len(), 1, "removed file must disappear from the tree");
+        assert_eq!(
+            files[0].offset, 88,
+            "the surviving file is the second fixture file"
+        );
     }
 
     #[tokio::test]
