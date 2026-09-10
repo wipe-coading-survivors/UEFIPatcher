@@ -11,18 +11,40 @@ pub struct SuppressScope {
     pub end: usize,
 }
 
+pub(crate) fn package_bounds(body: &[u8]) -> (usize, usize) {
+    if is_form_package(body) {
+        let plen = body[0] as usize | (body[1] as usize) << 8 | (body[2] as usize) << 16;
+        (4, plen.min(body.len()))
+    } else {
+        (0, body.len())
+    }
+}
+
+/// Обход: opcode-aligned (`i += length`), границы — `package_bounds`
+/// (u24-длина пакета); глубина +1 на любой scoped-оп (бит 0x80), −1 на END —
+/// AMI-quirk операнды с END-терминаторами и вложенные FORM/GRAYOUT не ломают
+/// баланс. Возвращает контент всех SUPPRESS_IF пакета: [start, end) — между
+/// заголовком SUPPRESS_IF и его END. Спека hii-walker-consistency §3.1.
 pub fn find_suppress_if_scopes(body: &[u8]) -> Vec<SuppressScope> {
+    let (start, end) = package_bounds(body);
     let mut scopes = vec![];
-    let mut i = 0;
-    while i + 2 <= body.len() {
-        if body[i] == 0x0A && body[i + 1] & 0x80 != 0 {
+    let mut i = start;
+    while i + 2 <= end {
+        let op = body[i];
+        let length = (body[i + 1] & 0x7F) as usize;
+        if length < 2 || i + length > end {
+            break;
+        }
+        if op == IFR_SUPPRESS_IF_OP && body[i + 1] & 0x80 != 0 {
             let scope_start = i + 2;
-            let mut depth = 1;
+            let mut depth = 1usize;
             let mut j = scope_start;
-            while j + 2 <= body.len() {
-                if body[j] == 0x0A && body[j + 1] & 0x80 != 0 {
-                    depth += 1;
-                } else if body[j] == 0x29 && body[j + 1] == 0x02 {
+            while j + 2 <= end {
+                let inner_len = (body[j + 1] & 0x7F) as usize;
+                if inner_len < 2 || j + inner_len > end {
+                    return scopes;
+                }
+                if body[j] == IFR_END_OP {
                     depth -= 1;
                     if depth == 0 {
                         scopes.push(SuppressScope {
@@ -31,17 +53,14 @@ pub fn find_suppress_if_scopes(body: &[u8]) -> Vec<SuppressScope> {
                         });
                         break;
                     }
+                } else if body[j + 1] & 0x80 != 0 {
+                    depth += 1;
                 }
-                let len = if body.len() > j + 1 {
-                    body[j + 1] as usize & 0x7F
-                } else {
-                    2
-                };
-                j += len.max(2);
+                j += inner_len;
             }
             i = j + 2;
         } else {
-            i += 1;
+            i += length;
         }
     }
     scopes
@@ -59,12 +78,7 @@ pub fn unsuppress(ifr: &mut [u8], scope: &SuppressScope) {
 }
 
 pub fn find_form_suppress_scope(body: &[u8], form_id: u16) -> Option<SuppressScope> {
-    let (start, end) = if is_form_package(body) {
-        let plen = body[0] as usize | (body[1] as usize) << 8 | (body[2] as usize) << 16;
-        (4, plen.min(body.len()))
-    } else {
-        (0, body.len())
-    };
+    let (start, end) = package_bounds(body);
     let mut open: Vec<(u8, usize)> = Vec::new();
     let mut i = start;
     while i + 2 <= end {
@@ -119,12 +133,7 @@ pub fn collect_form_string_ids(body: &[u8], form_id: u16) -> Vec<u16> {
         IFR_ONE_OF_OPTION_OP, IFR_ORDERED_LIST_OP, IFR_PASSWORD_OP, IFR_REF_OP, IFR_STRING_OP,
         IFR_SUBTITLE_OP, IFR_TEXT_OP, IFR_TIME_OP,
     };
-    let (start, end) = if is_form_package(body) {
-        let plen = body[0] as usize | (body[1] as usize) << 8 | (body[2] as usize) << 16;
-        (4, plen.min(body.len()))
-    } else {
-        (0, body.len())
-    };
+    let (start, end) = package_bounds(body);
     let mut out: Vec<u16> = Vec::new();
     let mut seen = std::collections::HashSet::new();
     let push = |out: &mut Vec<u16>, seen: &mut std::collections::HashSet<u16>, id: u16| {
@@ -399,13 +408,12 @@ pub fn parse_form_package(body: &[u8]) -> Option<FormSetInfo> {
     if !is_form_package(body) {
         return None;
     }
-    let plen = body[0] as usize | (body[1] as usize) << 8 | (body[2] as usize) << 16;
-    let end = plen.min(body.len());
+    let (start, end) = package_bounds(body);
     let mut guid = None;
     let mut title: StringId = 0;
     let mut forms = Vec::new();
     let mut scope_stack: Vec<u8> = Vec::new();
-    let mut i = 4;
+    let mut i = start;
     while i + 2 <= end {
         let op_code = body[i];
         let length_and_scope = body[i + 1];
@@ -679,6 +687,57 @@ mod tests {
         let scope = find_form_suppress_scope(&pkg, 5).unwrap();
         assert_eq!(scope.start, find_suppress_if_scopes(&pkg)[0].start);
         assert!(find_form_suppress_scope(&pkg, 6).is_none());
+    }
+
+    fn suppress_if() -> Vec<u8> {
+        opcode(IFR_SUPPRESS_IF_OP, true, &[])
+    }
+
+    #[test]
+    fn find_suppress_if_scopes_closes_on_own_end_with_nested_form() {
+        let g = Guid::from_str(FORMSET_GUID).unwrap();
+        let mut ifr = form_set(&g, 7);
+        ifr.extend(suppress_if());
+        ifr.extend(form(9, 19));
+        ifr.extend(end());
+        ifr.extend(end());
+        ifr.extend(end());
+        let pkg = package(&ifr);
+        let scopes = find_suppress_if_scopes(&pkg);
+        assert_eq!(scopes.len(), 1);
+        assert_eq!(scopes[0].start, 29);
+        assert_eq!(scopes[0].end, 37);
+    }
+
+    #[test]
+    fn find_suppress_if_scopes_survives_scoped_operand_end_terminators() {
+        let g = Guid::from_str(FORMSET_GUID).unwrap();
+        let mut ifr = form_set(&g, 7);
+        ifr.extend(suppress_if());
+        let mut operand = vec![0x45u8, 0x8A];
+        operand.extend_from_slice(&1u64.to_le_bytes());
+        ifr.extend(operand);
+        ifr.extend(end());
+        ifr.extend(end());
+        ifr.extend(end());
+        let pkg = package(&ifr);
+        let scopes = find_suppress_if_scopes(&pkg);
+        assert_eq!(scopes.len(), 1);
+        assert_eq!(scopes[0].start, 29);
+        assert_eq!(scopes[0].end, 41);
+    }
+
+    #[test]
+    fn find_suppress_if_scopes_ignores_tail_beyond_declared_length() {
+        let g = Guid::from_str(FORMSET_GUID).unwrap();
+        let mut ifr = form_set(&g, 7);
+        ifr.extend(suppress_if());
+        ifr.extend(end());
+        ifr.extend(end());
+        let mut pkg = package(&ifr);
+        pkg.extend(vec![0x0A, 0x82, 0x29, 0x02]);
+        let scopes = find_suppress_if_scopes(&pkg);
+        assert_eq!(scopes.len(), 1, "хвост за пределами plen не читается");
     }
 
     fn varstore_bytes() -> Vec<u8> {

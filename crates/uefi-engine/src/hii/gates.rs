@@ -1,4 +1,4 @@
-use super::ifr::is_form_package;
+use super::ifr::package_bounds;
 use r_efi::hii::{
     IFR_ACTION_OP, IFR_CHECKBOX_OP, IFR_DATE_OP, IFR_DEFAULT_OP, IFR_END_OP, IFR_EQ_ID_VAL_OP,
     IFR_EQUAL_OP, IFR_FORM_OP, IFR_GRAY_OUT_IF_OP, IFR_NUMERIC_OP, IFR_NUMERIC_SIZE, IFR_ONE_OF_OP,
@@ -83,15 +83,6 @@ pub fn decode_expr(region: &[u8]) -> GateExpr {
         },
         [(IFR_TRUE_OP, _)] => GateExpr::True,
         _ => GateExpr::Other,
-    }
-}
-
-fn package_bounds(body: &[u8]) -> (usize, usize) {
-    if is_form_package(body) {
-        let plen = body[0] as usize | (body[1] as usize) << 8 | (body[2] as usize) << 16;
-        (4, plen.min(body.len()))
-    } else {
-        (0, body.len())
     }
 }
 

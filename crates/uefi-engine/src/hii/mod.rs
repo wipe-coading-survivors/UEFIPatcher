@@ -2128,8 +2128,14 @@ mod tests {
     #[test]
     fn set_item_visibility_patches_form_inside_pe_resource() {
         let list_guid = Guid::from_str(FILE_GUID_STR).unwrap();
-        let mut form_pkg = vec![11u8, 0, 0, r_efi::hii::PACKAGE_FORMS];
+        let mut form_pkg = vec![36u8, 0, 0, r_efi::hii::PACKAGE_FORMS];
+        form_pkg.extend_from_slice(&[r_efi::hii::IFR_FORM_SET_OP, 0x97]);
+        form_pkg.extend_from_slice(&list_guid.to_bytes());
+        form_pkg.extend_from_slice(&7u16.to_le_bytes());
+        form_pkg.extend_from_slice(&0u16.to_le_bytes());
+        form_pkg.push(0u8);
         form_pkg.extend_from_slice(&[0x0A, 0x82, 0x12, 0x03, 0x40, 0x29, 0x02]);
+        form_pkg.extend_from_slice(&[0x29, 0x02]);
         let mut list = list_guid.to_bytes().to_vec();
         let total = 20 + form_pkg.len() + 4;
         list.extend_from_slice(&(total as u32).to_le_bytes());
@@ -2172,7 +2178,7 @@ mod tests {
         assert_eq!(ranges.len(), 1);
         let (off, len) = ranges[0];
         let blob = &section.body[off..off + len];
-        assert_eq!(&blob[24..28], &[0x0A, 0x82, 0x29, 0x02]);
+        assert_eq!(&blob[47..51], &[0x0A, 0x82, 0x29, 0x02]);
     }
 
     #[test]
