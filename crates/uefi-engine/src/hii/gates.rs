@@ -310,9 +310,9 @@ pub fn plan_gates(body: &[u8], gates: &[Gate]) -> Result<Vec<PlannedFlip>, Strin
             None => {
                 let region = &body[gate.expr_offset..gate.expr_end.min(body.len())];
                 return Err(format!(
-                    "{} gate at pkg+{:#x} wrapping {:?}: expression [{}] is not a hardware-validated flip class",
+                    "{} gate at {} wrapping {:?}: expression [{}] is not a hardware-validated flip class",
                     gate.kind.as_str(),
-                    gate.scope_offset,
+                    super::pkg_off(gate.scope_offset),
                     gate.wraps,
                     region
                         .iter()
@@ -345,9 +345,9 @@ pub fn plan_gates_skip_unlocked(body: &[u8], gates: &[Gate]) -> Result<Vec<Plann
             None => {
                 let region = &body[gate.expr_offset..gate.expr_end.min(body.len())];
                 return Err(format!(
-                    "{} gate at pkg+{:#x} wrapping {:?}: expression [{}] is not a hardware-validated flip class",
+                    "{} gate at {} wrapping {:?}: expression [{}] is not a hardware-validated flip class",
                     gate.kind.as_str(),
-                    gate.scope_offset,
+                    super::pkg_off(gate.scope_offset),
                     gate.wraps,
                     region
                         .iter()

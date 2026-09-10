@@ -238,16 +238,24 @@ fn hex(bytes: &[u8]) -> String {
         .join(" ")
 }
 
-pub(crate) fn flip_text(base: usize, flip: &gates::PlannedFlip) -> String {
+/// Все печатаемые смещения — pkg+: от начала form-пакета, включая его
+/// 4-байтовый заголовок (u24 length + kind). Единая точка истины для
+/// GateInfo.flip/scope_offset, UnlockOutcome.applied и текстов ошибок
+/// планировщика. Спека hii-walker-consistency §3.3.
+pub(crate) fn pkg_off(off: usize) -> String {
+    format!("pkg+{off:#x}")
+}
+
+pub(crate) fn flip_text(flip: &gates::PlannedFlip) -> String {
     format!(
-        "pkg+{:#x}: {} -> {}",
-        base + flip.offset,
+        "{}: {} -> {}",
+        pkg_off(flip.offset),
         hex(&flip.from),
         hex(&flip.to)
     )
 }
 
-fn gate_info(pkg: &[u8], gate: &gates::Gate, base: usize) -> uefi_proto::GateInfo {
+fn gate_info(pkg: &[u8], gate: &gates::Gate) -> uefi_proto::GateInfo {
     let region = &pkg[gate.expr_offset..gate.expr_end.min(pkg.len())];
     let flip = gates::plan_flip(pkg, gate);
     let (wraps, form_id, host_form_id, question_id) = match gate.wraps {
@@ -274,11 +282,8 @@ fn gate_info(pkg: &[u8], gate: &gates::Gate, base: usize) -> uefi_proto::GateInf
         question_id,
         expression: expr_text(&gate.expr, region),
         flippable: flip.is_some(),
-        flip: flip
-            .as_ref()
-            .map(|f| flip_text(base, f))
-            .unwrap_or_default(),
-        scope_offset: (base + gate.scope_offset) as u32,
+        flip: flip.as_ref().map(flip_text).unwrap_or_default(),
+        scope_offset: gate.scope_offset as u32,
     }
 }
 
@@ -297,7 +302,7 @@ pub fn gates_list(image: &Image, item_id: &str) -> Result<Vec<uefi_proto::GateIn
     for (start, len) in form_package_ranges(node) {
         let pkg = &node.body[start..start + len];
         for gate in gates::find_gates(pkg, &gt) {
-            out.push(gate_info(pkg, &gate, start));
+            out.push(gate_info(pkg, &gate));
         }
     }
     Ok(out)
@@ -338,8 +343,9 @@ pub fn unlock(image: &mut Image, item_id: &str) -> Result<UnlockOutcome, HiiErro
             match gates::plan_gates(pkg, &found) {
                 Ok(flips) => {
                     for gate in &found {
-                        infos.push(gate_info(pkg, gate, start));
+                        infos.push(gate_info(pkg, gate));
                     }
+                    applied.extend(flips.iter().map(flip_text));
                     absolute_flips.extend(flips.into_iter().map(|f| gates::PlannedFlip {
                         offset: start + f.offset,
                         from: f.from,
@@ -369,7 +375,6 @@ pub fn unlock(image: &mut Image, item_id: &str) -> Result<UnlockOutcome, HiiErro
             return Err(HiiError::GateExpressionUnsupported(e));
         }
         assert_eq!(body.len(), body_len, "unlock is length-preserving");
-        applied = absolute_flips.iter().map(|f| flip_text(0, f)).collect();
         node.body = body;
         true
     };
@@ -2541,15 +2546,14 @@ mod tests {
         assert_eq!(gates[0].host_form_id, 10002);
         assert_eq!(gates[0].expression, "1 == 1");
         assert!(gates[0].flippable);
-        assert!(gates[0].flip.contains("-> 02"));
+        assert_eq!(gates[0].scope_offset, 0x21);
+        assert_eq!(gates[0].flip, "pkg+0x2f: 01 -> 02");
         let qgates = gates_list(&image, VENDOR_QUESTION_ITEM).unwrap();
         assert_eq!(qgates.len(), 1);
         assert_eq!(qgates[0].gate_kind, "grayout");
         assert_eq!(qgates[0].expression, "0x009A == 0x0001");
-        assert_eq!(
-            qgates[0].flip,
-            format!("pkg+{:#x}: 01 00 -> ff ff", qgates[0].scope_offset + 6)
-        );
+        assert_eq!(qgates[0].scope_offset, 0x52);
+        assert_eq!(qgates[0].flip, "pkg+0x58: 01 00 -> ff ff");
     }
 
     #[test]
@@ -2648,6 +2652,52 @@ mod tests {
         assert_eq!(
             diff, 2,
             "eq_id_val flip touches exactly the two value bytes"
+        );
+    }
+
+    #[test]
+    fn gates_and_unlock_print_pkg_relative_offsets_in_second_package() {
+        let list_guid = Guid::try_parse("ABBCE13D-E25A-4D9F-A1F9-2F7710786892").unwrap();
+        let pkg1 = forms_pkg(vec![g_form(9), g_end(), g_end()].concat());
+        let pkg2 = vendor_forms_pkg();
+        let mut list = list_guid.to_bytes().to_vec();
+        let total = 20 + pkg1.len() + pkg2.len() + 4;
+        list.extend_from_slice(&(total as u32).to_le_bytes());
+        list.extend_from_slice(&pkg1);
+        list.extend_from_slice(&pkg2);
+        list.extend_from_slice(&[4, 0, 0, r_efi::hii::PACKAGE_END]);
+        let pe = crate::hii::pe_resource::synth_hii_pe("HII", &list);
+        let mut image = vendor_image_with(0x10, pe);
+        let item = "5c60f367-a505-419a-859e-2a4ff6ca6fe5:0x10:0#10029:0x3B";
+
+        let gates = gates_list(&image, item).unwrap();
+        assert_eq!(gates.len(), 1);
+        assert_eq!(gates[0].scope_offset, 0x52);
+        assert_eq!(gates[0].flip, "pkg+0x58: 01 00 -> ff ff");
+
+        let node = &image.root.children[0].children[0].children[0];
+        let ranges = form_package_ranges(node);
+        assert_eq!(ranges.len(), 2);
+        let (start2, _) = ranges[1];
+        assert_eq!(
+            &node.body[start2 + 0x58..start2 + 0x5A],
+            &[0x01, 0x00],
+            "байт по напечатанному смещению == from"
+        );
+
+        let outcome = unlock(&mut image, item).unwrap();
+        assert_eq!(
+            outcome.applied,
+            vec!["pkg+0x58: 01 00 -> ff ff".to_string()]
+        );
+        let node = &image.root.children[0].children[0].children[0];
+        assert_eq!(&node.body[start2 + 0x58..start2 + 0x5A], &[0xFF, 0xFF]);
+        let ranges_after = form_package_ranges(node);
+        let (start1, len1) = ranges_after[0];
+        assert_eq!(
+            &node.body[start1..start1 + len1],
+            &pkg1[..],
+            "первый пакет нетронут"
         );
     }
 
