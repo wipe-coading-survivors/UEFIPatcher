@@ -1580,8 +1580,38 @@ fn real_image_hii_unlock_matches_e12() {
     assert_eq!(question_gates[0].expression, "0x009A == 0x0001");
     assert!(question_gates[0].flippable);
 
-    uefi_engine::hii::unlock(&mut img, &form_item).expect("unlock page");
-    uefi_engine::hii::unlock(&mut img, &question_item).expect("unlock question");
+    let parse_flip_str = |s: &str| -> (usize, Vec<u8>, Vec<u8>) {
+        let (off, rest) = s.strip_prefix("pkg+").unwrap().split_once(':').unwrap();
+        let off = usize::from_str_radix(off.trim_start_matches("0x"), 16).unwrap();
+        let (from, to) = rest.split_once("->").unwrap();
+        let bytes = |t: &str| -> Vec<u8> {
+            t.trim()
+                .split(' ')
+                .map(|b| u8::from_str_radix(b, 16).unwrap())
+                .collect()
+        };
+        (off, bytes(from), bytes(to))
+    };
+    for gi in [&form_gates[0], &question_gates[0]] {
+        assert_eq!(
+            pkg_before[gi.scope_offset as usize],
+            if gi.gate_kind == "suppress" {
+                0x0A
+            } else {
+                0x0D
+            },
+            "scope_offset указывает на опкод гейта (контракт pkg+)"
+        );
+        let (off, from, _to) = parse_flip_str(&gi.flip);
+        assert_eq!(
+            &pkg_before[off..off + from.len()],
+            &from[..],
+            "GateInfo.flip {gi:?} указывает на from-байты"
+        );
+    }
+
+    let form_out = uefi_engine::hii::unlock(&mut img, &form_item).expect("unlock page");
+    let q_out = uefi_engine::hii::unlock(&mut img, &question_item).expect("unlock question");
     let built = uefi_engine::builder::build_image(&img).expect("build_image");
 
     assert_eq!(built.len(), data.len(), "total flash length preserved");
@@ -1617,6 +1647,16 @@ fn real_image_hii_unlock_matches_e12() {
         "engine unlock must reproduce the hardware-validated E12 dataflip byte-for-byte"
     );
 
+    for s in form_out.applied.iter().chain(&q_out.applied) {
+        let (off, from, to) = parse_flip_str(s);
+        assert_eq!(
+            &pkg_before[off..off + from.len()],
+            &from[..],
+            "напечатанное смещение {s} указывает на from-байты (контракт pkg+)"
+        );
+        assert_eq!(&pkg_after[off..off + to.len()], &to[..]);
+    }
+
     let (_, new_file_end) = file_extent(&rebuilt, &new_path);
     assert_eq!(
         new_file_end, file_end,
@@ -1641,6 +1681,20 @@ fn real_image_hii_unlock_matches_e12() {
         forms.iter().any(|f| f.form_id_ifr == 10029),
         "form 10029 stays discoverable after unlock"
     );
+}
+
+#[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
+#[test]
+fn real_image_set_visibility_no_own_scope_is_explicit_error() {
+    let data = load_fw();
+    let mut img = parse_image(&data, ImageMode::Write, "img1", "s1").expect("parse_image");
+    let err = uefi_engine::hii::set_item_visibility(
+        &mut img,
+        &format!("{PCI_SETUP_MODULE_GUID}:0x10:0#10029"),
+        true,
+    )
+    .expect_err("форма 10029 скрыта REF-гейтом родителя, собственного скоупа нет");
+    assert!(matches!(err, uefi_engine::hii::HiiError::NoSuppressScope));
 }
 
 #[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
@@ -2152,7 +2206,7 @@ fn real_image_hijack_v2_scenario_b_full_page_matches_e26_content() {
     let form_out = uefi_engine::hii::unlock(&mut img, ITEM).unwrap();
     assert_eq!(
         form_out.applied,
-        vec!["pkg+0x8fae: 01 -> 02".to_string()],
+        vec!["pkg+0x67a: 01 -> 02".to_string()],
         "form-level unlock flips only the hub REF EqConst, no cascade to question gates (TODO.md:1972)"
     );
 
@@ -2169,13 +2223,13 @@ fn real_image_hijack_v2_scenario_b_full_page_matches_e26_content() {
     assert_eq!(
         question_flips,
         vec![
-            "pkg+0x95da: 01 00 -> ff ff".to_string(),
-            "pkg+0x962f: 01 00 -> ff ff".to_string(),
-            "pkg+0x9684: 01 00 -> ff ff".to_string(),
-            "pkg+0x96af: 01 00 -> ff ff".to_string(),
-            "pkg+0x96da: 01 00 -> ff ff".to_string(),
-            "pkg+0x9705: 01 00 -> ff ff".to_string(),
-            "pkg+0x9730: 01 00 -> ff ff".to_string(),
+            "pkg+0xca6: 01 00 -> ff ff".to_string(),
+            "pkg+0xcfb: 01 00 -> ff ff".to_string(),
+            "pkg+0xd50: 01 00 -> ff ff".to_string(),
+            "pkg+0xd7b: 01 00 -> ff ff".to_string(),
+            "pkg+0xda6: 01 00 -> ff ff".to_string(),
+            "pkg+0xdd1: 01 00 -> ff ff".to_string(),
+            "pkg+0xdfc: 01 00 -> ff ff".to_string(),
         ],
         "every unlockable question flips its EQ(0x9A,1) gate to FFFF (E25 class); q59 must be pre-unlocked for the idempotence proof (TODO.md:1988)"
     );
