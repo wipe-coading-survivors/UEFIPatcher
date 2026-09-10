@@ -32,7 +32,10 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
                     format!("{indent}{expand} {icon} "),
                     Style::default().fg(type_color(node.node_type)),
                 ),
-                Span::styled(format!("{} ", node.name), Style::default().fg(color)),
+                Span::styled(
+                    format!("{} ", app.node_label(node)),
+                    Style::default().fg(color),
+                ),
                 Span::raw(format!("{} {marker}", node.guid.as_deref().unwrap_or(""))),
             ]))
         })

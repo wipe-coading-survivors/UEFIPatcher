@@ -232,6 +232,28 @@ impl App {
         self.cmdline.clear();
         self.insert_cmd = "";
     }
+
+    pub fn node_label(&self, node: &TreeNode) -> String {
+        if !node.name.is_empty() {
+            return node.name.clone();
+        }
+        match node.node_type {
+            crate::theme::TYPE_IMAGE => match &self.active_image_id {
+                Some(id) => self
+                    .registry
+                    .images
+                    .iter()
+                    .find(|i| &i.image_id == id)
+                    .map(|i| i.name.clone())
+                    .unwrap_or_else(|| id.clone()),
+                None => "Image".into(),
+            },
+            crate::theme::TYPE_VOLUME => "Volume".into(),
+            66 => uefi_common::names::file_type_name_or_raw(node.subtype),
+            67 => uefi_common::names::section_type_name_or_raw(node.subtype),
+            _ => format!("0x{:02X}", node.subtype),
+        }
+    }
 }
 
 impl Default for App {
@@ -424,5 +446,46 @@ mod tests {
         assert!(t.contains("Type:     Volume (65 / 0x41)"));
         assert!(t.contains("Subtype:  0x00"));
         assert!(t.contains("GUID:     (none)"));
+    }
+
+    #[test]
+    fn node_label_image_from_registry_name() {
+        let mut app = App::new();
+        app.active_image_id = Some("img-9".into());
+        app.registry.images = vec![ImageInfo {
+            image_id: "img-9".into(),
+            name: "HNX99TF.bin".into(),
+            ..Default::default()
+        }];
+        assert_eq!(app.node_label(&node("", 0)), "HNX99TF.bin");
+    }
+
+    #[test]
+    fn node_label_image_fallback_when_no_registry_match() {
+        let mut app = App::new();
+        app.active_image_id = Some("img-9".into());
+        assert_eq!(app.node_label(&node("", 0)), "img-9");
+        app.active_image_id = None;
+        assert_eq!(app.node_label(&node("", 0)), "Image");
+    }
+
+    #[test]
+    fn node_label_volume_and_subtype_fallback() {
+        let app = App::new();
+        let mut vol = node("0", 1);
+        vol.node_type = 65;
+        assert_eq!(app.node_label(&vol), "Volume");
+        let mut file = node("1/0", 2);
+        file.node_type = 66;
+        file.subtype = 0x07;
+        assert_eq!(app.node_label(&file), "DXE driver");
+        let mut sec = node("1/0/0", 3);
+        sec.node_type = 67;
+        sec.subtype = 0x77;
+        assert_eq!(app.node_label(&sec), "Unknown 77h");
+        let mut unk = node("3", 1);
+        unk.node_type = 99;
+        unk.subtype = 0x42;
+        assert_eq!(app.node_label(&unk), "0x42");
     }
 }
