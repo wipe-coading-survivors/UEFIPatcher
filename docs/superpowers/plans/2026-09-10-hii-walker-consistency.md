@@ -799,6 +799,32 @@ for s in form_out.applied.iter().chain(&q_out.applied) {
 }
 ```
 
+- [ ] **Step 2b: re-pinning стейловых пинов `real_image_hijack_v2_scenario_b`** (дефект плана, rule-11: Task 5 сделал `UnlockOutcome.applied` pkg-относительными — пины были body-абсолютными; RED уже наблюдается на текущем коде — тест падает на первом пине). В тесте `real_image_hijack_v2_scenario_b` (~2154) заменить:
+
+```rust
+assert_eq!(
+    form_out.applied,
+    vec!["pkg+0x67a: 01 -> 02".to_string()],
+    "form-level unlock flips only the hub REF EqConst, no cascade to question gates (TODO.md:1972)"
+);
+```
+
+и семь строк `question_flips` (~2169–2179) →
+
+```rust
+vec![
+    "pkg+0xca6: 01 00 -> ff ff".to_string(),
+    "pkg+0xcfb: 01 00 -> ff ff".to_string(),
+    "pkg+0xd50: 01 00 -> ff ff".to_string(),
+    "pkg+0xd7b: 01 00 -> ff ff".to_string(),
+    "pkg+0xda6: 01 00 -> ff ff".to_string(),
+    "pkg+0xdd1: 01 00 -> ff ff".to_string(),
+    "pkg+0xdfc: 01 00 -> ff ff".to_string(),
+],
+```
+
+Старые значения переводятся вычитанием старта пакета в теле (0x8934: 0x8fae→0x67a, 0x95da→0xca6 и т.д.); новые совпадают с `E12_FLIP_BYTES` (0x67A, 0xDD1..0xDD2 — hardware-валидированные pkg-офсеты E12) и allowed-диффом этого же теста — перекрёстное подтверждение контракта §3.3.
+
 - [ ] **Step 3: компиляция** — `cargo test -p uefi-engine --no-run` (real-image тесты компилируются в обычном прогоне, но убедиться явно).
 
 - [ ] **Step 4: Commit**
