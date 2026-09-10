@@ -277,16 +277,32 @@ fn node_name(node: &FfsNode) -> String {
         {
             decode_utf16le_body(&node.body)
         }
-        FfsType::File => {
-            for child in &node.children {
-                if child.node_type == FfsType::Section && child.subtype == EFI_SECTION_UI {
-                    return decode_utf16le_body(&child.body);
-                }
-            }
-            String::new()
-        }
+        FfsType::File => find_lifted_name(&node.children, 0).unwrap_or_default(),
         _ => String::new(),
     }
+}
+
+fn find_lifted_name(children: &[FfsNode], depth: usize) -> Option<String> {
+    if depth >= 8 {
+        return None;
+    }
+    for child in children {
+        if child.node_type == FfsType::Section
+            && (child.subtype == EFI_SECTION_UI || child.subtype == EFI_SECTION_VERSION)
+        {
+            return Some(decode_utf16le_body(&child.body));
+        }
+    }
+    for child in children {
+        if child.node_type == FfsType::Section
+            && (child.subtype == EFI_SECTION_COMPRESSION
+                || child.subtype == EFI_SECTION_GUID_DEFINED)
+            && let Some(name) = find_lifted_name(&child.children, depth + 1)
+        {
+            return Some(name);
+        }
+    }
+    None
 }
 
 fn decode_utf16le_body(body: &[u8]) -> String {
@@ -379,6 +395,89 @@ mod tests {
             alignment_bytes: vec![],
         };
         assert_eq!(node_name(&file), "Setup");
+    }
+
+    fn guided_with_ui_child() -> FfsNode {
+        let ui = FfsNode {
+            guid: None,
+            node_type: FfsType::Section,
+            subtype: EFI_SECTION_UI,
+            offset: 0,
+            header: vec![0; 4],
+            body: encode_utf16le_null("DeepSetup"),
+            tail: vec![],
+            children: vec![],
+            action: Action::NoAction,
+            parsing_data: ParsingData::None,
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        };
+        FfsNode {
+            guid: None,
+            node_type: FfsType::Section,
+            subtype: EFI_SECTION_GUID_DEFINED,
+            offset: 0,
+            header: vec![0; 4],
+            body: vec![],
+            tail: vec![],
+            children: vec![ui],
+            action: Action::NoAction,
+            parsing_data: ParsingData::None,
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        }
+    }
+
+    #[test]
+    fn node_name_lifts_ui_through_guided_wrapper() {
+        let mut file = FfsNode {
+            guid: None,
+            node_type: FfsType::File,
+            subtype: 0x07,
+            offset: 0,
+            header: vec![0; 24],
+            body: vec![],
+            tail: vec![],
+            children: vec![guided_with_ui_child()],
+            action: Action::NoAction,
+            parsing_data: ParsingData::None,
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        };
+        assert_eq!(node_name(&file), "DeepSetup");
+        let mut wrapper = guided_with_ui_child();
+        wrapper.subtype = EFI_SECTION_COMPRESSION;
+        file.children = vec![wrapper];
+        assert_eq!(node_name(&file), "DeepSetup");
+    }
+
+    #[test]
+    fn node_name_lift_stops_at_depth_limit() {
+        let mut node = guided_with_ui_child();
+        for _ in 0..10 {
+            let mut w = guided_with_ui_child();
+            w.children = vec![node];
+            node = w;
+        }
+        let file = FfsNode {
+            guid: None,
+            node_type: FfsType::File,
+            subtype: 0x07,
+            offset: 0,
+            header: vec![0; 24],
+            body: vec![],
+            tail: vec![],
+            children: vec![node],
+            action: Action::NoAction,
+            parsing_data: ParsingData::None,
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        };
+        assert_eq!(node_name(&file), "");
     }
 
     #[test]
