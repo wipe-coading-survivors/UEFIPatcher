@@ -2357,3 +2357,48 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
 * [ ] **engine: поднять scope_balance в pub(crate) хелпер hii::ifr**
   — дублирован в тестах mod.rs и real_image.rs; инвариант
   железо-доказан (раунд 8), понадобится следующему REF/scope-опу.
+
+## HOWTO-документация: сценарии пользователя (2026-09-10)
+
+> Поручение владельца: HOWTO-доки + ссылка на них из README.
+> README.md в репо сейчас нет — создать вместе с HOWTO. Прошивка —
+> всегда руками владельца: HOWTO описывают подготовку образа,
+> команды CLI и проверку результата, не заливку.
+
+* [ ] **docs/howto/cli.md — работа с CLI в целом** — сквозной
+  workflow: запуск движка (сокет, `UEFIPATCHER_SOCK`), session
+  init/list, image open/find/dump/save, edit-операции
+  (insert/remove/replace/rebuild), setup/hii-команды; форматы вывода
+  json/text/tsv; переменные окружения. Источники: план цикла 2,
+  `uefi-cli --help`.
+* [ ] **docs/howto/add-form-serial-console.md — добавление формы
+  Setup на примере серийной консоли** — полный путь дуги
+  setup-new-page: `hii form add` (varstore+форма) → `hii question
+  add` ($SPF-записи) → `hii page add` (страница) → REF; боевой
+  минимальный паттерн E43 `7e5d4bba…` (вопросы add_question на
+  мёртвую сток-форму 10009 + REF, ноль новых форм — обход
+  IntelRC-стены: любая новая форма Setup-формсета ломает вход в
+  IntelRCSetup, раунды 12–13-бис); предостережения дуги: varstore
+  ids 1..20 заняты / 21–30 не проверены / 31+ свободны, дубли qid —
+  не крашер, REF-эмит voff=0xFFFF, $SPF ifr-фиксап add_form
+  (`c5a5c09`), протокол прошивки (розетка перед каждым образом,
+  батарейка вынута). Источники: спека setup-new-page, pack/вердикты
+  E36–E43.
+* [ ] **docs/howto/open-hidden-form.md — открытие скрытой формы,
+  пример Advanced → PCI Configuration (HNX99TF)** — конвейер
+  unhide-цикла: `hii form gates` → `hii form unlock` (E12-классы
+  флипов UPG/PRC; item_id `#<form_id>[:<qid>]`), set-value,
+  проверка на плате. Исторический прецедент: скрытая страница PCI +
+  Above 4G Decoding (E12 unlock, E14 значение). Источники: спека
+  unlock-op, `docs/reports/2026-09-02-hw-validation-hnx99tf.md`.
+* [ ] **docs/howto/bifurcation-rd450x.md — настройка PCIe-бифуркации
+  на Lenovo RD450x** — поиск вопросов бифуркации (формы «PCI Express
+  Settings» 10057+, varstore ServerSetup/IntelSetup — v5-маппинг по
+  имени), различие SDP/IFR-дефолтов vs живого StdDefaults-снимка
+  (гипотеза «мёртвых структур»: AMIBCP правит инертные дефолты —
+  «правит, но на плате не применяется»), set-default в обе копии
+  StdDefaults, чеклист проверки (lspci/линки, живучесть после
+  reseed). Источник: раздел «450x: PCIe-бифуркация» выше.
+* [ ] **README.md — создать и сослаться на HOWTO** — короткий README
+  (назначение, компоненты, сборка/контейнеры, указатель
+  docs/howto/*.md).
