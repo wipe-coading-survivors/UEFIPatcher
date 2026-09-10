@@ -2025,6 +2025,12 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   между hii_question_info/hii_set_value. Контекст: tests/mock_server.rs;
   кандидат — fn `mock_question()`.
   Закрыто: cli-polish — `mock_question()`.
+* [ ] **uefi-cli output.rs: tests-mod `mock_question()` без defaults —
+  третий дубль QuestionInfo-литерала** — рядом инлайн-литерал в
+  `question_info_text_prints_defaults_and_varstore` (с defaults) и
+  tests/mock_server.rs `mock_question()` (с defaults). Контекст:
+  расширить tests-mod-фикстуру одним DefaultEntry вместо третьего
+  литерала. Найдено финальным ревью cli-polish.
 * [ ] **set_value: NotWritable проверяется до парсинга item_id** —
   Read-режим + мусорный item_id → NotWritable вместо NotFound; зеркально
   `resolve_writable_path`. Контекст: `hii/mod.rs`; выровнять при
