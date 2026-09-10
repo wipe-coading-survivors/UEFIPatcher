@@ -338,14 +338,13 @@ fn find_form_suppress_scope_returns_none_on_length_below_two() {
 
 #[test]
 fn parse_form_package_rejects_short_formset_opcode() {
-    // IfrFormSet с length < 23 (здесь 4): гвид/титул не читаются
     let mut ifr = vec![IFR_FORM_SET_OP, 0x04, 0xAA, 0xBB];
     ifr.extend(end());
     assert!(parse_form_package(&package(&ifr)).is_none());
 }
 
 #[test]
-fn find_suppress_if_scopes_returns_outer_scope_first() {
+fn find_suppress_if_scopes_returns_only_outermost_scope() {
     let g = Guid::from_str(FORMSET_GUID).unwrap();
     let mut ifr = form_set(&g, 7);
     ifr.extend(suppress_if());
@@ -354,14 +353,14 @@ fn find_suppress_if_scopes_returns_outer_scope_first() {
     ifr.extend(end());
     ifr.extend(end());
     let scopes = find_suppress_if_scopes(&package(&ifr));
-    assert_eq!(scopes.len(), 2);
-    assert!(scopes[0].start < scopes[1].start && scopes[0].end > scopes[1].end);
+    assert_eq!(scopes.len(), 1, "вложенный SUPPRESS_IF покрывается внешним скоупом");
+    // внешний SUPPRESS @27 (контент с 29), внутренний END @31, внешний END @33
+    assert_eq!(scopes[0].start, 29);
+    assert_eq!(scopes[0].end, 33);
 }
 
 #[test]
 fn find_suppress_if_scopes_does_not_match_payload_bytes() {
-    // TEXT-оп с payload, содержащим 0x0A 0x82: выравнивание по опкодам
-    // не должно принимать эти байты за SUPPRESS_IF
     let g = Guid::from_str(FORMSET_GUID).unwrap();
     let mut ifr = form_set(&g, 7);
     ifr.extend(suppress_if());
