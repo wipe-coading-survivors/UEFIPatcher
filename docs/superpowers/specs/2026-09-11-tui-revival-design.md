@@ -28,7 +28,7 @@ TUI технически жив (тесты/клippy зелёные, `2026-08-12
 | A5 | Tab-completion + общий парсинг флагов | common+TUI | `uefi-common::cli`; Tab-дополнение в cmdline |
 | A6 | Регионы flash-дескриптора | engine | Полная таблица FLREG (BIOS/ME/GbE/PDR/…), ME с FTPR-парсером, read-only-индикация |
 | A7 | `ImageUpload` RPC + `:upload` | proto+engine+TUI | Байты образа через RPC вместо server-side пути |
-| A8 | Мутационный журнал | engine | Pending-операции переживают рестарт движка (SQLite, replay) |
+| A8 | Снапшоты образа | proto+engine+TUI | Именованные точки отката байтов (аддендум; журнал отменён — write-through) |
 
 ## Non-goals
 
@@ -160,31 +160,11 @@ raw-узлы с dim-стилем; сверка дампа с UEFITool вручн
 - TUI: `:upload PATH` — читает файл из FS клиента, шлёт RPC. Использование — docker/remote-кейсы
   (client FS != server FS); локально `:open` остаётся путём сервера.
 
-### A8 — Мутационный журнал (engine)
+### A8 — Мутационный журнал (engine) — ЗАМЕНЁН, см. «Аддендум»
 
-Контекст: pending-операции (Action::Remove/Rebuild/Replace + вставки) живут только в in-memory
-дереве `Image.root` — рестарт движка теряет их, хотя сессия/артефакты персистентны. Гейт A3
-(«remove → save → чист») проверяет применённое состояние; журнал добавляет выживание
-**неприменённого** (решение владельца 2026-09-11 при ревью спеки: «хранение промежуточных
-результатов»).
-
-- **Схема**: аддитивная SQLite-таблица `image_ops(image_id, seq, kind, path, payload_json,
-  file_hash)`; `kind` ∈ insert/replace/remove/rebuild; payload — artifact_id, mode
-  (into/before/after), body_only. Контракты RPC **не меняются** — фича прозрачна для клиентов.
-- **Запись**: в `ops::insert/replace/remove/rebuild` транзакционно с применением в памяти (одна
-  sqlite-транзакция на операцию).
-- **Replay**: в `get_or_load_image` (cache-miss, `rpc/server.rs:68-97`): parse файла → журнал по
-  `seq` поверх свежего дерева. `file_hash` (sha256 файла на момент записи) не совпал — файл подменён
-  внешне → журнал сбрасывается с warn (байты — source of truth; журнал живёт только пока
-  консистентен с файлом).
-- **Очистка**: успешный `flush_image` (там же, где A3-prune) ⇒ журнал образа очищен — применённое
-  состояние теперь в байтах. Session GC/destroy ⇒ каскадное удаление строк образов сессии.
-- Артефакты-источники insert/replace уже персистентны (storage цикла 1) — replay берёт из таблицы
-  артефактов; артефакт исчез (GC) ⇒ replay-строка пропускается с warn.
-
-Гейт: remove → **рестарт движка** → `image_nodes_list` показывает маркер `-`; insert из артефакта →
-рестарт → узел с маркером `+`; save (flush) → рестарт → чисто (журнал очищен, маркеров нет);
-подмена файла на диске после remove → рестарт → журнал сброшен, warn в лог.
+> Раздел заменён на снапшоты образа аддендумом от 2026-09-11 (ревью планирования): журнал
+> исходной редакции оказался мёртвым кодом — write-through уже персистит каждую правку
+> немедленно. Актуальная редакция — «A8' — Снапшоты образа» в аддендуме ниже.
 
 ## Порядок и зависимости
 
@@ -225,3 +205,74 @@ TUI-фичи после; A8 последняя (стоится на A3-конт�
 - **D7:** Мотивационная рамка гейтов A3/A8: A3 закрывает «экран врёт после save», A8 закрывает
   «pending теряется на рестарте» — это разные дефекты одной подсистемы и обе части семантики
   «pending-операции видны» (см. TODO:701), восстановленной целиком.
+  > D7 и D6 переведены аддендумом от 2026-09-11: write-through закрывает «pending теряется на
+  > рестарте» сам по себе; A8' (снапшоты) закрывает потребность «промежуточные результаты = точки
+  > отката».
+
+## Аддендум (ревью планирования, 2026-09-11)
+
+Открыто при написании плана реализации (дух rule-11: фиксация до кода).
+
+**Факт (write-through):** все мутационные RPC-хендлеры — `image_node_insert/remove/replace/
+rebuild`, все hii-опы, `image_save` — уже вызывают `flush_image` немедленно после операции
+(коммит `aa6ed56`; на это же жаловался TODO issue II-bis). «Pending-окна» не существует: каждая
+правка уже в байтах на диске до возврата RPC; рестарт движка ничего не теряет
+(`get_or_load_image` → re-parse с диска).
+
+Следствия:
+- **A3 (prune после flush) — в силе**, и работает не только после `:save`, а после **каждой**
+  мутации: экран перестаёт показывать применённое как «запланированное» сразу.
+- TUI-маркеры действий (`+`/`-`/`~`/`*`) после A3 недостижимы (prune происходит внутри
+  mutation-RPC до его возврата). Рендер-код маркеров остаётся как no-op при NoAction; чистка —
+  отдельная косметика, не этого цикла.
+- **A8 (журнал pending-операций) мёртв** при write-through → заменён снапшотами (решение
+  владельца 2026-09-11: «переводим на снапшоты, аддендумом»).
+
+### A8' — Снапшоты образа (proto+engine+TUI)
+
+Именованные точки отката байтов образа — «промежуточные результаты» в смысле воркфлоу дуг E*
+(«откат — E32»): перед рискованной правкой — снапшот, после неудачи — restore.
+
+- **Proto:**
+  `rpc ImageSnapshotCreate(ImageSnapshotCreateRequest) returns (ImageSnapshotCreateResponse);`
+  `rpc ImageSnapshotsList(ImageSnapshotsListRequest) returns (ImageSnapshotsListResponse);`
+  `rpc ImageSnapshotRestore(ImageSnapshotRestoreRequest) returns (Empty);`
+  `ImageSnapshotCreateRequest { string image_id = 1; string name = 2; }`,
+  `ImageSnapshotCreateResponse { string snapshot_id = 1; int64 created_at = 2; }`,
+  `ImageSnapshotInfo { string snapshot_id = 1; string name = 2; int64 created_at = 3; uint64 size = 4; }`,
+  `ImageSnapshotsListRequest { string image_id = 1; }`,
+  `ImageSnapshotsListResponse { repeated ImageSnapshotInfo snapshots = 1; }`,
+  `ImageSnapshotRestoreRequest { string image_id = 1; string snapshot_id = 2; }`.
+- **Схема** (аддитивно):
+  `CREATE TABLE IF NOT EXISTS image_snapshots (id TEXT PRIMARY KEY, image_id TEXT NOT NULL
+  REFERENCES images(id) ON DELETE CASCADE, name TEXT NOT NULL, size INTEGER NOT NULL,
+  created_at INTEGER NOT NULL);` + индекс по image_id. Файл:
+  `data_dir/sessions/<sid>/images/<image_id>.snapshots/<snapshot_id>.bin` — копия текущих
+  байтов образа (write-through уже записал их — отдельный flush не нужен). Каскад сессии/GC —
+  как у артефактов (`ON DELETE CASCADE` + purge-флаг при файловой чистке).
+- **Create:** строка образа существует → читаем stored `.bin` → копия в файл снапшота → insert
+  row. Пустое имя → `snap-<unix_secs>`.
+- **Restore:** snapshot row существует → чтение файла снапшота → `atomic_write` поверх stored
+  image `.bin` → инвалидация in-memory кэша (`images.remove(image_id)` — следующий доступ
+  re-parse'ит) → `touch_image`.
+- **TUI:** `:snapshot [NAME]` — создать; `:snapshots` — список в status_msg;
+  `:restore <snapshot_id>` — restore + refresh tree/registry.
+- **Гейт** (integration-стенд, реальный EngineServer на unix-сокете): open(write) → remove →
+  `snapshot "before"` → ещё правка → `restore` → `image_nodes_list` равен дереву на момент
+  снапшота; «рестарт» движка (новый EngineServer на том же data_dir) → `snapshots_list` жив;
+  restore несуществующего id → not_found.
+
+### Уточнение A5 (открыто при планировании)
+
+CLI-сторона парсинга флагов остаётся на clap derive (эксклюзивность `--file`/`--artifact-id` —
+ArgGroup, `main.rs:145-180`); ручного «двойника» парсера там нет. Общий модуль `uefi-common::cli`
+получает парсер TUI (`parse_node_flags`/`NodeCmdArgs` + `source()`-валидация ровно-один-из);
+CLI на общий модуль НЕ мигрирует.
+
+### Уточнение A1 (модель регионов)
+
+Регион — это `FfsType::Region` (63, слот уже есть в enum), а НЕ Volume: Region-узлы несут свои
+метки через `RegionParsingData` («ME region», «GbE region», имена $FPT-партиций), все Volume —
+BIOS-тома с меткой `"Volume"`. Dim-стиль `immutable_style` вешается по `node_type == Region`
+(63) — включая детей (партиции), автоматически. Поле `Node.region` в proto несёт метку региона
+для клиентов.
