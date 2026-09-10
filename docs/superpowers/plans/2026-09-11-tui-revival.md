@@ -27,7 +27,7 @@
 |---|---|---|
 | `fn find_lifted_name(children: &[FfsNode], depth: usize) -> Option<String>` (private, `parser/image.rs`) | Task 1 | — (внутренний) |
 | `App::node_label(&self, node: &TreeNode) -> String` | Task 2 | `ui/tree.rs` (рендер), Task 8 (регион-метки приходят через `TreeNode.name` — уже сегодня заполняется из `Node.name`) |
-| `ops::prune_applied(root: &mut FfsNode)`; `OpsError::{MutationBehindCompression, ImmutableRegion}` | Task 3 (prune+barrier), Task 6 (ImmutableRegion) | `rpc/server.rs::flush_image` |
+| `OpsError::{MutationBehindCompression, ImmutableRegion}`; контракт `flush_image` = re-parse кэша после записи | Task 3 (barrier+re-parse), Task 6 (ImmutableRegion) | мутационные хендлеры `rpc/server.rs` |
 | `App::goto_path(&mut self, target: &str) -> Result<(), String>` | Task 4 | `commands.rs` `:goto` |
 | `uefi_common::cli::{NodeCmdArgs, Source, parse_node_flags}` | Task 5 | TUI `commands.rs` (insert/replace) |
 | `commands::complete(app: &App, cmdline: &str) -> (Option<String>, Vec<String>)` | Task 5 | `main.rs` Tab |
@@ -282,36 +282,22 @@ pub fn node_label(&self, node: &TreeNode) -> String {
 
 ### Task 3: (A3) engine — prune применённых операций + барьер-гард в ops
 
+> **Rule-11 фикс (2026-09-11, по ходу исполнения):** обнаружены два дефекта шага.
+> (1) Серверный ассерт `nodes.iter().all(|n| n.path != "0/0")` непроходим на собственной фикстуре задачи: после prune выживший файл смещается в индекс 0 и занимает путь "0/0" (пути позиционные). Ассерт заменён на «остался ровно один File-узел и это выживший (offset 88)».
+> (2) Механизм `prune_applied` в `flush_image` порождает регрессию «воскресения» байтов: `build_volume`/`build_file` при `NoAction` сериализуют `header+body+tail` дословно (builder/mod.rs:52-57, 85-89), ops-мутации не синхронизируют `body` контейнеров — значит ЛЮБОЙ повторный flush после prune (поздний save или мутация в другом поддереве) emit'ит stale body и удалённый файл возвращается в записанные байты. До prune pending-маркеры Rebuild случайно защищали от этого. Корректный механизм: после успешного `atomic_write` заменять кэшированный образ re-parse'ом записанных байт (тот же путь, что `get_or_load_image` на cache-miss) — дерево и байты совпадают по построению. `prune_applied` как pub-API и его ops-тест исключаются; ensure_mutable/OpsError/сессионные ассерты остаются как были.
+
 **Files:**
-- Modify: `crates/uefi-engine/src/ops.rs` (`OpsError`, `prune_applied`, гард в `remove`/`replace`/`rebuild`/`insert`)
-- Modify: `crates/uefi-engine/src/rpc/server.rs` (`flush_image`, после успешного `atomic_write`)
+- Modify: `crates/uefi-engine/src/ops.rs` (`OpsError`, гард в `remove`/`replace`/`rebuild`/`insert`)
+- Modify: `crates/uefi-engine/src/rpc/server.rs` (`flush_image`: re-parse кэша после успешного `atomic_write`)
 - Test: оба файла, `mod tests`
 
 **Interfaces:**
 - Consumes: `Action`, `FfsType`, `ParsingData::GuidedSection`, `crate::ffs::is_recompressable_lzma_guid`.
-- Produces: `pub fn prune_applied(root: &mut FfsNode)`; `OpsError::MutationBehindCompression` (RPC-маппинг: `Status::failed_precondition`, добавить в обработку ошибок мутационных хендлеров — сегодня они маппят `OpsError` через `Status::internal`; заменить на матч по вариантам).
+- Produces: `OpsError::MutationBehindCompression` (RPC-маппинг: `Status::failed_precondition`, добавить в обработку ошибок мутационных хендлеров — сегодня они маппят `OpsError` через `Status::internal`; заменить на матч по вариантам); контракт `flush_image` — после записи кэш-образ == parse(записанные байты).
 
-- [ ] **Step 1: падающие тесты в `ops.rs`**:
+- [ ] **Step 1: падающий тест в `ops.rs`**:
 
 ```rust
-#[test]
-fn prune_applied_drops_remove_and_resets_actions() {
-    let buf = make_simple_image();
-    let mut img = parse_image(&buf, ImageMode::Write, "i", "s").unwrap();
-    let ffs = make_ffs_file();
-    let t = parse_target("0").unwrap();
-    insert(&mut img.root, &t, &ffs, InsertMode::Into).unwrap();
-    let file_target = parse_target("0/0").unwrap();
-    remove(&mut img.root, &file_target).unwrap();
-    prune_applied(&mut img.root);
-    assert!(
-        img.root.children[0].children.is_empty(),
-        "Remove-marked child must be pruned"
-    );
-    assert_eq!(img.root.action, Action::NoAction);
-    assert_eq!(img.root.children[0].action, Action::NoAction);
-}
-
 #[test]
 fn remove_behind_tiano_compression_refused() {
     let buf = make_simple_image();
@@ -359,9 +345,9 @@ fn remove_behind_tiano_compression_refused() {
 
 (`EFI_SECTION_COMPRESSION` импортировать из `crate::ffs` в тест-модуль.)
 
-- [ ] **Step 2: красный** — `cargo test -p uefi-engine prune_applied remove_behind` → FAIL.
+- [ ] **Step 2: красный** — `cargo test -p uefi-engine remove_behind` → FAIL.
 
-- [ ] **Step 3: реализация в `ops.rs`**:
+- [ ] **Step 3: реализация в `ops.rs`** (prune_applied исключён rule-11-фиксом — см. шапку задачи):
 
 ```rust
 #[derive(Debug, thiserror::Error)]
@@ -374,19 +360,6 @@ pub enum OpsError {
     InvalidFfs,
     #[error("mutation behind non-recompressable compression barrier")]
     MutationBehindCompression,
-}
-
-pub fn prune_applied(root: &mut FfsNode) {
-    if matches!(root.action, Action::Rebuild | Action::Replace) {
-        root.action = Action::NoAction;
-    }
-    root.children.retain(|c| c.action != Action::Remove);
-    for child in &mut root.children {
-        if matches!(child.action, Action::Rebuild | Action::Replace) {
-            child.action = Action::NoAction;
-        }
-        prune_applied(child);
-    }
 }
 
 fn ensure_mutable(root: &FfsNode, path: &[usize], include_target: bool) -> Result<(), OpsError> {
@@ -420,15 +393,18 @@ fn ensure_mutable(root: &FfsNode, path: &[usize], include_target: bool) -> Resul
 
 - [ ] **Step 4: зелёный ops** — `cargo test -p uefi-tui` не трогаем; `cargo test -p uefi-engine && cargo clippy -p uefi-engine -- -D warnings`.
 
-- [ ] **Step 5: server-интеграция** — в `rpc/server.rs::flush_image` после `atomic_write(...)` и до `touch_image`:
+- [ ] **Step 5: server-интеграция** — в `rpc/server.rs::flush_image` после успешного `atomic_write(...)` и до `touch_image` заменить кэшированный образ re-parse'ом записанных байт (rule-11-фикс: честность байтов, см. шапку задачи):
 
 ```rust
 let mut images = self.images.lock().await;
 if let Some(img) = images.get_mut(image_id) {
-    crate::ops::prune_applied(&mut img.root);
+    *img = parse_image(&bytes, img.mode, image_id, &img.session_id)
+        .map_err(|e| Status::internal(e.to_string()))?;
 }
 drop(images);
 ```
+
+(поля `img.mode`/`img.session_id` — фактические имена полей `Image` в types.rs; `bytes` — буфер, отданный в `atomic_write`. Если parse упал — образ уже записан корректно, но кэш протух: вернуть internal и инвалидировать (`images.remove(image_id)`) — следующий `get_or_load_image` перепарсит с диска.)
 
 Маппинг ошибок ops в мутационных хендлерах (`image_node_insert/remove/replace/rebuild`): заменить `Status::internal(e.to_string())` на хелпер над `crate::ops::OpsError`:
 
@@ -457,7 +433,7 @@ fn fv_image_with_two_files() -> Vec<u8> {
         f[0..16].copy_from_slice(guid.as_bytes());
         f[18] = 0x01;
         f[20..23].copy_from_slice(&crate::ffs::size_to_uint24(32));
-        f[24 + k] = 0xAA;
+        f[24] = [0xAA, 0xBB][k];
         buf[*at..*at + 32].copy_from_slice(&f);
     }
     buf
@@ -499,18 +475,37 @@ async fn remove_rpc_leaves_clean_tree() {
         nodes.iter().all(|n| n.action == 50),
         "no pending markers after write-through flush"
     );
-    assert!(
-        nodes.iter().all(|n| n.path != "0/0"),
-        "removed file must disappear from the tree"
-    );
+    let files: Vec<&_> = nodes.iter().filter(|n| n.node_type == 66).collect();
+    assert_eq!(files.len(), 1, "removed file must disappear from the tree");
+    assert_eq!(files[0].offset, 88, "survivor is the second fixture file");
 }
 ```
+
+(Rule-11-фикс ассерта: пути позиционные — после удаления выживший файл занимает "0/0"; проверяем «остался один File и это выживший».)
+
+Дополнительный гейт воскрешения (rule-11-фикс №2 — регрессия stale-body, которую prune не ловил): после `remove "0/0"` повторно сохранить образ (мутация в другом поддереве или явный save — что даёт второй flush) и проверить записанные байты уровня данных, а не дерева:
+
+```rust
+#[tokio::test]
+async fn second_flush_does_not_resurrect_removed_file() {
+    // тот же стенд/фикстура, что remove_rpc_leaves_clean_tree;
+    // файлы фикстуры несут разные маркеры: f[24]=0xAA (файл @56), f[25]=0xBB (файл @88)
+    // 1) remove "0/0" (первый flush — FV ещё Rebuild, пишет корректно)
+    // 2) триггер второго flush без мутаций в этом FV: подойдёт вторая мутация
+    //    в другом поддереве (двух-FV фикстура, remove "1/0") ИЛИ повторный
+    //    save/rebuild существующего RPC-путя — выбрать доступный на месте;
+    //    маркер 0xAA из тела удалённого файла обязан отсутствовать в
+    //    прочитанных с диска байтах образа (data_dir/sessions/<sid>/images/<iid>.bin).
+}
+```
+
+(тело заполнить по фактическим RPC; суть — байтовый ассерт, не дерево: `!bytes_after.contains(&0xAA)` в зоне тела файла @56; с re-parse-фиксом проходит, со stale-body — падает.)
 
 (`fv_image_with_two_files` кладёт два выровненных FFS-файла в тело FV @56 и @88; GUID-байты и `size_to_uint24` — по образцу `ops.rs::tests::make_ffs_file`; `create_session`-хелпер взять из существующего теста `flush_image_writes_bytes_to_data_dir` — там сессия создаётся через `sm.create_session`/RPC, переиспользовать тот же путь).
 
 - [ ] **Step 6: зелёный всё** — `cargo test -p uefi-engine && cargo clippy -p uefi-engine -- -D warnings`.
 
-- [ ] **Step 7: commit** — `feat(uefi-engine): prune applied actions after flush + refuse mutations behind compression barrier`
+- [ ] **Step 7: commit** — `feat(uefi-engine): honest tree+bytes after flush (cache re-parse) + refuse mutations behind compression barrier`
 
 ---
 
