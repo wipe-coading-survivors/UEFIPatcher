@@ -122,13 +122,14 @@ git commit -m "refactor(hii): scope_balance -> pub-хелпер hii::ifr, дуб
 **Files:**
 - Modify: `crates/uefi-engine/src/hii/ifr.rs` (переписать `find_suppress_if_scopes`; добавить `package_bounds`; переключить bounds-блоки трёх walker'ов)
 - Modify: `crates/uefi-engine/src/hii/gates.rs` (удалить приватный `package_bounds`, импортировать из `ifr`)
+- Modify: `crates/uefi-engine/src/hii/mod.rs` (фикстура унаследованного теста `set_item_visibility_patches_form_inside_pe_resource` — FORM_SET-opener, см. Step 6)
 - Test: `crates/uefi-engine/src/hii/ifr.rs` (mod tests)
 
 **Interfaces:**
 - Produces: `pub(crate) fn package_bounds(body: &[u8]) -> (usize, usize)` в `hii::ifr` — `(4, plen.min(body.len()))` для form-пакета, `(0, body.len())` для прочего тела.
 - Produces: `find_suppress_if_scopes(body: &[u8]) -> Vec<SuppressScope>` — контракт возврата не меняется (все скоупы пакета; content между заголовком SUPPRESS_IF и его END).
 
-- [ ] **Step 1: написать падающие тесты** — в mod tests `ifr.rs` (нужен импорт `IFR_GRAY_OUT_IF_OP` в локальный `use`):
+- [ ] **Step 1: написать падающие тесты** — в mod tests `ifr.rs`:
 
 ```rust
 fn suppress_if() -> Vec<u8> {
@@ -271,12 +272,12 @@ let end = plen.min(body.len());
 
 - [ ] **Step 5: дедупликация `package_bounds` в `gates.rs`** — удалить приватную `fn package_bounds` (строки ~89–96); импорт наверху `use super::ifr::is_form_package;` заменить на `use super::ifr::package_bounds;` (других использований `is_form_package` в gates.rs нет).
 
-- [ ] **Step 6: `cargo test -p uefi-engine` — зелёный** (включая существующие `unsuppress_makes_block_empty`, `unsuppress_rewrites_slice_in_place_preserving_length`, `find_form_suppress_scope_walks_package_body`, тесты gates.rs). `cargo clippy -p uefi-engine -- -D warnings` — чисто.
+- [ ] **Step 6: `cargo test -p uefi-engine` — зелёный** (включая существующие `unsuppress_makes_block_empty`, `unsuppress_rewrites_slice_in_place_preserving_length`, `find_form_suppress_scope_walks_package_body`, тесты gates.rs). Унаследованный `set_item_visibility_patches_form_inside_pe_resource` (mod.rs) падает на вербатим-реализации §3.1: его синтетический FORMS-пакет без FORM_SET-opener'а не распознаётся `is_form_package`/`package_bounds`, и opcode-aligned обход обрывается на 4-байтовом заголовке пакета — фикстуре добавляется FORM_SET-opener (UEFI: FORM_SET — первый опкод forms-пакета), ассерт смещения `blob[24..28]` заменяется на `blob[47..51]` (SUPPRESS сдвигается на +23); диф-каунт «ровно 5 байт» и остальные ассерты не меняются. `cargo clippy -p uefi-engine -- -D warnings` — чисто.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add crates/uefi-engine/src/hii/ifr.rs crates/uefi-engine/src/hii/gates.rs
+git add crates/uefi-engine/src/hii/ifr.rs crates/uefi-engine/src/hii/gates.rs crates/uefi-engine/src/hii/mod.rs
 git commit -m "fix(hii/ifr): find_suppress_if_scopes — opcode-aligned обход, глубина по любым scoped-опам, bounds по plen; package_bounds — общий pub(crate) хелпер (TODO:200, TODO:1199 механика)"
 ```
 
