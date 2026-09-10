@@ -1120,7 +1120,6 @@ mod tests {
         let mut ifr = form_set(&g, 7);
         ifr.extend(form(1, 10));
         ifr.extend(end());
-        // END formset опущен: баланс +1
         assert_eq!(scope_balance(&package(&ifr)), 1);
     }
 }
