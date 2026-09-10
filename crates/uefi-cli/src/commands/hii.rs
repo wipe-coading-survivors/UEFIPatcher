@@ -187,10 +187,26 @@ pub async fn question_add(
     let st = state::require_state()?;
     let mut client = Client::connect(cli_sock, st).await?;
     let image_id = client.active_image()?;
-    let outcomes = client
+    let resp = client
         .hii_question_add(&image_id, item_id, &schema_json)
         .await?;
-    crate::output::print_question_add(&outcomes, format);
+    crate::output::print_question_add_result(&resp.questions, &resp.refs, format);
+    Ok(())
+}
+
+pub async fn page_add(
+    target: &str,
+    file: &str,
+    cli_sock: Option<&str>,
+    format: OutputFormat,
+) -> Result<(), AppError> {
+    let schema_json = std::fs::read_to_string(file)
+        .map_err(|e| AppError::new(ErrKind::IoError, format!("{file}: {e}")))?;
+    let st = state::require_state()?;
+    let mut client = Client::connect(cli_sock, st).await?;
+    let image_id = client.active_image()?;
+    let resp = client.hii_page_add(&image_id, target, &schema_json).await?;
+    crate::output::print_page_add(&resp, format);
     Ok(())
 }
 

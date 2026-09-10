@@ -187,6 +187,10 @@ enum HiiCmd {
         #[command(subcommand)]
         sub: HiiQuestionCmd,
     },
+    Page {
+        #[command(subcommand)]
+        sub: HiiPageCmd,
+    },
     String {
         #[command(subcommand)]
         sub: HiiStringCmd,
@@ -255,6 +259,16 @@ enum HiiQuestionCmd {
     #[command(about = "insert a OneOf question into a live form")]
     Add {
         item_id: String,
+        #[arg(long)]
+        file: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum HiiPageCmd {
+    #[command(about = "register a form as a page in the $SPF page table")]
+    Add {
+        target: String,
         #[arg(long)]
         file: String,
     },
@@ -442,6 +456,11 @@ async fn dispatch(cli: &Cli, format: output::OutputFormat) -> Result<(), error::
                     commands::hii::question_add(item_id, file, sock, format).await
                 }
             },
+            HiiCmd::Page { sub } => match sub {
+                HiiPageCmd::Add { target, file } => {
+                    commands::hii::page_add(target, file, sock, format).await
+                }
+            },
             HiiCmd::String { sub } => match sub {
                 HiiStringCmd::List => commands::hii::string_list(sock, format).await,
             },
@@ -618,6 +637,32 @@ mod tests {
                 assert_eq!(file, "s3_questions.json");
             }
             _ => panic!("expected hii question add"),
+        }
+    }
+
+    #[test]
+    fn parse_hii_page_add_args() {
+        let cli = Cli::try_parse_from([
+            "uefi-cli",
+            "hii",
+            "page",
+            "add",
+            "3/28/1/0#10019",
+            "--file",
+            "np_page.json",
+        ])
+        .unwrap();
+        match cli.cmd {
+            Cmd::Hii {
+                sub:
+                    HiiCmd::Page {
+                        sub: HiiPageCmd::Add { target, file },
+                    },
+            } => {
+                assert_eq!(target, "3/28/1/0#10019");
+                assert_eq!(file, "np_page.json");
+            }
+            _ => panic!("expected hii page add"),
         }
     }
 

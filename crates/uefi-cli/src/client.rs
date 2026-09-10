@@ -395,7 +395,7 @@ impl Client {
         image_id: &str,
         target: &str,
         schema_json: &str,
-    ) -> Result<Vec<HiiQuestionAddOutcome>, AppError> {
+    ) -> Result<HiiQuestionAddResponse, AppError> {
         let req = HiiQuestionAddRequest {
             image_id: image_id.into(),
             target: target.into(),
@@ -406,7 +406,26 @@ impl Client {
             .hii_question_add(auth_req(&self.state, req))
             .await?
             .into_inner();
-        Ok(resp.questions)
+        Ok(resp)
+    }
+
+    pub async fn hii_page_add(
+        &mut self,
+        image_id: &str,
+        target: &str,
+        schema_json: &str,
+    ) -> Result<HiiPageAddResponse, AppError> {
+        let req = HiiPageAddRequest {
+            image_id: image_id.into(),
+            target: target.into(),
+            schema_json: schema_json.into(),
+        };
+        let resp = self
+            .inner
+            .hii_page_add(auth_req(&self.state, req))
+            .await?
+            .into_inner();
+        Ok(resp)
     }
 
     pub async fn hii_form_set_add(

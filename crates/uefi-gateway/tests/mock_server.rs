@@ -245,6 +245,12 @@ impl EngineService for MockEngine {
     ) -> Result<Response<HiiQuestionAddResponse>, Status> {
         Ok(Response::new(HiiQuestionAddResponse::default()))
     }
+    async fn hii_page_add(
+        &self,
+        _req: Request<HiiPageAddRequest>,
+    ) -> Result<Response<HiiPageAddResponse>, Status> {
+        Ok(Response::new(HiiPageAddResponse::default()))
+    }
 }
 
 pub async fn start_mock(sock: &Path) -> JoinHandle<()> {

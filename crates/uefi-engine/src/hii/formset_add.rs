@@ -378,7 +378,7 @@ fn emit_item(b: &mut IfrBuilder, item: &schema::ItemSchema, string_ids: &HashMap
         schema::ItemSchema::Ref(r) => {
             let pid = string_ids[&r.prompt];
             let hid = string_ids[&r.help];
-            b.emit_ref(pid, hid, r.question_id, 0, 0, r.form_id);
+            b.emit_ref(pid, hid, r.question_id, 0, 0xFFFF, r.form_id);
         }
         schema::ItemSchema::String(_)
         | schema::ItemSchema::Action(_)

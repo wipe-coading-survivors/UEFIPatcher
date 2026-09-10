@@ -15,7 +15,9 @@ use super::pe_resource::{
     hii_entry_locations, plan_rsrc_blob_growth, try_grow_rsrc_tail, write_length_chain,
 };
 use super::schema;
+use super::spf;
 use super::string_pack;
+use super::{ami_patcher, node_at, node_at_mut, question_forms_package, select_resolving_records};
 use r_efi::hii::PACKAGE_FORMS;
 
 #[derive(Debug)]
@@ -99,6 +101,27 @@ pub fn add_form(
         }
     }
     let inserted_form_ids: Vec<u16> = schema.forms.iter().map(|f| f.id).collect();
+    let varstores = build_varstores(schema)?;
+    let spf_fixup = if varstores.is_empty() {
+        None
+    } else {
+        let pkg_pre = question_forms_package(&image.root, &target, bare_channel)?.to_vec();
+        let (after_header, formset_end) =
+            ifr::formset_insert_points(&pkg_pre, formset_idx).ok_or(HiiError::InvalidIfr)?;
+        match ami_patcher::discover_pfs_payload_path(image) {
+            Ok(sd_path) => {
+                let spf_body = node_at(&image.root, &sd_path).body.clone();
+                Some((
+                    sd_path,
+                    after_header as u32,
+                    formset_end as u32,
+                    select_resolving_records(&spf::scan_question_records(&spf_body), &pkg_pre),
+                ))
+            }
+            Err(HiiError::AmiFilesNotFound) => None,
+            Err(e) => return Err(e),
+        }
+    };
     let string_ids = if bare_channel {
         string_pack::add_strings(image, owner_file_guid.as_ref(), &strings)?
     } else {
@@ -114,7 +137,6 @@ pub fn add_form(
             }
         }
     };
-    let varstores = build_varstores(schema)?;
     let mut b = IfrBuilder::new();
     formset_add::emit_forms(&mut b, schema, &string_ids);
     let form_ifr = b.build();
@@ -128,6 +150,22 @@ pub fn add_form(
         } else {
             insert_form_into_resource(&mut node.body, formset_idx, &form_ifr, &varstores)?;
         }
+    }
+    if let Some((sd_path, after_header, formset_end, selected)) = spf_fixup {
+        let node = node_at_mut(&mut image.root, &sd_path);
+        spf::fixup_selected_record_ifr_offsets(
+            &mut node.body,
+            &selected,
+            formset_end,
+            form_ifr.len() as u32,
+        );
+        spf::fixup_selected_record_ifr_offsets(
+            &mut node.body,
+            &selected,
+            after_header,
+            varstores.len() as u32,
+        );
+        ops::mark_rebuild_to_root_by_path(&mut image.root, &sd_path);
     }
     ops::mark_rebuild_to_root_by_path(&mut image.root, &path);
     tracing::debug!(?inserted_form_ids, "add_form done");

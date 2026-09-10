@@ -370,6 +370,18 @@ impl EngineService for MockEngine {
                 string_ids,
                 spf_record_offset: 0x13C,
             }],
+            refs: vec![],
+        }))
+    }
+    async fn hii_page_add(
+        &self,
+        _req: Request<HiiPageAddRequest>,
+    ) -> Result<Response<HiiPageAddResponse>, Status> {
+        Ok(Response::new(HiiPageAddResponse {
+            form_id: 10021,
+            slot: 1,
+            page_offset: 0x178,
+            title_string_id: 0x1A7,
         }))
     }
 }

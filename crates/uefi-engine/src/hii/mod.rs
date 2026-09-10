@@ -892,6 +892,14 @@ fn record_counter(body: &[u8], offset: usize) -> u32 {
     )
 }
 
+fn select_resolving_records(records: &[spf::SpfQuestionRecord], pkg: &[u8]) -> Vec<usize> {
+    records
+        .iter()
+        .filter(|r| spf_record_resolves(pkg, r.question_id, r.ifr_offset))
+        .map(|r| r.offset)
+        .collect()
+}
+
 fn plan_spf_append(
     body: &[u8],
     pkg: &[u8],
@@ -912,11 +920,7 @@ fn plan_spf_append(
         .max()
         .unwrap_or(0);
     let counter = (0x0001u32 << 16) | (1 + max_low);
-    let selected_records = records
-        .iter()
-        .filter(|r| spf_record_resolves(pkg, r.question_id, r.ifr_offset))
-        .map(|r| r.offset)
-        .collect();
+    let selected_records = select_resolving_records(&records, pkg);
     let count_at = base + spf::SPF_PAGE_COUNT_OFFSET;
     let count_bytes = body.get(count_at..count_at + 4).ok_or(HiiError::NotFound)?;
     let page_count = u32::from_le_bytes(count_bytes.try_into().unwrap()) as usize;
@@ -958,6 +962,10 @@ fn plan_spf_append(
     })
 }
 
+fn apply_spf_ifr_fixup(body: &mut [u8], plan: &SpfAppendPlan, insert_at: u32, delta: u32) {
+    spf::fixup_selected_record_ifr_offsets(body, &plan.selected_records, insert_at, delta);
+}
+
 #[allow(clippy::too_many_arguments)]
 fn apply_spf_question(
     node: &mut FfsNode,
@@ -970,8 +978,8 @@ fn apply_spf_question(
     optimized: Option<u64>,
     failsafe: Option<u64>,
 ) -> Result<usize, HiiError> {
+    apply_spf_ifr_fixup(&mut node.body, plan, insert_at, delta);
     let body = &mut node.body;
-    spf::fixup_selected_record_ifr_offsets(body, &plan.selected_records, insert_at, delta);
     let optimal = optimized.map_or(0, |v| v as u8);
     let failsafe_v = failsafe.map_or(0, |v| v as u8);
     let rec_off = spf::append_question_record(
@@ -1037,11 +1045,9 @@ fn preflight_question_splice(
     target: &crate::types::Target,
     bare_channel: bool,
     form_id: u16,
-    schema: &schema::QuestionAddSchema,
-    optimized: Option<u64>,
+    ops_len: usize,
     strings: &[String],
 ) -> Result<(), HiiError> {
-    let ops_len = build_question_ops(schema, 0, 0, |_| Some(0), optimized)?.len();
     let node =
         crate::parser::target::find_item(&image.root, target).map_err(|_| HiiError::NotFound)?;
     if bare_channel {
@@ -1203,8 +1209,7 @@ pub fn add_question(
         &qt.target,
         qt.bare_channel,
         qt.form_id,
-        schema,
-        optimized,
+        build_question_ops(schema, 0, 0, |_| Some(0), optimized)?.len(),
         &strings,
     )?;
     let string_ids = if qt.bare_channel {
@@ -1312,8 +1317,7 @@ pub fn check_question_add(
             &qt.target,
             qt.bare_channel,
             qt.form_id,
-            schema,
-            optimized,
+            build_question_ops(schema, 0, 0, |_| Some(0), optimized)?.len(),
             &strings,
         )?;
         pending.push((
@@ -1324,6 +1328,279 @@ pub fn check_question_add(
         ));
     }
     Ok(())
+}
+
+fn build_ref_ops(schema: &schema::QuestionAddRefSchema, prompt_id: u16, help_id: u16) -> Vec<u8> {
+    let mut b = ifr_builder::IfrBuilder::new();
+    b.emit_ref(
+        prompt_id,
+        help_id,
+        schema.question_id,
+        0,
+        0xFFFF,
+        schema.form_id,
+    );
+    b.build()
+}
+
+fn check_ref_slots(
+    schema: &schema::QuestionAddRefSchema,
+    pkg: &[u8],
+    pending_qids: &[u16],
+) -> Result<(), HiiError> {
+    let slots = values::scan_question_slots(pkg);
+    if slots.iter().any(|s| s.question_id == schema.question_id) {
+        return Err(HiiError::InvalidSchema(format!(
+            "question id {:#x} already exists in the formset",
+            schema.question_id
+        )));
+    }
+    if pending_qids.contains(&schema.question_id) {
+        return Err(HiiError::InvalidSchema(format!(
+            "question id {:#x} duplicates an earlier question in the same request",
+            schema.question_id
+        )));
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+pub struct AddRefResult {
+    pub question_id: u16,
+    pub string_ids: HashMap<String, u16>,
+}
+
+#[tracing::instrument(level = "debug", skip(image, schema), fields(item_id = %item_id), err)]
+pub fn add_ref(
+    image: &mut Image,
+    item_id: &str,
+    schema: &schema::QuestionAddRefSchema,
+) -> Result<AddRefResult, HiiError> {
+    if image.mode != ImageMode::Write {
+        return Err(HiiError::NotWritable);
+    }
+    let qt = resolve_question_target(image, item_id)?;
+    let path = resolve_writable_path(image, &qt.target)?;
+    let sd_path = ami_patcher::discover_pfs_payload_path(image)?;
+    let spf_plan = {
+        let body = node_at(&image.root, &sd_path).body.clone();
+        plan_spf_append(
+            &body,
+            &qt.pkg,
+            qt.span.form_op as u32,
+            qt.span.next_form_op as u32,
+            qt.form_id,
+        )?
+    };
+    check_ref_slots(schema, &qt.pkg, &[])?;
+
+    let mut strings: Vec<String> = vec![schema.prompt.clone(), schema.help.clone()];
+    strings.dedup();
+    preflight_question_splice(
+        image,
+        &qt.target,
+        qt.bare_channel,
+        qt.form_id,
+        build_ref_ops(schema, 0, 0).len(),
+        &strings,
+    )?;
+    let string_ids = if qt.bare_channel {
+        let owner = form_add::owner_guid_by_path(&image.root, &path);
+        string_pack::add_strings(image, owner.as_ref(), &strings)?
+    } else {
+        let node = crate::parser::target::find_item_mut(&mut image.root, &qt.target)
+            .map_err(|_| HiiError::NotFound)?;
+        match string_pack::add_strings_to_resource(&mut node.body, &strings) {
+            Ok(ids) => ids,
+            Err(string_pack::AddStringsToResourceError::NotFound) => {
+                return Err(HiiError::StringPackageNotFound);
+            }
+            Err(string_pack::AddStringsToResourceError::GrowthUnsupported) => {
+                return Err(HiiError::PeGrowthUnsupported);
+            }
+        }
+    };
+
+    let prompt_id = *string_ids.get(&schema.prompt).ok_or(HiiError::InvalidIfr)?;
+    let help_id = *string_ids.get(&schema.help).ok_or(HiiError::InvalidIfr)?;
+    let ops = build_ref_ops(schema, prompt_id, help_id);
+    let (insert_at, delta) = {
+        let node = crate::parser::target::find_item_mut(&mut image.root, &qt.target)
+            .map_err(|_| HiiError::NotFound)?;
+        if qt.bare_channel {
+            ifr::splice_question_ops(&mut node.body, 0, qt.form_id, &ops)?
+        } else {
+            splice_question_ops_into_resource(&mut node.body, qt.form_id, &ops)?
+        }
+    };
+    ops::mark_rebuild_to_root_by_path(&mut image.root, &path);
+
+    {
+        let node = node_at_mut(&mut image.root, &sd_path);
+        apply_spf_ifr_fixup(&mut node.body, &spf_plan, insert_at as u32, delta as u32);
+    }
+    ops::mark_rebuild_to_root_by_path(&mut image.root, &sd_path);
+    tracing::debug!(question_id = schema.question_id, insert_at, "add_ref done");
+    Ok(AddRefResult {
+        question_id: schema.question_id,
+        string_ids,
+    })
+}
+
+pub fn check_ref_add(
+    image: &Image,
+    item_id: &str,
+    refs: &[schema::QuestionAddRefSchema],
+    question_qids: &[u16],
+) -> Result<(), HiiError> {
+    if image.mode != ImageMode::Write {
+        return Err(HiiError::NotWritable);
+    }
+    let qt = resolve_question_target(image, item_id)?;
+    resolve_writable_path(image, &qt.target)?;
+    let sd_path = ami_patcher::discover_pfs_payload_path(image)?;
+    {
+        let body = node_at(&image.root, &sd_path).body.clone();
+        plan_spf_append(
+            &body,
+            &qt.pkg,
+            qt.span.form_op as u32,
+            qt.span.next_form_op as u32,
+            qt.form_id,
+        )?;
+    }
+    let mut pending: Vec<u16> = question_qids.to_vec();
+    for schema in refs {
+        check_ref_slots(schema, &qt.pkg, &pending)?;
+        let mut strings: Vec<String> = vec![schema.prompt.clone(), schema.help.clone()];
+        strings.dedup();
+        preflight_question_splice(
+            image,
+            &qt.target,
+            qt.bare_channel,
+            qt.form_id,
+            build_ref_ops(schema, 0, 0).len(),
+            &strings,
+        )?;
+        pending.push(schema.question_id);
+    }
+    Ok(())
+}
+
+fn spf_page_registration_slot(body: &[u8], form_id: u16) -> Result<u16, HiiError> {
+    let base = spf::container_start(body).ok_or(HiiError::NotFound)?;
+    let count_at = base + spf::SPF_PAGE_COUNT_OFFSET;
+    let count_bytes = body.get(count_at..count_at + 4).ok_or(HiiError::NotFound)?;
+    let count = u32::from_le_bytes(count_bytes.try_into().unwrap());
+    for slot in 0..count as usize {
+        let at = base + spf::SPF_PAGE_TABLE_OFFSET + 4 * slot;
+        let Some(slot_bytes) = body.get(at..at + 4) else {
+            break;
+        };
+        let off = u32::from_le_bytes(slot_bytes.try_into().unwrap()) as usize;
+        if off == 0 {
+            continue;
+        }
+        let fid_at = base + off + spf::SPF_PAGE_FORM_ID_OFFSET;
+        if let Some(fb) = body.get(fid_at..fid_at + 2)
+            && u16::from_le_bytes(fb.try_into().unwrap()) == form_id
+        {
+            return Err(HiiError::InvalidSchema(format!(
+                "page {form_id} is already registered in the $SPF page table"
+            )));
+        }
+    }
+    let gap_at = base + spf::SPF_PAGE_TABLE_OFFSET + 4 * count as usize;
+    let gap = body.get(gap_at..gap_at + 4).ok_or(HiiError::NotFound)?;
+    if u32::from_le_bytes(gap.try_into().unwrap()) != 0 {
+        return Err(HiiError::InvalidSchema("page table gap occupied".into()));
+    }
+    Ok(count as u16)
+}
+
+#[derive(Debug)]
+pub struct AddPageResult {
+    pub form_id: u16,
+    pub slot: usize,
+    pub page_offset: usize,
+    pub title_string_id: u16,
+}
+
+#[tracing::instrument(level = "debug", skip(image, schema), fields(item_id = %item_id), err)]
+pub fn add_page(
+    image: &mut Image,
+    item_id: &str,
+    schema: &schema::PageAddSchema,
+) -> Result<AddPageResult, HiiError> {
+    if image.mode != ImageMode::Write {
+        return Err(HiiError::NotWritable);
+    }
+    if schema.title.is_empty() {
+        return Err(HiiError::InvalidSchema("title must not be empty".into()));
+    }
+    let qt = resolve_question_target(image, item_id)?;
+    let path = resolve_writable_path(image, &qt.target)?;
+    let sd_path = ami_patcher::discover_pfs_payload_path(image)?;
+    let spf_plan = {
+        let body = node_at(&image.root, &sd_path).body.clone();
+        plan_spf_append(
+            &body,
+            &qt.pkg,
+            qt.span.form_op as u32,
+            qt.span.next_form_op as u32,
+            qt.form_id,
+        )?
+    };
+    let seq = {
+        let node = node_at(&image.root, &sd_path);
+        spf_page_registration_slot(&node.body, schema.form_id)?
+    };
+
+    let strings = vec![schema.title.clone()];
+    let string_ids = if qt.bare_channel {
+        let owner = form_add::owner_guid_by_path(&image.root, &path);
+        string_pack::add_strings(image, owner.as_ref(), &strings)?
+    } else {
+        let node = crate::parser::target::find_item_mut(&mut image.root, &qt.target)
+            .map_err(|_| HiiError::NotFound)?;
+        match string_pack::add_strings_to_resource(&mut node.body, &strings) {
+            Ok(ids) => ids,
+            Err(string_pack::AddStringsToResourceError::NotFound) => {
+                return Err(HiiError::StringPackageNotFound);
+            }
+            Err(string_pack::AddStringsToResourceError::GrowthUnsupported) => {
+                return Err(HiiError::PeGrowthUnsupported);
+            }
+        }
+    };
+    let title_id = *string_ids.get(&schema.title).ok_or(HiiError::InvalidIfr)?;
+    ops::mark_rebuild_to_root_by_path(&mut image.root, &path);
+
+    let (slot, page_offset) = {
+        let node = node_at_mut(&mut image.root, &sd_path);
+        let skeleton = spf::append_page_skeleton(
+            &mut node.body,
+            spf_plan.page_offset,
+            schema.form_id,
+            title_id,
+            seq,
+            spf_plan.page_slot as u16,
+        );
+        let slot = spf::register_page_slot(&mut node.body, skeleton)
+            .ok_or_else(|| HiiError::InvalidSchema("page table gap occupied".into()))?;
+        let base = spf::container_start(&node.body).expect("$SPF survives appends");
+        let new_len = node.body.len() - base;
+        spf::bump_container_length(&mut node.body, new_len);
+        (slot, skeleton)
+    };
+    ops::mark_rebuild_to_root_by_path(&mut image.root, &sd_path);
+    tracing::debug!(form_id = schema.form_id, slot, "add_page done");
+    Ok(AddPageResult {
+        form_id: schema.form_id,
+        slot,
+        page_offset,
+        title_string_id: title_id,
+    })
 }
 
 #[cfg(test)]
@@ -3319,6 +3596,658 @@ mod tests {
                 before,
                 "check must not mutate the image"
             );
+        }
+
+        mod ref_add_tests {
+            use super::*;
+            use crate::hii::ifr_builder::{OP_END, OP_REF};
+
+            fn ref_add_schema(qid: u16, dest_form: u16) -> schema::QuestionAddRefSchema {
+                schema::QuestionAddRefSchema {
+                    form_id: dest_form,
+                    prompt: "Goto Page".into(),
+                    help: "Goto Page help".into(),
+                    question_id: qid,
+                }
+            }
+
+            fn find_ref_op(pkg: &[u8], form_id: u16) -> Option<usize> {
+                let span = crate::hii::form_hijack::locate_form(pkg, form_id)?;
+                let mut i = span.form_op;
+                while i + 2 <= span.next_form_op {
+                    let len = (pkg[i + 1] & 0x7F) as usize;
+                    if len < 2 {
+                        return None;
+                    }
+                    if pkg[i] == OP_REF {
+                        return Some(i);
+                    }
+                    i += len;
+                }
+                None
+            }
+
+            fn pkg_u16(pkg: &[u8], off: usize) -> u16 {
+                u16::from_le_bytes([pkg[off], pkg[off + 1]])
+            }
+
+            fn scope_balance(pkg: &[u8]) -> i32 {
+                let mut bal = 0i32;
+                let mut i = 4;
+                while i + 2 <= pkg.len() {
+                    let len = (pkg[i + 1] & 0x7F) as usize;
+                    if len < 2 {
+                        break;
+                    }
+                    if pkg[i] == OP_END {
+                        bal -= 1;
+                    } else if pkg[i + 1] & 0x80 != 0 {
+                        bal += 1;
+                    }
+                    i += len;
+                }
+                bal
+            }
+
+            #[test]
+            fn add_ref_inserts_goto_before_form_end() {
+                let (flash, pkg_before, _) = question_add_flash_image();
+                let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+                let res =
+                    add_ref(&mut img, ITEM_FORM, &ref_add_schema(0x300, 10020)).expect("add ref");
+                assert_eq!(res.question_id, 0x300);
+                let prompt_id = *res.string_ids.get("Goto Page").unwrap();
+                let help_id = *res.string_ids.get("Goto Page help").unwrap();
+                assert_ne!(prompt_id, help_id);
+
+                let pkg_after = pkg_of(&img, "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x10:0");
+                assert_eq!(pkg_after.len() - pkg_before.len(), 15);
+                assert_eq!(
+                    scope_balance(&pkg_after),
+                    scope_balance(&pkg_before),
+                    "REF is not a scope op: the splice must not change the IFR scope balance"
+                );
+                let r = find_ref_op(&pkg_after, 10019).expect("REF op in form 10019");
+                assert_eq!(pkg_after[r + 1] & 0x7F, 15, "REF op total length is 15");
+                assert_eq!(pkg_u16(&pkg_after, r + 13), 10020, "FormId at +13");
+                assert_eq!(pkg_u16(&pkg_after, r + 6), 0x300, "qid at +6");
+                assert_eq!(pkg_u16(&pkg_after, r + 2), prompt_id, "prompt at +2");
+                assert_eq!(pkg_u16(&pkg_after, r + 4), help_id, "help at +4");
+                assert_eq!(pkg_u16(&pkg_after, r + 8), 0, "var store id is zero");
+                assert_eq!(
+                    pkg_u16(&pkg_after, r + 10),
+                    0xFFFF,
+                    "var offset carries the stock no-storage sentinel (all 31 stock REFs: 0xFFFF)"
+                );
+                assert_eq!(
+                    pkg_after[r + 15],
+                    OP_END,
+                    "REF must sit directly before the form END op"
+                );
+            }
+
+            #[test]
+            fn add_ref_fixups_spf_ifr_offsets_without_appends() {
+                let (flash, pkg_before, spf_before) = question_add_flash_image();
+                let rec0_before = spf::scan_question_records(&spf_before)
+                    .into_iter()
+                    .find(|r| r.question_id == 0x3B)
+                    .unwrap();
+                let rec1_before = spf::scan_question_records(&spf_before)
+                    .into_iter()
+                    .find(|r| r.question_id == 0x55)
+                    .unwrap();
+                let foreign_before = spf::scan_question_records(&spf_before)
+                    .into_iter()
+                    .find(|r| r.question_id == 0x66)
+                    .unwrap();
+                let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+                add_ref(&mut img, ITEM_FORM, &ref_add_schema(0x300, 10020)).expect("add ref");
+
+                let spf_after = spf_leaf_of(&img).to_vec();
+                assert_eq!(spf_after.len(), spf_before.len(), "no container growth");
+                let base_before = spf::container_start(&spf_before).unwrap();
+                let base_after = spf::container_start(&spf_after).unwrap();
+                assert_eq!(base_after, base_before);
+                assert_eq!(
+                    rec_u32(&spf_after, base_after, 0x5C),
+                    rec_u32(&spf_before, base_before, 0x5C),
+                    "container length header must stay untouched"
+                );
+                assert_eq!(
+                    rec_u32(&spf_after, base_after, spf::SPF_PAGE_COUNT_OFFSET),
+                    rec_u32(&spf_before, base_before, spf::SPF_PAGE_COUNT_OFFSET),
+                    "page count must stay untouched"
+                );
+                assert_eq!(
+                    spf::scan_question_records(&spf_after).len(),
+                    spf::scan_question_records(&spf_before).len(),
+                    "no new question records"
+                );
+                assert!(
+                    !spf::scan_question_records(&spf_after)
+                        .iter()
+                        .any(|r| r.question_id == 0x300),
+                    "the REF must not gain a $SPF record"
+                );
+                assert_eq!(
+                    spf::scan_string_controls(&spf_after).len(),
+                    spf::scan_string_controls(&spf_before).len(),
+                    "no new string controls"
+                );
+
+                let delta = pkg_of(&img, "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x10:0").len()
+                    - pkg_before.len();
+                assert_eq!(delta, 15);
+                let recs_after = spf::scan_question_records(&spf_after);
+                let rec0_after = recs_after.iter().find(|r| r.question_id == 0x3B).unwrap();
+                assert_eq!(
+                    rec0_after.ifr_offset, rec0_before.ifr_offset,
+                    "record below the splice point must not shift"
+                );
+                let rec1_after = recs_after.iter().find(|r| r.question_id == 0x55).unwrap();
+                assert_eq!(
+                    rec1_after.ifr_offset,
+                    rec1_before.ifr_offset + delta as u32,
+                    "record above the splice point must shift by delta"
+                );
+                let foreign_after = recs_after.iter().find(|r| r.question_id == 0x66).unwrap();
+                assert_eq!(foreign_after.offset, foreign_before.offset);
+                assert_eq!(foreign_after.ifr_offset, foreign_before.ifr_offset);
+
+                let shifted_at = rec1_before.offset + spf::SPF_RECORD_IFR_OFFSET;
+                let mut expected_spf = spf_before.clone();
+                let shifted: [u8; 4] = (rec1_before.ifr_offset + delta as u32).to_le_bytes();
+                expected_spf[shifted_at..shifted_at + 4].copy_from_slice(&shifted);
+                assert_eq!(
+                    spf_after, expected_spf,
+                    "only the shifted ifr_offset u32 may differ"
+                );
+                assert_eq!(
+                    rec_u32(&spf_after, rec1_after.offset, spf::SPF_RECORD_IFR_OFFSET),
+                    rec1_before.ifr_offset + delta as u32
+                );
+            }
+
+            #[test]
+            fn add_ref_rejects_duplicate_qids_without_mutation() {
+                let (flash, _, _) = question_add_flash_image();
+                let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+                let before = build_image(&img).unwrap();
+                let err = add_ref(&mut img, ITEM_FORM, &ref_add_schema(0x3B, 10020)).unwrap_err();
+                assert!(matches!(err, HiiError::InvalidSchema(_)), "got {err:?}");
+                let dup_in_request =
+                    vec![ref_add_schema(0x300, 10020), ref_add_schema(0x300, 10019)];
+                assert!(
+                    matches!(
+                        check_ref_add(&img, ITEM_FORM, &dup_in_request, &[]).unwrap_err(),
+                        HiiError::InvalidSchema(_)
+                    ),
+                    "intra-request duplicate ref qid must be rejected"
+                );
+                let clash_with_question = vec![ref_add_schema(0x200, 10020)];
+                assert!(
+                    matches!(
+                        check_ref_add(&img, ITEM_FORM, &clash_with_question, &[0x200]).unwrap_err(),
+                        HiiError::InvalidSchema(_)
+                    ),
+                    "ref qid clashing with a question from the same request must be rejected"
+                );
+                assert_eq!(
+                    build_image(&img).unwrap(),
+                    before,
+                    "rejections must not mutate the image"
+                );
+            }
+
+            #[test]
+            fn add_ref_refuses_read_only_mode() {
+                let (flash, _, _) = question_add_flash_image();
+                let mut img = parse_image(&flash, ImageMode::Read, "i", "s").unwrap();
+                let err = add_ref(&mut img, ITEM_FORM, &ref_add_schema(0x300, 10020)).unwrap_err();
+                assert!(matches!(err, HiiError::NotWritable), "got {err:?}");
+                let err = check_ref_add(&img, ITEM_FORM, &[ref_add_schema(0x300, 10020)], &[])
+                    .unwrap_err();
+                assert!(matches!(err, HiiError::NotWritable), "got {err:?}");
+            }
+
+            #[test]
+            fn add_ref_allows_dangling_destination_form() {
+                let (flash, _, _) = question_add_flash_image();
+                let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+                let res = add_ref(&mut img, ITEM_FORM, &ref_add_schema(0x300, 10099))
+                    .expect("destination existence is the caller's contract");
+                assert_eq!(res.question_id, 0x300);
+                let pkg_after = pkg_of(&img, "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x10:0");
+                let r = find_ref_op(&pkg_after, 10019).expect("REF op in form 10019");
+                assert_eq!(pkg_u16(&pkg_after, r + 13), 10099);
+                assert!(
+                    crate::hii::form_hijack::locate_form(&pkg_after, 10099).is_none(),
+                    "fixture must not contain the dangling destination"
+                );
+            }
+        }
+
+        mod page_add_tests {
+            use super::*;
+
+            fn page_add_schema(form_id: u16) -> schema::PageAddSchema {
+                schema::PageAddSchema {
+                    form_id,
+                    title: "New Page".into(),
+                }
+            }
+
+            #[test]
+            fn add_page_registers_skeleton_from_parent_clone() {
+                let (flash, _, spf_before) = question_add_flash_image();
+                let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+                let res = add_page(&mut img, ITEM_FORM, &page_add_schema(10021)).expect("add page");
+                assert_eq!(res.form_id, 10021);
+                assert_eq!(res.slot, 1, "seq = page count read before the bump");
+                let spf_after = spf_leaf_of(&img).to_vec();
+                let base = spf::container_start(&spf_after).unwrap();
+                assert_eq!(
+                    rec_u32(&spf_after, base, spf::SPF_PAGE_COUNT_OFFSET),
+                    rec_u32(&spf_before, base, spf::SPF_PAGE_COUNT_OFFSET) + 1,
+                    "page count must grow by exactly one"
+                );
+                assert_eq!(
+                    rec_u32(&spf_after, base, spf::SPF_PAGE_TABLE_OFFSET + 4 * res.slot) as usize,
+                    res.page_offset,
+                    "the new slot must contain the skeleton offset"
+                );
+                assert_eq!(res.page_offset, spf_before.len() - base);
+                let page = base + res.page_offset;
+                assert_eq!(
+                    rec_u16(&spf_after, page, spf::SPF_PAGE_FORM_ID_OFFSET),
+                    10021
+                );
+                assert_eq!(
+                    rec_u16(&spf_after, page, spf::SPF_PAGE_TITLE_ID_OFFSET),
+                    res.title_string_id
+                );
+                assert_eq!(rec_u16(&spf_after, page, spf::SPF_PAGE_SEQ_OFFSET), 1);
+                assert_eq!(
+                    rec_u16(&spf_after, page, spf::SPF_PAGE_PARENT_OFFSET),
+                    0,
+                    "B = parent page slot"
+                );
+                assert_eq!(rec_u32(&spf_after, page, spf::SPF_PAGE_CNT_OFFSET), 0);
+                let parent_abs =
+                    base + rec_u32(&spf_before, base, spf::SPF_PAGE_TABLE_OFFSET) as usize;
+                assert_eq!(
+                    spf_after[page + spf::SPF_PAGE_MARKER_OFFSET],
+                    spf_before[parent_abs + spf::SPF_PAGE_MARKER_OFFSET],
+                    "marker must be cloned from the parent page"
+                );
+                assert_eq!(
+                    rec_u32(&spf_after, page, spf::SPF_PAGE_IMAGE_OFFSET),
+                    rec_u32(&spf_before, parent_abs, spf::SPF_PAGE_IMAGE_OFFSET),
+                    "image offset must be cloned from the parent page"
+                );
+                let patched = |i: usize| {
+                    (spf::SPF_PAGE_FORM_ID_OFFSET..spf::SPF_PAGE_FORM_ID_OFFSET + 2).contains(&i)
+                        || (spf::SPF_PAGE_TITLE_ID_OFFSET..spf::SPF_PAGE_PARENT_OFFSET + 2)
+                            .contains(&i)
+                        || (spf::SPF_PAGE_CNT_OFFSET..spf::SPF_PAGE_HEADER_SIZE).contains(&i)
+                };
+                for i in 0..spf::SPF_PAGE_HEADER_SIZE {
+                    if !patched(i) {
+                        assert_eq!(
+                            spf_after[page + i],
+                            spf_before[parent_abs + i],
+                            "skeleton byte {i:#x} must be cloned from the parent header"
+                        );
+                    }
+                }
+                assert_eq!(
+                    rec_u32(&spf_after, parent_abs, 0) as usize,
+                    res.page_offset,
+                    "the zero prefix of the parent page doubles as table slot 1 in this fixture geometry"
+                );
+                assert_eq!(
+                    &spf_after[parent_abs + 4..parent_abs + spf::SPF_PAGE_HEADER_SIZE + 4],
+                    &spf_before[parent_abs + 4..parent_abs + spf::SPF_PAGE_HEADER_SIZE + 4],
+                    "the parent page past the table-slot prefix must stay byte-identical"
+                );
+                assert_eq!(spf_after.len(), spf_before.len() + 0x20);
+                assert_eq!(
+                    rec_u32(&spf_after, base, 0x5C),
+                    (spf_after.len() - base) as u32,
+                    "the header-region last length must track the grown container"
+                );
+            }
+
+            #[test]
+            fn add_page_survives_rebuild_and_duplicate_is_rejected() {
+                let (flash, _, _) = question_add_flash_image();
+                let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+                let res = add_page(&mut img, ITEM_FORM, &page_add_schema(10021)).expect("add page");
+                let built = build_image(&img).unwrap();
+                let mut re = parse_image(&built, ImageMode::Write, "i2", "s2").unwrap();
+                let spf_re = spf_leaf_of(&re).to_vec();
+                let base = spf::container_start(&spf_re).unwrap();
+                assert_eq!(
+                    rec_u32(&spf_re, base, spf::SPF_PAGE_COUNT_OFFSET),
+                    2,
+                    "the registration must survive the rebuild"
+                );
+                let slot1 = rec_u32(&spf_re, base, spf::SPF_PAGE_TABLE_OFFSET + 4) as usize;
+                assert_eq!(slot1, res.page_offset);
+                assert_eq!(
+                    rec_u16(&spf_re, base + slot1, spf::SPF_PAGE_FORM_ID_OFFSET),
+                    10021
+                );
+                let strings = crate::hii::strings::collect_strings(&re);
+                assert!(
+                    strings
+                        .iter()
+                        .any(|s| s.string_id == u32::from(res.title_string_id)
+                            && s.text == "New Page"),
+                    "the page title string must resolve after the rebuild"
+                );
+                let err = add_page(&mut re, ITEM_FORM, &page_add_schema(10021)).unwrap_err();
+                assert!(
+                    matches!(err, HiiError::InvalidSchema(_)),
+                    "duplicate registration must be rejected, got {err:?}"
+                );
+            }
+
+            #[test]
+            fn add_page_rejects_empty_title_without_mutation() {
+                let (flash, _, _) = question_add_flash_image();
+                let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+                let schema = schema::PageAddSchema {
+                    form_id: 10021,
+                    title: String::new(),
+                };
+                let err = add_page(&mut img, ITEM_FORM, &schema).unwrap_err();
+                assert!(matches!(err, HiiError::InvalidSchema(_)), "got {err:?}");
+                assert_eq!(
+                    build_image(&img).unwrap(),
+                    flash,
+                    "rejection must not mutate the image"
+                );
+            }
+        }
+
+        mod form_varstore_tests {
+            use super::*;
+            use crate::hii::form_add::add_form;
+
+            const ITEM_FORMSET: &str = "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x10:0";
+            const ITEM_FORMSET_BARE: &str = "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:0";
+
+            fn varstore_form_schema() -> schema::FormSetSchema {
+                schema::FormSetSchema {
+                    formset_guid: "11111111-2222-3333-4444-555555555555".into(),
+                    title: "T".into(),
+                    help: "H".into(),
+                    class_guids: vec![],
+                    varstores: vec![schema::VarStoreSchema {
+                        id: 7,
+                        guid: "22222222-3333-4444-5555-666666666666".into(),
+                        size: 64,
+                        name: "VStore".into(),
+                        var_type: schema::VarStoreType::Buffer,
+                    }],
+                    default_stores: vec![],
+                    forms: vec![schema::FormSchema {
+                        id: 42,
+                        title: "NewForm".into(),
+                        items: vec![schema::ItemSchema::Text(schema::TextItem {
+                            prompt: "P".into(),
+                            help: "H".into(),
+                            text_two: "X".into(),
+                        })],
+                    }],
+                    setupdata_guid: None,
+                    amitse_guid: None,
+                }
+            }
+
+            fn varstore_op_len(pkg: &[u8]) -> usize {
+                let at = pkg
+                    .windows(6)
+                    .position(|w| w == b"VStore")
+                    .expect("varstore name in the forms package");
+                (pkg[at - 22 + 1] & 0x7F) as usize
+            }
+
+            #[test]
+            fn add_form_varstore_declaration_fixups_spf_ifr_offsets() {
+                let (flash, pkg_before, spf_before) = question_add_flash_image();
+                let before_recs = spf::scan_question_records(&spf_before);
+                let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+                add_form(&mut img, ITEM_FORMSET, &varstore_form_schema())
+                    .expect("form add with a varstore declaration");
+
+                let pkg_after = pkg_of(&img, ITEM_FORMSET);
+                let spf_after = spf_leaf_of(&img).to_vec();
+                assert_eq!(
+                    spf_after.len(),
+                    spf_before.len(),
+                    "the fixup must not grow the $SPF container"
+                );
+                let delta = varstore_op_len(&pkg_after);
+                assert!(delta > 0);
+
+                let mut expected_spf = spf_before.clone();
+                let mut live = 0usize;
+                for b in &before_recs {
+                    if !spf_record_resolves(&pkg_before, b.question_id, b.ifr_offset) {
+                        continue;
+                    }
+                    live += 1;
+                    let at = b.offset + spf::SPF_RECORD_IFR_OFFSET;
+                    let shifted: [u8; 4] = (b.ifr_offset + delta as u32).to_le_bytes();
+                    expected_spf[at..at + 4].copy_from_slice(&shifted);
+                }
+                assert_eq!(
+                    live, 2,
+                    "the fixture carries exactly two live records (q0x3B, q0x55)"
+                );
+                assert_eq!(
+                    spf_after, expected_spf,
+                    "round-11 invariant: only the live records' ifr_offset u32s may differ after the varstore insert"
+                );
+                for b in &before_recs {
+                    if !spf_record_resolves(&pkg_before, b.question_id, b.ifr_offset) {
+                        continue;
+                    }
+                    let a = spf::scan_question_records(&spf_after)
+                        .into_iter()
+                        .find(|r| r.question_id == b.question_id)
+                        .expect("stock live record must survive the form add");
+                    assert!(
+                        spf_record_resolves(&pkg_after, a.question_id, a.ifr_offset),
+                        "record q{:#x} must resolve to its own question op after the varstore insert",
+                        a.question_id
+                    );
+                }
+            }
+
+            #[test]
+            fn add_form_varstore_declaration_fixups_spf_ifr_offsets_bare() {
+                let (flash, pkg_before, spf_before) = question_add_bare_flash_image();
+                let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+                add_form(&mut img, ITEM_FORMSET_BARE, &varstore_form_schema())
+                    .expect("form add with a varstore declaration (bare channel)");
+
+                let t = crate::parser::target::parse_target(ITEM_FORMSET_BARE).unwrap();
+                let pkg_after = crate::parser::target::find_item(&img.root, &t)
+                    .unwrap()
+                    .body
+                    .clone();
+                let spf_after = spf_leaf_of(&img).to_vec();
+                let delta = varstore_op_len(&pkg_after);
+                let mut live = 0usize;
+                for b in spf::scan_question_records(&spf_before) {
+                    if !spf_record_resolves(&pkg_before, b.question_id, b.ifr_offset) {
+                        continue;
+                    }
+                    live += 1;
+                    let a = spf::scan_question_records(&spf_after)
+                        .into_iter()
+                        .find(|r| r.question_id == b.question_id)
+                        .unwrap();
+                    assert_eq!(
+                        a.ifr_offset,
+                        b.ifr_offset + delta as u32,
+                        "bare channel must shift live record q{:#x} by the varstore length",
+                        b.question_id
+                    );
+                    assert!(spf_record_resolves(&pkg_after, a.question_id, a.ifr_offset));
+                }
+                assert_eq!(live, 2);
+            }
+
+            #[test]
+            fn add_form_varstore_fixups_records_in_later_formsets() {
+                use crate::hii::form_hijack::test_fixtures::{
+                    ffs_file_bytes, file_sections, flash_with_files, section_bytes,
+                    string_package_bytes,
+                };
+                use crate::hii::ifr_builder::{IfrBuilder, TYPE_NUM_SIZE_8};
+
+                let mut b = IfrBuilder::new();
+                let g1 = Guid::from_str("A1B2C3D4-E5F6-7890-ABCD-EF1234567890").unwrap();
+                let g2 = Guid::from_str("B1B2C3D4-E5F6-7890-ABCD-EF1234567890").unwrap();
+                b.emit_form_set(&g1, 1, 1, &[]);
+                b.emit_var_store(1, &g1, 0x100, "Setup");
+                b.emit_form(10019, 1);
+                b.emit_one_of(0x01A3, 0x01A4, 0x3B, 1, 0x3A, 0, 1);
+                b.emit_one_of_option(4, 0x30, TYPE_NUM_SIZE_8, 0, 1);
+                b.emit_end();
+                b.emit_end();
+                b.emit_end();
+                b.emit_form_set(&g2, 2, 2, &[]);
+                b.emit_form(10020, 2);
+                b.emit_one_of(0x01A5, 0x01A6, 0x55, 1, 0x40, 0, 1);
+                b.emit_one_of_option(5, 0x00, TYPE_NUM_SIZE_8, 0, 1);
+                b.emit_end();
+                b.emit_end();
+                b.emit_end();
+                let ifr = b.build();
+                let mut pkg = vec![0u8; 4];
+                let len = 4 + ifr.len() as u32;
+                pkg[0] = (len & 0xFF) as u8;
+                pkg[1] = ((len >> 8) & 0xFF) as u8;
+                pkg[2] = ((len >> 16) & 0xFF) as u8;
+                pkg[3] = r_efi::hii::PACKAGE_FORMS;
+                pkg.extend_from_slice(&ifr);
+
+                let spf_body = question_add_spf_body_for(&pkg);
+                let before = spf::scan_question_records(&spf_body);
+                let flash = flash_with_files(vec![
+                    ffs_file_bytes(
+                        &Guid::from_str("5C60F367-A505-419A-859E-2A4FF6CA6FE5").unwrap(),
+                        &file_sections(&[
+                            section_bytes(crate::ffs::EFI_SECTION_RAW, &pkg),
+                            section_bytes(crate::ffs::EFI_SECTION_RAW, &string_package_bytes()),
+                        ]),
+                    ),
+                    sd_file_direct(&spf_body),
+                ]);
+                let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+                add_form(
+                    &mut img,
+                    "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:0#0",
+                    &varstore_form_schema(),
+                )
+                .expect("form add into formset 0");
+
+                let t = crate::parser::target::parse_target(ITEM_FORMSET_BARE).unwrap();
+                let pkg_after = crate::parser::target::find_item(&img.root, &t)
+                    .unwrap()
+                    .body
+                    .clone();
+                let spf_after = spf_leaf_of(&img).to_vec();
+                let v = varstore_op_len(&pkg_after) as u32;
+                let f = (pkg_after.len() - pkg.len() - v as usize) as u32;
+                assert!(f > 0);
+
+                let after = spf::scan_question_records(&spf_after);
+                let b0 = before.iter().find(|r| r.question_id == 0x3B).unwrap();
+                let b1 = before.iter().find(|r| r.question_id == 0x55).unwrap();
+                let a0 = after.iter().find(|r| r.question_id == 0x3B).unwrap();
+                let a1 = after.iter().find(|r| r.question_id == 0x55).unwrap();
+                assert_eq!(
+                    a0.ifr_offset,
+                    b0.ifr_offset + v,
+                    "records inside the targeted formset shift by the varstore length only"
+                );
+                assert_eq!(
+                    a1.ifr_offset,
+                    b1.ifr_offset + v + f,
+                    "records in later formsets shift by varstore + form lengths"
+                );
+                assert!(spf_record_resolves(
+                    &pkg_after,
+                    a0.question_id,
+                    a0.ifr_offset
+                ));
+                assert!(spf_record_resolves(
+                    &pkg_after,
+                    a1.question_id,
+                    a1.ifr_offset
+                ));
+            }
+
+            #[test]
+            fn add_form_varstores_refuse_when_spf_behind_bad_wrapper() {
+                let pkg = question_add_forms_pkg();
+                let spf_body = question_add_spf_body_for(&pkg);
+                let mk = |node_type: FfsType, body: Vec<u8>, children: Vec<FfsNode>| FfsNode {
+                    guid: None,
+                    node_type,
+                    subtype: 0,
+                    offset: 0,
+                    header: vec![],
+                    body,
+                    tail: vec![],
+                    children,
+                    action: Action::NoAction,
+                    parsing_data: ParsingData::None,
+                    fixed: false,
+                    compressed: false,
+                    alignment_bytes: vec![],
+                };
+                let mut forms_sec = mk(FfsType::Section, pkg.clone(), vec![]);
+                forms_sec.subtype = crate::ffs::EFI_SECTION_RAW;
+                let mut setup_file = mk(FfsType::File, vec![], vec![forms_sec]);
+                setup_file.guid =
+                    Some(Guid::from_str("5C60F367-A505-419A-859E-2A4FF6CA6FE5").unwrap());
+                let mut spf_sec = mk(FfsType::Section, spf_body, vec![]);
+                spf_sec.subtype = crate::ffs::EFI_SECTION_FREEFORM_SUBTYPE_GUID;
+                let mut tiano = mk(FfsType::Section, vec![], vec![spf_sec]);
+                tiano.subtype = crate::ffs::EFI_SECTION_GUID_DEFINED;
+                tiano.parsing_data = ParsingData::GuidedSection(GuidedSectionParsingData {
+                    guid: crate::ffs::tiano_guid(),
+                    dictionary_size: 0x0080_0000,
+                });
+                let mut sd_file = mk(FfsType::File, vec![], vec![tiano]);
+                sd_file.guid = Some(Guid::from_str(SETUPDATA_GUID_STR).unwrap());
+                let volume = mk(FfsType::Volume, vec![], vec![setup_file, sd_file]);
+                let root = mk(FfsType::Image, vec![], vec![volume]);
+                let mut img = Image {
+                    image_id: "i".into(),
+                    session_id: "s".into(),
+                    root,
+                    mode: ImageMode::Write,
+                };
+
+                let err =
+                    add_form(&mut img, ITEM_FORMSET_BARE, &varstore_form_schema()).unwrap_err();
+                assert!(
+                    matches!(err, HiiError::MutationBehindCompression),
+                    "a reachable-but-blocked $SPF must refuse the varstore insert instead of desyncing it, got {err:?}"
+                );
+                let forms = &img.root.children[0].children[0].children[0];
+                assert_eq!(forms.body, pkg, "the forms package must stay untouched");
+                assert_eq!(forms.action, Action::NoAction);
+            }
         }
     }
 }
