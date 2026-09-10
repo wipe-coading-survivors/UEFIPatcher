@@ -25,8 +25,20 @@ pub async fn open(
     Ok(())
 }
 
-pub async fn switch(image_id: &str, _format: OutputFormat) -> Result<(), AppError> {
+pub async fn switch(
+    image_id: &str,
+    cli_sock: Option<&str>,
+    _format: OutputFormat,
+) -> Result<(), AppError> {
     let mut st = state::require_state()?;
+    let mut client = Client::connect(cli_sock, st.clone()).await?;
+    let images = client.images_list().await?;
+    if !images.iter().any(|i| i.image_id == image_id) {
+        return Err(AppError::new(
+            uefi_common::error::ErrKind::RpcNotFound,
+            format!("image {image_id} not found on server; see 'image list'"),
+        ));
+    }
     st.active_image_id = Some(image_id.into());
     state::write_state(&st)?;
     Ok(())
