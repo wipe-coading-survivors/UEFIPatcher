@@ -197,16 +197,22 @@
   титулы (cross-file id collision), не только пустые. Контекст: главный
   fidelity-риск фазы; real-image `#[ignore]` тесты фазы 5 — tripwire;
   если проявится — scoping карты per-file.
-* [ ] **hii/ifr: walker игнорирует заявленную длину пакета в header
+* [x] **hii/ifr: walker игнорирует заявленную длину пакета в header
   bytes 0..2** — идёт до `body.len()`; при теле с хвостовыми данными
   за пределами одного пакета возможен over-walk. Контекст: контракт
   «одно тело пакета на секцию» (как в фазе 3); worst case — spurious
   `None` → секция пропускается, не паника; усилить при находке на
   real-image тестах.
-* [ ] **hii/ifr: недостающие edge-тесты** — stray END на пустом стеке,
+  Закрыто: аудит 2026-09-10 — bounds (4, plen.min(len)) уже были во всех
+  walker'ах, кроме find_suppress_if_scopes (ходил до body.len());
+  переведён на общий package_bounds — цикл hii-walker-consistency.
+* [x] **hii/ifr: недостающие edge-тесты** — stray END на пустом стеке,
   `length < 2`, короткий IfrFormSet (`length` 2..23), nested-suppress
   порядок. Контекст: код-пути проверены ревью чтением (`Vec::pop` no-op,
   `length < 23 → None`), добавить тестами при касании.
+  Закрыто: добавлены (stray END, length<2, короткий IfrFormSet,
+  nested-порядок, tail за plen, 0x0A в payload) — цикл
+  hii-walker-consistency.
 * [ ] **план фазы 4: внутренняя несогласованность** — текст плана
   требует «reuse `guid_from_bytes`», а mandated-код использует
   `Guid::from_bytes` (реализация следовала коду). Контекст: семантически
@@ -1196,11 +1202,16 @@ atomic_write. После первой мутации хранимый файл �
   отказывает как unflippable вместо перепланировки в false. Контекст:
   решение брейнсторма u2 — строго E12-классы (hardware-validated);
   расширять при живом прецеденте.
-* [ ] **hii/ifr: quirk 0x8a не перенесён в легаси-walker'ы** — gates-walker
+* [x] **hii/ifr: quirk 0x8a не перенесён в легаси-walker'ы** — gates-walker
   маскирует vendor scope-bit (`len & 0x7F`, 0x0A→0x8A), легаси-обходчики
   `ifr.rs` — нет: на setup-модуле HNX99TF путь `set_item_visibility`
   (unsuppress) даёт no-op. Контекст: выровнять при следующем касании
   легаси-путей.
+  Закрыто: диагноз пересмотрен (аудит 2026-09-10) — маскирование & 0x7F
+  есть во всех walker'ах с ff1a5ab; реальные причины no-op: REF-гейт
+  родителя (семантика, территория gates/unlock) и баланс глубины
+  find_suppress_if_scopes (механика, исправлено); no-op стал явной
+  ошибкой NoSuppressScope — цикл hii-walker-consistency.
 * [ ] **FormInfo: поле «gated» для REF-гейтнутых форм** — форма, скрытая
   suppress-ом на REF из родительской формы, не видна в `hii form list`
   как гейтнутая (`visible` покрывает только собственные suppress-скоупы
@@ -1210,10 +1221,12 @@ atomic_write. После первой мутации хранимый файл �
   Read-режиме даёт NotFound вместо NotWritable (parse item_id идёт до
   проверки режима в `resolve_writable_path`). Контекст: `hii/mod.rs`;
   проверять режим до парсинга при следующем касании.
-* [ ] **hii/gates: decoder допускает ровно один мусорный байт после
+* [x] **hii/gates: decoder допускает ровно один мусорный байт после
   валидного префикса операндов** — exact-consumption check снят ради
   END-quirk (scoped expression operands). Контекст: захватить
   ограничение тестом; ужесточить, если появятся новые quirk'и.
+  Закрыто: зафиксирован парой тестов (1 байт терпится / 2 байта —
+  Other) — цикл hii-walker-consistency.
 * [x] **hii/gates: EqIdVal re-unlock — user-visible дефект отчётности** —
   повторный unlock уже-0xFFFF гейта планирует no-op флип (from==to==`ff ff`),
   который попадает в applied (CLI печатает «applied … ff ff -> ff ff»), а
@@ -1226,6 +1239,11 @@ atomic_write. После первой мутации хранимый файл �
   decode_expr (expr_offset/expr_end из живого обхода). Контекст: ввод
   уже wired, но приходит через guarded `find_gates`; захарденить при
   появлении иных источников Gate.
+* [ ] **hii: пересадка set_item_visibility на gates-слой** — REF-гейты
+  (скрытие suppress'ом вокруг REF в родительской форме) остаются территорией
+  unlock; расширение осознанно не вошло в цикл hii-walker-consistency
+  (спека §4): меняет класс мутации существующего RPC. Контекст: отдельный
+  мини-цикл при живом прецеденте.
 * [ ] **rpc/server hii_unlock: get_or_load_image-клон используется только
   для touch** — полный clone образа берётся ради `img.session_id`
   (`sm.touch`), мутация идёт через повторный lock `images.get_mut`.
@@ -1237,10 +1255,12 @@ atomic_write. После первой мутации хранимый файл �
 * [ ] **uefi-cli e2e: TSV-инвокация `hii form gates` ассертит только exit
   success** — содержимое колонок TSV не проверяется. Контекст: добавить
   content-ассерты stdout.
-* [ ] **hii: тест `gates_list_bare_channel…` выводит ожидаемый офсет флипа
+* [x] **hii: тест `gates_list_bare_channel…` выводит ожидаемый офсет флипа
   из тестируемого `scope_offset`** — точные офсеты закриплены только в
   unit-тестах gates.rs. Контекст: захардкодить ожидание в интеграционном
   тесте.
+  Закрыто: ожидания захардкожены (pkg+0x21/0x2f/0x52/0x58) +
+  мульти-пакетный PE-тест с base>0 — цикл hii-walker-consistency.
 * [ ] **hii unlock/gates_list: non-HII канал — Ok с пустым списком вместо
   NotASetupItem** — расхождение с таблицей ошибок §5 спеки
   (plan-sanctioned `unwrap_or_default` PE-resource-канала); безвредный
@@ -1951,12 +1971,14 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
 > Отложенные minors из per-task и финального ревью цикла (ветка
 > `fix/cycle6-reimplent`; v1+v5 закрыты выше).
 
-* [ ] **hii/gates: `question_storage_width` читает qflags@+12 вместо
+* [x] **hii/gates: `question_storage_width` читает qflags@+12 вместо
   numeric-flags@+13** — `hii/values.rs` (Task 1) следует r-efi-раскладке
   (numeric size-flags @+13), gates.rs читает байт вопросных флагов; для
   реального мастера 0x9A непокрыт (width-guard пропускает) — латентно,
   E12-тесты не задеты. Контекст: values.rs корректен; выровнять gates.rs
   при следующем касании.
+  Закрыто: numeric size-flags @+13 с guard length>=14, фикстура numeric_op
+  выровнена по r-efi IfrNumeric — цикл hii-walker-consistency.
 * [ ] **values: покрытие NUMERIC width 2/4/8 и DEFAULT-типов 2..4** —
   width-вывод тестируется только на SIZE_1/type 1. Контекст: тесты
   `hii/values.rs`.
@@ -1991,7 +2013,7 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
 * [ ] **option-тексты в question info** — отдаются string_id без
   резолюции по string-package. Контекст: спека value-op «Отложенное»;
   при подключении TUI/WebUI.
-* [ ] **hii unlock/gates: напечатанные смещения флипов нестабильны ±4
+* [x] **hii unlock/gates: напечатанные смещения флипов нестабильны ±4
   относительно фактических байт** — живой прогон E15: grayout-флип
   напечатан `pkg+0x9705`, байт реально изменён @dec+0x9709;
   suppress-scope напечатан `@pkg+0x8fa0`, реально @dec+0x8FA4, при этом
@@ -2000,6 +2022,11 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   scope_offset/flip-строк смешаны (package start vs opcodes start).
   Контекст: `hii/gates.rs` plan_flip/GateInfo, `hii/mod.rs` flip_text;
   найти при следующем касании gates-вывода.
+  Закрыто: единый контракт pkg+ (от начала form-пакета с 4-байтовым
+  заголовком), хелпер pkg_off/flip_text; GateInfo.scope_offset и
+  UnlockOutcome.applied — pkg-относительные; пиннинг юнит-тестом с
+  base>0 и real-image ассертом «байт по напечатанному смещению ==
+  from» — цикл hii-walker-consistency.
 * [ ] **nvar: find_varstore_record матчит первую запись по (имя +
   data_len)** — две записи с одинаковым именем И длиной в одном
   сторе молча флипнут только первую. Контекст: спека §3.1/§7
@@ -2354,9 +2381,11 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   Урок: docs-коммит про дефект плана должен предшествовать
   реализации, иначе история не показывает расхождение до кода.
   Учесть в следующих циклах.
-* [ ] **engine: поднять scope_balance в pub(crate) хелпер hii::ifr**
+* [x] **engine: поднять scope_balance в pub(crate) хелпер hii::ifr**
   — дублирован в тестах mod.rs и real_image.rs; инвариант
   железо-доказан (раунд 8), понадобится следующему REF/scope-опу.
+  Закрыто: pub hii::ifr::scope_balance (pub — real_image.rs внешний
+  крейт), дубли удалены — цикл hii-walker-consistency.
 
 ## HOWTO-документация: сценарии пользователя (2026-09-10)
 
