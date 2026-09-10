@@ -41,19 +41,21 @@
   теперь `ImagesList` (список открытых образов); FFS-узлы → `node list`.
 * [x] **Нет `ListImages` RPC в proto** — закрыто: добавлен `ImagesList` +
   `ImageInfo` (Plan A Task 3) + CLI `image list` (Task 5).
-* [ ] **`image switch <image_id>` не валидирует образ на сервере** —
+* [x] **`image switch <image_id>` не валидирует образ на сервере** —
   только перезаписывает локальный state-файл. Опечатка молча сохраняется.
   Контекст: добавить проверку через `ImageStatus`/`ImagesList` перед
   записью state.
+  Закрыто: cli-polish — валидация через `images_list` до записи state.
 * [x] **Нет `image status`** — закрыто: `ImageStatus` RPC + CLI
   `image status` (Plan A Task 3/4c/5).
 
 ### UX/cli-rendering
 
-* [ ] **Все подкоманды без `about:`** — `image --help`, `node --help`,
+* [x] **Все подкоманды без `about:`** — `image --help`, `node --help`,
   `setup --help` показывают голые имена без описания. Проставить
   `#[command(about = "...")]` и `#[arg(help = "...")]` везде. Plan A
   топологию поменял, но `about:` не добавил.
+  Закрыто: cli-polish — about на все подкоманды + help на несамодостаточные аргументы.
 * [x] **`--format` глобальный — String, не ValueEnum** — закрыто:
   `OutputFormat` теперь `clap::ValueEnum` (Plan A Task 5a).
 * [x] **`--mode` у `image open` — String, не ValueEnum** — закрыто:
@@ -76,21 +78,24 @@
 
 ### Новые находки Plan A (code review)
 
-* [ ] **`client.rs image_status` делает `.info.unwrap()`** (Task 5b,
+* [x] **`client.rs image_status` делает `.info.unwrap()`** (Task 5b,
   verbatim из brief) — паника, если сервер вернёт `None` (race с close).
   Контекст: `crates/uefi-cli/src/client.rs` image_status. Заменить на
   `ok_or_else(|| AppError::new(ErrKind::NotFound, ...))`. Mock'и
   компенсируют возвратом `Some`, но production-сервер может race'нуть.
+  Закрыто: ещё `4d1d473` (Plan A final review M1); отмечено циклом cli-polish.
 * [ ] **`write_through_persists_mutation_to_disk` тест тафтологичен** —
   `before==fixture_volume()` делает assertion `after != before || after
   == fixture_volume()` всегда истинным. Тест не ловит регрессию удаления
   `flush_image`. Контекст: `crates/uefi-engine/src/rpc/server.rs` tests.
   Усилить: mtime-check или реально меняющая байты мутация (`node remove`).
-* [ ] **Интеграционные тесты CLI проверяют только exit-code, не stdout**
+* [x] **Интеграционные тесты CLI проверяют только exit-code, не stdout**
   — `cli_integration.rs`/`e2e.rs` (Task 5f.0). Регрессия в print-fn
   пройдёт незамеченной. Добавить content-assertions.
-* [ ] **Нет теста на ArgGroup exclusivity** — `--file X --artifact Y`
+  Закрыто: cli-polish — content-ассерты на print-fn (full_flow/edit_flow/новые флоу).
+* [x] **Нет теста на ArgGroup exclusivity** — `--file X --artifact Y`
   (clap ловит) и ни `--file`, ни `--artifact` (runtime ловит) не покрыты.
+  Закрыто: cli-polish — clap-конфликт и runtime «exactly one» покрыты (e2e/cli_integration).
 
 
 ## План B: IFR forms/strings extraction + слияние с setup_advanced
@@ -1261,9 +1266,10 @@ atomic_write. После первой мутации хранимый файл �
 * [ ] **hii/gates: тест обрезанного пакета ассертит `gates.len() <= 1`** —
   слабый предикат: silent under-walk (0 гейтов) тоже пройдёт. Контекст:
   закрипить точное ожидаемое количество/содержимое.
-* [ ] **uefi-cli e2e: TSV-инвокация `hii form gates` ассертит только exit
+* [x] **uefi-cli e2e: TSV-инвокация `hii form gates` ассертит только exit
   success** — содержимое колонок TSV не проверяется. Контекст: добавить
   content-ассерты stdout.
+  Закрыто: cli-polish — точный заголовок + data-строка.
 * [x] **hii: тест `gates_list_bare_channel…` выводит ожидаемый офсет флипа
   из тестируемого `scope_offset`** — точные офсеты закриплены только в
   unit-тестах gates.rs. Контекст: захардкодить ожидание в интеграционном
@@ -1275,11 +1281,12 @@ atomic_write. После первой мутации хранимый файл �
   (plan-sanctioned `unwrap_or_default` PE-resource-канала); безвредный
   no-op success. Контекст: задокументировать расхождение либо вернуть
   NotASetupItem.
-* [ ] **CLI: несуществующий item_id в gates/unlock отдаёт
+* [x] **CLI: несуществующий item_id в gates/unlock отдаёт
   `RPC_NOT_FOUND`** — найдено при ревизии u1–u5 (§13 отчёта): ошибка
   «цель не найдена» маппится в код `RPC_NOT_FOUND`, который читается
   как «метод RPC не поддерживается». Контекст: hii_error_status /
   отдельный код NotFound для HII-таргетов.
+  Закрыто: cli-polish — `hii_error_status_ctx`: «{target} not found», код RPC оставлен.
 * [ ] **engine: дефолт сокета `/run/uefipatcher.sock` недоступен без
   root** — `bin/engine.rs:38` дефолтит на `/run` (требует прав даже на
   bind; без systemd-юнита, создающего сокет/каталог, демон не
@@ -2006,15 +2013,18 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   (направление 0→1 держится на фикстуре). Контекст: тест set_value
   в `tests/real_image.rs`. Закрыто финальным ревью-циклом (коммит
   `d2ebc3e`: len-ассерт + fixture pre-check).
-* [ ] **CLI: defaults-ветка принтера question info не покрыта тестами** —
+* [x] **CLI: defaults-ветка принтера question info не покрыта тестами** —
   `mock_question()` всегда с пустыми defaults. Контекст: `uefi-cli`
   output.rs; одна DefaultEntry в фикстуре.
-* [ ] **CLI: e2e tsv-подкейс без content-ассертов** — `--format tsv hii
+  Закрыто: cli-polish — `question_info_text` unit + интеграционный ассерт.
+* [x] **CLI: e2e tsv-подкейс без content-ассертов** — `--format tsv hii
   question info 0#42:0x1` ассертит только exit success. Контекст:
   e2e.rs.
-* [ ] **uefi-cli мок: дублирование ~40-строчного QuestionInfo-литерала**
+  Закрыто: cli-polish — точный заголовок + data-строка question info.
+* [x] **uefi-cli мок: дублирование ~40-строчного QuestionInfo-литерала**
   между hii_question_info/hii_set_value. Контекст: tests/mock_server.rs;
   кандидат — fn `mock_question()`.
+  Закрыто: cli-polish — `mock_question()`.
 * [ ] **set_value: NotWritable проверяется до парсинга item_id** —
   Read-режим + мусорный item_id → NotWritable вместо NotFound; зеркально
   `resolve_writable_path`. Контекст: `hii/mod.rs`; выровнять при
@@ -2375,9 +2385,10 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   соседний spf_page_registration_slot ходит через .get();
   применяющий хелпер может вернуть Option для симметрии вместо
   опоры на инвариант «между check и apply узел не меняется».
-* [ ] **uefi-cli: about строки page add** — «register a form as a
+* [x] **uefi-cli: about строки page add** — «register a form as a
   page» читается как валидация формы; фактически регистрируется
   form id без проверки IFR (by design, order form→page). Перефразировать.
+  Закрыто: cli-polish — переформулировано.
 * [ ] **rpc/hii_question_add: нет отката при сбое середины цикла** —
   check_* проходят списком, но apply — по одному; сбой после первого
   вопроса оставляет частичное состояние (унаследовано от questions,
