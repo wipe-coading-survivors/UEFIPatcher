@@ -452,6 +452,28 @@ pub fn parse_form_package(body: &[u8]) -> Option<FormSetInfo> {
     })
 }
 
+/// Баланс скоупов IFR form-пакета: +1 на scoped-опкод (бит 0x80 в байте
+/// length/scope), −1 на END. 0 на корректном пакете. Инвариант
+/// железо-доказан раундом 8 дуги setup-new-page; спека
+/// hii-walker-consistency §3.5. `pkg` — form-пакет с 4-байтовым заголовком.
+pub fn scope_balance(pkg: &[u8]) -> i32 {
+    let mut bal = 0i32;
+    let mut i = 4;
+    while i + 2 <= pkg.len() {
+        let len = (pkg[i + 1] & 0x7F) as usize;
+        if len < 2 {
+            break;
+        }
+        if pkg[i] == IFR_END_OP {
+            bal -= 1;
+        } else if pkg[i + 1] & 0x80 != 0 {
+            bal += 1;
+        }
+        i += len;
+    }
+    bal
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1080,5 +1102,25 @@ mod tests {
             Err(HiiError::InvalidSchema(_))
         ));
         assert_eq!(pkg, before);
+    }
+
+    #[test]
+    fn scope_balance_is_zero_for_balanced_package() {
+        let g = Guid::from_str(FORMSET_GUID).unwrap();
+        let mut ifr = form_set(&g, 7);
+        ifr.extend(form(1, 10));
+        ifr.extend(end());
+        ifr.extend(end());
+        assert_eq!(scope_balance(&package(&ifr)), 0);
+    }
+
+    #[test]
+    fn scope_balance_counts_unclosed_scope() {
+        let g = Guid::from_str(FORMSET_GUID).unwrap();
+        let mut ifr = form_set(&g, 7);
+        ifr.extend(form(1, 10));
+        ifr.extend(end());
+        // END formset опущен: баланс +1
+        assert_eq!(scope_balance(&package(&ifr)), 1);
     }
 }

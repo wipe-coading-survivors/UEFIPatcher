@@ -4159,26 +4159,9 @@ fn np_assert_ref_stage(asm: &NpAssembly, expected_page_count: u32) {
         "REF must sit directly before the form END op"
     );
 
-    let scope_balance = |pkg: &[u8]| {
-        let mut bal = 0i32;
-        let mut i = 4;
-        while i + 2 <= pkg.len() {
-            let len = (pkg[i + 1] & 0x7F) as usize;
-            if len < 2 {
-                break;
-            }
-            if pkg[i] == r_efi::hii::IFR_END_OP {
-                bal -= 1;
-            } else if pkg[i + 1] & 0x80 != 0 {
-                bal += 1;
-            }
-            i += len;
-        }
-        bal
-    };
     assert_eq!(
-        scope_balance(&final_pkg),
-        scope_balance(&asm.pkg_pre_refs),
+        uefi_engine::hii::ifr::scope_balance(&final_pkg),
+        uefi_engine::hii::ifr::scope_balance(&asm.pkg_pre_refs),
         "the REF splice must not change the IFR scope balance (round-8 root cause: an own END after REF unbalanced the stack and crashed TSE)"
     );
 

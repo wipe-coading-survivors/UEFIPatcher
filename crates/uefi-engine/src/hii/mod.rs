@@ -3631,24 +3631,6 @@ mod tests {
                 u16::from_le_bytes([pkg[off], pkg[off + 1]])
             }
 
-            fn scope_balance(pkg: &[u8]) -> i32 {
-                let mut bal = 0i32;
-                let mut i = 4;
-                while i + 2 <= pkg.len() {
-                    let len = (pkg[i + 1] & 0x7F) as usize;
-                    if len < 2 {
-                        break;
-                    }
-                    if pkg[i] == OP_END {
-                        bal -= 1;
-                    } else if pkg[i + 1] & 0x80 != 0 {
-                        bal += 1;
-                    }
-                    i += len;
-                }
-                bal
-            }
-
             #[test]
             fn add_ref_inserts_goto_before_form_end() {
                 let (flash, pkg_before, _) = question_add_flash_image();
@@ -3663,8 +3645,8 @@ mod tests {
                 let pkg_after = pkg_of(&img, "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x10:0");
                 assert_eq!(pkg_after.len() - pkg_before.len(), 15);
                 assert_eq!(
-                    scope_balance(&pkg_after),
-                    scope_balance(&pkg_before),
+                    crate::hii::ifr::scope_balance(&pkg_after),
+                    crate::hii::ifr::scope_balance(&pkg_before),
                     "REF is not a scope op: the splice must not change the IFR scope balance"
                 );
                 let r = find_ref_op(&pkg_after, 10019).expect("REF op in form 10019");
