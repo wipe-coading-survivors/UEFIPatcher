@@ -73,7 +73,14 @@ impl EngineService for MockEngine {
         &self,
         _req: Request<ImagesListRequest>,
     ) -> Result<Response<ImagesListResponse>, Status> {
-        Ok(Response::new(ImagesListResponse { images: vec![] }))
+        Ok(Response::new(ImagesListResponse {
+            images: vec![ImageInfo {
+                image_id: "mock-image-1".into(),
+                name: "mock.bin".into(),
+                path: "/dev/null".into(),
+                ..Default::default()
+            }],
+        }))
     }
     async fn image_save(&self, _req: Request<ImageSaveRequest>) -> Result<Response<Empty>, Status> {
         Ok(Response::new(Empty {}))

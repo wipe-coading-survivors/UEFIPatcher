@@ -54,6 +54,48 @@ async fn full_flow() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn image_switch_validates_against_server() {
+    let (td, sock) = setup_env().await;
+    let cwd = td.path();
+
+    cli(&sock, cwd).args(["session", "init"]).assert().success();
+    cli(&sock, cwd)
+        .args(["image", "open", "/dev/null", "--mode", "read"])
+        .assert()
+        .success();
+
+    cli(&sock, cwd)
+        .args(["image", "switch", "mock-image-1"])
+        .assert()
+        .success();
+    cli(&sock, cwd)
+        .args(["image", "status"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("mock-image-1"));
+
+    cli(&sock, cwd)
+        .args(["image", "switch", "no-such-image"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicates::str::contains(
+            "image no-such-image not found on server; see 'image list'",
+        ));
+
+    cli(&sock, cwd)
+        .args(["image", "status"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("mock-image-1"));
+
+    cli(&sock, cwd)
+        .args(["session", "destroy"])
+        .assert()
+        .success();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn no_state_errors() {
     let td = TempDir::new().unwrap();
     let cwd = td.path();

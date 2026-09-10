@@ -343,7 +343,7 @@ async fn dispatch(cli: &Cli, format: output::OutputFormat) -> Result<(), error::
                 };
                 commands::image::open(path, name.as_deref(), mode_i, sock, format).await
             }
-            ImageCmd::Switch { image_id } => commands::image::switch(image_id, format).await,
+            ImageCmd::Switch { image_id } => commands::image::switch(image_id, sock, format).await,
             ImageCmd::Close { image_id } => {
                 commands::image::close(image_id.as_deref(), sock, format).await
             }
