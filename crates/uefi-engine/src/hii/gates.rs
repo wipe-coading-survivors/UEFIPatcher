@@ -982,6 +982,25 @@ mod tests {
     }
 
     #[test]
+    fn decode_tolerates_exactly_one_trailing_garbage_byte() {
+        let mut region = concat(&[uint64(1), uint64(1), equal()]);
+        region.push(0xAB);
+        assert_eq!(
+            decode_expr(&region),
+            GateExpr::EqConst { a: 1, b: 1 },
+            "ровно один непарный байт в хвосте терпится (следствие END-quirk)"
+        );
+    }
+
+    #[test]
+    fn decode_rejects_two_trailing_garbage_bytes() {
+        let mut region = concat(&[uint64(1), uint64(1), equal()]);
+        region.push(0xAB);
+        region.push(0xAB);
+        assert_eq!(decode_expr(&region), GateExpr::Other);
+    }
+
+    #[test]
     fn plan_gates_skip_unlocked_passes_already_unlocked() {
         let mut ifr = form_set(7);
         ifr.extend(form(10002, 20));

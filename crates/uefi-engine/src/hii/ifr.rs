@@ -66,6 +66,12 @@ pub fn find_suppress_if_scopes(body: &[u8]) -> Vec<SuppressScope> {
     scopes
 }
 
+/// Структурный rewrite: скоуп становится пустым (END сразу после заголовка
+/// SUPPRESS_IF), выражение сдвигается на 2 байта вправо, за END.
+/// Железо-валиден только на Platform-формсете (901, E7/E8); на setup-модуле
+/// этот класс байтов («пустой скоуп + stray-опкоды») E11-фатален (виснет
+/// AMITSE) — hardware-валидный путь для setup-модуля: unlock (флипы
+/// литералов). Спека hii-walker-consistency §2/§3.7.
 pub fn unsuppress(ifr: &mut [u8], scope: &SuppressScope) {
     if scope.end + 2 > ifr.len() || ifr[scope.end] != 0x29 || ifr[scope.end + 1] != 0x02 {
         return;
@@ -77,6 +83,11 @@ pub fn unsuppress(ifr: &mut [u8], scope: &SuppressScope) {
     ifr[scope.start + 1] = 0x02;
 }
 
+/// Ищет только suppress-скоуп, оборачивающий саму форму (железо:
+/// Platform-формсет 901, E7/E8). Гейты вокруг REF в родительской форме
+/// НЕ ищет — это территория gates-слоя/unlock (E12); no-op-скрытие
+/// setup-модуля отдаётся наверх как NoSuppressScope. Спека
+/// hii-walker-consistency §3.7.
 pub fn find_form_suppress_scope(body: &[u8], form_id: u16) -> Option<SuppressScope> {
     let (start, end) = package_bounds(body);
     let mut open: Vec<(u8, usize)> = Vec::new();
@@ -631,6 +642,13 @@ mod tests {
     }
 
     #[test]
+    fn parse_form_package_rejects_short_formset_opcode() {
+        let mut ifr = vec![IFR_FORM_SET_OP, 0x04, 0xAA, 0xBB];
+        ifr.extend(end());
+        assert!(parse_form_package(&package(&ifr)).is_none());
+    }
+
+    #[test]
     fn unsuppress_rewrites_slice_in_place_preserving_length() {
         let mut buf = vec![0xEE; 4];
         buf.extend_from_slice(&[0x0A, 0x82, 0x12, 0x03, 0x40, 0x29, 0x02]);
@@ -689,6 +707,30 @@ mod tests {
         assert!(find_form_suppress_scope(&pkg, 6).is_none());
     }
 
+    #[test]
+    fn find_form_suppress_scope_ignores_stray_end_on_empty_stack() {
+        let g = Guid::from_str(FORMSET_GUID).unwrap();
+        let mut ifr = form_set(&g, 7);
+        ifr.extend(end());
+        ifr.extend(suppress_if());
+        ifr.extend(form(5, 15));
+        ifr.extend(end());
+        ifr.extend(end());
+        let scope = find_form_suppress_scope(&package(&ifr), 5);
+        assert!(
+            scope.is_some(),
+            "stray END до скоупа — pop пустого стека, no-op"
+        );
+    }
+
+    #[test]
+    fn find_form_suppress_scope_returns_none_on_length_below_two() {
+        let mut ifr = form_set(&Guid::from_str(FORMSET_GUID).unwrap(), 7);
+        ifr.push(0x01);
+        ifr.push(0x01);
+        assert!(find_form_suppress_scope(&package(&ifr), 5).is_none());
+    }
+
     fn suppress_if() -> Vec<u8> {
         opcode(IFR_SUPPRESS_IF_OP, true, &[])
     }
@@ -738,6 +780,38 @@ mod tests {
         pkg.extend(vec![0x0A, 0x82, 0x29, 0x02]);
         let scopes = find_suppress_if_scopes(&pkg);
         assert_eq!(scopes.len(), 1, "хвост за пределами plen не читается");
+    }
+
+    #[test]
+    fn find_suppress_if_scopes_returns_only_outermost_scope() {
+        let g = Guid::from_str(FORMSET_GUID).unwrap();
+        let mut ifr = form_set(&g, 7);
+        ifr.extend(suppress_if());
+        ifr.extend(suppress_if());
+        ifr.extend(end());
+        ifr.extend(end());
+        ifr.extend(end());
+        let scopes = find_suppress_if_scopes(&package(&ifr));
+        assert_eq!(
+            scopes.len(),
+            1,
+            "вложенный SUPPRESS_IF покрывается внешним скоупом"
+        );
+        // внешний SUPPRESS @27 (контент с 29), внутренний END @31, внешний END @33
+        assert_eq!(scopes[0].start, 29);
+        assert_eq!(scopes[0].end, 33);
+    }
+
+    #[test]
+    fn find_suppress_if_scopes_does_not_match_payload_bytes() {
+        let g = Guid::from_str(FORMSET_GUID).unwrap();
+        let mut ifr = form_set(&g, 7);
+        ifr.extend(suppress_if());
+        ifr.extend(end());
+        ifr.extend(opcode(IFR_TEXT_OP, false, &[0x0A, 0x82, 0x00]));
+        ifr.extend(end());
+        let scopes = find_suppress_if_scopes(&package(&ifr));
+        assert_eq!(scopes.len(), 1);
     }
 
     fn varstore_bytes() -> Vec<u8> {
