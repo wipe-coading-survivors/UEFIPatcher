@@ -249,6 +249,9 @@ pub struct PlannedFlip {
     pub to: Vec<u8>,
 }
 
+/// Ширина storage вопроса: CHECKBOX → 1 (qid@+6); NUMERIC — numeric
+/// size-flags @+13 & IFR_NUMERIC_SIZE (r-efi IfrNumeric; тот же байт читает
+/// values.rs), НЕ question-flags @+12. Спека hii-walker-consistency §3.4.
 pub(crate) fn question_storage_width(body: &[u8], question_id: u16) -> Option<u8> {
     let (start, end) = package_bounds(body);
     let mut i = start;
@@ -264,7 +267,7 @@ pub(crate) fn question_storage_width(body: &[u8], question_id: u16) -> Option<u8
         {
             return match op {
                 IFR_CHECKBOX_OP => Some(1),
-                IFR_NUMERIC_OP if length >= 13 => Some(1u8 << (body[i + 12] & IFR_NUMERIC_SIZE)),
+                IFR_NUMERIC_OP if length >= 14 => Some(1u8 << (body[i + 13] & IFR_NUMERIC_SIZE)),
                 _ => None,
             };
         }
@@ -467,9 +470,9 @@ mod tests {
     }
 
     fn numeric_op(question_id: u16, flags: u8) -> Vec<u8> {
-        let mut p = vec![0u8; 11];
+        let mut p = vec![0u8; 12];
         p[4..6].copy_from_slice(&question_id.to_le_bytes());
-        p[10] = flags;
+        p[11] = flags;
         opcode(IFR_NUMERIC_OP, true, &p)
     }
 
@@ -785,6 +788,23 @@ mod tests {
         let pkg = package(&master_switch_ifr(r_efi::hii::IFR_NUMERIC_SIZE_1));
         let gates = find_gates(&pkg, &QUESTION_GATE_TARGET);
         assert!(plan_gates(&pkg, &gates).is_ok());
+    }
+
+    #[test]
+    fn question_storage_width_reads_numeric_flags_at_13() {
+        for (flags, expect) in [
+            (r_efi::hii::IFR_NUMERIC_SIZE_1, 1u8),
+            (r_efi::hii::IFR_NUMERIC_SIZE_2, 2),
+            (r_efi::hii::IFR_NUMERIC_SIZE_4, 4),
+            (r_efi::hii::IFR_NUMERIC_SIZE_8, 8),
+        ] {
+            let pkg = package(&master_switch_ifr(flags));
+            assert_eq!(
+                question_storage_width(&pkg, 0x009A),
+                Some(expect),
+                "flags={flags:#x}"
+            );
+        }
     }
 
     #[test]
