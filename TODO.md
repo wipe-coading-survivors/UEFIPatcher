@@ -2304,13 +2304,56 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   ошибки различает «not declared» и «exceeds var store size 0xNN».
 * [x] **uefi-engine/add_form: varstore-декларация без $SPF
   ifr-фиксапа** (раунд 11 NP-E, stage-track вердикт §16.2) —
-  **ИСПРАВЛЕНО** (`c5a5c09`, пост-дуга 2026-09-10): `add_form` при
-  varstores≠[] планировал фиксап до мутаций
-  (select_resolving_records по пре-вставке; threshold=точка вставки
-  varstore после FORM_SET, delta=её длина) и применяет
-  fixup_selected_record_ifr_offsets после вставки; образы без $SPF
-  работают как раньше (AmiFilesNotFound → skip), заблокированный
-  $SPF → отказ MutationBehindCompression до каких-либо мутаций.
-  Гейты: юнит resource/bare/refusal (hii::form_varstore_tests) +
+  **ИСПРАВЛЕНО** (`c5a5c09` + two-zone `292c95c`, пост-дуга
+  2026-09-10): `add_form` при varstores≠[] планировал фиксап до
+  мутаций (select_resolving_records по пре-вставке) и применяет
+  two-zone сдвиг после вставки: записи ≥ END целевого формсета —
+  на длину varstore+формы, записи внутри формсета — на длину
+  varstore (ревью-дефект c5a5c09: мульти-формсет-пакеты
+  недосдвигались на form_ifr); образы без $SPF работают как раньше
+  (AmiFilesNotFound → skip), заблокированный $SPF → отказ
+  MutationBehindCompression до каких-либо мутаций. Гейты: юнит
+  resource/bare/refusal/multi-formset (hii::form_varstore_tests) +
   round-11 инвариант на реальном образе в np1. Исторический обход
   дуги: E39/E43 не полагаются на varstore-формы.
+
+## Находки финального ревью ветки setup-new-page (2026-09-10)
+
+Ревью d8feaaa..HEAD перед merge: Critical — нет; Important #1
+(mульти-формсет десинк) и #2 (CLI JSON) — исправлены (`292c95c`,
+`785198c`); ниже — оставленные миноры и процесс-заметки.
+
+* [ ] **uefi-engine/add_ref: требуется $SPF-страница родительской
+  формы** — add_ref/check_ref_add переиспользуют plan_spf_append,
+  который падает NotFound без страницы формы, хотя REF не нужна ни
+  страница, ни запись — только selected_records. REF из безстраничной
+  формы даёт невнятный NotFound. Фикс-вариант: лёгкий
+  plan_spf_fixup(body, pkg) -> Vec<usize> для add_ref, либо явная
+  ошибка «parent form has no $SPF page».
+* [ ] **uefi-engine/real_image np4: безусловный дамп
+  /tmp/np14_E43.bin** — остаток лестницы прошивок; гейт-тест,
+  пишущий 16MB в фиксированный /tmp-путь. Убрать (E43 принят) или
+  гейтить через env (UEFIPATCHER_NP_DUMP). Заодно унифицировать
+  println!/eprintln! между np3/np4 и np1/np2.
+* [ ] **uefi-engine/spf: register_page_slot — прямая индексация** —
+  соседний spf_page_registration_slot ходит через .get();
+  применяющий хелпер может вернуть Option для симметрии вместо
+  опоры на инвариант «между check и apply узел не меняется».
+* [ ] **uefi-cli: about строки page add** — «register a form as a
+  page» читается как валидация формы; фактически регистрируется
+  form id без проверки IFR (by design, order form→page). Перефразировать.
+* [ ] **rpc/hii_question_add: нет отката при сбое середины цикла** —
+  check_* проходят списком, но apply — по одному; сбой после первого
+  вопроса оставляет частичное состояние (унаследовано от questions,
+  refs расширяют окно). Продолжить строку существующих заметок об
+  атомарности RPC.
+* [ ] **процесс rule-11: два нарушения порядка в дуге** —
+  `de00f45` (docs fix Task 4) приземлился ПОСЛЕ `305b2c3` (feat),
+  `3461441` (docs fix Task 5) — после `7f1ac12` (тесты); в обоих
+  docs-коммитах уже описаны дефекты, найденные в реализации.
+  Урок: docs-коммит про дефект плана должен предшествовать
+  реализации, иначе история не показывает расхождение до кода.
+  Учесть в следующих циклах.
+* [ ] **engine: поднять scope_balance в pub(crate) хелпер hii::ifr**
+  — дублирован в тестах mod.rs и real_image.rs; инвариант
+  железо-доказан (раунд 8), понадобится следующему REF/scope-опу.
