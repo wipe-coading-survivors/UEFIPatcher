@@ -57,6 +57,13 @@ fn hii_error_status(e: crate::hii::HiiError) -> Status {
     }
 }
 
+fn hii_error_status_ctx(e: crate::hii::HiiError, ctx: &str) -> Status {
+    match e {
+        crate::hii::HiiError::NotFound => Status::not_found(format!("{ctx} not found")),
+        _ => hii_error_status(e),
+    }
+}
+
 fn artifact_output_path_is_relative(p: &str) -> bool {
     std::path::Path::new(p).is_relative()
 }
@@ -673,7 +680,7 @@ impl EngineService for EngineServer {
                 .get_mut(&r.image_id)
                 .ok_or_else(|| Status::not_found("image not found"))?;
             crate::hii::set_item_visibility(img_slot, &r.item_id, r.visible)
-                .map_err(hii_error_status)?;
+                .map_err(|e| hii_error_status_ctx(e, &r.item_id))?;
         }
         self.flush_image(&r.image_id).await?;
         let _ = self.sm.touch(&img.session_id);
@@ -781,7 +788,7 @@ impl EngineService for EngineServer {
                 .get_mut(&r.image_id)
                 .ok_or_else(|| Status::not_found("image not found"))?;
             crate::hii::form_add::add_form(img_slot, &r.target, &schema)
-                .map_err(hii_error_status)?
+                .map_err(|e| hii_error_status_ctx(e, &r.target))?
         };
         self.flush_image(&r.image_id).await?;
         let _ = self.sm.touch(&img.session_id);
@@ -830,7 +837,7 @@ impl EngineService for EngineServer {
             )
             .map_err(|e| match e {
                 crate::hii::HiiError::AmiFilesNotFound => Status::not_found(e.to_string()),
-                _ => hii_error_status(e),
+                _ => hii_error_status_ctx(e, &r.target),
             })?
         };
         self.flush_image(&r.image_id).await?;
@@ -875,7 +882,8 @@ impl EngineService for EngineServer {
     ) -> RpcResult<HiiGatesListResponse> {
         let r = req.into_inner();
         let img = self.get_or_load_image(&r.image_id).await?;
-        let gates = crate::hii::gates_list(&img, &r.item_id).map_err(hii_error_status)?;
+        let gates = crate::hii::gates_list(&img, &r.item_id)
+            .map_err(|e| hii_error_status_ctx(e, &r.item_id))?;
         let _ = self.sm.touch(&img.session_id);
         tracing::info!(image_id = %r.image_id, item_id = %r.item_id, count = gates.len(), "hii gates listed");
         Ok(Response::new(HiiGatesListResponse { gates }))
@@ -890,7 +898,8 @@ impl EngineService for EngineServer {
             let img_slot = images
                 .get_mut(&r.image_id)
                 .ok_or_else(|| Status::not_found("image not found"))?;
-            crate::hii::unlock(img_slot, &r.item_id).map_err(hii_error_status)?
+            crate::hii::unlock(img_slot, &r.item_id)
+                .map_err(|e| hii_error_status_ctx(e, &r.item_id))?
         };
         self.flush_image(&r.image_id).await?;
         let _ = self.sm.touch(&img.session_id);
@@ -908,7 +917,8 @@ impl EngineService for EngineServer {
     ) -> RpcResult<HiiQuestionInfoResponse> {
         let r = req.into_inner();
         let img = self.get_or_load_image(&r.image_id).await?;
-        let question = crate::hii::question_info(&img, &r.item_id).map_err(hii_error_status)?;
+        let question = crate::hii::question_info(&img, &r.item_id)
+            .map_err(|e| hii_error_status_ctx(e, &r.item_id))?;
         let _ = self.sm.touch(&img.session_id);
         tracing::info!(image_id = %r.image_id, item_id = %r.item_id, "hii question info");
         Ok(Response::new(HiiQuestionInfoResponse {
@@ -928,7 +938,8 @@ impl EngineService for EngineServer {
             let img_slot = images
                 .get_mut(&r.image_id)
                 .ok_or_else(|| Status::not_found("image not found"))?;
-            crate::hii::set_value(img_slot, &r.item_id, r.value).map_err(hii_error_status)?
+            crate::hii::set_value(img_slot, &r.item_id, r.value)
+                .map_err(|e| hii_error_status_ctx(e, &r.item_id))?
         };
         self.flush_image(&r.image_id).await?;
         let _ = self.sm.touch(&img.session_id);
@@ -957,13 +968,13 @@ impl EngineService for EngineServer {
                 .get_mut(&r.image_id)
                 .ok_or_else(|| Status::not_found("image not found"))?;
             crate::hii::check_question_add(img_slot, &r.target, &schema.questions)
-                .map_err(hii_error_status)?;
+                .map_err(|e| hii_error_status_ctx(e, &r.target))?;
             let question_qids: Vec<u16> = schema.questions.iter().map(|q| q.question_id).collect();
             crate::hii::check_ref_add(img_slot, &r.target, &schema.refs, &question_qids)
-                .map_err(hii_error_status)?;
+                .map_err(|e| hii_error_status_ctx(e, &r.target))?;
             for q in &schema.questions {
-                let result =
-                    crate::hii::add_question(img_slot, &r.target, q).map_err(hii_error_status)?;
+                let result = crate::hii::add_question(img_slot, &r.target, q)
+                    .map_err(|e| hii_error_status_ctx(e, &r.target))?;
                 outcomes.push(HiiQuestionAddOutcome {
                     question_id: u32::from(result.question_id),
                     string_ids: result
@@ -975,8 +986,8 @@ impl EngineService for EngineServer {
                 });
             }
             for rf in &schema.refs {
-                let result =
-                    crate::hii::add_ref(img_slot, &r.target, rf).map_err(hii_error_status)?;
+                let result = crate::hii::add_ref(img_slot, &r.target, rf)
+                    .map_err(|e| hii_error_status_ctx(e, &r.target))?;
                 ref_outcomes.push(HiiQuestionAddOutcome {
                     question_id: u32::from(result.question_id),
                     string_ids: result
@@ -1008,7 +1019,8 @@ impl EngineService for EngineServer {
             let img_slot = images
                 .get_mut(&r.image_id)
                 .ok_or_else(|| Status::not_found("image not found"))?;
-            crate::hii::add_page(img_slot, &r.target, &schema).map_err(hii_error_status)?
+            crate::hii::add_page(img_slot, &r.target, &schema)
+                .map_err(|e| hii_error_status_ctx(e, &r.target))?
         };
         self.flush_image(&r.image_id).await?;
         let _ = self.sm.touch(&img.session_id);
@@ -1177,6 +1189,17 @@ mod tests {
         let st = hii_error_status(crate::hii::HiiError::HidingUnsupported);
         assert_eq!(st.code(), tonic::Code::InvalidArgument);
         assert!(st.message().contains("not implemented"));
+    }
+
+    #[test]
+    fn hii_error_status_ctx_enriches_only_not_found() {
+        let st = hii_error_status_ctx(crate::hii::HiiError::NotFound, "0#99");
+        assert_eq!(st.code(), tonic::Code::NotFound);
+        assert_eq!(st.message(), "0#99 not found");
+
+        let st = hii_error_status_ctx(crate::hii::HiiError::NotWritable, "0#99");
+        assert_eq!(st.code(), tonic::Code::FailedPrecondition);
+        assert_eq!(st.message(), crate::hii::HiiError::NotWritable.to_string());
     }
 
     #[test]
