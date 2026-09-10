@@ -23,28 +23,60 @@ async fn full_flow() {
     let (td, sock) = setup_env().await;
     let cwd = td.path();
 
-    cli(&sock, cwd).args(["session", "init"]).assert().success();
+    cli(&sock, cwd)
+        .args(["session", "init"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("\t"));
     assert!(cwd.join(".uefipatcher").exists());
 
-    cli(&sock, cwd).args(["session", "list"]).assert().success();
+    cli(&sock, cwd)
+        .args(["session", "list"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "session_id\tcreated_at\tlast_activity",
+        ));
 
     cli(&sock, cwd)
         .args(["image", "open", "/dev/null", "--mode", "read"])
         .assert()
-        .success();
+        .success()
+        .stdout(predicates::str::contains("mock.bin"));
 
-    cli(&sock, cwd).args(["node", "list"]).assert().success();
+    cli(&sock, cwd)
+        .args(["node", "list"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("0"));
 
-    cli(&sock, cwd).args(["image", "list"]).assert().success();
+    cli(&sock, cwd)
+        .args(["image", "list"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "image_id\tname\tmode\tsize\tlast_activity",
+        ))
+        .stdout(predicates::str::contains("mock-image-1"));
 
-    cli(&sock, cwd).args(["image", "status"]).assert().success();
+    cli(&sock, cwd)
+        .args(["image", "status"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "image_id\tname\tpath\tmode\tsize\tcreated\tlast_activity",
+        ));
 
     cli(&sock, cwd)
         .args(["node", "search", "0"])
         .assert()
         .success();
 
-    cli(&sock, cwd).args(["image", "close"]).assert().success();
+    cli(&sock, cwd)
+        .args(["image", "close"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("ok"));
 
     cli(&sock, cwd)
         .args(["session", "destroy"])
@@ -88,6 +120,40 @@ async fn image_switch_validates_against_server() {
         .assert()
         .success()
         .stdout(predicates::str::contains("mock-image-1"));
+
+    cli(&sock, cwd)
+        .args(["session", "destroy"])
+        .assert()
+        .success();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn node_source_args_required_exactly_one() {
+    let (td, sock) = setup_env().await;
+    let cwd = td.path();
+    cli(&sock, cwd).args(["session", "init"]).assert().success();
+    cli(&sock, cwd)
+        .args(["image", "open", "/dev/null", "--mode", "write"])
+        .assert()
+        .success();
+
+    cli(&sock, cwd)
+        .args(["node", "insert", "0"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicates::str::contains(
+            "exactly one of --file or --artifact required",
+        ));
+
+    cli(&sock, cwd)
+        .args(["node", "replace", "0", "--body-only"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicates::str::contains(
+            "exactly one of --file or --artifact required",
+        ));
 
     cli(&sock, cwd)
         .args(["session", "destroy"])
