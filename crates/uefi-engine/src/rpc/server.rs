@@ -41,12 +41,12 @@ fn builder_error_status(e: crate::builder::BuilderError) -> Status {
 
 fn hii_error_status(e: crate::hii::HiiError) -> Status {
     match e {
-        crate::hii::HiiError::NotFound | crate::hii::HiiError::StringPackageNotFound => {
-            Status::not_found(e.to_string())
-        }
-        crate::hii::HiiError::NotASetupItem | crate::hii::HiiError::InvalidSchema(_) => {
-            Status::invalid_argument(e.to_string())
-        }
+        crate::hii::HiiError::NotFound
+        | crate::hii::HiiError::StringPackageNotFound
+        | crate::hii::HiiError::NoSuppressScope => Status::not_found(e.to_string()),
+        crate::hii::HiiError::NotASetupItem
+        | crate::hii::HiiError::InvalidSchema(_)
+        | crate::hii::HiiError::HidingUnsupported => Status::invalid_argument(e.to_string()),
         crate::hii::HiiError::NotWritable
         | crate::hii::HiiError::GateExpressionUnsupported(_)
         | crate::hii::HiiError::MutationBehindCompression
@@ -1167,6 +1167,16 @@ mod tests {
             "suppress gate at pkg+0x674".into(),
         ));
         assert_eq!(st.code(), tonic::Code::FailedPrecondition);
+    }
+
+    #[test]
+    fn hii_error_status_maps_no_suppress_scope_and_hiding() {
+        let st = hii_error_status(crate::hii::HiiError::NoSuppressScope);
+        assert_eq!(st.code(), tonic::Code::NotFound);
+        assert!(st.message().contains("REF-parent"));
+        let st = hii_error_status(crate::hii::HiiError::HidingUnsupported);
+        assert_eq!(st.code(), tonic::Code::InvalidArgument);
+        assert!(st.message().contains("not implemented"));
     }
 
     #[test]

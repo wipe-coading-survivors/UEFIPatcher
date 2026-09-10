@@ -56,6 +56,12 @@ pub enum HiiError {
     GateExpressionUnsupported(String),
     #[error("value operation not supported: {0}")]
     ValueOpUnsupported(String),
+    #[error(
+        "form has no suppress-if scope of its own; REF-parent gates are the unlock op's domain"
+    )]
+    NoSuppressScope,
+    #[error("hiding (visible=false) is not implemented: only unsuppress exists")]
+    HidingUnsupported,
 }
 
 #[tracing::instrument(level = "debug", skip(image), fields(item_id = %item_id, visible), err)]
@@ -85,35 +91,34 @@ pub fn set_item_visibility(
         if node.node_type != FfsType::Section {
             return Err(HiiError::NotASetupItem);
         }
+        if !visible {
+            return Err(HiiError::HidingUnsupported);
+        }
         if node.subtype == EFI_SECTION_RAW || ifr::is_form_package(&node.body) {
-            if visible {
-                let scope = match form_id {
-                    Some(fid) => ifr::find_form_suppress_scope(&node.body, fid),
-                    None => ifr::find_suppress_if_scopes(&node.body).into_iter().next(),
-                };
-                if let Some(scope) = scope {
-                    ifr::unsuppress(&mut node.body, &scope);
-                    changed = true;
-                }
+            let scope = match form_id {
+                Some(fid) => ifr::find_form_suppress_scope(&node.body, fid),
+                None => ifr::find_suppress_if_scopes(&node.body).into_iter().next(),
+            };
+            if let Some(scope) = scope {
+                ifr::unsuppress(&mut node.body, &scope);
+                changed = true;
             }
         } else if node.subtype == EFI_SECTION_PE32 {
             let Some(packages) = pe_resource_form_packages(&node.body) else {
                 return Err(HiiError::NotASetupItem);
             };
-            if visible {
-                for (start, len) in packages {
-                    let scope = {
-                        let seg = &node.body[start..start + len];
-                        match form_id {
-                            Some(fid) => ifr::find_form_suppress_scope(seg, fid),
-                            None => ifr::find_suppress_if_scopes(seg).into_iter().next(),
-                        }
-                    };
-                    if let Some(scope) = scope {
-                        ifr::unsuppress(&mut node.body[start..start + len], &scope);
-                        changed = true;
-                        break;
+            for (start, len) in packages {
+                let scope = {
+                    let seg = &node.body[start..start + len];
+                    match form_id {
+                        Some(fid) => ifr::find_form_suppress_scope(seg, fid),
+                        None => ifr::find_suppress_if_scopes(seg).into_iter().next(),
                     }
+                };
+                if let Some(scope) = scope {
+                    ifr::unsuppress(&mut node.body[start..start + len], &scope);
+                    changed = true;
+                    break;
                 }
             }
         } else {
@@ -122,6 +127,8 @@ pub fn set_item_visibility(
     }
     if changed {
         ops::mark_rebuild_to_root_by_path(&mut image.root, &path);
+    } else {
+        return Err(HiiError::NoSuppressScope);
     }
     tracing::debug!(changed, "set_item_visibility done");
     Ok(())
@@ -2533,6 +2540,20 @@ mod tests {
         let mut image = vendor_image_with(0x19, vendor_forms_pkg());
         let err = set_item_visibility(&mut image, VENDOR_QUESTION_ITEM, true).unwrap_err();
         assert!(matches!(err, HiiError::NotFound));
+    }
+
+    #[test]
+    fn set_item_visibility_false_is_hiding_unsupported() {
+        let mut image = vendor_image_with(0x19, vendor_forms_pkg());
+        let err = set_item_visibility(&mut image, VENDOR_FORM_ITEM, false).unwrap_err();
+        assert!(matches!(err, HiiError::HidingUnsupported));
+    }
+
+    #[test]
+    fn set_item_visibility_without_own_scope_is_no_suppress_scope() {
+        let mut image = vendor_image_with(0x19, vendor_forms_pkg());
+        let err = set_item_visibility(&mut image, VENDOR_FORM_ITEM, true).unwrap_err();
+        assert!(matches!(err, HiiError::NoSuppressScope));
     }
 
     #[test]
