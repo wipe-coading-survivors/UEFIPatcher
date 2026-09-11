@@ -28,6 +28,14 @@ REGISTRY focus
   Enter on image    -> :image switch <id>  (return to Tree)
   Enter on artifact -> prefill :insert <path> --artifact-id <id>
 
+FORMS VIEW (Tab / Shift-Tab, :forms / :image)
+  j / k          move cursor (формы / строки)
+  h / l          collapse / expand формсета
+  S              strings-браузер (повторно — закрыть; Esc тоже)
+  /              открыть strings + промпт фильтра (:filter TEXT)
+  Ctrl-hjkl      focus List <-> Details
+  Tab            обратно в Image-view
+
 COMMAND / INSERT
   Enter           execute cmdline   ·  Esc  cancel   ·  Backspace  delete
 
@@ -42,6 +50,9 @@ EX-COMMANDS
   :remove [TARGET]
   :rebuild [TARGET]
   :image switch ID | :image close [ID]
+  :forms                      переключить Forms-view (требует активный образ)
+  :image                      обратно в Image-view
+  :filter TEXT                фильтр strings-браузера (пустой — сброс)
   :refresh
   :artifacts
   :help | :h
