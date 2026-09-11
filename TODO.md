@@ -2735,6 +2735,16 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   чистейший вариант, но отдельная дуга. Контекст:
   `crates/uefi-tui/src/commands.rs` (add_prefill, ветка `"form"`);
   семантика — `uefi_engine::hii::add_ref` (`hii/mod.rs`).
+* [ ] **uefi-tui: completion-меню не рендерится** — `complete()`
+  возвращает `(rep, opts)`, но `ui/cmdline.rs` рисует только строку
+  команды: список кандидатов выбрасывается. При множестве кандидатов
+  с общим префиксом (`hii question add <TAB>` → ~180 item-кандидатов
+  Setup, общий префикс `…#10`) TAB доводит до префикса и дальше
+  вслепую — владелец: «не выпадает» (2026-09-12). Фикс: рендер opts
+  над cmdline-панелью (лимит по высоте + прокрутка; инлайн-дополнение
+  общим префиксом уже работает). Контекст:
+  `crates/uefi-tui/src/ui/cmdline.rs` (render),
+  `crates/uefi-tui/src/commands.rs` (complete).
 * [ ] **uefi-tui: help-экран подрезается на низких терминалах** — HELP
   в `ui/help.rs` = 70 строк, рендерится одним Paragraph без скролла:
   при высоте терминала меньше ~70 строк хвост (секция EX-COMMANDS, где
