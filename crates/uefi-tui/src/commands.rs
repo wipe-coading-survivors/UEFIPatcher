@@ -934,6 +934,54 @@ fn common_prefix(items: &[String]) -> String {
     p
 }
 
+fn unique_form_targets(app: &App) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    app.forms
+        .forms
+        .iter()
+        .map(|f| f.form_id.clone())
+        .filter(|t| seen.insert(t.clone()))
+        .collect()
+}
+
+fn unique_formset_guids(app: &App) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    app.forms
+        .forms
+        .iter()
+        .map(|f| f.formset_guid.clone())
+        .filter(|g| seen.insert(g.clone()))
+        .collect()
+}
+
+/// Пути по префиксу для позиции schema-файла: набранный каталог-префикс
+/// сохраняется как есть (абсолютный/относительный), каталоги получают
+/// "/", скрытые файлы — только по точечному префиксу. Спека §4 V3.
+fn complete_path(token: &str) -> Vec<String> {
+    let (dir_part, prefix) = match token.rfind('/') {
+        Some(i) => (&token[..=i], &token[i + 1..]),
+        None => ("", token),
+    };
+    let dir = if dir_part.is_empty() { "." } else { dir_part };
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return vec![];
+    };
+    let mut out: Vec<String> = rd
+        .flatten()
+        .map(|e| {
+            (
+                e.file_name().to_string_lossy().to_string(),
+                e.file_type().map(|t| t.is_dir()).unwrap_or(false),
+            )
+        })
+        .filter(|(name, _)| name.starts_with(prefix))
+        .filter(|(name, _)| !name.starts_with('.') || prefix.starts_with('.'))
+        .map(|(name, is_dir)| format!("{dir_part}{name}{}", if is_dir { "/" } else { "" }))
+        .collect();
+    out.sort();
+    out
+}
+
 fn context_candidates(app: &App, cmd: &str, head: &[&str], token: &str) -> Vec<String> {
     if head.last() == Some(&"--mode") {
         return ["into", "before", "after"]
@@ -951,10 +999,17 @@ fn context_candidates(app: &App, cmd: &str, head: &[&str], token: &str) -> Vec<S
             .filter(|c| c.starts_with(token))
             .collect();
     }
+    if head.last() == Some(&"--ffs") {
+        return unique_formset_guids(app)
+            .into_iter()
+            .filter(|c| c.starts_with(token))
+            .collect();
+    }
     if token.starts_with("--") {
         let flags: &[&str] = match cmd {
             "insert" => &["--file", "--artifact-id", "--mode"],
             "replace" => &["--file", "--artifact-id", "--body-only"],
+            "hii" if head.contains(&"formset") && head.contains(&"add") => &["--ffs"],
             _ => &[],
         };
         return flags
@@ -965,11 +1020,65 @@ fn context_candidates(app: &App, cmd: &str, head: &[&str], token: &str) -> Vec<S
     }
     if cmd == "hii" {
         if head.len() == 1 {
-            return ["set-value", "visibility", "unlock"]
-                .iter()
-                .filter(|c| c.starts_with(token))
-                .map(|s| s.to_string())
-                .collect();
+            return [
+                "formset",
+                "form",
+                "question",
+                "page",
+                "hijack",
+                "set-value",
+                "visibility",
+                "unlock",
+            ]
+            .iter()
+            .filter(|c| c.starts_with(token))
+            .map(|s| s.to_string())
+            .collect();
+        }
+        let noun = head[1];
+        if matches!(noun, "formset" | "form" | "question" | "page") {
+            if head.len() == 2 {
+                return ["add"]
+                    .iter()
+                    .filter(|c| c.starts_with(token))
+                    .map(|s| s.to_string())
+                    .collect();
+            }
+            if head.get(2) != Some(&"add") {
+                return vec![];
+            }
+            let file_pos = if noun == "formset" { 3 } else { 4 };
+            if head.len() == file_pos {
+                return complete_path(token);
+            }
+            if head.len() == file_pos - 1 {
+                if noun == "question" {
+                    return app
+                        .forms
+                        .forms
+                        .iter()
+                        .map(|f| format!("{}#{}", f.form_id, f.form_id_ifr))
+                        .filter(|c| c.starts_with(token))
+                        .collect();
+                }
+                return unique_form_targets(app)
+                    .into_iter()
+                    .filter(|c| c.starts_with(token))
+                    .collect();
+            }
+            return vec![];
+        }
+        if noun == "hijack" {
+            if head.len() == 2 {
+                return unique_form_targets(app)
+                    .into_iter()
+                    .filter(|c| c.starts_with(token))
+                    .collect();
+            }
+            if head.len() == 3 {
+                return complete_path(token);
+            }
+            return vec![];
         }
         if matches!(head[1], "set-value" | "visibility" | "unlock")
             && !head[2..].iter().any(|s| !s.starts_with("--"))
@@ -1645,6 +1754,11 @@ mod tests {
         assert_eq!(
             opts,
             vec![
+                "formset".to_string(),
+                "form".to_string(),
+                "question".to_string(),
+                "page".to_string(),
+                "hijack".to_string(),
                 "set-value".to_string(),
                 "visibility".to_string(),
                 "unlock".to_string()
@@ -1656,6 +1770,124 @@ mod tests {
             opts.is_empty(),
             "unique candidate completes directly, no menu"
         );
+    }
+
+    #[test]
+    fn complete_hii_nouns_add_targets_items_and_paths() {
+        let mut app = crate::app::App::new();
+        app.forms.forms = vec![
+            uefi_proto::FormInfo {
+                form_id: "t:0x19:0".into(),
+                formset_guid: "SET-A".into(),
+                form_id_ifr: 10001,
+                title: "Main".into(),
+                visible: true,
+            },
+            uefi_proto::FormInfo {
+                form_id: "t:0x19:0".into(),
+                formset_guid: "SET-A".into(),
+                form_id_ifr: 10019,
+                title: "Serial".into(),
+                visible: false,
+            },
+        ];
+        let (rep, _) = complete(&app, "hii form ");
+        assert_eq!(
+            rep.as_deref(),
+            Some("hii form add"),
+            "единственный кандидат инлайн-дополняется (контракт complete)"
+        );
+        let (rep, _) = complete(&app, "hii formset ");
+        assert_eq!(rep.as_deref(), Some("hii formset add"));
+
+        let (rep, _) = complete(&app, "hii form add ");
+        assert_eq!(
+            rep.as_deref(),
+            Some("hii form add t:0x19:0"),
+            "голые target-кандидаты, дедуп по двум формам одного target"
+        );
+        let (rep, _) = complete(&app, "hii hijack ");
+        assert_eq!(rep.as_deref(), Some("hii hijack t:0x19:0"));
+        let (_, opts) = complete(&app, "hii question add ");
+        assert_eq!(
+            opts,
+            vec!["t:0x19:0#10001".to_string(), "t:0x19:0#10019".to_string()],
+            "question add — item-кандидаты target#form_id (form_id десятичное)"
+        );
+    }
+
+    #[test]
+    fn complete_path_lists_dir_entries_with_slash_for_dirs() {
+        let td = tempfile::TempDir::new().unwrap();
+        std::fs::write(td.path().join("schema-a.json"), "{}").unwrap();
+        std::fs::write(td.path().join("schema-b.json"), "{}").unwrap();
+        std::fs::write(td.path().join(".hidden.json"), "{}").unwrap();
+        std::fs::create_dir(td.path().join("fixtures")).unwrap();
+        let base = td.path().display().to_string();
+        assert_eq!(
+            complete_path(&format!("{base}/schema-")),
+            vec![
+                format!("{base}/schema-a.json"),
+                format!("{base}/schema-b.json")
+            ]
+        );
+        assert_eq!(
+            complete_path(&format!("{base}/fix")),
+            vec![format!("{base}/fixtures/")],
+            "каталог получает / — следующий Tab спускается внутрь"
+        );
+        assert_eq!(
+            complete_path(&format!("{base}/.")),
+            vec![format!("{base}/.hidden.json")],
+            "скрытые — только по явному точечному префиксу"
+        );
+        assert!(complete_path(&format!("{base}/no-such-dir-9f1/x")).is_empty());
+    }
+
+    #[test]
+    fn complete_hii_add_file_position_is_path_completion() {
+        let td = tempfile::TempDir::new().unwrap();
+        std::fs::write(td.path().join("schema-x.json"), "{}").unwrap();
+        let base = td.path().display().to_string();
+        let mut app = crate::app::App::new();
+        app.forms.forms = vec![uefi_proto::FormInfo {
+            form_id: "t:0x19:0".into(),
+            formset_guid: "SET-A".into(),
+            form_id_ifr: 10001,
+            title: "Main".into(),
+            visible: true,
+        }];
+        let (rep, _) = complete(&app, &format!("hii formset add {base}/schema-x"));
+        assert_eq!(
+            rep.as_deref(),
+            Some(format!("hii formset add {base}/schema-x.json").as_str())
+        );
+        let (rep, _) = complete(&app, &format!("hii form add t:0x19:0 {base}/schema-x"));
+        assert_eq!(
+            rep.as_deref(),
+            Some(format!("hii form add t:0x19:0 {base}/schema-x.json").as_str())
+        );
+        let (rep, _) = complete(&app, &format!("hii hijack t:0x19:0 {base}/schema-x"));
+        assert_eq!(
+            rep.as_deref(),
+            Some(format!("hii hijack t:0x19:0 {base}/schema-x.json").as_str())
+        );
+    }
+
+    #[test]
+    fn complete_ffs_flag_and_formset_guid_value() {
+        let mut app = crate::app::App::new();
+        app.forms.forms = vec![uefi_proto::FormInfo {
+            form_id: "t:0x19:0".into(),
+            formset_guid: "SET-A".into(),
+            form_id_ifr: 10001,
+            title: "Main".into(),
+            visible: true,
+        }];
+        let (rep, _) = complete(&app, "hii formset add f.json --");
+        assert_eq!(rep.as_deref(), Some("hii formset add f.json --ffs"));
+        let (rep, _) = complete(&app, "hii formset add f.json --ffs ");
+        assert_eq!(rep.as_deref(), Some("hii formset add f.json --ffs SET-A"));
     }
 
     #[test]
