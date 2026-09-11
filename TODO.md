@@ -2584,3 +2584,38 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   identity_op-хвосты в тест-коде копятся незаметно (8 сайтов фикстур Task 6
   почищены в Task 14 цикла A). Контекст: добавить `--all-targets` в
   финальные гейты циклов (AGENTS.md).
+
+## Находки финального ревью ветки tui-forms-v1 (2026-09-11)
+
+> Финальное ревью всей ветки (7 задач, все task-reviewed): Critical — нет,
+> только Minor. Must-fix Finding 1 (комплишен `:forms`/`:f`/`:filter` в
+> COMMANDS) исправлен fix-коммитом этой же ветки; ниже — отложенные миноры.
+
+* [ ] **uefi-tui (Forms V2): детали-панель не скроллит длинные списки
+  вопросов** — Paragraph без scroll, j/k в Details ничего не делают; на
+  HNX99TF ~31 вопрос/форма в среднем — хвост списка не виден. Нужен scroll.
+  Контекст: `crates/uefi-tui/src/ui` (Forms details-рендер).
+* [ ] **uefi-tui (Forms V2): ошибка ленивого fetch'а вопросов глотается** —
+  `let _ = refresh_questions_if_needed` в `main.rs`; при ошибке RPC панель
+  висит на «loading…». Показывать ошибку в status_msg. Контекст:
+  `crates/uefi-tui/src/main.rs` (два call-сайта).
+* [ ] **uefi-engine: HiiListQuestions молча режет form_id u32→u16** — при
+  form_id > 65535 значение усекается без диагностики. Добавить
+  валидацию/ошибку. Контекст: `crates/uefi-engine/src/rpc/server.rs`
+  (handler hii_list_questions).
+* [ ] **uefi-engine: collect_string_sections дублирует схему walk_sections**
+  — обход секций у questions.rs и forms.rs повторяет друг друга; извлечь
+  общий хелпер при появлении третьего потребителя. Контекст:
+  `crates/uefi-engine/src/hii/questions.rs:74` vs
+  `crates/uefi-engine/src/hii/forms.rs:51`.
+* [ ] **uefi-engine: hii_list_questions handler без tracing::info!
+  успех-строки** — паритет с hii_question_info. Контекст:
+  `crates/uefi-engine/src/rpc/server.rs` (оба handler'а рядом).
+* [ ] **uefi-engine: bare PE form-пакеты дают пустой список вопросов** —
+  form_package_ranges не покрывает bare_form_packages: формы bare-канала
+  видны в list-forms, вопросы по ним не возвращаются. Асимметрия уровня
+  движка, не TUI. Контекст: `crates/uefi-engine/src/hii/mod.rs:209`.
+* [ ] **uefi-tui: App::forms_sanitize_cursor не используется** —
+  forms_set_expanded клампит курсор сам, refresh_forms сбрасывает в 0.
+  Кандидат на использование в V2 (скролл/навигация) или удаление.
+  Контекст: `crates/uefi-tui/src/app.rs:333`.
