@@ -31,13 +31,13 @@ pub(crate) fn package_edges(pkg: &[u8]) -> Vec<(u16, u16)> {
 /// RAW / PE-resource / bare, рекурсивно через compression). NOT
 /// read-only-ограничен — работает в любом ImageMode; висячие цели
 /// отдаются как есть. Спека tui-forms-view §3.5.
-pub fn collect_edges(image: &Image) -> Vec<(String, u32, u32)> {
+pub fn collect_edges(image: &Image) -> Vec<uefi_proto::FormEdge> {
     let mut out = Vec::new();
     walk_files(&image.root, &mut out);
     out
 }
 
-fn walk_files(node: &FfsNode, out: &mut Vec<(String, u32, u32)>) {
+fn walk_files(node: &FfsNode, out: &mut Vec<uefi_proto::FormEdge>) {
     for child in &node.children {
         if child.node_type == FfsType::File {
             collect_file_edges(child, out);
@@ -46,14 +46,14 @@ fn walk_files(node: &FfsNode, out: &mut Vec<(String, u32, u32)>) {
     }
 }
 
-fn collect_file_edges(file: &FfsNode, out: &mut Vec<(String, u32, u32)>) {
+fn collect_file_edges(file: &FfsNode, out: &mut Vec<uefi_proto::FormEdge>) {
     if file.guid.is_none() {
         return;
     }
     walk_sections(file, out);
 }
 
-fn walk_sections(node: &FfsNode, out: &mut Vec<(String, u32, u32)>) {
+fn walk_sections(node: &FfsNode, out: &mut Vec<uefi_proto::FormEdge>) {
     for child in &node.children {
         if child.node_type != FfsType::Section {
             continue;
@@ -91,10 +91,14 @@ fn walk_sections(node: &FfsNode, out: &mut Vec<(String, u32, u32)>) {
     }
 }
 
-fn push_edges(pkg: &[u8], formset: &crate::types::Guid, out: &mut Vec<(String, u32, u32)>) {
+fn push_edges(pkg: &[u8], formset: &crate::types::Guid, out: &mut Vec<uefi_proto::FormEdge>) {
     let guid = guid_to_upper_string(formset);
     for (parent, child) in package_edges(pkg) {
-        let e = (guid.clone(), u32::from(parent), u32::from(child));
+        let e = uefi_proto::FormEdge {
+            formset_guid: guid.clone(),
+            parent_form_id: u32::from(parent),
+            form_id: u32::from(child),
+        };
         if !out.contains(&e) {
             out.push(e);
         }
@@ -277,8 +281,22 @@ mod tests {
     fn collect_edges_walks_raw_section_and_keeps_dangling() {
         let edges = collect_edges(&mk_image(tree_pkg()));
         assert_eq!(edges.len(), 2);
-        assert_eq!(edges[0], (FORMSET_GUID.to_string(), 10001, 10019));
-        assert_eq!(edges[1], (FORMSET_GUID.to_string(), 10019, 10030));
+        assert_eq!(
+            edges[0],
+            uefi_proto::FormEdge {
+                formset_guid: FORMSET_GUID.to_string(),
+                parent_form_id: 10001,
+                form_id: 10019,
+            }
+        );
+        assert_eq!(
+            edges[1],
+            uefi_proto::FormEdge {
+                formset_guid: FORMSET_GUID.to_string(),
+                parent_form_id: 10019,
+                form_id: 10030,
+            }
+        );
     }
 
     #[test]
@@ -295,7 +313,14 @@ mod tests {
             .concat(),
         );
         let edges = collect_edges(&mk_image(pkg));
-        assert_eq!(edges, vec![(FORMSET_GUID.to_string(), 10001, 65535)]);
+        assert_eq!(
+            edges,
+            vec![uefi_proto::FormEdge {
+                formset_guid: FORMSET_GUID.to_string(),
+                parent_form_id: 10001,
+                form_id: 65535,
+            }]
+        );
     }
 
     #[test]

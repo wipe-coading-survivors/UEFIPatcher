@@ -747,6 +747,19 @@ impl EngineService for EngineServer {
     }
 
     #[tracing::instrument(skip(self, req), err)]
+    async fn hii_form_tree(
+        &self,
+        req: Request<HiiFormTreeRequest>,
+    ) -> RpcResult<HiiFormTreeResponse> {
+        let r = req.into_inner();
+        let img = self.get_or_load_image(&r.image_id).await?;
+        let edges = crate::hii::ref_tree::collect_edges(&img);
+        let _ = self.sm.touch(&img.session_id);
+        tracing::info!(image_id = %r.image_id, count = edges.len(), "hii form tree");
+        Ok(Response::new(HiiFormTreeResponse { edges }))
+    }
+
+    #[tracing::instrument(skip(self, req), err)]
     async fn hii_list_strings(
         &self,
         req: Request<HiiListStringsRequest>,

@@ -329,6 +329,18 @@ impl EngineService for MockEngine {
             ],
         }))
     }
+    async fn hii_form_tree(
+        &self,
+        _req: Request<HiiFormTreeRequest>,
+    ) -> Result<Response<HiiFormTreeResponse>, Status> {
+        Ok(Response::new(HiiFormTreeResponse {
+            edges: vec![FormEdge {
+                formset_guid: "11111111-2222-3333-4444-555555555555".into(),
+                parent_form_id: 10001,
+                form_id: 10019,
+            }],
+        }))
+    }
     async fn hii_form_set_add(
         &self,
         _req: Request<HiiFormSetAddRequest>,
