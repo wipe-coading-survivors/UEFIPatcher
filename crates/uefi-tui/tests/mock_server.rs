@@ -10,9 +10,40 @@ use tonic::{Request, Response, Status};
 use uefi_proto::engine_service_server::{EngineService, EngineServiceServer};
 use uefi_proto::*;
 
+/// Записанный schema-вызов: rpc-имя, поля запроса по роли (target =
+/// target/item_id/target_ffs_guid, extra = setupdata_guid hijack).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SchemaCall {
+    pub rpc: &'static str,
+    pub image_id: String,
+    pub target: String,
+    pub schema_json: String,
+    pub extra: String,
+}
+
 #[derive(Default)]
 pub struct MockEngine {
     pub sessions: Arc<Mutex<HashMap<String, String>>>,
+    pub schema_calls: Arc<Mutex<Vec<SchemaCall>>>,
+}
+
+impl MockEngine {
+    async fn record_schema(
+        &self,
+        rpc: &'static str,
+        image_id: &str,
+        target: &str,
+        schema_json: &str,
+        extra: &str,
+    ) {
+        self.schema_calls.lock().await.push(SchemaCall {
+            rpc,
+            image_id: image_id.into(),
+            target: target.into(),
+            schema_json: schema_json.into(),
+            extra: extra.into(),
+        });
+    }
 }
 
 #[tonic::async_trait]
@@ -343,28 +374,55 @@ impl EngineService for MockEngine {
     }
     async fn hii_form_set_add(
         &self,
-        _req: Request<HiiFormSetAddRequest>,
+        req: Request<HiiFormSetAddRequest>,
     ) -> Result<Response<HiiFormSetAddResponse>, Status> {
+        let r = req.into_inner();
+        self.record_schema(
+            "HiiFormSetAdd",
+            &r.image_id,
+            &r.target_ffs_guid,
+            &r.schema_json,
+            "",
+        )
+        .await;
         Ok(Response::new(HiiFormSetAddResponse {
-            new_ffs_id: "mock".into(),
-            inserted_form_ids: vec![],
-            string_ids: std::collections::HashMap::new(),
+            new_ffs_id: "mock-ffs-1".into(),
+            inserted_form_ids: vec![10101],
+            string_ids: [("title".to_string(), 600)].into(),
         }))
     }
     async fn hii_form_add(
         &self,
-        _req: Request<HiiFormAddRequest>,
+        req: Request<HiiFormAddRequest>,
     ) -> Result<Response<HiiFormAddResponse>, Status> {
+        let r = req.into_inner();
+        self.record_schema("HiiFormAdd", &r.image_id, &r.target, &r.schema_json, "")
+            .await;
         Ok(Response::new(HiiFormAddResponse {
-            inserted_form_ids: vec![],
-            string_ids: std::collections::HashMap::new(),
+            inserted_form_ids: vec![10101],
+            string_ids: [("title".to_string(), 600)].into(),
         }))
     }
     async fn hii_form_hijack(
         &self,
-        _req: Request<HiiFormHijackRequest>,
+        req: Request<HiiFormHijackRequest>,
     ) -> Result<Response<HiiFormHijackResponse>, Status> {
-        Ok(Response::new(HiiFormHijackResponse::default()))
+        let r = req.into_inner();
+        self.record_schema(
+            "HiiFormHijack",
+            &r.image_id,
+            &r.target,
+            &r.schema_json,
+            &r.setupdata_guid,
+        )
+        .await;
+        Ok(Response::new(HiiFormHijackResponse {
+            string_ids: [("title".to_string(), 600)].into(),
+            form_ifr_start: 0x1000,
+            form_ifr_end: 0x1100,
+            unlock_flips: vec!["pkg+0x1c: 01 00 -> ff ff".into()],
+            ..Default::default()
+        }))
     }
     async fn hii_gates_list(
         &self,
@@ -442,15 +500,33 @@ impl EngineService for MockEngine {
     }
     async fn hii_question_add(
         &self,
-        _req: Request<HiiQuestionAddRequest>,
+        req: Request<HiiQuestionAddRequest>,
     ) -> Result<Response<HiiQuestionAddResponse>, Status> {
-        Ok(Response::new(HiiQuestionAddResponse::default()))
+        let r = req.into_inner();
+        self.record_schema("HiiQuestionAdd", &r.image_id, &r.target, &r.schema_json, "")
+            .await;
+        Ok(Response::new(HiiQuestionAddResponse {
+            questions: vec![HiiQuestionAddOutcome {
+                question_id: 0x258,
+                string_ids: [("prompt".to_string(), 600)].into(),
+                spf_record_offset: 0x1C,
+            }],
+            refs: vec![],
+        }))
     }
     async fn hii_page_add(
         &self,
-        _req: Request<HiiPageAddRequest>,
+        req: Request<HiiPageAddRequest>,
     ) -> Result<Response<HiiPageAddResponse>, Status> {
-        Ok(Response::new(HiiPageAddResponse::default()))
+        let r = req.into_inner();
+        self.record_schema("HiiPageAdd", &r.image_id, &r.target, &r.schema_json, "")
+            .await;
+        Ok(Response::new(HiiPageAddResponse {
+            form_id: 10019,
+            slot: 1,
+            page_offset: 42,
+            title_string_id: 600,
+        }))
     }
     async fn image_snapshot_create(
         &self,
@@ -482,11 +558,12 @@ impl EngineService for MockEngine {
     }
 }
 
-pub async fn start_mock(sock: &Path) -> JoinHandle<()> {
+pub async fn start_mock(sock: &Path) -> (JoinHandle<()>, Arc<Mutex<Vec<SchemaCall>>>) {
     let _ = std::fs::remove_file(sock);
     let listener = tokio::net::UnixListener::bind(sock).unwrap();
     let incoming = UnixListenerStream::new(listener);
     let mock = MockEngine::default();
+    let schema_calls = mock.schema_calls.clone();
     let handle = tokio::spawn(async move {
         Server::builder()
             .add_service(EngineServiceServer::new(mock))
@@ -495,7 +572,7 @@ pub async fn start_mock(sock: &Path) -> JoinHandle<()> {
             .unwrap();
     });
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    handle
+    (handle, schema_calls)
 }
 
 #[cfg(test)]
@@ -535,6 +612,48 @@ mod tests {
             .into_inner();
         assert!(!resp.session_id.is_empty());
         assert!(!resp.token.is_empty());
+    }
+
+    #[tokio::test]
+    async fn schema_rpcs_record_calls_and_fixture_responses() {
+        let td = TempDir::new().unwrap();
+        let sock = td.path().join("mock.sock");
+        let (_h, calls) = start_mock(&sock).await;
+        let sock_str = sock.to_string_lossy().to_string();
+        let channel = Endpoint::try_from("http://localhost")
+            .unwrap()
+            .connect_with_connector(service_fn(move |_: http::Uri| {
+                let s = sock_str.clone();
+                async move {
+                    Ok::<_, std::io::Error>(TokioIo::new(tokio::net::UnixStream::connect(s).await?))
+                }
+            }))
+            .await
+            .unwrap();
+        let mut client = EngineServiceClient::new(channel);
+        let r = client
+            .hii_form_set_add(HiiFormSetAddRequest {
+                image_id: "img-1".into(),
+                schema_json: "{\"forms\":[]}".into(),
+                target_ffs_guid: "FFS-GUID".into(),
+            })
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(r.new_ffs_id, "mock-ffs-1");
+        assert_eq!(r.inserted_form_ids, vec![10101]);
+        let calls = calls.lock().await;
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            calls[0],
+            SchemaCall {
+                rpc: "HiiFormSetAdd",
+                image_id: "img-1".into(),
+                target: "FFS-GUID".into(),
+                schema_json: "{\"forms\":[]}".into(),
+                extra: String::new(),
+            }
+        );
     }
 
     #[tokio::test]
