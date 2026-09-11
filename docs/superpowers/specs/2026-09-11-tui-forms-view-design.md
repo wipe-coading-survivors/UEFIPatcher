@@ -141,6 +141,40 @@ package → walker).
 ленивость обязательна; консьюмеры `HiiListForms` (CLI TSV-вывод) не меняются; item_id-паттерн
 уже per-action.
 
+### 3.5 Engine-добавка V2: `HiiFormTree` (REF-дерево форм)
+
+IFR хранит формы плоско — иерархии «форма в форме» нет. Вложенность реального Setup-меню
+(Main → Advanced → Serial Port 1 Configuration) строится браузером из **REF-вопросов**: в
+родительской форме стоит `IFR_REF_OP`, чей payload содержит `FormId` целевой формы. Все
+REF-варианты (REF..REF5) — один опкод `0x0F` (в r-efi отдельных констант REF2..REF5 нет),
+различаются длиной; `FormId u16 @ +13` при `length >= 15` — паттерн чтения уже реализован в
+движке (`gates.rs`, ветка `Wraps::Ref`).
+
+```proto
+rpc HiiFormTree(HiiFormTreeRequest) returns (HiiFormTreeResponse);
+message FormEdge {
+  string formset_guid = 1;
+  uint32 parent_form_id = 2;
+  uint32 form_id = 3;      // цель REF-вопроса
+}
+message HiiFormTreeRequest  { string image_id = 1; }
+message HiiFormTreeResponse { repeated FormEdge edges = 1; }
+```
+
+Драйвер — walker поверх того же `walk_statements` (quirk-маски/bounds — общий фундамент,
+риск §5): в форме X каждый REF-опкод даёт ребро `X → FormId@+13`; рёбра дедуплицируются;
+висячие цели (формы нет в `HiiListForms`) отдаются как есть — не молча отбрасываются.
+Отдельный RPC (не поле в `FormInfo`) по той же причине, что и 3.4: TSV-вывод
+`uefi-cli hii form list` не меняется.
+
+TUI строит дерево клиент-side: корни — формы без входящих рёбер (первая форма формсета,
+затем «сироты» в порядке появления); дети группируются по родителю; форма с несколькими
+родителями показывается у каждого. Рендер — вложенные отступы, `h`/`l` сворачивают и формы
+(не только формсеты); защита от циклов — visited при обходе. Details-панель показывает
+полный путь (`Main → Advanced → Serial Port 1 Configuration`) — это дизамбигуирует
+одинаковые титулы (две «Boot» в одном формсете, гейт-находка V1). Плоский режим (текущий)
+остаётся переключателем — дерево не должно прятать «сирот».
+
 ## 4. Лестница V1–V3
 
 ### V1 — Просмотр (forms + questions + strings, read-only)
@@ -158,6 +192,8 @@ walker (3.4), strings-браузер, `:forms`/`:image`.
 ### V2 — Правки на месте
 
 Состав:
+- REF-дерево форм (3.5): список строится по рёбрам `HiiFormTree` — вложенные отступы, путь в
+  details; плоский режим — переключателем;
 - форма: `v` — toggle visibility (`HiiSetFormVisibility`), `u` — unlock (`HiiUnlock`); результат —
   applied_flips в status_msg + re-fetch форм (visible-маркер меняется);
 - детали: блок гейтов из `HiiGatesList` (gate_kind/expression/flippable);
@@ -168,7 +204,9 @@ walker (3.4), strings-браузер, `:forms`/`:image`.
 
 **Гейт V2:** unlock/set-value из TUI дают байт-в-байт тот же образ, что те же операции из CLI
 (sha256 сравнение сохранённых образов); visible-маркер в TUI сходится с `hii form list` после
-правки.
+правки. REF-дерево: у «Serial Port 1 Configuration» виден родитель «Advanced» (путь в details);
+две «Boot» различимы путём; сумма узлов дерева == `hii form list` по формсету (с учётом кратных
+родителей); висячие REF-цели помечены, циклы не зацикливают рендер.
 
 ### V3 — Операции добавления (schema-файлы)
 
@@ -214,6 +252,94 @@ add `. Вывод (inserted ids, string_ids) — в status_msg + refresh. Таб
   реализации.
 - Каждая ступень заканчивается `cargo test --all` + `cargo clippy --all -- -D warnings` (урок
   `9933f59`).
+
+## 7. Гейт V1 — сценарий для владельца (аддендум, 2026-09-11)
+
+Engine-часть гейта автоматизирована (`real_image.rs::
+hii_list_questions_real_image_consistent_with_question_info`, #[ignore]).
+Ручная TUI-часть (запускается владельцем на живом движке и HNX99TF):
+
+1. `cargo run -p uefi-engine` (сокет по умолчанию), в другом терминале
+   `cargo run -p uefi-tui`;
+2. `:open <путь к HNX99TF-образу> --mode write`;
+3. `Tab` → Forms-view: формсеты развёрнуты, титулы форм видны (сверка с
+   `uefi-cli hii form list` — количество/названия/visible-маркеры);
+4. `j/k` до формы с вопросами → правая панель: вопросы с kind и prompt;
+   сверка выборочного вопроса с `uefi-cli hii question info <item_id>`;
+5. `S` → strings-браузер, `/` → фильтр по подстроке — счётчик строк
+   сходится с `uefi-cli hii string list | grep -ci <подстрока>`;
+6. `Tab` → возврат в Image-view без потери состояния дерева.
+
+Вердикт (все пункты да/нет + скриншоты) — аддендумом сюда; при негативе —
+бисект по задаче цикла. Успех = переход к плану V2.
+
+### Вердикт владельца (2026-09-11)
+
+Гейт пройден на живом образе HNX99TF (вкладка Forms, вопросы, strings,
+фильтр). Общая оценка: «результат просто потрясающий». Курсорная подсветка
+списков Forms/Strings добавлена по находке гейта (`bac5598`).
+
+Замечания (не блокируют, внесены в backlog TODO.md):
+1. Формы плоские: у подчинённых форм не видно родителя — «Serial Port 1
+   Configuration» показывает только формсет, родитель «Advanced» не виден.
+   IFR хранит формы плоско; вложенность реального меню строится из
+   REF-вопросов (`IFR_REF_OP` 0x0F, FormId u16 @ +13; паттерн чтения —
+   `gates.rs:201`). Решение — REF-дерево форм в V2 (TODO).
+2. Одинаковые титулы в одном формсете (две «Boot» в 7B59104A-C00D) не
+   дизамбигуированы. Частично закрыто строкой «Form ID» в деталях
+   (`4320e54`); полное решение — путь по REF-дереву (V2).
+
+V1 засчитана; переход к плану V2 (правки: visibility/unlock/set-value; REF-дерево форм
+включено в V2-состав — дизайн §3.5, решение владельца 2026-09-11).
+
+## 8. Гейт V2 — сценарий для владельца (аддендум, 2026-09-11)
+
+Engine-часть автоматизирована (`real_image.rs::form_tree_real_image_edges_consistent`,
+#[ignore]). Ручная TUI-часть (на живом движке и HNX99TF; байт-в-байт сравнения —
+sha256sum):
+
+1. `cargo run -p uefi-engine`, в другом терминале `cargo run -p uefi-tui`;
+   `:open <HNX99TF> --mode write`; `Tab` → Forms-view.
+2. REF-дерево: «Serial Port 1 Configuration» вложена в «Advanced» (отступ), в
+   details — путь «… → Advanced → Serial Port 1 Configuration»; сверка parent
+   с `uefi-cli hii form list`.
+3. Две «Boot» в формсете 7B59104A-C00D различимы путём в details.
+4. `T` — плоский режим (V1-вид) и обратно; сумма Form-строк дерева ≥
+   `hii form list` по формсету (кратные родители учитываются дважды).
+5. Висячие REF-цели помечены «! … (dangling REF target)»; навигация не
+   зацикливается на циклических рёбрах.
+6. `v` на видимой форме → маркер `[H]`, статус «visibility …: off»; сверка с
+   `uefi-cli hii form list` после правки.
+7. Unlock-паритет: `:snapshot`, `u` на форме, `:save /tmp/tui-unlock.bin`;
+   `:restore`, из CLI `uefi-cli hii form unlock <item>` + сохранение образа;
+   `sha256sum` обоих файлов совпадает.
+8. Set-value-паритет: `:snapshot`, Details-focus → `j` до вопроса → `Enter`
+   (prefill `hii set-value …`), ввести значение, `:save /tmp/tui-setval.bin`;
+   `:restore`, CLI `uefi-cli hii question set-value <item> <value>` +
+   сохранение; sha256 совпадает. Перед вводом details показывает диапазон/
+   options (подсказка).
+
+Вердикт (все пункты да/нет + скриншоты) — аддендумом сюда; при негативе —
+бисект по задаче плана. Успех = переход к плану V3 (операции добавления).
+
+### Вердикт владельца по гейту V2 (2026-09-11) — ПОЗИТИВНЫЙ
+
+Прогнано на живом образе (HNX99TF, /tmp/uefipatcher-test): TUI-часть — REF-дерево
+с путями, T/S/h/u/v/Enter-интерактив, Details с опциями-строками и гейтами;
+CLI-часть — `image open --mode write` → `hii form unlock` → `hii question
+set-value 0x5` → `image save`. Паритет §8: sha256 TUI- и CLI-результатов одной
+последовательности от одного источника совпали байт-в-байт (`5722e79c…`).
+Попутно гейт вскрыл и закрыл 7 раундов правок (план, «Правки по итогам гейта»):
+тексты опций, v=unsuppress, unlock skip-unlocked, курсор при сворачивании,
+статус image:id, hii-легенда в stderr, `hii question list`.
+
+> «ЭТО ПРОРЫВ, даже без учета V3, я до сих пор под впечатлением от проделанной
+> работы, когда у нас впервые получилось вставить получить вывод на серийную
+> консоль из биуса, и добавить формы, теперь я вижу как это сделать сам!!!»
+> — владелец, 2026-09-11
+
+Ступень V2 закрыта. Следующий шаг дуги — план V3 (операции добавления:
+`:hii question-add/page-add` из TUI, schema-файлы, решение D5).
 
 ## Решения (decisions log)
 

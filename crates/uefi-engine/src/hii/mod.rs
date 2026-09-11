@@ -10,6 +10,8 @@ pub mod ifr_builder;
 pub mod nvar;
 pub mod package_list;
 pub mod pe_resource;
+pub mod questions;
+pub mod ref_tree;
 pub mod schema;
 pub mod spf;
 pub mod string_pack;
@@ -347,7 +349,7 @@ pub fn unlock(image: &mut Image, item_id: &str) -> Result<UnlockOutcome, HiiErro
             if found.is_empty() {
                 continue;
             }
-            match gates::plan_gates(pkg, &found) {
+            match gates::plan_gates_skip_unlocked(pkg, &found) {
                 Ok(flips) => {
                     for gate in &found {
                         infos.push(gate_info(pkg, gate));
@@ -404,7 +406,11 @@ fn question_kind_str(kind: values::QuestionKind) -> &'static str {
     }
 }
 
-fn question_info_proto(form_id: u16, map: &values::QuestionMap) -> uefi_proto::QuestionInfo {
+fn question_info_proto(
+    form_id: u16,
+    map: &values::QuestionMap,
+    texts: &HashMap<u16, String>,
+) -> uefi_proto::QuestionInfo {
     uefi_proto::QuestionInfo {
         form_id: form_id as u32,
         question_id: map.question_id as u32,
@@ -432,6 +438,7 @@ fn question_info_proto(form_id: u16, map: &values::QuestionMap) -> uefi_proto::Q
                 string_id: o.string_id as u32,
                 value: o.value,
                 flags: o.flags as u32,
+                text: texts.get(&o.string_id).cloned().unwrap_or_default(),
             })
             .collect(),
         defaults: map
@@ -451,17 +458,26 @@ fn find_question_map(
     target: &crate::types::Target,
     form_id: u16,
     question_id: u16,
-) -> Result<values::QuestionMap, HiiError> {
-    let node =
-        crate::parser::target::find_item(&image.root, target).map_err(|_| HiiError::NotFound)?;
+) -> Result<(values::QuestionMap, HashMap<u16, String>), HiiError> {
+    let path =
+        crate::parser::target::find_item_path(&image.root, target).ok_or(HiiError::NotFound)?;
+    let mut node = &image.root;
+    for &i in &path {
+        node = &node.children[i];
+    }
     if node.node_type != FfsType::Section {
         return Err(HiiError::NotASetupItem);
     }
+    let mut file = &image.root;
+    for &i in &path[..path.len() - 1] {
+        file = &file.children[i];
+    }
+    let texts = questions::prompt_texts(file);
     for (start, len) in form_package_ranges(node) {
         if let Some(map) =
             values::find_question(&node.body[start..start + len], form_id, question_id)
         {
-            return Ok(map);
+            return Ok((map, texts));
         }
     }
     Err(HiiError::NotFound)
@@ -472,8 +488,48 @@ pub fn question_info(image: &Image, item_id: &str) -> Result<uefi_proto::Questio
     let Some(question_id) = question_id else {
         return Err(HiiError::NotFound);
     };
-    let map = find_question_map(image, &target, form_id, question_id)?;
-    Ok(question_info_proto(form_id, &map))
+    let (map, texts) = find_question_map(image, &target, form_id, question_id)?;
+    Ok(question_info_proto(form_id, &map, &texts))
+}
+
+/// Вопросы формы по target-строке (например "GUID:0x19:0") + числовой
+/// form_id. Read-only: работает в любом ImageMode. НЕ проверяет
+/// writability-барьеры — это просмотр (мутации — set_value/unlock).
+/// Спека tui-forms-view §3.4.
+pub fn list_questions(
+    image: &Image,
+    target_str: &str,
+    form_id: u16,
+) -> Result<Vec<uefi_proto::QuestionSummary>, HiiError> {
+    let target = crate::parser::target::parse_target(target_str).map_err(|_| HiiError::NotFound)?;
+    let path =
+        crate::parser::target::find_item_path(&image.root, &target).ok_or(HiiError::NotFound)?;
+    let mut node = &image.root;
+    for &i in &path {
+        node = &node.children[i];
+    }
+    if node.node_type != FfsType::Section {
+        return Err(HiiError::NotASetupItem);
+    }
+    let mut file = &image.root;
+    for &i in &path[..path.len() - 1] {
+        file = &file.children[i];
+    }
+    let titles = questions::prompt_texts(file);
+    let mut out = Vec::new();
+    for (start, len) in form_package_ranges(node) {
+        for q in questions::questions(&node.body[start..start + len], form_id) {
+            out.push(uefi_proto::QuestionSummary {
+                question_id: q.question_id as u32,
+                kind: question_kind_str(q.kind).to_string(),
+                prompt: titles.get(&q.prompt_sid).cloned().unwrap_or_default(),
+                var_store_id: q.var_store_id as u32,
+                var_offset: q.var_offset as u32,
+                width: q.width as u32,
+            });
+        }
+    }
+    Ok(out)
 }
 
 fn validate_set_value(map: &values::QuestionMap, value: u64) -> Result<u8, HiiError> {
@@ -632,8 +688,8 @@ pub fn set_value(image: &mut Image, item_id: &str, value: u64) -> Result<ValueOu
     let Some(question_id) = question_id else {
         return Err(HiiError::NotFound);
     };
-    let map = find_question_map(image, &target, form_id, question_id)?;
-    let info = question_info_proto(form_id, &map);
+    let (map, texts) = find_question_map(image, &target, form_id, question_id)?;
+    let info = question_info_proto(form_id, &map, &texts);
     let width = validate_set_value(&map, value)?;
     let varstore = map.varstore.as_ref().ok_or_else(|| {
         HiiError::ValueOpUnsupported("question varstore is not declared in the form package".into())
@@ -2787,6 +2843,35 @@ mod tests {
         assert_eq!(image.root.children[0].children[0].children[0].body, pkg);
     }
 
+    #[test]
+    fn unlock_skips_already_unlocked_gate() {
+        let mut eq = vec![r_efi::hii::IFR_EQ_ID_VAL_OP, 0x06, 0xB4, 0x00];
+        eq.extend_from_slice(&0xFFFFu16.to_le_bytes());
+        let pkg = forms_pkg(
+            [
+                g_form(10002),
+                g_opcode(r_efi::hii::IFR_SUPPRESS_IF_OP, true, &[]),
+                eq,
+                g_ref(10029),
+                g_end(),
+                g_end(),
+                g_end(),
+            ]
+            .concat(),
+        );
+        let mut image = vendor_image_with(0x19, pkg.clone());
+        let outcome = unlock(&mut image, VENDOR_FORM_ITEM).unwrap();
+        assert!(
+            outcome.applied.is_empty(),
+            "гейт с константой 0xFFFF уже разблокирован — флипать нечего"
+        );
+        assert_eq!(outcome.gates.len(), 1, "гейт всё равно перечислен в infos");
+        assert_eq!(
+            image.root.children[0].children[0].children[0].body, pkg,
+            "байты пакета не тронуты"
+        );
+    }
+
     const NVAR_FV0_GUID_STR: &str = "10000000-0000-4000-8000-000000000001";
     const NVAR_FV2_GUID_STR: &str = "20000000-0000-4000-8000-000000000002";
 
@@ -2839,6 +2924,36 @@ mod tests {
         )
     }
 
+    const SIBT_STRING_SCSU: u8 = 0x10;
+    const SIBT_END: u8 = 0x00;
+
+    fn test_string_pkg() -> Vec<u8> {
+        let texts = ["Main", "Hidden", "Enabled"];
+        let lang = "eng";
+        let hdr_size: u32 = (46 + lang.len() + 1) as u32;
+        let mut b = vec![0u8; 3];
+        b.push(r_efi::hii::PACKAGE_STRINGS);
+        b.extend_from_slice(&hdr_size.to_le_bytes());
+        b.extend_from_slice(&hdr_size.to_le_bytes());
+        while b.len() < 44 {
+            b.push(0);
+        }
+        b.extend_from_slice(&0u16.to_le_bytes());
+        b.extend_from_slice(lang.as_bytes());
+        b.push(0);
+        for t in texts {
+            b.push(SIBT_STRING_SCSU);
+            b.extend_from_slice(t.as_bytes());
+            b.push(0);
+        }
+        b.push(SIBT_END);
+        let len = b.len() as u32;
+        b[0] = (len & 0xFF) as u8;
+        b[1] = ((len >> 8) & 0xFF) as u8;
+        b[2] = ((len >> 16) & 0xFF) as u8;
+        b
+    }
+
     fn nvar_entry(
         name: Option<&str>,
         data: &[u8],
@@ -2878,7 +2993,9 @@ mod tests {
         nvar_file.guid = Some(Guid::from_str(NVAR_FV0_GUID_STR).unwrap());
         let mut forms_section = mk_node(FfsType::Section, value_forms_pkg(), vec![]);
         forms_section.subtype = 0x19;
-        let mut forms_file = mk_node(FfsType::File, vec![], vec![forms_section]);
+        let mut strings_section = mk_node(FfsType::Section, test_string_pkg(), vec![]);
+        strings_section.subtype = 0x19;
+        let mut forms_file = mk_node(FfsType::File, vec![], vec![forms_section, strings_section]);
         forms_file.guid = Some(Guid::from_str(VENDOR_FORMSET_GUID_STR).unwrap());
         let fv0 = mk_node(FfsType::Volume, vec![], vec![nvar_file, forms_file]);
 
@@ -2940,7 +3057,43 @@ mod tests {
             q.options.iter().map(|o| o.flags).collect::<Vec<_>>(),
             vec![0x30, 0x00]
         );
+        assert_eq!(
+            q.options
+                .iter()
+                .map(|o| o.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["", "Enabled"],
+            "sid 3 резолвится через string-пакет файла, sid 4 в пакете нет — пустой текст"
+        );
         assert!(q.defaults.is_empty());
+    }
+
+    #[test]
+    fn list_questions_reports_vendor_form() {
+        let mut image = image_with_nvar_stores();
+        image.mode = ImageMode::Read;
+        let target = format!("{}:0x19:0", VENDOR_FORMSET_GUID_STR.to_lowercase());
+        let qs = list_questions(&image, &target, 10029).unwrap();
+        assert_eq!(qs.len(), 1);
+        let q = &qs[0];
+        assert_eq!(q.question_id, 0x3B);
+        assert_eq!(q.kind, "one_of");
+        assert_eq!(q.var_store_id, 1);
+        assert_eq!(q.var_offset, 0x3A);
+        assert_eq!(q.width, 1);
+        assert!(q.prompt.is_empty(), "fixture has no string package");
+    }
+
+    #[test]
+    fn list_questions_bad_target_and_unknown_form() {
+        let mut image = image_with_nvar_stores();
+        image.mode = ImageMode::Read;
+        assert!(matches!(
+            list_questions(&image, "not-a-target", 10029),
+            Err(HiiError::NotFound)
+        ));
+        let target = format!("{}:0x19:0", VENDOR_FORMSET_GUID_STR.to_lowercase());
+        assert!(list_questions(&image, &target, 65535).unwrap().is_empty());
     }
 
     #[test]

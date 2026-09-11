@@ -287,6 +287,25 @@ impl Client {
             .forms)
     }
 
+    pub async fn hii_list_questions(
+        &mut self,
+        image_id: &str,
+        target: &str,
+        form_id: u32,
+    ) -> Result<Vec<QuestionSummary>, AppError> {
+        let req = HiiListQuestionsRequest {
+            image_id: image_id.into(),
+            target: target.into(),
+            form_id,
+        };
+        Ok(self
+            .inner
+            .hii_list_questions(auth_req(&self.state, req))
+            .await?
+            .into_inner()
+            .questions)
+    }
+
     pub async fn hii_list_strings(&mut self, image_id: &str) -> Result<Vec<StringInfo>, AppError> {
         let req = HiiListStringsRequest {
             image_id: image_id.into(),

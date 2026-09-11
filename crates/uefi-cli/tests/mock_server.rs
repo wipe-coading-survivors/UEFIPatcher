@@ -308,6 +308,37 @@ impl EngineService for MockEngine {
             question: Some(mock_question()),
         }))
     }
+    async fn hii_list_questions(
+        &self,
+        _req: Request<HiiListQuestionsRequest>,
+    ) -> Result<Response<HiiListQuestionsResponse>, Status> {
+        Ok(Response::new(HiiListQuestionsResponse {
+            questions: vec![
+                QuestionSummary {
+                    question_id: 0x22,
+                    kind: "checkbox".into(),
+                    prompt: "Serial Port".into(),
+                    var_store_id: 21,
+                    var_offset: 0x0,
+                    width: 1,
+                },
+                QuestionSummary {
+                    question_id: 0x23,
+                    kind: "one_of".into(),
+                    prompt: "Change Settings".into(),
+                    var_store_id: 21,
+                    var_offset: 0x1,
+                    width: 1,
+                },
+            ],
+        }))
+    }
+    async fn hii_form_tree(
+        &self,
+        _req: Request<HiiFormTreeRequest>,
+    ) -> Result<Response<HiiFormTreeResponse>, Status> {
+        Ok(Response::new(HiiFormTreeResponse { edges: vec![] }))
+    }
     async fn hii_set_value(
         &self,
         _req: Request<HiiSetValueRequest>,
@@ -391,11 +422,13 @@ fn mock_question() -> QuestionInfo {
                 string_id: 4,
                 value: 0,
                 flags: 0x30,
+                text: "Disabled".into(),
             },
             OptionEntry {
                 string_id: 3,
                 value: 1,
                 flags: 0x00,
+                text: "Enabled".into(),
             },
         ],
         defaults: vec![DefaultEntry {

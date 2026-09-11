@@ -747,6 +747,19 @@ impl EngineService for EngineServer {
     }
 
     #[tracing::instrument(skip(self, req), err)]
+    async fn hii_form_tree(
+        &self,
+        req: Request<HiiFormTreeRequest>,
+    ) -> RpcResult<HiiFormTreeResponse> {
+        let r = req.into_inner();
+        let img = self.get_or_load_image(&r.image_id).await?;
+        let edges = crate::hii::ref_tree::collect_edges(&img);
+        let _ = self.sm.touch(&img.session_id);
+        tracing::info!(image_id = %r.image_id, count = edges.len(), "hii form tree");
+        Ok(Response::new(HiiFormTreeResponse { edges }))
+    }
+
+    #[tracing::instrument(skip(self, req), err)]
     async fn hii_list_strings(
         &self,
         req: Request<HiiListStringsRequest>,
@@ -970,6 +983,19 @@ impl EngineService for EngineServer {
         Ok(Response::new(HiiQuestionInfoResponse {
             question: Some(question),
         }))
+    }
+
+    #[tracing::instrument(skip(self, req), err)]
+    async fn hii_list_questions(
+        &self,
+        req: Request<HiiListQuestionsRequest>,
+    ) -> RpcResult<HiiListQuestionsResponse> {
+        let r = req.into_inner();
+        let img = self.get_or_load_image(&r.image_id).await?;
+        let questions = crate::hii::list_questions(&img, &r.target, r.form_id as u16)
+            .map_err(|e| hii_error_status_ctx(e, &r.target))?;
+        let _ = self.sm.touch(&img.session_id);
+        Ok(Response::new(HiiListQuestionsResponse { questions }))
     }
 
     #[tracing::instrument(skip(self, req), err)]

@@ -7,7 +7,7 @@ use uefi_common::state::{State, resolve_sock};
 use uefi_proto::engine_service_client::EngineServiceClient;
 use uefi_proto::*;
 
-use crate::app::App;
+use crate::app::{App, View};
 
 pub struct Client {
     inner: EngineServiceClient<Channel>,
@@ -126,6 +126,28 @@ fn mode_to_i32(s: &str) -> Result<i32, String> {
         "before" => Ok(1),
         "after" => Ok(2),
         _ => Err(format!("unknown mode: {s} (into|before|after)")),
+    }
+}
+
+fn parse_u64_loose(s: &str) -> Result<u64, String> {
+    if let Some(hex) = s.strip_prefix("0x") {
+        u64::from_str_radix(hex, 16)
+    } else {
+        s.parse::<u64>()
+    }
+    .map_err(|e| format!("invalid value '{s}': {e}"))
+}
+
+/// Относительный путь :save абсолютизируется от CWD клиента: файл пишет
+/// engine-процесс, и без этого путь резолвится от его каталога запуска.
+fn absolutize_path(raw: &str) -> String {
+    let p = std::path::Path::new(raw);
+    if p.is_absolute() {
+        return raw.to_string();
+    }
+    match std::env::current_dir() {
+        Ok(cwd) => cwd.join(p).display().to_string(),
+        Err(_) => raw.to_string(),
     }
 }
 
@@ -249,7 +271,8 @@ pub async fn execute_command(
             Ok(snap_id.to_string())
         }
         "save" | "s" => {
-            let path = parts.get(1).ok_or("usage: :save OUTPUT")?;
+            let raw = parts.get(1).ok_or("usage: :save OUTPUT")?;
+            let path = absolutize_path(raw);
             let iid = client
                 .state
                 .active_image_id
@@ -461,7 +484,11 @@ pub async fn execute_command(
             Ok(target)
         }
         "image" => {
-            let sub = parts.get(1).ok_or("usage: :image switch ID | close [ID]")?;
+            if parts.get(1).is_none() {
+                app.view = View::Image;
+                return Ok("image".into());
+            }
+            let sub = parts.get(1).expect("checked above");
             match *sub {
                 "switch" => {
                     let id = parts.get(2).ok_or("usage: :image switch ID")?.to_string();
@@ -481,8 +508,12 @@ pub async fn execute_command(
                     app.cursor = 0;
                     app.active_image_id = Some(id.clone());
                     client.state.active_image_id = Some(id.clone());
+                    app.image_loaded = true;
                     app.status_msg = format!("switched to {id}");
                     let _ = refresh_registry(app, client).await;
+                    if app.view == View::Forms {
+                        refresh_forms(app, client).await?;
+                    }
                     Ok(id)
                 }
                 "close" => {
@@ -506,6 +537,7 @@ pub async fn execute_command(
                         app.tree.clear();
                         app.cursor = 0;
                         app.image_loaded = false;
+                        app.view = View::Image;
                     }
                     app.status_msg = format!("closed {id}");
                     let _ = refresh_registry(app, client).await;
@@ -513,6 +545,136 @@ pub async fn execute_command(
                 }
                 other => Err(format!("unknown image subcommand: {other}")),
             }
+        }
+        "forms" | "f" => {
+            if app.active_image_id.is_none() && client.state.active_image_id.is_none() {
+                return Err("no active image — :open PATH first".into());
+            }
+            refresh_forms(app, client).await?;
+            app.view = View::Forms;
+            app.status_msg = format!("forms: {}", app.forms.forms.len());
+            Ok("forms".into())
+        }
+        "hii" => {
+            let sub = parts.get(1).copied().ok_or(
+                "usage: :hii set-value ITEM VALUE | :hii visibility ITEM on|off | :hii unlock ITEM",
+            )?;
+            let iid = client
+                .state
+                .active_image_id
+                .clone()
+                .ok_or("no active image")?;
+            match sub {
+                "set-value" => {
+                    let item = parts
+                        .get(2)
+                        .ok_or("usage: :hii set-value ITEM VALUE")?
+                        .to_string();
+                    let value =
+                        parse_u64_loose(parts.get(3).ok_or("usage: :hii set-value ITEM VALUE")?)?;
+                    let r = client
+                        .inner
+                        .hii_set_value(auth_req(
+                            &client.state,
+                            HiiSetValueRequest {
+                                image_id: iid,
+                                item_id: item.clone(),
+                                value,
+                            },
+                        ))
+                        .await
+                        .map_err(|e| e.message().to_string())?
+                        .into_inner();
+                    let prev_qid = app.selected_question_id();
+                    reload_forms(app, client).await?;
+                    let _ = refresh_form_details_if_needed(app, client).await;
+                    if let Some(qid) = prev_qid
+                        && let Some(pos) = app
+                            .forms
+                            .questions
+                            .iter()
+                            .position(|q| q.question_id == qid)
+                    {
+                        app.forms.question_cursor = pos;
+                        let _ = refresh_question_info_if_needed(app, client).await;
+                    }
+                    let flips = if r.applied_flips.is_empty() {
+                        "none".to_string()
+                    } else {
+                        r.applied_flips.join(" · ")
+                    };
+                    let stores = if r.stores.is_empty() {
+                        "none".to_string()
+                    } else {
+                        r.stores.join(" · ")
+                    };
+                    app.status_msg = format!("set {item}={value}: flips {flips} · stores {stores}");
+                    Ok(item)
+                }
+                "visibility" => {
+                    let item = parts
+                        .get(2)
+                        .ok_or("usage: :hii visibility ITEM on|off")?
+                        .to_string();
+                    let visible = match parts.get(3) {
+                        Some(&"on") => true,
+                        Some(&"off") => false,
+                        _ => return Err("usage: :hii visibility ITEM on|off".into()),
+                    };
+                    client
+                        .inner
+                        .hii_set_form_visibility(auth_req(
+                            &client.state,
+                            HiiSetFormVisibilityRequest {
+                                image_id: iid,
+                                item_id: item.clone(),
+                                visible,
+                            },
+                        ))
+                        .await
+                        .map_err(|e| e.message().to_string())?;
+                    reload_forms(app, client).await?;
+                    let _ = refresh_form_details_if_needed(app, client).await;
+                    app.status_msg =
+                        format!("visibility {item}: {}", if visible { "on" } else { "off" });
+                    Ok(item)
+                }
+                "unlock" => {
+                    let item = parts.get(2).ok_or("usage: :hii unlock ITEM")?.to_string();
+                    let r = client
+                        .inner
+                        .hii_unlock(auth_req(
+                            &client.state,
+                            HiiUnlockRequest {
+                                image_id: iid,
+                                item_id: item.clone(),
+                            },
+                        ))
+                        .await
+                        .map_err(|e| e.message().to_string())?
+                        .into_inner();
+                    reload_forms(app, client).await?;
+                    let _ = refresh_form_details_if_needed(app, client).await;
+                    app.status_msg = if r.applied_flips.is_empty() {
+                        format!(
+                            "unlock {item}: no flippable gates ({} gates)",
+                            r.gates.len()
+                        )
+                    } else {
+                        format!("unlock {item}: {}", r.applied_flips.join(" · "))
+                    };
+                    Ok(item)
+                }
+                other => Err(format!("unknown hii subcommand: {other}")),
+            }
+        }
+        "filter" => {
+            if !app.forms.show_strings {
+                return Err("filter is for the strings browser (S to open)".into());
+            }
+            app.forms.strings_filter = parts[1..].join(" ");
+            app.forms.strings_cursor = 0;
+            Ok(app.forms.strings_filter.clone())
         }
         "refresh" => {
             refresh_registry(app, client).await?;
@@ -555,8 +717,12 @@ const COMMANDS: &[&str] = &[
     "rebuild",
     "image",
     "refresh",
+    "forms",
+    "f",
+    "filter",
     "goto",
     "g",
+    "hii",
     "upload",
     "snapshot",
     "snapshots",
@@ -638,6 +804,27 @@ fn context_candidates(app: &App, cmd: &str, head: &[&str], token: &str) -> Vec<S
             .filter(|c| c.starts_with(token))
             .map(|s| s.to_string())
             .collect();
+    }
+    if cmd == "hii" {
+        if head.len() == 1 {
+            return ["set-value", "visibility", "unlock"]
+                .iter()
+                .filter(|c| c.starts_with(token))
+                .map(|s| s.to_string())
+                .collect();
+        }
+        if matches!(head[1], "set-value" | "visibility" | "unlock")
+            && !head[2..].iter().any(|s| !s.starts_with("--"))
+        {
+            return app
+                .forms
+                .forms
+                .iter()
+                .map(|f| format!("{}#{}", f.form_id, f.form_id_ifr))
+                .filter(|c| c.starts_with(token))
+                .collect();
+        }
+        return vec![];
     }
     let has_positional = head[1..].iter().any(|s| !s.starts_with("--"));
     let target_cmds = [
@@ -732,6 +919,241 @@ pub async fn refresh_registry(app: &mut App, client: &mut Client) -> Result<(), 
     Ok(())
 }
 
+/// item_id выделенной формы: "<target>#<form_id>" (form_id —
+/// десятичное, контракт parse_item_id). None — если строка не форма.
+pub fn selected_form_item_id(app: &App) -> Option<String> {
+    let key = app.selected_form_key()?;
+    Some(format!("{}#{}", key.target, key.form_id_ifr))
+}
+
+/// Insert-prefill для Enter на вопросе: вопрос из question_cursor.
+/// item_id-контракт: form_id — ДЕСЯТИЧНОЕ (parse_item_id), qid — hex.
+/// Спека tui-forms-view §4 V2, решение D6.
+pub fn set_value_prefill(app: &App) -> Option<String> {
+    let key = app.selected_form_key()?;
+    let qid = app.selected_question_id()?;
+    Some(format!(
+        "hii set-value {}#{}:{:#x} ",
+        key.target, key.form_id_ifr, qid
+    ))
+}
+
+/// Команда для клавиши `v` на выбранной форме. Движок реализует только
+/// unsuppress (visibility on); скрытие (off) — ошибка, поэтому на уже
+/// видимой форме возвращает None — вызывающий показывает пояснение,
+/// а не шлёт команду.
+pub fn form_visibility_command(item: &str, visible: bool) -> Option<String> {
+    (!visible).then(|| format!("hii visibility {item} on"))
+}
+
+pub async fn refresh_forms(app: &mut App, client: &mut Client) -> Result<(), String> {
+    let image_id = app
+        .active_image_id
+        .clone()
+        .or_else(|| client.state.active_image_id.clone())
+        .ok_or("no active image")?;
+    let resp = client
+        .inner
+        .hii_list_forms(auth_req(
+            &client.state,
+            HiiListFormsRequest {
+                image_id: image_id.clone(),
+            },
+        ))
+        .await
+        .map_err(|e| e.message().to_string())?
+        .into_inner();
+    let edges = client
+        .inner
+        .hii_form_tree(auth_req(&client.state, HiiFormTreeRequest { image_id }))
+        .await
+        .map_err(|e| e.message().to_string())?
+        .into_inner()
+        .edges;
+    app.forms.forms = resp.forms;
+    app.forms.edges = edges;
+    app.forms.expanded = crate::forms::all_row_keys(&app.forms.forms, &app.forms.edges);
+    app.forms.cursor = 0;
+    app.forms.questions.clear();
+    app.forms.questions_key = None;
+    app.forms.strings.clear();
+    app.forms.strings_filter.clear();
+    app.forms.strings_cursor = 0;
+    app.forms.show_strings = false;
+    Ok(())
+}
+
+/// Re-fetch форм И рёбер после мутации: сохраняет flat_mode,
+/// развёрнутость, выделение (по formset+form_id), strings-браузер;
+/// сбрасывает per-form кэши (questions, gates, question_info).
+/// Вход во view — refresh_forms (сброс), не эта функция.
+/// Спека tui-forms-view §3.3.
+pub async fn reload_forms(app: &mut App, client: &mut Client) -> Result<(), String> {
+    let image_id = app
+        .active_image_id
+        .clone()
+        .or_else(|| client.state.active_image_id.clone())
+        .ok_or("no active image")?;
+    let sel = app
+        .selected_form_key()
+        .map(|k| (k.formset_guid, k.form_id_ifr));
+    let forms = client
+        .inner
+        .hii_list_forms(auth_req(
+            &client.state,
+            HiiListFormsRequest {
+                image_id: image_id.clone(),
+            },
+        ))
+        .await
+        .map_err(|e| e.message().to_string())?
+        .into_inner()
+        .forms;
+    let edges = client
+        .inner
+        .hii_form_tree(auth_req(&client.state, HiiFormTreeRequest { image_id }))
+        .await
+        .map_err(|e| e.message().to_string())?
+        .into_inner()
+        .edges;
+    app.forms.forms = forms;
+    app.forms.edges = edges;
+    app.forms.questions.clear();
+    app.forms.questions_key = None;
+    app.forms.gates.clear();
+    app.forms.question_cursor = 0;
+    app.forms.question_info = None;
+    app.forms.question_info_key = None;
+    match sel {
+        Some((guid, fid)) => {
+            let rows = app.forms_rows();
+            let idx = rows.iter().position(|r| {
+                matches!(
+                    r,
+                    crate::forms::FormsRow::Form { key, .. }
+                        if key.formset_guid == guid && key.form_id_ifr == fid
+                )
+            });
+            match idx {
+                Some(i) => app.forms.cursor = i,
+                None => app.forms_sanitize_cursor(),
+            }
+        }
+        None => app.forms_sanitize_cursor(),
+    }
+    Ok(())
+}
+
+/// Вопросы И гейты выделенной формы — лениво, по смене FormKey
+/// (кэш на одну форму). Ошибка gates-запроса не валит вопросы:
+/// текст в status_msg, список гейтов пуст. Спека tui-forms-view
+/// §4 V2.
+pub async fn refresh_form_details_if_needed(
+    app: &mut App,
+    client: &mut Client,
+) -> Result<(), String> {
+    let Some(key) = app.selected_form_key() else {
+        return Ok(());
+    };
+    if app.forms.questions_key.as_ref() == Some(&key) {
+        return Ok(());
+    }
+    let image_id = app
+        .active_image_id
+        .clone()
+        .or_else(|| client.state.active_image_id.clone())
+        .ok_or("no active image")?;
+    let resp = client
+        .inner
+        .hii_list_questions(auth_req(
+            &client.state,
+            HiiListQuestionsRequest {
+                image_id: image_id.clone(),
+                target: key.target.clone(),
+                form_id: key.form_id_ifr,
+            },
+        ))
+        .await
+        .map_err(|e| e.message().to_string())?
+        .into_inner();
+    app.forms.questions = resp.questions;
+    app.forms.questions_key = Some(key.clone());
+    app.forms.question_cursor = 0;
+    app.forms.question_info = None;
+    app.forms.question_info_key = None;
+    let item_id = format!("{}#{}", key.target, key.form_id_ifr);
+    match client
+        .inner
+        .hii_gates_list(auth_req(
+            &client.state,
+            HiiGatesListRequest { image_id, item_id },
+        ))
+        .await
+    {
+        Ok(r) => app.forms.gates = r.into_inner().gates,
+        Err(e) => {
+            app.forms.gates.clear();
+            app.status_msg = format!("gates: {}", e.message());
+        }
+    }
+    Ok(())
+}
+
+/// Диапазон/options выбранного вопроса — лениво, по смене
+/// (FormKey, question_id); кэш на один вопрос. Спека tui-forms-view
+/// §4 V2 (подсказка при вводе set-value).
+pub async fn refresh_question_info_if_needed(
+    app: &mut App,
+    client: &mut Client,
+) -> Result<(), String> {
+    let Some(key) = app.selected_form_key() else {
+        return Ok(());
+    };
+    let Some(qid) = app.selected_question_id() else {
+        app.forms.question_info = None;
+        app.forms.question_info_key = None;
+        return Ok(());
+    };
+    if app.forms.question_info_key.as_ref() == Some(&(key.clone(), qid)) {
+        return Ok(());
+    }
+    let image_id = app
+        .active_image_id
+        .clone()
+        .or_else(|| client.state.active_image_id.clone())
+        .ok_or("no active image")?;
+    let item_id = format!("{}#{}:{:#x}", key.target, key.form_id_ifr, qid);
+    let resp = client
+        .inner
+        .hii_question_info(auth_req(
+            &client.state,
+            HiiQuestionInfoRequest { image_id, item_id },
+        ))
+        .await
+        .map_err(|e| e.message().to_string())?
+        .into_inner();
+    app.forms.question_info = resp.question;
+    app.forms.question_info_key = Some((key, qid));
+    Ok(())
+}
+
+pub async fn refresh_strings(app: &mut App, client: &mut Client) -> Result<(), String> {
+    let image_id = app
+        .active_image_id
+        .clone()
+        .or_else(|| client.state.active_image_id.clone())
+        .ok_or("no active image")?;
+    let resp = client
+        .inner
+        .hii_list_strings(auth_req(&client.state, HiiListStringsRequest { image_id }))
+        .await
+        .map_err(|e| e.message().to_string())?
+        .into_inner();
+    app.forms.strings = resp.strings;
+    app.forms.strings_cursor = 0;
+    Ok(())
+}
+
 pub async fn restore_session(app: &mut App, client: &mut Client) -> Result<(), String> {
     if let Err(e) = refresh_registry(app, client).await {
         app.status_msg = format!("registry: {e}");
@@ -809,6 +1231,64 @@ mod tests {
                 "--artifact-id".to_string(),
                 "--mode".to_string()
             ]
+        );
+    }
+
+    #[test]
+    fn parse_u64_loose_hex_and_dec() {
+        assert_eq!(parse_u64_loose("0x1").unwrap(), 1);
+        assert_eq!(parse_u64_loose("0xFF").unwrap(), 255);
+        assert_eq!(parse_u64_loose("42").unwrap(), 42);
+        assert!(parse_u64_loose("0xG").is_err());
+        assert!(parse_u64_loose("").is_err());
+    }
+
+    #[test]
+    fn absolutize_path_relative_to_client_cwd() {
+        let abs = absolutize_path("/tmp/x.bin");
+        assert_eq!(abs, "/tmp/x.bin");
+        let rel = absolutize_path("out.bin");
+        let cwd = std::env::current_dir().unwrap();
+        assert_eq!(rel, cwd.join("out.bin").display().to_string());
+    }
+
+    #[test]
+    fn form_visibility_command_only_unsuppresses() {
+        assert_eq!(
+            form_visibility_command("G:0x19:0#42", false).as_deref(),
+            Some("hii visibility G:0x19:0#42 on")
+        );
+        assert_eq!(
+            form_visibility_command("G:0x19:0#42", true),
+            None,
+            "скрытие не поддержано движком — на видимой форме команды нет"
+        );
+    }
+
+    #[test]
+    fn complete_hii_verbs_and_item_ids() {
+        let mut app = crate::app::App::new();
+        app.forms.forms = vec![uefi_proto::FormInfo {
+            form_id: "t:0x19:0".into(),
+            formset_guid: "S".into(),
+            form_id_ifr: 10001,
+            title: "Main".into(),
+            visible: true,
+        }];
+        let (_, opts) = complete(&app, "hii ");
+        assert_eq!(
+            opts,
+            vec![
+                "set-value".to_string(),
+                "visibility".to_string(),
+                "unlock".to_string()
+            ]
+        );
+        let (rep, opts) = complete(&app, "hii set-value ");
+        assert_eq!(rep.as_deref(), Some("hii set-value t:0x19:0#10001"));
+        assert!(
+            opts.is_empty(),
+            "unique candidate completes directly, no menu"
         );
     }
 

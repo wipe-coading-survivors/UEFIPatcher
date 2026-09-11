@@ -248,7 +248,31 @@ impl EngineService for MockEngine {
         &self,
         _req: Request<HiiListFormsRequest>,
     ) -> Result<Response<HiiListFormsResponse>, Status> {
-        Ok(Response::new(HiiListFormsResponse { forms: vec![] }))
+        Ok(Response::new(HiiListFormsResponse {
+            forms: vec![
+                FormInfo {
+                    form_id: "11111111-2222-3333-4444-555555555555:0x19:0".into(),
+                    formset_guid: "11111111-2222-3333-4444-555555555555".into(),
+                    form_id_ifr: 10001,
+                    title: "Main".into(),
+                    visible: true,
+                },
+                FormInfo {
+                    form_id: "11111111-2222-3333-4444-555555555555:0x19:0".into(),
+                    formset_guid: "11111111-2222-3333-4444-555555555555".into(),
+                    form_id_ifr: 10019,
+                    title: "Serial Port 1 Configuration".into(),
+                    visible: false,
+                },
+                FormInfo {
+                    form_id: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE:0x19:0".into(),
+                    formset_guid: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE".into(),
+                    form_id_ifr: 902,
+                    title: "Platform".into(),
+                    visible: true,
+                },
+            ],
+        }))
     }
     async fn hii_set_form_visibility(
         &self,
@@ -260,7 +284,62 @@ impl EngineService for MockEngine {
         &self,
         _req: Request<HiiListStringsRequest>,
     ) -> Result<Response<HiiListStringsResponse>, Status> {
-        Ok(Response::new(HiiListStringsResponse { strings: vec![] }))
+        Ok(Response::new(HiiListStringsResponse {
+            strings: vec![
+                StringInfo {
+                    language: "en-US".into(),
+                    string_id: 1,
+                    text: "Setup".into(),
+                },
+                StringInfo {
+                    language: "en-US".into(),
+                    string_id: 2,
+                    text: "Advanced".into(),
+                },
+                StringInfo {
+                    language: "en-US".into(),
+                    string_id: 3,
+                    text: "Serial Port".into(),
+                },
+            ],
+        }))
+    }
+    async fn hii_list_questions(
+        &self,
+        _req: Request<HiiListQuestionsRequest>,
+    ) -> Result<Response<HiiListQuestionsResponse>, Status> {
+        Ok(Response::new(HiiListQuestionsResponse {
+            questions: vec![
+                QuestionSummary {
+                    question_id: 0x210,
+                    kind: "one_of".into(),
+                    prompt: "Serial Port".into(),
+                    var_store_id: 1,
+                    var_offset: 95,
+                    width: 1,
+                },
+                QuestionSummary {
+                    question_id: 0x211,
+                    kind: "numeric".into(),
+                    prompt: "Baud Rate".into(),
+                    var_store_id: 1,
+                    var_offset: 96,
+                    width: 1,
+                },
+            ],
+        }))
+    }
+    async fn hii_form_tree(
+        &self,
+        _req: Request<HiiFormTreeRequest>,
+    ) -> Result<Response<HiiFormTreeResponse>, Status> {
+        Ok(Response::new(HiiFormTreeResponse {
+            edges: vec![FormEdge {
+                formset_guid: "11111111-2222-3333-4444-555555555555".into(),
+                parent_form_id: 10001,
+                form_id: 10019,
+            }],
+        }))
     }
     async fn hii_form_set_add(
         &self,
@@ -291,7 +370,16 @@ impl EngineService for MockEngine {
         &self,
         _req: Request<HiiGatesListRequest>,
     ) -> Result<Response<HiiGatesListResponse>, Status> {
-        Ok(Response::new(HiiGatesListResponse { gates: vec![] }))
+        Ok(Response::new(HiiGatesListResponse {
+            gates: vec![GateInfo {
+                gate_kind: "suppress".into(),
+                wraps: "form".into(),
+                form_id: 10001,
+                expression: "eq(1, 1)".into(),
+                flippable: true,
+                ..Default::default()
+            }],
+        }))
     }
     async fn hii_unlock(
         &self,
@@ -299,20 +387,58 @@ impl EngineService for MockEngine {
     ) -> Result<Response<HiiUnlockResponse>, Status> {
         Ok(Response::new(HiiUnlockResponse {
             gates: vec![],
-            applied_flips: vec![],
+            applied_flips: vec!["pkg+0x1c: 01 00 -> ff ff".into()],
         }))
     }
     async fn hii_question_info(
         &self,
-        _req: Request<HiiQuestionInfoRequest>,
+        req: Request<HiiQuestionInfoRequest>,
     ) -> Result<Response<HiiQuestionInfoResponse>, Status> {
-        Ok(Response::new(HiiQuestionInfoResponse::default()))
+        let r = req.into_inner();
+        let qid = r
+            .item_id
+            .rsplit(':')
+            .next()
+            .and_then(|s| u32::from_str_radix(s.trim_start_matches("0x"), 16).ok())
+            .unwrap_or(0x210);
+        Ok(Response::new(HiiQuestionInfoResponse {
+            question: Some(QuestionInfo {
+                question_id: qid,
+                kind: "one_of".into(),
+                var_store_id: 1,
+                var_offset: 0x5F,
+                width: 1,
+                options: vec![
+                    OptionEntry {
+                        string_id: 18,
+                        value: 0,
+                        flags: 0,
+                        text: "Disabled".into(),
+                    },
+                    OptionEntry {
+                        string_id: 17,
+                        value: 1,
+                        flags: 0,
+                        text: "Enabled".into(),
+                    },
+                ],
+                ..Default::default()
+            }),
+        }))
     }
     async fn hii_set_value(
         &self,
         _req: Request<HiiSetValueRequest>,
     ) -> Result<Response<HiiSetValueResponse>, Status> {
-        Ok(Response::new(HiiSetValueResponse::default()))
+        Ok(Response::new(HiiSetValueResponse {
+            question: Some(QuestionInfo {
+                question_id: 0x210,
+                kind: "one_of".into(),
+                ..Default::default()
+            }),
+            applied_flips: vec!["pkg+0x3e: 01 -> 00".into()],
+            stores: vec!["Setup".into()],
+        }))
     }
     async fn hii_question_add(
         &self,

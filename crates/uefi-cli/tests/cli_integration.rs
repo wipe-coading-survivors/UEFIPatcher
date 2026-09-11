@@ -3,6 +3,7 @@ mod mock_server;
 use std::path::Path;
 
 use assert_cmd::Command;
+use predicates::boolean::PredicateBooleanExt;
 use tempfile::TempDir;
 
 async fn setup_env() -> (TempDir, String) {
@@ -230,6 +231,9 @@ async fn hii_question_info_and_set_value_flow() {
         .stdout(predicates::str::contains("0x3a"))
         .stdout(predicates::str::contains("58"))
         .stdout(predicates::str::contains("value = 1"))
+        .stdout(predicates::str::contains(
+            "value = 1 \"Enabled\" (string 3, flags 0x0)",
+        ))
         .stdout(predicates::str::contains("default = 1 (id 0, type 0)"));
 
     cli(&sock, cwd)
@@ -251,7 +255,7 @@ async fn hii_question_info_and_set_value_flow() {
         .assert()
         .success()
         .stdout(predicates::str::contains("form_id\tquestion_id\tkind"))
-        .stdout(predicates::str::contains("option\t3\t1\t0"));
+        .stdout(predicates::str::contains("option\t3\t1\t0\tEnabled"));
 
     cli(&sock, cwd)
         .args(["hii", "question", "set-value", "0#10029:0x3B", "1"])
@@ -334,4 +338,74 @@ async fn form_add_flow() {
         .args(["session", "destroy"])
         .assert()
         .success();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hii_question_list_outputs_item_ids() {
+    let (td, sock) = setup_env().await;
+    let cwd = td.path();
+
+    cli(&sock, cwd).args(["session", "init"]).assert().success();
+
+    cli(&sock, cwd)
+        .args(["image", "open", "/dev/null"])
+        .assert()
+        .success();
+
+    cli(&sock, cwd)
+        .args([
+            "--format",
+            "tsv",
+            "hii",
+            "question",
+            "list",
+            "899407d7-99fe-43d8-9a21-79ec328cac21:0x10:0#10019",
+        ])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "item_id\tquestion_id\tkind\tprompt\tvar_store_id\tvar_offset\twidth",
+        ))
+        .stdout(predicates::str::contains(
+            "899407d7-99fe-43d8-9a21-79ec328cac21:0x10:0#10019:0x23\t0x23\tone_of\tChange Settings",
+        ));
+
+    cli(&sock, cwd)
+        .args([
+            "--format",
+            "text",
+            "hii",
+            "question",
+            "list",
+            "899407d7-99fe-43d8-9a21-79ec328cac21:0x10:0#10019",
+        ])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "899407d7-99fe-43d8-9a21-79ec328cac21:0x10:0#10019:0x22  checkbox  \"Serial Port\"",
+        ))
+        .stderr(predicates::str::contains(
+            "item_id = <ffs-file-guid>:<section-type>:<index>#<form_id-dec>[:<question-id-hex>]",
+        ))
+        .stderr(predicates::str::contains("10 = PE32 image"))
+        .stderr(predicates::str::contains("kind: one_of = pick an option"));
+
+    cli(&sock, cwd)
+        .args(["--format", "text", "hii", "form", "list"])
+        .assert()
+        .success()
+        .stderr(predicates::str::contains(
+            "item_id = <ffs-file-guid>:<section-type>:<index>#<form_id-dec>[:<question-id-hex>]",
+        ))
+        .stderr(predicates::str::contains("19 = Raw"))
+        .stderr(predicates::str::contains("kind:").not())
+        .stderr(predicates::str::contains(
+            "form_id = target of the form package",
+        ))
+        .stderr(predicates::str::contains("formset_guid = IFR formset GUID"))
+        .stderr(predicates::str::contains(
+            "form_id_ifr = IFR form id (decimal; append as #<form_id> to form_id)",
+        ))
+        .stderr(predicates::str::contains("visible = suppression state"))
+        .stdout(predicates::str::contains("Main"));
 }
