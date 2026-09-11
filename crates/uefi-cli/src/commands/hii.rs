@@ -9,8 +9,20 @@ pub async fn form_list(cli_sock: Option<&str>, format: OutputFormat) -> Result<(
     let mut client = Client::connect(cli_sock, st).await?;
     let image_id = client.active_image()?;
     let forms = client.hii_list_forms(&image_id).await?;
+    if format == OutputFormat::Text {
+        let codes = target_section_codes(forms.iter().map(|f| f.form_id.as_str()));
+        eprint!("{}", uefi_common::format::hii_legend(&codes, false));
+    }
     crate::output::print_forms(&forms, format);
     Ok(())
+}
+
+/// Типы секций из target-частей (`<guid>:<type-hex>:<index>`) для легенды.
+fn target_section_codes<'a>(targets: impl Iterator<Item = &'a str>) -> Vec<u8> {
+    targets
+        .filter_map(|t| t.split(':').nth(1))
+        .filter_map(|s| u8::from_str_radix(s.trim_start_matches("0x"), 16).ok())
+        .collect()
 }
 
 /// item_id формы: `<target>#<form_id>` (form_id — десятичное; вопросная
@@ -40,6 +52,10 @@ pub async fn question_list(
     let questions = client
         .hii_list_questions(&image_id, target, form_id)
         .await?;
+    if format == OutputFormat::Text {
+        let codes = target_section_codes(std::iter::once(target));
+        eprint!("{}", uefi_common::format::hii_legend(&codes, true));
+    }
     crate::output::print_questions(&questions, target, form_id, format);
     Ok(())
 }

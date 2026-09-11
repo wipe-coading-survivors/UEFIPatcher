@@ -3,6 +3,7 @@ mod mock_server;
 use std::path::Path;
 
 use assert_cmd::Command;
+use predicates::boolean::PredicateBooleanExt;
 use tempfile::TempDir;
 
 async fn setup_env() -> (TempDir, String) {
@@ -382,5 +383,21 @@ async fn hii_question_list_outputs_item_ids() {
         .success()
         .stdout(predicates::str::contains(
             "899407d7-99fe-43d8-9a21-79ec328cac21:0x10:0#10019:0x22  checkbox  \"Serial Port\"",
-        ));
+        ))
+        .stderr(predicates::str::contains(
+            "item_id = <ffs-file-guid>:<section-type>:<index>#<form_id-dec>[:<question-id-hex>]",
+        ))
+        .stderr(predicates::str::contains("10 = PE32 image"))
+        .stderr(predicates::str::contains("kind: one_of = pick an option"));
+
+    cli(&sock, cwd)
+        .args(["--format", "text", "hii", "form", "list"])
+        .assert()
+        .success()
+        .stderr(predicates::str::contains(
+            "item_id = <ffs-file-guid>:<section-type>:<index>#<form_id-dec>[:<question-id-hex>]",
+        ))
+        .stderr(predicates::str::contains("19 = Raw"))
+        .stderr(predicates::str::contains("kind:").not())
+        .stdout(predicates::str::contains("Main"));
 }
