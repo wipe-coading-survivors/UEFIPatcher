@@ -68,7 +68,7 @@ impl EngineService for MockEngine {
         _req: Request<ImageUploadRequest>,
     ) -> Result<Response<ImageOpenResponse>, Status> {
         Ok(Response::new(ImageOpenResponse {
-            image_id: "mock".into(),
+            image_id: "mock-upload".into(),
             root_guid: String::new(),
             name: "mock.bin".into(),
         }))
@@ -405,6 +405,33 @@ mod tests {
         assert!(app.tree[0].has_children);
         assert!(app.registry.images.len() == 1);
         assert!(app.registry.artifacts.len() == 1);
+    }
+
+    #[tokio::test]
+    async fn upload_sets_active_image_and_tree() {
+        let td = TempDir::new().unwrap();
+        let sock = td.path().join("mock.sock");
+        let _handle = start_mock(&sock).await;
+        let state = uefi_common::state::State {
+            session_id: Some("s1".into()),
+            token: Some("t1".into()),
+            ..Default::default()
+        };
+        let mut client = commands::connect(Some(sock.to_str().unwrap()), state)
+            .await
+            .unwrap();
+        let mut app = App::new();
+        let out = std::env::temp_dir().join("tui-upload-test.bin");
+        std::fs::write(&out, b"mock").unwrap();
+        let r =
+            commands::execute_command(&mut app, &format!("upload {}", out.display()), &mut client)
+                .await
+                .unwrap();
+        assert_eq!(app.active_image_id.as_deref(), Some(r.as_str()));
+        assert_eq!(client.state.active_image_id.as_deref(), Some(r.as_str()));
+        assert!(app.image_loaded);
+        assert!(!app.tree.is_empty());
+        let _ = std::fs::remove_file(&out);
     }
 
     #[tokio::test]

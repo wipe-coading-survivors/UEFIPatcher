@@ -39,9 +39,33 @@ pub async fn connect(cli_sock: Option<&str>, state: State) -> Result<Client, Str
         .await
         .map_err(|e| e.to_string())?;
     Ok(Client {
-        inner: EngineServiceClient::new(channel),
+        inner: EngineServiceClient::new(channel).max_encoding_message_size(64 * 1024 * 1024),
         state,
     })
+}
+
+impl Client {
+    pub async fn image_upload(
+        &mut self,
+        session_id: &str,
+        data: Vec<u8>,
+        mode: i32,
+        name: &str,
+    ) -> Result<ImageOpenResponse, String> {
+        self.inner
+            .image_upload(auth_req(
+                &self.state,
+                ImageUploadRequest {
+                    session_id: session_id.into(),
+                    data,
+                    mode,
+                    name: name.into(),
+                },
+            ))
+            .await
+            .map_err(|e| e.message().to_string())
+            .map(|r| r.into_inner())
+    }
 }
 
 fn mode_to_i32(s: &str) -> Result<i32, String> {
@@ -102,6 +126,27 @@ pub async fn execute_command(
             client.state.active_image_id = Some(r.image_id.clone());
             let _ = refresh_registry(app, client).await;
             Ok(r.image_id)
+        }
+        "upload" => {
+            let path = parts
+                .get(1)
+                .ok_or("usage: :upload PATH [--mode read|write]")?;
+            let mode = if parts.contains(&"write") { 1 } else { 0 };
+            let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
+            let name = std::path::Path::new(path)
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let sid = client.state.session_id.clone().ok_or("no session")?;
+            let resp = client.image_upload(&sid, bytes, mode, &name).await?;
+            app.active_image_id = Some(resp.image_id.clone());
+            client.state.active_image_id = Some(resp.image_id.clone());
+            app.image_loaded = true;
+            app.cursor = 0;
+            refresh_tree(app, client).await?;
+            refresh_registry(app, client).await?;
+            app.status_msg = format!("uploaded {} ({})", resp.name, resp.image_id);
+            Ok(resp.image_id)
         }
         "save" | "s" => {
             let path = parts.get(1).ok_or("usage: :save OUTPUT")?;
