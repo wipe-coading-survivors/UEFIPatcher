@@ -177,6 +177,31 @@ impl App {
         }
     }
 
+    pub fn goto_path(&mut self, target: &str) -> Result<(), String> {
+        let norm = target.trim_start_matches('/');
+        let idx = self
+            .tree
+            .iter()
+            .position(|n| n.path == norm)
+            .ok_or_else(|| format!("no node at path {target}"))?;
+        let want = crate::tree::segments(norm);
+        for node in &mut self.tree {
+            let segs = crate::tree::segments(&node.path);
+            if segs.len() < want.len()
+                && segs.iter().zip(want.iter()).all(|(a, b)| a == b)
+                && node.has_children
+            {
+                node.expanded = true;
+            }
+        }
+        let vis = self.visible();
+        self.cursor = vis
+            .iter()
+            .position(|&v| v == idx)
+            .ok_or("node hidden after expand")?;
+        Ok(())
+    }
+
     pub fn focus_next(&mut self) {
         self.focus = self.focus.next();
     }
@@ -467,6 +492,26 @@ mod tests {
         assert_eq!(app.node_label(&node("", 0)), "img-9");
         app.active_image_id = None;
         assert_eq!(app.node_label(&node("", 0)), "Image");
+    }
+
+    #[test]
+    fn goto_path_expands_ancestors_and_moves_cursor() {
+        let mut app = App::new();
+        app.tree = vec![node("", 0), node("0", 1), node("0/0", 2), node("0/0/0", 3)];
+        app.cursor = 0;
+        app.goto_path("0/0/0").unwrap();
+        assert!(app.tree[1].expanded);
+        assert!(app.tree[2].expanded);
+        assert_eq!(app.selected_path().as_deref(), Some("0/0/0"));
+    }
+
+    #[test]
+    fn goto_path_accepts_leading_slash_and_errors_on_miss() {
+        let mut app = App::new();
+        app.tree = vec![node("", 0), node("0", 1)];
+        app.goto_path("/0").unwrap();
+        assert_eq!(app.selected_path().as_deref(), Some("0"));
+        assert!(app.goto_path("9/9").is_err());
     }
 
     #[test]

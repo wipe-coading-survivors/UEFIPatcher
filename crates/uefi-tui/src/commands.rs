@@ -429,6 +429,11 @@ pub async fn execute_command(
             );
             Ok("refreshed".into())
         }
+        "goto" | "g" => {
+            let target = parts.get(1).ok_or("usage: :goto PATH (e.g. 1/28/1)")?;
+            app.goto_path(target)?;
+            Ok(format!("→ {target}"))
+        }
         "quit" | "q" => {
             app.quit = true;
             Ok("quitting".into())

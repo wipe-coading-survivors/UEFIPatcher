@@ -122,6 +122,9 @@ async fn handle_normal(app: &mut App, ev: &AppEvent, client: &mut Option<command
         AppEvent::Enter if app.focus == Focus::Registry => {
             handle_registry_enter(app, client).await;
         }
+        AppEvent::Key('/') => {
+            app.enter_insert_mode("goto", "goto ".into());
+        }
         _ => {}
     }
 }
