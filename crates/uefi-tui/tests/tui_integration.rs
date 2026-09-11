@@ -56,7 +56,7 @@ async fn forms_command_switches_view_and_loads() {
     );
 
     app.forms_cursor_down();
-    uefi_tui::commands::refresh_questions_if_needed(&mut app, &mut client)
+    uefi_tui::commands::refresh_form_details_if_needed(&mut app, &mut client)
         .await
         .unwrap();
     assert_eq!(
@@ -170,7 +170,7 @@ async fn forms_load_fetches_edges_and_reload_preserves_state() {
     assert_eq!(app.forms_rows().len(), 4, "SET-B collapsed hides 902");
     app.forms.cursor = 2;
     assert_eq!(app.selected_form_key().unwrap().form_id_ifr, 10019);
-    uefi_tui::commands::refresh_questions_if_needed(&mut app, &mut client)
+    uefi_tui::commands::refresh_form_details_if_needed(&mut app, &mut client)
         .await
         .unwrap();
     assert_eq!(
@@ -234,6 +234,52 @@ async fn forms_tree_mode_nested_path() {
     assert!(
         matches!(&flat[2], uefi_tui::forms::FormsRow::Form { depth: 1, path, .. } if path.is_empty()),
         "плоский режим: без вложенности и пути"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn forms_details_question_info_gates_and_prefill() {
+    let td = tempfile::TempDir::new().unwrap();
+    let sock = td.path().join("test.sock");
+    let _handle = mock_server::start_mock(&sock).await;
+    let state = uefi_common::State {
+        session_id: Some("s1".into()),
+        token: Some("t1".into()),
+        active_image_id: None,
+        sock_path: Some(sock.display().to_string()),
+    };
+    let mut client = uefi_tui::commands::connect(None, state).await.unwrap();
+    let mut app = uefi_tui::app::App::new();
+    uefi_tui::commands::execute_command(&mut app, "open /dev/null", &mut client)
+        .await
+        .unwrap();
+    uefi_tui::commands::execute_command(&mut app, "forms", &mut client)
+        .await
+        .unwrap();
+
+    app.forms_cursor_down();
+    assert_eq!(
+        uefi_tui::commands::selected_form_item_id(&app).unwrap(),
+        "11111111-2222-3333-4444-555555555555:0x19:0#10001"
+    );
+    uefi_tui::commands::refresh_form_details_if_needed(&mut app, &mut client)
+        .await
+        .unwrap();
+    assert_eq!(app.forms.questions.len(), 2);
+    assert_eq!(app.forms.gates.len(), 1, "gates пришли вместе с вопросами");
+
+    app.forms.focus = uefi_tui::app::FormsFocus::Details;
+    app.forms_question_cursor_down();
+    uefi_tui::commands::refresh_question_info_if_needed(&mut app, &mut client)
+        .await
+        .unwrap();
+    let qi = app.forms.question_info.as_ref().unwrap();
+    assert_eq!(qi.question_id, 0x211, "мок эхом возвращает qid из item_id");
+    assert_eq!(app.selected_question_id(), Some(0x211));
+
+    assert_eq!(
+        uefi_tui::commands::set_value_prefill(&app).unwrap(),
+        "hii set-value 11111111-2222-3333-4444-555555555555:0x19:0#10001:0x211 "
     );
 }
 

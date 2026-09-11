@@ -2,6 +2,12 @@ use std::collections::{HashMap, HashSet};
 
 use uefi_proto::{FormEdge, FormInfo};
 
+use crate::app::FormsData;
+
+pub(crate) fn short_guid(guid: &str) -> &str {
+    &guid[..guid.len().min(13)]
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FormKey {
     pub target: String,
@@ -241,6 +247,80 @@ pub fn selected_key(rows: &[FormsRow], cursor: usize) -> Option<FormKey> {
     }
 }
 
+/// Текст правой панели Forms-view: заголовок формы, путь по
+/// REF-дереву, вопросы с курсором, вопрос-подсказка (диапазон/
+/// options), блок гейтов. Чистая функция от state — рендерит
+/// ui/forms.rs. Спека tui-forms-view §3.2, §4 V2.
+pub fn form_details_text(forms: &FormsData, rows: &[FormsRow], cursor: usize) -> String {
+    let Some(FormsRow::Form { key, path, .. }) = rows.get(cursor) else {
+        return "no form selected".into();
+    };
+    let mut s = format!(
+        "Form:    {}\nForm ID: {}\nFormSet: {}\nTarget:  {}\n",
+        key.title,
+        key.form_id_ifr,
+        short_guid(&key.formset_guid),
+        key.target
+    );
+    if !path.is_empty() {
+        s.push_str(&format!("Path:    {path}\n"));
+    }
+    if forms.questions_key.as_ref() == Some(key) {
+        s.push_str(&format!(
+            "\nQuestions ({}) — qid · kind · prompt:\n",
+            forms.questions.len()
+        ));
+        for (i, q) in forms.questions.iter().enumerate() {
+            let marker = if i == forms.question_cursor { ">" } else { " " };
+            let prompt = if q.prompt.is_empty() { "-" } else { &q.prompt };
+            s.push_str(&format!(
+                "{marker} q{:#x}  {}  {}\n",
+                q.question_id, q.kind, prompt
+            ));
+        }
+        if let Some(qi) = &forms.question_info {
+            s.push_str(&format!(
+                "\nQuestion q{:#x} ({}):\n",
+                qi.question_id, qi.kind
+            ));
+            s.push_str(&format!(
+                "  store {} · offset {:#x} · width {}\n",
+                qi.var_store_id, qi.var_offset, qi.width
+            ));
+            match qi.kind.as_str() {
+                "numeric" => {
+                    s.push_str(&format!(
+                        "  range {}..={} step {}\n",
+                        qi.min, qi.max, qi.step
+                    ));
+                }
+                "one_of" => {
+                    let opts: Vec<String> = qi
+                        .options
+                        .iter()
+                        .map(|o| format!("{:#x}(sid {})", o.value, o.string_id))
+                        .collect();
+                    s.push_str(&format!("  options: {}\n", opts.join(" · ")));
+                }
+                _ => {}
+            }
+        }
+        if !forms.gates.is_empty() {
+            s.push_str(&format!("\nGates ({}):\n", forms.gates.len()));
+            for g in &forms.gates {
+                let flip = if g.flippable { "flippable" } else { "-" };
+                s.push_str(&format!(
+                    "  {:<8} {:<24} {}\n",
+                    g.gate_kind, g.expression, flip
+                ));
+            }
+        }
+    } else {
+        s.push_str("\nQuestions: loading…\n");
+    }
+    s
+}
+
 pub fn all_formset_guids(forms: &[FormInfo]) -> HashSet<String> {
     forms.iter().map(|f| f.formset_guid.clone()).collect()
 }
@@ -441,5 +521,99 @@ mod tests {
             "родительский узел развёрнут по умолчанию"
         );
         assert!(!keys.contains("S#2"), "лист не нужен в наборе");
+    }
+
+    fn gi(kind: &str, expr: &str, flippable: bool) -> uefi_proto::GateInfo {
+        uefi_proto::GateInfo {
+            gate_kind: kind.into(),
+            expression: expr.into(),
+            flippable,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn form_details_text_path_marker_question_and_gates() {
+        let forms = vec![
+            fi("t1", "S", 1, "Main", true),
+            fi("t1", "S", 2, "Serial", false),
+        ];
+        let edges = vec![edge("S", 1, 2)];
+        let ex = all_row_keys(&forms, &edges);
+        let rows = build_tree_rows(&forms, &edges, &ex);
+        let mut fd = FormsData {
+            questions: vec![
+                uefi_proto::QuestionSummary {
+                    question_id: 0x210,
+                    kind: "one_of".into(),
+                    prompt: "Serial Port".into(),
+                    ..Default::default()
+                },
+                uefi_proto::QuestionSummary {
+                    question_id: 0x211,
+                    kind: "numeric".into(),
+                    prompt: "Baud".into(),
+                    ..Default::default()
+                },
+            ],
+            questions_key: Some(FormKey {
+                target: "t1".into(),
+                formset_guid: "S".into(),
+                form_id_ifr: 2,
+                title: "Serial".into(),
+            }),
+            question_cursor: 1,
+            question_info: Some(uefi_proto::QuestionInfo {
+                question_id: 0x211,
+                kind: "numeric".into(),
+                var_store_id: 1,
+                var_offset: 0x60,
+                width: 1,
+                min: 0,
+                max: 255,
+                step: 1,
+                ..Default::default()
+            }),
+            gates: vec![gi("suppress", "eq(1, 1)", true)],
+            ..Default::default()
+        };
+        let t = form_details_text(&fd, &rows, 2);
+        assert!(t.contains("Path:    Main → Serial"));
+        assert!(
+            t.contains("> q0x211  numeric  Baud"),
+            "курсор вопроса маркерится"
+        );
+        assert!(
+            t.contains("  q0x210  one_of  Serial Port"),
+            "не выбранный — без маркера"
+        );
+        assert!(t.contains("Question q0x211 (numeric):"));
+        assert!(t.contains("range 0..=255 step 1"));
+        assert!(t.contains("Gates (1):"));
+        let gates_line = t
+            .lines()
+            .find(|l| l.contains("eq(1, 1)"))
+            .expect("gates line present");
+        assert!(gates_line.contains("suppress") && gates_line.contains("flippable"));
+
+        fd.question_info = Some(uefi_proto::QuestionInfo {
+            question_id: 0x210,
+            kind: "one_of".into(),
+            options: vec![
+                uefi_proto::OptionEntry {
+                    string_id: 18,
+                    value: 0,
+                    flags: 0,
+                },
+                uefi_proto::OptionEntry {
+                    string_id: 17,
+                    value: 1,
+                    flags: 0,
+                },
+            ],
+            ..Default::default()
+        });
+        let t = form_details_text(&fd, &rows, 2);
+        assert!(t.contains("options: 0x0(sid 18) · 0x1(sid 17)"));
     }
 }

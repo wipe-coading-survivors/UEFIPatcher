@@ -14,15 +14,14 @@ fn focus_style(active: bool) -> Style {
     }
 }
 
-fn short_guid(guid: &str) -> &str {
-    &guid[..guid.len().min(13)]
-}
-
 fn row_item(row: &FormsRow) -> ListItem<'static> {
     match row {
         FormsRow::FormSet { guid, expanded } => {
             let marker = if *expanded { "▾" } else { "▸" };
-            ListItem::from(format!("{marker} FormSet {}", short_guid(guid)))
+            ListItem::from(format!(
+                "{marker} FormSet {}",
+                crate::forms::short_guid(guid)
+            ))
         }
         FormsRow::Form {
             key,
@@ -76,7 +75,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
         cols[0],
         &mut state,
     );
-    let text = details_text(app);
+    let text = crate::forms::form_details_text(&app.forms, &rows, app.forms.cursor);
     f.render_widget(
         Paragraph::new(text).block(
             Block::default()
@@ -86,39 +85,6 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
         ),
         cols[1],
     );
-}
-
-fn details_text(app: &App) -> String {
-    let rows = app.forms_rows();
-    let Some(FormsRow::Form { key, path, .. }) = rows.get(app.forms.cursor) else {
-        return "no form selected".into();
-    };
-    let mut s = format!(
-        "Form:    {}\nForm ID: {}\nFormSet: {}\nTarget:  {}\n",
-        key.title,
-        key.form_id_ifr,
-        short_guid(&key.formset_guid),
-        key.target
-    );
-    if !path.is_empty() {
-        s.push_str(&format!("Path:    {path}\n"));
-    }
-    if app.forms.questions_key.as_ref() == Some(key) {
-        s.push_str(&format!(
-            "\nQuestions ({}) — qid · kind · prompt:\n",
-            app.forms.questions.len()
-        ));
-        for q in &app.forms.questions {
-            let prompt = if q.prompt.is_empty() { "-" } else { &q.prompt };
-            s.push_str(&format!(
-                "  q{:#06x}  {}  {}\n",
-                q.question_id, q.kind, prompt
-            ));
-        }
-    } else {
-        s.push_str("\nQuestions: loading…\n");
-    }
-    s
 }
 
 fn render_strings(f: &mut Frame, area: Rect, app: &mut App) {

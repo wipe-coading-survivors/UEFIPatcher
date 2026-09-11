@@ -370,7 +370,16 @@ impl EngineService for MockEngine {
         &self,
         _req: Request<HiiGatesListRequest>,
     ) -> Result<Response<HiiGatesListResponse>, Status> {
-        Ok(Response::new(HiiGatesListResponse { gates: vec![] }))
+        Ok(Response::new(HiiGatesListResponse {
+            gates: vec![GateInfo {
+                gate_kind: "suppress".into(),
+                wraps: "form".into(),
+                form_id: 10001,
+                expression: "eq(1, 1)".into(),
+                flippable: true,
+                ..Default::default()
+            }],
+        }))
     }
     async fn hii_unlock(
         &self,
@@ -383,9 +392,37 @@ impl EngineService for MockEngine {
     }
     async fn hii_question_info(
         &self,
-        _req: Request<HiiQuestionInfoRequest>,
+        req: Request<HiiQuestionInfoRequest>,
     ) -> Result<Response<HiiQuestionInfoResponse>, Status> {
-        Ok(Response::new(HiiQuestionInfoResponse::default()))
+        let r = req.into_inner();
+        let qid = r
+            .item_id
+            .rsplit(':')
+            .next()
+            .and_then(|s| u32::from_str_radix(s.trim_start_matches("0x"), 16).ok())
+            .unwrap_or(0x210);
+        Ok(Response::new(HiiQuestionInfoResponse {
+            question: Some(QuestionInfo {
+                question_id: qid,
+                kind: "one_of".into(),
+                var_store_id: 1,
+                var_offset: 0x5F,
+                width: 1,
+                options: vec![
+                    OptionEntry {
+                        string_id: 18,
+                        value: 0,
+                        flags: 0,
+                    },
+                    OptionEntry {
+                        string_id: 17,
+                        value: 1,
+                        flags: 0,
+                    },
+                ],
+                ..Default::default()
+            }),
+        }))
     }
     async fn hii_set_value(
         &self,

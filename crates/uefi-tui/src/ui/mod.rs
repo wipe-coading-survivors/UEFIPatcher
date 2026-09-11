@@ -9,7 +9,7 @@ pub mod tree;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
-use crate::app::App;
+use crate::app::{App, FormsFocus};
 
 pub fn render(f: &mut Frame, app: &mut App) {
     let full = f.area();
@@ -49,6 +49,8 @@ fn render_hint(f: &mut Frame, area: Rect, app: &App) {
         crate::app::Mode::Normal if app.view == crate::app::View::Forms => {
             if app.forms.show_strings {
                 "NORMAL[Forms/Strings]: j/k move · /filter · S/Esc close · Ctrl-hjkl focus · :cmd · ?help · q"
+            } else if app.forms.focus == FormsFocus::Details {
+                "NORMAL[Forms/Details]: j/k вопрос · Enter set-value · Tab image-view · :cmd · ?help · q"
             } else {
                 "NORMAL[Forms]: j/k move · h/l collapse/expand · v visibility · u unlock · T tree/flat · S strings · Tab image-view · :cmd · ?help · q"
             }

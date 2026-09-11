@@ -1,7 +1,10 @@
 use std::collections::HashSet;
 
 use ratatui::widgets::ListState;
-use uefi_proto::{ArtifactInfo, FormEdge, FormInfo, ImageInfo, QuestionSummary, StringInfo};
+use uefi_proto::{
+    ArtifactInfo, FormEdge, FormInfo, GateInfo, ImageInfo, QuestionInfo, QuestionSummary,
+    StringInfo,
+};
 
 use crate::tree::visible_rows;
 
@@ -71,6 +74,10 @@ pub struct FormsData {
     pub focus: FormsFocus,
     pub questions: Vec<QuestionSummary>,
     pub questions_key: Option<crate::forms::FormKey>,
+    pub gates: Vec<GateInfo>,
+    pub question_cursor: usize,
+    pub question_info: Option<QuestionInfo>,
+    pub question_info_key: Option<(crate::forms::FormKey, u32)>,
     pub show_strings: bool,
     pub strings: Vec<StringInfo>,
     pub strings_filter: String,
@@ -314,6 +321,34 @@ impl App {
     pub fn forms_cursor_up(&mut self) {
         if self.forms.cursor > 0 {
             self.forms.cursor -= 1;
+        }
+    }
+
+    pub fn forms_question_cursor_down(&mut self) {
+        let n = self.forms.questions.len();
+        if n > 0 && self.forms.question_cursor + 1 < n {
+            self.forms.question_cursor += 1;
+        }
+    }
+
+    pub fn forms_question_cursor_up(&mut self) {
+        if self.forms.question_cursor > 0 {
+            self.forms.question_cursor -= 1;
+        }
+    }
+
+    pub fn selected_question_id(&self) -> Option<u32> {
+        self.forms.questions_key.as_ref()?;
+        self.forms
+            .questions
+            .get(self.forms.question_cursor)
+            .map(|q| q.question_id)
+    }
+
+    pub fn selected_form_visible(&self) -> Option<bool> {
+        match self.forms_rows().get(self.forms.cursor) {
+            Some(crate::forms::FormsRow::Form { visible, .. }) => Some(*visible),
+            _ => None,
         }
     }
 
@@ -769,5 +804,52 @@ mod tests {
         assert_eq!(app.forms.strings_cursor, 1);
         app.strings_cursor_down();
         assert_eq!(app.forms.strings_cursor, 1, "clamp at last visible");
+    }
+
+    #[test]
+    fn question_cursor_clamps_and_selected_question() {
+        let mut app = App::new();
+        app.forms.forms = vec![form_info("S", 1)];
+        app.forms.expanded = ["S".into()].into();
+        app.forms.questions_key = Some(crate::forms::FormKey {
+            target: "t:0x19:0".into(),
+            formset_guid: "S".into(),
+            form_id_ifr: 1,
+            title: "f1".into(),
+        });
+        app.forms.questions = vec![
+            uefi_proto::QuestionSummary {
+                question_id: 0x210,
+                ..Default::default()
+            },
+            uefi_proto::QuestionSummary {
+                question_id: 0x211,
+                ..Default::default()
+            },
+        ];
+        assert_eq!(app.selected_question_id(), Some(0x210));
+        app.forms_question_cursor_down();
+        assert_eq!(app.selected_question_id(), Some(0x211));
+        app.forms_question_cursor_down();
+        assert_eq!(
+            app.selected_question_id(),
+            Some(0x211),
+            "clamp на последнем"
+        );
+        app.forms_question_cursor_up();
+        assert_eq!(app.selected_question_id(), Some(0x210));
+    }
+
+    #[test]
+    fn selected_form_visible_reads_row() {
+        let mut app = App::new();
+        app.forms.forms = vec![form_info("S", 1), form_info("S", 2)];
+        app.forms.expanded = ["S".into()].into();
+        app.forms.cursor = 2;
+        assert_eq!(app.selected_form_visible(), Some(true));
+        app.forms.forms[1].visible = false;
+        assert_eq!(app.selected_form_visible(), Some(false));
+        app.forms.cursor = 0;
+        assert_eq!(app.selected_form_visible(), None, "FormSet-строка не форма");
     }
 }

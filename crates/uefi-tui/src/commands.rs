@@ -571,7 +571,7 @@ pub async fn execute_command(
                         .map_err(|e| e.message().to_string())?
                         .into_inner();
                     reload_forms(app, client).await?;
-                    let _ = refresh_questions_if_needed(app, client).await;
+                    let _ = refresh_form_details_if_needed(app, client).await;
                     let flips = if r.applied_flips.is_empty() {
                         "none".to_string()
                     } else {
@@ -608,7 +608,7 @@ pub async fn execute_command(
                         .await
                         .map_err(|e| e.message().to_string())?;
                     reload_forms(app, client).await?;
-                    let _ = refresh_questions_if_needed(app, client).await;
+                    let _ = refresh_form_details_if_needed(app, client).await;
                     app.status_msg =
                         format!("visibility {item}: {}", if visible { "on" } else { "off" });
                     Ok(item)
@@ -628,7 +628,7 @@ pub async fn execute_command(
                         .map_err(|e| e.message().to_string())?
                         .into_inner();
                     reload_forms(app, client).await?;
-                    let _ = refresh_questions_if_needed(app, client).await;
+                    let _ = refresh_form_details_if_needed(app, client).await;
                     app.status_msg = if r.applied_flips.is_empty() {
                         format!(
                             "unlock {item}: no flippable gates ({} gates)",
@@ -893,6 +893,25 @@ pub async fn refresh_registry(app: &mut App, client: &mut Client) -> Result<(), 
     Ok(())
 }
 
+/// item_id выделенной формы: "<target>#<form_id>" (form_id —
+/// десятичное, контракт parse_item_id). None — если строка не форма.
+pub fn selected_form_item_id(app: &App) -> Option<String> {
+    let key = app.selected_form_key()?;
+    Some(format!("{}#{}", key.target, key.form_id_ifr))
+}
+
+/// Insert-prefill для Enter на вопросе: вопрос из question_cursor.
+/// item_id-контракт: form_id — ДЕСЯТИЧНОЕ (parse_item_id), qid — hex.
+/// Спека tui-forms-view §4 V2, решение D6.
+pub fn set_value_prefill(app: &App) -> Option<String> {
+    let key = app.selected_form_key()?;
+    let qid = app.selected_question_id()?;
+    Some(format!(
+        "hii set-value {}#{}:{:#x} ",
+        key.target, key.form_id_ifr, qid
+    ))
+}
+
 pub async fn refresh_forms(app: &mut App, client: &mut Client) -> Result<(), String> {
     let image_id = app
         .active_image_id
@@ -932,8 +951,9 @@ pub async fn refresh_forms(app: &mut App, client: &mut Client) -> Result<(), Str
 
 /// Re-fetch форм И рёбер после мутации: сохраняет flat_mode,
 /// развёрнутость, выделение (по formset+form_id), strings-браузер;
-/// сбрасывает per-form кэши (questions). Вход во view —
-/// refresh_forms (сброс), не эта функция. Спека tui-forms-view §3.3.
+/// сбрасывает per-form кэши (questions, gates, question_info).
+/// Вход во view — refresh_forms (сброс), не эта функция.
+/// Спека tui-forms-view §3.3.
 pub async fn reload_forms(app: &mut App, client: &mut Client) -> Result<(), String> {
     let image_id = app
         .active_image_id
@@ -966,6 +986,10 @@ pub async fn reload_forms(app: &mut App, client: &mut Client) -> Result<(), Stri
     app.forms.edges = edges;
     app.forms.questions.clear();
     app.forms.questions_key = None;
+    app.forms.gates.clear();
+    app.forms.question_cursor = 0;
+    app.forms.question_info = None;
+    app.forms.question_info_key = None;
     match sel {
         Some((guid, fid)) => {
             let rows = app.forms_rows();
@@ -986,7 +1010,14 @@ pub async fn reload_forms(app: &mut App, client: &mut Client) -> Result<(), Stri
     Ok(())
 }
 
-pub async fn refresh_questions_if_needed(app: &mut App, client: &mut Client) -> Result<(), String> {
+/// Вопросы И гейты выделенной формы — лениво, по смене FormKey
+/// (кэш на одну форму). Ошибка gates-запроса не валит вопросы:
+/// текст в status_msg, список гейтов пуст. Спека tui-forms-view
+/// §4 V2.
+pub async fn refresh_form_details_if_needed(
+    app: &mut App,
+    client: &mut Client,
+) -> Result<(), String> {
     let Some(key) = app.selected_form_key() else {
         return Ok(());
     };
@@ -1003,7 +1034,7 @@ pub async fn refresh_questions_if_needed(app: &mut App, client: &mut Client) -> 
         .hii_list_questions(auth_req(
             &client.state,
             HiiListQuestionsRequest {
-                image_id,
+                image_id: image_id.clone(),
                 target: key.target.clone(),
                 form_id: key.form_id_ifr,
             },
@@ -1012,7 +1043,63 @@ pub async fn refresh_questions_if_needed(app: &mut App, client: &mut Client) -> 
         .map_err(|e| e.message().to_string())?
         .into_inner();
     app.forms.questions = resp.questions;
-    app.forms.questions_key = Some(key);
+    app.forms.questions_key = Some(key.clone());
+    app.forms.question_cursor = 0;
+    app.forms.question_info = None;
+    app.forms.question_info_key = None;
+    let item_id = format!("{}#{}", key.target, key.form_id_ifr);
+    match client
+        .inner
+        .hii_gates_list(auth_req(
+            &client.state,
+            HiiGatesListRequest { image_id, item_id },
+        ))
+        .await
+    {
+        Ok(r) => app.forms.gates = r.into_inner().gates,
+        Err(e) => {
+            app.forms.gates.clear();
+            app.status_msg = format!("gates: {}", e.message());
+        }
+    }
+    Ok(())
+}
+
+/// Диапазон/options выбранного вопроса — лениво, по смене
+/// (FormKey, question_id); кэш на один вопрос. Спека tui-forms-view
+/// §4 V2 (подсказка при вводе set-value).
+pub async fn refresh_question_info_if_needed(
+    app: &mut App,
+    client: &mut Client,
+) -> Result<(), String> {
+    let Some(key) = app.selected_form_key() else {
+        return Ok(());
+    };
+    let Some(qid) = app.selected_question_id() else {
+        app.forms.question_info = None;
+        app.forms.question_info_key = None;
+        return Ok(());
+    };
+    if app.forms.question_info_key.as_ref() == Some(&(key.clone(), qid)) {
+        return Ok(());
+    }
+    let image_id = app
+        .active_image_id
+        .clone()
+        .or_else(|| client.state.active_image_id.clone())
+        .ok_or("no active image")?;
+    let item_id = format!("{}#{}:{:#x}", key.target, key.form_id_ifr, qid);
+    let resp = client
+        .inner
+        .hii_question_info(auth_req(
+            &client.state,
+            HiiQuestionInfoRequest { image_id, item_id },
+        ))
+        .await
+        .map_err(|e| e.message().to_string())?
+        .into_inner();
+    app.forms.question_info = resp.question;
+    app.forms.question_info_key = Some((key, qid));
     Ok(())
 }
 

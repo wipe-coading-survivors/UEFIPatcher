@@ -232,7 +232,7 @@ async fn handle_normal_forms(app: &mut App, ev: &AppEvent, client: &mut Option<c
         {
             app.forms_cursor_down();
             if let Some(c) = client.as_mut() {
-                let _ = commands::refresh_questions_if_needed(app, c).await;
+                let _ = commands::refresh_form_details_if_needed(app, c).await;
             }
         }
         AppEvent::Key('k') | AppEvent::Up
@@ -240,7 +240,28 @@ async fn handle_normal_forms(app: &mut App, ev: &AppEvent, client: &mut Option<c
         {
             app.forms_cursor_up();
             if let Some(c) = client.as_mut() {
-                let _ = commands::refresh_questions_if_needed(app, c).await;
+                let _ = commands::refresh_form_details_if_needed(app, c).await;
+            }
+        }
+        AppEvent::Key('j') | AppEvent::Down
+            if app.forms.focus == FormsFocus::Details && !app.forms.show_strings =>
+        {
+            app.forms_question_cursor_down();
+            if let Some(c) = client.as_mut() {
+                let _ = commands::refresh_question_info_if_needed(app, c).await;
+            }
+        }
+        AppEvent::Key('k') | AppEvent::Up
+            if app.forms.focus == FormsFocus::Details && !app.forms.show_strings =>
+        {
+            app.forms_question_cursor_up();
+            if let Some(c) = client.as_mut() {
+                let _ = commands::refresh_question_info_if_needed(app, c).await;
+            }
+        }
+        AppEvent::Enter if app.forms.focus == FormsFocus::Details && !app.forms.show_strings => {
+            if let Some(pre) = commands::set_value_prefill(app) {
+                app.enter_insert_mode("hii", pre);
             }
         }
         AppEvent::Key('j') | AppEvent::Down if app.forms.show_strings => app.strings_cursor_down(),
@@ -256,6 +277,29 @@ async fn handle_normal_forms(app: &mut App, ev: &AppEvent, client: &mut Option<c
                 && let Err(e) = commands::refresh_strings(app, c).await
             {
                 app.status_msg = format!("error: {e}");
+            }
+        }
+        AppEvent::Key('v') if !app.forms.show_strings => {
+            if let (Some(item), Some(vis)) = (
+                commands::selected_form_item_id(app),
+                app.selected_form_visible(),
+            ) {
+                let cmd = format!("hii visibility {item} {}", if vis { "off" } else { "on" });
+                if let Some(c) = client.as_mut()
+                    && let Err(e) = commands::execute_command(app, &cmd, c).await
+                {
+                    app.status_msg = format!("error: {e}");
+                }
+            }
+        }
+        AppEvent::Key('u') if !app.forms.show_strings => {
+            if let Some(item) = commands::selected_form_item_id(app) {
+                let cmd = format!("hii unlock {item}");
+                if let Some(c) = client.as_mut()
+                    && let Err(e) = commands::execute_command(app, &cmd, c).await
+                {
+                    app.status_msg = format!("error: {e}");
+                }
             }
         }
         AppEvent::Key('T') if !app.forms.show_strings => {

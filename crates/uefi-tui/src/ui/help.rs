@@ -31,10 +31,13 @@ REGISTRY focus
 FORMS VIEW (Tab / Shift-Tab, :forms / :image)
   j / k          move cursor (формы / строки)
   h / l          collapse / expand формсета (и формы в REF-дереве)
+  v              toggle visibility выбранной формы (:hii visibility)
+  u              unlock выбранной формы (:hii unlock)
   T              плоский список <-> REF-дерево (путь в details)
   S              strings-браузер (повторно — закрыть; Esc тоже)
   /              открыть strings + промпт фильтра (:filter TEXT)
   Ctrl-hjkl      focus List <-> Details
+  Details focus: j/k выбор вопроса · Enter → :hii set-value <item> <value>
   Tab            обратно в Image-view
 
 COMMAND / INSERT
@@ -53,6 +56,9 @@ EX-COMMANDS
   :image switch ID | :image close [ID]
   :forms                      переключить Forms-view (требует активный образ)
   :image                      обратно в Image-view
+  :hii set-value ITEM VALUE   (ITEM = target#form[:qid], form — десятичное)
+  :hii visibility ITEM on|off
+  :hii unlock ITEM
   :filter TEXT                фильтр strings-браузера (пустой — сброс)
   :refresh
   :artifacts
