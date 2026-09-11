@@ -816,16 +816,13 @@ pub fn complete(app: &App, cmdline: &str) -> (Option<String>, Vec<String>) {
         return (None, vec![]);
     }
     let prefix = common_prefix(&candidates);
-    if prefix.len() > token.len() {
-        let mut out = head.join(" ");
-        if !out.is_empty() {
-            out.push(' ');
-        }
-        out.push_str(&prefix);
-        (Some(out), vec![])
-    } else {
-        (None, candidates)
+    let mut out = head.join(" ");
+    if !out.is_empty() {
+        out.push(' ');
     }
+    out.push_str(&prefix);
+    let opts = if candidates.len() > 1 { candidates } else { vec![] };
+    (Some(out), opts)
 }
 
 fn common_prefix(items: &[String]) -> String {
@@ -883,6 +880,8 @@ fn context_candidates(app: &App, cmd: &str, head: &[&str], token: &str) -> Vec<S
 
 (Позиционный фильтр упростить при реализации до «первый non-flag после cmd», если полная форма шума даст; тесты — критерий.)
 
+> **Rule-11 фикс (2026-09-11, по ходу исполнения):** исходный хвост `complete` (`if prefix.len() > token.len() … else (None, candidates)`) противоречил собственным тестам задачи: `complete_artifact_ids_after_flag` ожидает `Some(...)` при неоднозначных кандидатах (общий префикс == токену) и непустые `opts` при пустом токене. Контракт по тестам: уникальный кандидат → `(Some(полный), [])`; неоднозначные → `(Some(общий префикс), кандидаты)` — вызывающий применяет префикс И показывает варианты. Хендлер `main.rs` соответственно `if`/`if` (не `else if`).
+
 `input.rs`: добавить вариант `Tab` в `AppEvent` и `KeyCode::Tab => AppEvent::Tab`. `main.rs::handle_command`:
 
 ```rust
@@ -890,7 +889,8 @@ AppEvent::Tab => {
     let (rep, opts) = commands::complete(app, &app.cmdline.clone());
     if let Some(r) = rep {
         app.cmdline = r;
-    } else if !opts.is_empty() {
+    }
+    if !opts.is_empty() {
         app.status_msg = format!("options: {}", opts.join(" "));
     }
 }
