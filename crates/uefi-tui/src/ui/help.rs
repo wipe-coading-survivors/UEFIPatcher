@@ -31,7 +31,7 @@ REGISTRY focus
 FORMS VIEW (Tab / Shift-Tab, :forms / :image)
   j / k          move cursor (формы / строки)
   h / l          collapse / expand формсета (и формы в REF-дереве)
-  v              toggle visibility выбранной формы (:hii visibility)
+  v              показать скрытую форму (unsuppress; скрытие не поддержано)
   u              unlock выбранной формы (:hii unlock)
   T              плоский список <-> REF-дерево (путь в details)
   S              strings-браузер (повторно — закрыть; Esc тоже)

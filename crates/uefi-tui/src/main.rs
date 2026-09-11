@@ -284,11 +284,19 @@ async fn handle_normal_forms(app: &mut App, ev: &AppEvent, client: &mut Option<c
                 commands::selected_form_item_id(app),
                 app.selected_form_visible(),
             ) {
-                let cmd = format!("hii visibility {item} {}", if vis { "off" } else { "on" });
-                if let Some(c) = client.as_mut()
-                    && let Err(e) = commands::execute_command(app, &cmd, c).await
-                {
-                    app.status_msg = format!("error: {e}");
+                match commands::form_visibility_command(&item, vis) {
+                    Some(cmd) => {
+                        if let Some(c) = client.as_mut()
+                            && let Err(e) = commands::execute_command(app, &cmd, c).await
+                        {
+                            app.status_msg = format!("error: {e}");
+                        }
+                    }
+                    None => {
+                        app.status_msg = format!(
+                            "already visible — hiding not supported (engine implements unsuppress only): {item}"
+                        );
+                    }
                 }
             }
         }

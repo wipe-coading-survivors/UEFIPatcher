@@ -912,6 +912,14 @@ pub fn set_value_prefill(app: &App) -> Option<String> {
     ))
 }
 
+/// Команда для клавиши `v` на выбранной форме. Движок реализует только
+/// unsuppress (visibility on); скрытие (off) — ошибка, поэтому на уже
+/// видимой форме возвращает None — вызывающий показывает пояснение,
+/// а не шлёт команду.
+pub fn form_visibility_command(item: &str, visible: bool) -> Option<String> {
+    (!visible).then(|| format!("hii visibility {item} on"))
+}
+
 pub async fn refresh_forms(app: &mut App, client: &mut Client) -> Result<(), String> {
     let image_id = app
         .active_image_id
@@ -1207,6 +1215,19 @@ mod tests {
         assert_eq!(parse_u64_loose("42").unwrap(), 42);
         assert!(parse_u64_loose("0xG").is_err());
         assert!(parse_u64_loose("").is_err());
+    }
+
+    #[test]
+    fn form_visibility_command_only_unsuppresses() {
+        assert_eq!(
+            form_visibility_command("G:0x19:0#42", false).as_deref(),
+            Some("hii visibility G:0x19:0#42 on")
+        );
+        assert_eq!(
+            form_visibility_command("G:0x19:0#42", true),
+            None,
+            "скрытие не поддержано движком — на видимой форме команды нет"
+        );
     }
 
     #[test]

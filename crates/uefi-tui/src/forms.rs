@@ -304,7 +304,13 @@ pub fn form_details_text(forms: &FormsData, rows: &[FormsRow], cursor: usize) ->
                     let opts: Vec<String> = qi
                         .options
                         .iter()
-                        .map(|o| format!("{:#x}(sid {})", o.value, o.string_id))
+                        .map(|o| {
+                            if o.text.is_empty() {
+                                format!("{:#x}(sid {})", o.value, o.string_id)
+                            } else {
+                                format!("{:#x} \"{}\"", o.value, o.text)
+                            }
+                        })
                         .collect();
                     s.push_str(&format!("  options: {}\n", opts.join(" · ")));
                 }
@@ -611,6 +617,28 @@ mod tests {
                     string_id: 18,
                     value: 0,
                     flags: 0,
+                    text: "Disabled".into(),
+                },
+                uefi_proto::OptionEntry {
+                    string_id: 17,
+                    value: 1,
+                    flags: 0,
+                    text: "Enabled".into(),
+                },
+            ],
+            ..Default::default()
+        });
+        let t = form_details_text(&fd, &rows, 2);
+        assert!(t.contains("options: 0x0 \"Disabled\" · 0x1 \"Enabled\""));
+
+        fd.question_info = Some(uefi_proto::QuestionInfo {
+            question_id: 0x210,
+            kind: "one_of".into(),
+            options: vec![
+                uefi_proto::OptionEntry {
+                    string_id: 18,
+                    value: 0,
+                    flags: 0,
                     ..Default::default()
                 },
                 uefi_proto::OptionEntry {
@@ -623,6 +651,9 @@ mod tests {
             ..Default::default()
         });
         let t = form_details_text(&fd, &rows, 2);
-        assert!(t.contains("options: 0x0(sid 18) · 0x1(sid 17)"));
+        assert!(
+            t.contains("options: 0x0(sid 18) · 0x1(sid 17)"),
+            "пустой text — fallback на sid"
+        );
     }
 }

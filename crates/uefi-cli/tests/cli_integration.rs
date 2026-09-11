@@ -230,6 +230,9 @@ async fn hii_question_info_and_set_value_flow() {
         .stdout(predicates::str::contains("0x3a"))
         .stdout(predicates::str::contains("58"))
         .stdout(predicates::str::contains("value = 1"))
+        .stdout(predicates::str::contains(
+            "value = 1 \"Enabled\" (string 3, flags 0x0)",
+        ))
         .stdout(predicates::str::contains("default = 1 (id 0, type 0)"));
 
     cli(&sock, cwd)
@@ -251,7 +254,7 @@ async fn hii_question_info_and_set_value_flow() {
         .assert()
         .success()
         .stdout(predicates::str::contains("form_id\tquestion_id\tkind"))
-        .stdout(predicates::str::contains("option\t3\t1\t0"));
+        .stdout(predicates::str::contains("option\t3\t1\t0\tEnabled"));
 
     cli(&sock, cwd)
         .args(["hii", "question", "set-value", "0#10029:0x3B", "1"])

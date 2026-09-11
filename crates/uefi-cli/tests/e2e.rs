@@ -114,7 +114,10 @@ async fn hii_question_info_and_set_value_output_content() {
         .stdout(predicates::str::contains("one_of"))
         .stdout(predicates::str::contains("Setup"))
         .stdout(predicates::str::contains("0x3a"))
-        .stdout(predicates::str::contains("value = 1"));
+        .stdout(predicates::str::contains("value = 1"))
+        .stdout(predicates::str::contains(
+            "value = 1 \"Enabled\" (string 3, flags 0x0)",
+        ));
 
     cli(&sock, cwd)
         .args(["hii", "question", "set-value", "0#10029:0x3B", "1"])

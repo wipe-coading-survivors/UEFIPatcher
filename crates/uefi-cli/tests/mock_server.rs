@@ -405,13 +405,13 @@ fn mock_question() -> QuestionInfo {
                 string_id: 4,
                 value: 0,
                 flags: 0x30,
-                ..Default::default()
+                text: "Disabled".into(),
             },
             OptionEntry {
                 string_id: 3,
                 value: 1,
                 flags: 0x00,
-                ..Default::default()
+                text: "Enabled".into(),
             },
         ],
         defaults: vec![DefaultEntry {

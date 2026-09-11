@@ -413,13 +413,13 @@ impl EngineService for MockEngine {
                         string_id: 18,
                         value: 0,
                         flags: 0,
-                        ..Default::default()
+                        text: "Disabled".into(),
                     },
                     OptionEntry {
                         string_id: 17,
                         value: 1,
                         flags: 0,
-                        ..Default::default()
+                        text: "Enabled".into(),
                     },
                 ],
                 ..Default::default()

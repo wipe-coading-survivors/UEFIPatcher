@@ -249,7 +249,10 @@ pub fn print_question_info(q: &QuestionInfo, format: OutputFormat) {
                 q.step
             );
             for o in &q.options {
-                println!("option\t{}\t{}\t{}", o.string_id, o.value, o.flags);
+                println!(
+                    "option\t{}\t{}\t{}\t{}",
+                    o.string_id, o.value, o.flags, o.text
+                );
             }
         }
         OutputFormat::Text => print!("{}", question_info_text(q)),
@@ -275,10 +278,17 @@ fn question_info_text(q: &QuestionInfo) -> String {
         s.push_str("no options\n");
     }
     for o in &q.options {
-        s.push_str(&format!(
-            "value = {} (string {}, flags {:#x})\n",
-            o.value, o.string_id, o.flags
-        ));
+        if o.text.is_empty() {
+            s.push_str(&format!(
+                "value = {} (string {}, flags {:#x})\n",
+                o.value, o.string_id, o.flags
+            ));
+        } else {
+            s.push_str(&format!(
+                "value = {} \"{}\" (string {}, flags {:#x})\n",
+                o.value, o.text, o.string_id, o.flags
+            ));
+        }
     }
     for d in &q.defaults {
         s.push_str(&format!(
@@ -720,7 +730,7 @@ mod tests {
                 string_id: 3,
                 value: 1,
                 flags: 0x00,
-                ..Default::default()
+                text: "Enabled".into(),
             }],
             defaults: vec![DefaultEntry {
                 default_id: 0,
@@ -732,7 +742,37 @@ mod tests {
         assert!(
             text.contains("varstore Setup (EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9) id 1 size 0x72")
         );
+        assert!(text.contains("value = 1 \"Enabled\" (string 3, flags 0x0)"));
+        assert!(
+            !text.contains("value = 1 (string 3"),
+            "резолвленная опция печатается с текстом, не только со string id"
+        );
         assert!(text.contains("default = 1 (id 0, type 0)"));
+    }
+
+    #[test]
+    fn question_info_text_keeps_sid_fallback_when_text_empty() {
+        let q = QuestionInfo {
+            form_id: 10029,
+            question_id: 0x3B,
+            kind: "one_of".into(),
+            var_store_id: 1,
+            varstore: None,
+            var_offset: 0x3A,
+            width: 1,
+            min: 0,
+            max: 0,
+            step: 0,
+            options: vec![OptionEntry {
+                string_id: 9,
+                value: 2,
+                flags: 0x00,
+                ..Default::default()
+            }],
+            defaults: vec![],
+        };
+        let text = question_info_text(&q);
+        assert!(text.contains("value = 2 (string 9, flags 0x0)"));
     }
 
     #[test]

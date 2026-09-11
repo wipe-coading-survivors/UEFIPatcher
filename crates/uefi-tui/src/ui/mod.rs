@@ -52,7 +52,7 @@ fn render_hint(f: &mut Frame, area: Rect, app: &App) {
             } else if app.forms.focus == FormsFocus::Details {
                 "NORMAL[Forms/Details]: j/k вопрос · Enter set-value · Tab image-view · :cmd · ?help · q"
             } else {
-                "NORMAL[Forms]: j/k move · h/l collapse/expand · v visibility · u unlock · T tree/flat · S strings · Tab image-view · :cmd · ?help · q"
+                "NORMAL[Forms]: j/k move · h/l collapse/expand · v show hidden (unsuppress) · u unlock · T tree/flat · S strings · Tab image-view · :cmd · ?help · q"
             }
         }
         crate::app::Mode::Normal => match app.focus {
