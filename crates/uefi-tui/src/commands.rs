@@ -151,6 +151,12 @@ fn absolutize_path(raw: &str) -> String {
     }
 }
 
+/// Читает schema-файл в TUI-процессе (клиент): в RPC уходит содержимое
+/// строкой, путь до движка не доходит (не :save — там пишет engine).
+fn read_schema(file: &str) -> Result<String, String> {
+    std::fs::read_to_string(file).map_err(|e| format!("{file}: {e}"))
+}
+
 pub async fn execute_command(
     app: &mut App,
     cmdline: &str,
@@ -557,7 +563,7 @@ pub async fn execute_command(
         }
         "hii" => {
             let sub = parts.get(1).copied().ok_or(
-                "usage: :hii set-value ITEM VALUE | :hii visibility ITEM on|off | :hii unlock ITEM",
+                "usage: :hii set-value ITEM VALUE | :hii visibility ITEM on|off | :hii unlock ITEM | :hii formset add FILE [--ffs GUID] | :hii form add TARGET FILE | :hii question add TARGET#FORM FILE | :hii page add TARGET FILE | :hii hijack TARGET FILE [SETUPDATA-GUID]",
             )?;
             let iid = client
                 .state
@@ -664,6 +670,158 @@ pub async fn execute_command(
                         format!("unlock {item}: {}", r.applied_flips.join(" · "))
                     };
                     Ok(item)
+                }
+                "formset" => {
+                    if parts.get(2).copied() != Some("add") {
+                        return Err("usage: :hii formset add FILE [--ffs GUID]".into());
+                    }
+                    let file = parts
+                        .get(3)
+                        .ok_or("usage: :hii formset add FILE [--ffs GUID]")?;
+                    let ffs = parts
+                        .iter()
+                        .position(|p| *p == "--ffs")
+                        .and_then(|i| parts.get(i + 1).copied())
+                        .unwrap_or_default();
+                    let schema_json = read_schema(file)?;
+                    let r = client
+                        .inner
+                        .hii_form_set_add(auth_req(
+                            &client.state,
+                            HiiFormSetAddRequest {
+                                image_id: iid,
+                                schema_json,
+                                target_ffs_guid: ffs.to_string(),
+                            },
+                        ))
+                        .await
+                        .map_err(|e| e.message().to_string())?
+                        .into_inner();
+                    refresh_tree(app, client).await?;
+                    reload_forms(app, client).await?;
+                    let _ = refresh_form_details_if_needed(app, client).await;
+                    app.status_msg =
+                        formset_add_status(&r.new_ffs_id, &r.inserted_form_ids, &r.string_ids);
+                    Ok(r.new_ffs_id)
+                }
+                "form" => {
+                    if parts.get(2).copied() != Some("add") {
+                        return Err("usage: :hii form add TARGET FILE".into());
+                    }
+                    let target = parts.get(3).ok_or("usage: :hii form add TARGET FILE")?;
+                    let file = parts.get(4).ok_or("usage: :hii form add TARGET FILE")?;
+                    let schema_json = read_schema(file)?;
+                    let r = client
+                        .inner
+                        .hii_form_add(auth_req(
+                            &client.state,
+                            HiiFormAddRequest {
+                                image_id: iid,
+                                target: target.to_string(),
+                                schema_json,
+                            },
+                        ))
+                        .await
+                        .map_err(|e| e.message().to_string())?
+                        .into_inner();
+                    refresh_tree(app, client).await?;
+                    reload_forms(app, client).await?;
+                    let _ = refresh_form_details_if_needed(app, client).await;
+                    app.status_msg = form_add_status(&r.inserted_form_ids, &r.string_ids);
+                    Ok(r.inserted_form_ids
+                        .iter()
+                        .map(|i| i.to_string())
+                        .collect::<Vec<_>>()
+                        .join(","))
+                }
+                "question" => {
+                    if parts.get(2).copied() != Some("add") {
+                        return Err("usage: :hii question add TARGET#FORM FILE".into());
+                    }
+                    let item = parts
+                        .get(3)
+                        .ok_or("usage: :hii question add TARGET#FORM FILE")?;
+                    let file = parts
+                        .get(4)
+                        .ok_or("usage: :hii question add TARGET#FORM FILE")?;
+                    let schema_json = read_schema(file)?;
+                    let r = client
+                        .inner
+                        .hii_question_add(auth_req(
+                            &client.state,
+                            HiiQuestionAddRequest {
+                                image_id: iid,
+                                target: item.to_string(),
+                                schema_json,
+                            },
+                        ))
+                        .await
+                        .map_err(|e| e.message().to_string())?
+                        .into_inner();
+                    refresh_tree(app, client).await?;
+                    reload_forms(app, client).await?;
+                    let _ = refresh_form_details_if_needed(app, client).await;
+                    app.status_msg = question_add_status(&r.questions, &r.refs);
+                    Ok(r.questions
+                        .iter()
+                        .map(|o| format!("{:#x}", o.question_id))
+                        .collect::<Vec<_>>()
+                        .join(","))
+                }
+                "page" => {
+                    if parts.get(2).copied() != Some("add") {
+                        return Err("usage: :hii page add TARGET FILE".into());
+                    }
+                    let target = parts.get(3).ok_or("usage: :hii page add TARGET FILE")?;
+                    let file = parts.get(4).ok_or("usage: :hii page add TARGET FILE")?;
+                    let schema_json = read_schema(file)?;
+                    let r = client
+                        .inner
+                        .hii_page_add(auth_req(
+                            &client.state,
+                            HiiPageAddRequest {
+                                image_id: iid,
+                                target: target.to_string(),
+                                schema_json,
+                            },
+                        ))
+                        .await
+                        .map_err(|e| e.message().to_string())?
+                        .into_inner();
+                    refresh_tree(app, client).await?;
+                    reload_forms(app, client).await?;
+                    let _ = refresh_form_details_if_needed(app, client).await;
+                    app.status_msg = page_add_status(&r);
+                    Ok(r.form_id.to_string())
+                }
+                "hijack" => {
+                    let target = parts
+                        .get(2)
+                        .ok_or("usage: :hii hijack TARGET FILE [SETUPDATA-GUID]")?;
+                    let file = parts
+                        .get(3)
+                        .ok_or("usage: :hii hijack TARGET FILE [SETUPDATA-GUID]")?;
+                    let setupdata_guid = parts.get(4).copied().unwrap_or_default();
+                    let schema_json = read_schema(file)?;
+                    let r = client
+                        .inner
+                        .hii_form_hijack(auth_req(
+                            &client.state,
+                            HiiFormHijackRequest {
+                                image_id: iid,
+                                target: target.to_string(),
+                                schema_json,
+                                setupdata_guid: setupdata_guid.to_string(),
+                            },
+                        ))
+                        .await
+                        .map_err(|e| e.message().to_string())?
+                        .into_inner();
+                    refresh_tree(app, client).await?;
+                    reload_forms(app, client).await?;
+                    let _ = refresh_form_details_if_needed(app, client).await;
+                    app.status_msg = hijack_status(&r);
+                    Ok(target.to_string())
                 }
                 other => Err(format!("unknown hii subcommand: {other}")),
             }
@@ -776,6 +934,54 @@ fn common_prefix(items: &[String]) -> String {
     p
 }
 
+fn unique_form_targets(app: &App) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    app.forms
+        .forms
+        .iter()
+        .map(|f| f.form_id.clone())
+        .filter(|t| seen.insert(t.clone()))
+        .collect()
+}
+
+fn unique_formset_guids(app: &App) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    app.forms
+        .forms
+        .iter()
+        .map(|f| f.formset_guid.clone())
+        .filter(|g| seen.insert(g.clone()))
+        .collect()
+}
+
+/// Пути по префиксу для позиции schema-файла: набранный каталог-префикс
+/// сохраняется как есть (абсолютный/относительный), каталоги получают
+/// "/", скрытые файлы — только по точечному префиксу. Спека §4 V3.
+fn complete_path(token: &str) -> Vec<String> {
+    let (dir_part, prefix) = match token.rfind('/') {
+        Some(i) => (&token[..=i], &token[i + 1..]),
+        None => ("", token),
+    };
+    let dir = if dir_part.is_empty() { "." } else { dir_part };
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return vec![];
+    };
+    let mut out: Vec<String> = rd
+        .flatten()
+        .map(|e| {
+            (
+                e.file_name().to_string_lossy().to_string(),
+                e.file_type().map(|t| t.is_dir()).unwrap_or(false),
+            )
+        })
+        .filter(|(name, _)| name.starts_with(prefix))
+        .filter(|(name, _)| !name.starts_with('.') || prefix.starts_with('.'))
+        .map(|(name, is_dir)| format!("{dir_part}{name}{}", if is_dir { "/" } else { "" }))
+        .collect();
+    out.sort();
+    out
+}
+
 fn context_candidates(app: &App, cmd: &str, head: &[&str], token: &str) -> Vec<String> {
     if head.last() == Some(&"--mode") {
         return ["into", "before", "after"]
@@ -793,10 +999,17 @@ fn context_candidates(app: &App, cmd: &str, head: &[&str], token: &str) -> Vec<S
             .filter(|c| c.starts_with(token))
             .collect();
     }
+    if head.last() == Some(&"--ffs") {
+        return unique_formset_guids(app)
+            .into_iter()
+            .filter(|c| c.starts_with(token))
+            .collect();
+    }
     if token.starts_with("--") {
         let flags: &[&str] = match cmd {
             "insert" => &["--file", "--artifact-id", "--mode"],
             "replace" => &["--file", "--artifact-id", "--body-only"],
+            "hii" if head.contains(&"formset") && head.contains(&"add") => &["--ffs"],
             _ => &[],
         };
         return flags
@@ -807,11 +1020,65 @@ fn context_candidates(app: &App, cmd: &str, head: &[&str], token: &str) -> Vec<S
     }
     if cmd == "hii" {
         if head.len() == 1 {
-            return ["set-value", "visibility", "unlock"]
-                .iter()
-                .filter(|c| c.starts_with(token))
-                .map(|s| s.to_string())
-                .collect();
+            return [
+                "formset",
+                "form",
+                "question",
+                "page",
+                "hijack",
+                "set-value",
+                "visibility",
+                "unlock",
+            ]
+            .iter()
+            .filter(|c| c.starts_with(token))
+            .map(|s| s.to_string())
+            .collect();
+        }
+        let noun = head[1];
+        if matches!(noun, "formset" | "form" | "question" | "page") {
+            if head.len() == 2 {
+                return ["add"]
+                    .iter()
+                    .filter(|c| c.starts_with(token))
+                    .map(|s| s.to_string())
+                    .collect();
+            }
+            if head.get(2) != Some(&"add") {
+                return vec![];
+            }
+            let file_pos = if noun == "formset" { 3 } else { 4 };
+            if head.len() == file_pos {
+                return complete_path(token);
+            }
+            if head.len() == file_pos - 1 {
+                if noun == "question" {
+                    return app
+                        .forms
+                        .forms
+                        .iter()
+                        .map(|f| format!("{}#{}", f.form_id, f.form_id_ifr))
+                        .filter(|c| c.starts_with(token))
+                        .collect();
+                }
+                return unique_form_targets(app)
+                    .into_iter()
+                    .filter(|c| c.starts_with(token))
+                    .collect();
+            }
+            return vec![];
+        }
+        if noun == "hijack" {
+            if head.len() == 2 {
+                return unique_form_targets(app)
+                    .into_iter()
+                    .filter(|c| c.starts_with(token))
+                    .collect();
+            }
+            if head.len() == 3 {
+                return complete_path(token);
+            }
+            return vec![];
         }
         if matches!(head[1], "set-value" | "visibility" | "unlock")
             && !head[2..].iter().any(|s| !s.starts_with("--"))
@@ -938,12 +1205,141 @@ pub fn set_value_prefill(app: &App) -> Option<String> {
     ))
 }
 
+/// Insert-prefill для клавиши `a` в Forms-view: FormSet-строка —
+/// `hii formset add ` (target не нужен), Form-строка — `hii form add
+/// <target> ` из выделения (решение D6); DanglingRef — None.
+/// Спека tui-forms-view §4 V3.
+pub fn add_prefill(app: &App) -> Option<String> {
+    match app.forms_rows().get(app.forms.cursor) {
+        Some(crate::forms::FormsRow::FormSet { .. }) => Some("hii formset add ".into()),
+        Some(crate::forms::FormsRow::Form { key, .. }) => {
+            Some(format!("hii form add {} ", key.target))
+        }
+        _ => None,
+    }
+}
+
 /// Команда для клавиши `v` на выбранной форме. Движок реализует только
 /// unsuppress (visibility on); скрытие (off) — ошибка, поэтому на уже
 /// видимой форме возвращает None — вызывающий показывает пояснение,
 /// а не шлёт команду.
 pub fn form_visibility_command(item: &str, visible: bool) -> Option<String> {
     (!visible).then(|| format!("hii visibility {item} on"))
+}
+
+fn fmt_string_ids(ids: &std::collections::HashMap<String, u32>) -> String {
+    if ids.is_empty() {
+        return "(none)".into();
+    }
+    let mut v: Vec<(&String, &u32)> = ids.iter().collect();
+    v.sort_by_key(|(name, _)| name.to_string());
+    v.iter()
+        .map(|(name, sid)| format!("{name}={sid}"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// Однострочный статус :hii formset add. Спека tui-forms-view §4 V3.
+pub fn formset_add_status(
+    new_ffs_id: &str,
+    form_ids: &[u32],
+    string_ids: &std::collections::HashMap<String, u32>,
+) -> String {
+    let forms = if form_ids.is_empty() {
+        "(none)".into()
+    } else {
+        form_ids
+            .iter()
+            .map(|i| i.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    format!(
+        "formset added: ffs {new_ffs_id} · forms {forms} · strings {}",
+        fmt_string_ids(string_ids)
+    )
+}
+
+/// Однострочный статус :hii form add. Спека tui-forms-view §4 V3.
+pub fn form_add_status(
+    form_ids: &[u32],
+    string_ids: &std::collections::HashMap<String, u32>,
+) -> String {
+    let forms = if form_ids.is_empty() {
+        "(none)".into()
+    } else {
+        form_ids
+            .iter()
+            .map(|i| i.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    format!(
+        "form added: forms {forms} · strings {}",
+        fmt_string_ids(string_ids)
+    )
+}
+
+/// Однострочный статус :hii question add: qid в hex (конвенция q0xNNN),
+/// string_ids всех исходов вперёд, сортировка по имени. Спека §4 V3.
+pub fn question_add_status(
+    questions: &[HiiQuestionAddOutcome],
+    refs: &[HiiQuestionAddOutcome],
+) -> String {
+    let fmt_ids = |v: &[HiiQuestionAddOutcome]| {
+        if v.is_empty() {
+            "(none)".to_string()
+        } else {
+            v.iter()
+                .map(|o| format!("{:#x}", o.question_id))
+                .collect::<Vec<_>>()
+                .join(",")
+        }
+    };
+    let mut names: Vec<(String, u32)> = questions
+        .iter()
+        .chain(refs)
+        .flat_map(|o| o.string_ids.iter().map(|(n, s)| (n.clone(), *s)))
+        .collect();
+    names.sort_by_key(|(n, _)| n.clone());
+    let strings = if names.is_empty() {
+        "(none)".into()
+    } else {
+        names
+            .iter()
+            .map(|(n, s)| format!("{n}={s}"))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    format!(
+        "question add: questions {} · refs {} · strings {strings}",
+        fmt_ids(questions),
+        fmt_ids(refs)
+    )
+}
+
+/// Однострочный статус :hii page add (десятичные поля, как CLI). Спека §4 V3.
+pub fn page_add_status(resp: &HiiPageAddResponse) -> String {
+    format!(
+        "page added: form {} · slot {} · offset {} · title sid {}",
+        resp.form_id, resp.slot, resp.page_offset, resp.title_string_id
+    )
+}
+
+/// Однострочный статус :hii hijack: flips join как unlock (V2), строки —
+/// количеством (имён может быть много). Спека §4 V3.
+pub fn hijack_status(resp: &HiiFormHijackResponse) -> String {
+    let flips = if resp.unlock_flips.is_empty() {
+        "none".to_string()
+    } else {
+        resp.unlock_flips.join(" · ")
+    };
+    format!(
+        "hijack: ifr {:#x}..{:#x} · flips {flips} · strings {}",
+        resp.form_ifr_start,
+        resp.form_ifr_end,
+        resp.string_ids.len()
+    )
 }
 
 pub async fn refresh_forms(app: &mut App, client: &mut Client) -> Result<(), String> {
@@ -1266,6 +1662,85 @@ mod tests {
     }
 
     #[test]
+    fn schema_status_formats() {
+        let mut sids = std::collections::HashMap::new();
+        sids.insert("title".to_string(), 600);
+        sids.insert("help".to_string(), 601);
+        assert_eq!(
+            formset_add_status("ffs-9", &[10101, 10102], &sids),
+            "formset added: ffs ffs-9 · forms 10101,10102 · strings help=601,title=600"
+        );
+        assert_eq!(
+            formset_add_status("ffs-9", &[], &std::collections::HashMap::new()),
+            "formset added: ffs ffs-9 · forms (none) · strings (none)"
+        );
+        assert_eq!(
+            form_add_status(&[10101], &sids),
+            "form added: forms 10101 · strings help=601,title=600"
+        );
+        assert_eq!(
+            form_add_status(&[], &std::collections::HashMap::new()),
+            "form added: forms (none) · strings (none)"
+        );
+    }
+
+    #[test]
+    fn question_add_status_hex_qids_and_strings() {
+        let mk = |qid: u32, sids: &[(&str, u32)]| HiiQuestionAddOutcome {
+            question_id: qid,
+            string_ids: sids.iter().map(|(n, s)| (n.to_string(), *s)).collect(),
+            spf_record_offset: 0x1C,
+        };
+        assert_eq!(
+            question_add_status(&[mk(0x258, &[("prompt", 600)])], &[]),
+            "question add: questions 0x258 · refs (none) · strings prompt=600"
+        );
+        assert_eq!(
+            question_add_status(
+                &[mk(0x258, &[])],
+                &[mk(0x25A, &[("prompt", 600), ("help", 601)])]
+            ),
+            "question add: questions 0x258 · refs 0x25a · strings help=601,prompt=600"
+        );
+        assert_eq!(
+            question_add_status(&[], &[]),
+            "question add: questions (none) · refs (none) · strings (none)"
+        );
+    }
+
+    #[test]
+    fn page_and_hijack_status() {
+        let page = HiiPageAddResponse {
+            form_id: 10019,
+            slot: 1,
+            page_offset: 42,
+            title_string_id: 600,
+        };
+        assert_eq!(
+            page_add_status(&page),
+            "page added: form 10019 · slot 1 · offset 42 · title sid 600"
+        );
+        let mut sids = std::collections::HashMap::new();
+        sids.insert("title".to_string(), 600);
+        let hijack = HiiFormHijackResponse {
+            string_ids: sids,
+            form_ifr_start: 0x1000,
+            form_ifr_end: 0x1100,
+            unlock_flips: vec!["pkg+0x1c: 01 00 -> ff ff".into()],
+            ..Default::default()
+        };
+        assert_eq!(
+            hijack_status(&hijack),
+            "hijack: ifr 0x1000..0x1100 · flips pkg+0x1c: 01 00 -> ff ff · strings 1"
+        );
+        let no_flips = HiiFormHijackResponse::default();
+        assert_eq!(
+            hijack_status(&no_flips),
+            "hijack: ifr 0x0..0x0 · flips none · strings 0"
+        );
+    }
+
+    #[test]
     fn complete_hii_verbs_and_item_ids() {
         let mut app = crate::app::App::new();
         app.forms.forms = vec![uefi_proto::FormInfo {
@@ -1279,6 +1754,11 @@ mod tests {
         assert_eq!(
             opts,
             vec![
+                "formset".to_string(),
+                "form".to_string(),
+                "question".to_string(),
+                "page".to_string(),
+                "hijack".to_string(),
                 "set-value".to_string(),
                 "visibility".to_string(),
                 "unlock".to_string()
@@ -1289,6 +1769,159 @@ mod tests {
         assert!(
             opts.is_empty(),
             "unique candidate completes directly, no menu"
+        );
+    }
+
+    #[test]
+    fn complete_hii_nouns_add_targets_items_and_paths() {
+        let mut app = crate::app::App::new();
+        app.forms.forms = vec![
+            uefi_proto::FormInfo {
+                form_id: "t:0x19:0".into(),
+                formset_guid: "SET-A".into(),
+                form_id_ifr: 10001,
+                title: "Main".into(),
+                visible: true,
+            },
+            uefi_proto::FormInfo {
+                form_id: "t:0x19:0".into(),
+                formset_guid: "SET-A".into(),
+                form_id_ifr: 10019,
+                title: "Serial".into(),
+                visible: false,
+            },
+        ];
+        let (rep, _) = complete(&app, "hii form ");
+        assert_eq!(
+            rep.as_deref(),
+            Some("hii form add"),
+            "единственный кандидат инлайн-дополняется (контракт complete)"
+        );
+        let (rep, _) = complete(&app, "hii formset ");
+        assert_eq!(rep.as_deref(), Some("hii formset add"));
+
+        let (rep, _) = complete(&app, "hii form add ");
+        assert_eq!(
+            rep.as_deref(),
+            Some("hii form add t:0x19:0"),
+            "голые target-кандидаты, дедуп по двум формам одного target"
+        );
+        let (rep, _) = complete(&app, "hii hijack ");
+        assert_eq!(rep.as_deref(), Some("hii hijack t:0x19:0"));
+        let (_, opts) = complete(&app, "hii question add ");
+        assert_eq!(
+            opts,
+            vec!["t:0x19:0#10001".to_string(), "t:0x19:0#10019".to_string()],
+            "question add — item-кандидаты target#form_id (form_id десятичное)"
+        );
+    }
+
+    #[test]
+    fn complete_path_lists_dir_entries_with_slash_for_dirs() {
+        let td = tempfile::TempDir::new().unwrap();
+        std::fs::write(td.path().join("schema-a.json"), "{}").unwrap();
+        std::fs::write(td.path().join("schema-b.json"), "{}").unwrap();
+        std::fs::write(td.path().join(".hidden.json"), "{}").unwrap();
+        std::fs::create_dir(td.path().join("fixtures")).unwrap();
+        let base = td.path().display().to_string();
+        assert_eq!(
+            complete_path(&format!("{base}/schema-")),
+            vec![
+                format!("{base}/schema-a.json"),
+                format!("{base}/schema-b.json")
+            ]
+        );
+        assert_eq!(
+            complete_path(&format!("{base}/fix")),
+            vec![format!("{base}/fixtures/")],
+            "каталог получает / — следующий Tab спускается внутрь"
+        );
+        assert_eq!(
+            complete_path(&format!("{base}/.")),
+            vec![format!("{base}/.hidden.json")],
+            "скрытые — только по явному точечному префиксу"
+        );
+        assert!(complete_path(&format!("{base}/no-such-dir-9f1/x")).is_empty());
+    }
+
+    #[test]
+    fn complete_hii_add_file_position_is_path_completion() {
+        let td = tempfile::TempDir::new().unwrap();
+        std::fs::write(td.path().join("schema-x.json"), "{}").unwrap();
+        let base = td.path().display().to_string();
+        let mut app = crate::app::App::new();
+        app.forms.forms = vec![uefi_proto::FormInfo {
+            form_id: "t:0x19:0".into(),
+            formset_guid: "SET-A".into(),
+            form_id_ifr: 10001,
+            title: "Main".into(),
+            visible: true,
+        }];
+        let (rep, _) = complete(&app, &format!("hii formset add {base}/schema-x"));
+        assert_eq!(
+            rep.as_deref(),
+            Some(format!("hii formset add {base}/schema-x.json").as_str())
+        );
+        let (rep, _) = complete(&app, &format!("hii form add t:0x19:0 {base}/schema-x"));
+        assert_eq!(
+            rep.as_deref(),
+            Some(format!("hii form add t:0x19:0 {base}/schema-x.json").as_str())
+        );
+        let (rep, _) = complete(&app, &format!("hii hijack t:0x19:0 {base}/schema-x"));
+        assert_eq!(
+            rep.as_deref(),
+            Some(format!("hii hijack t:0x19:0 {base}/schema-x.json").as_str())
+        );
+    }
+
+    #[test]
+    fn complete_ffs_flag_and_formset_guid_value() {
+        let mut app = crate::app::App::new();
+        app.forms.forms = vec![uefi_proto::FormInfo {
+            form_id: "t:0x19:0".into(),
+            formset_guid: "SET-A".into(),
+            form_id_ifr: 10001,
+            title: "Main".into(),
+            visible: true,
+        }];
+        let (rep, _) = complete(&app, "hii formset add f.json --");
+        assert_eq!(rep.as_deref(), Some("hii formset add f.json --ffs"));
+        let (rep, _) = complete(&app, "hii formset add f.json --ffs ");
+        assert_eq!(rep.as_deref(), Some("hii formset add f.json --ffs SET-A"));
+    }
+
+    #[test]
+    fn add_prefill_formset_form_and_dangling() {
+        let mut app = crate::app::App::new();
+        app.forms.forms = vec![uefi_proto::FormInfo {
+            form_id: "11111111-2222-3333-4444-555555555555:0x19:0".into(),
+            formset_guid: "SET-A".into(),
+            form_id_ifr: 10001,
+            title: "Main".into(),
+            visible: true,
+        }];
+        app.forms.edges = vec![uefi_proto::FormEdge {
+            formset_guid: "SET-A".into(),
+            parent_form_id: 10001,
+            form_id: 99,
+        }];
+        app.forms.expanded = crate::forms::all_row_keys(&app.forms.forms, &app.forms.edges);
+        app.forms.cursor = 0;
+        assert_eq!(
+            add_prefill(&app).as_deref(),
+            Some("hii formset add "),
+            "FormSet-строка: formset add не требует target"
+        );
+        app.forms.cursor = 1;
+        assert_eq!(
+            add_prefill(&app).as_deref(),
+            Some("hii form add 11111111-2222-3333-4444-555555555555:0x19:0 ")
+        );
+        app.forms.cursor = 2;
+        assert_eq!(
+            add_prefill(&app),
+            None,
+            "DanglingRef — не форма и не формсет, prefill нет"
         );
     }
 

@@ -413,3 +413,322 @@ async fn hii_set_value_keeps_question_cursor() {
         "курсор вопроса остаётся на редактируемом вопросе после set-value"
     );
 }
+
+fn schema_file(td: &tempfile::TempDir, name: &str, body: &str) -> String {
+    let p = td.path().join(name);
+    std::fs::write(&p, body).unwrap();
+    p.display().to_string()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hii_formset_add_sends_schema_and_refreshes() {
+    let td = tempfile::TempDir::new().unwrap();
+    let sock = td.path().join("test.sock");
+    let (_h, calls) = mock_server::start_mock(&sock).await;
+    let state = uefi_common::State {
+        session_id: Some("s1".into()),
+        token: Some("t1".into()),
+        active_image_id: None,
+        sock_path: Some(sock.display().to_string()),
+    };
+    let mut client = uefi_tui::commands::connect(None, state).await.unwrap();
+    let mut app = uefi_tui::app::App::new();
+    uefi_tui::commands::execute_command(&mut app, "open /dev/null", &mut client)
+        .await
+        .unwrap();
+    uefi_tui::commands::execute_command(&mut app, "forms", &mut client)
+        .await
+        .unwrap();
+    let body = r#"{"formset_guid":"NEW-GUID","forms":[]}"#;
+    let file = schema_file(&td, "formset.json", body);
+
+    app.forms_cursor_down();
+    uefi_tui::commands::refresh_form_details_if_needed(&mut app, &mut client)
+        .await
+        .unwrap();
+    assert!(
+        !app.forms.questions.is_empty(),
+        "кэш вопросов заполнен до add"
+    );
+    app.forms.cursor = 0;
+    app.tree.clear();
+
+    let r = uefi_tui::commands::execute_command(
+        &mut app,
+        &format!("hii formset add {file}"),
+        &mut client,
+    )
+    .await
+    .unwrap();
+    assert_eq!(r, "mock-ffs-1");
+    let calls = calls.lock().await;
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].rpc, "HiiFormSetAdd");
+    assert_eq!(calls[0].schema_json, body);
+    assert_eq!(
+        calls[0].target, "",
+        "без --ffs уходит пустой target_ffs_guid"
+    );
+    drop(calls);
+    assert_eq!(
+        app.status_msg,
+        "formset added: ffs mock-ffs-1 · forms 10101 · strings title=600"
+    );
+    assert!(
+        app.forms.questions.is_empty(),
+        "reload_forms сбросил кэш вопросов (курсор на FormSet — re-fetch не вернул)"
+    );
+    assert!(
+        !app.tree.is_empty(),
+        "дерево образа обновлено после вставки FFS"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hii_formset_add_ffs_flag() {
+    let td = tempfile::TempDir::new().unwrap();
+    let sock = td.path().join("test.sock");
+    let (_h, calls) = mock_server::start_mock(&sock).await;
+    let state = uefi_common::State {
+        session_id: Some("s1".into()),
+        token: Some("t1".into()),
+        active_image_id: None,
+        sock_path: Some(sock.display().to_string()),
+    };
+    let mut client = uefi_tui::commands::connect(None, state).await.unwrap();
+    let mut app = uefi_tui::app::App::new();
+    uefi_tui::commands::execute_command(&mut app, "open /dev/null", &mut client)
+        .await
+        .unwrap();
+    let file = schema_file(&td, "formset.json", "{}");
+    uefi_tui::commands::execute_command(
+        &mut app,
+        &format!("hii formset add {file} --ffs ABC-GUID"),
+        &mut client,
+    )
+    .await
+    .unwrap();
+    let calls = calls.lock().await;
+    assert_eq!(calls[0].target, "ABC-GUID");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hii_form_add_sends_target_and_schema() {
+    let td = tempfile::TempDir::new().unwrap();
+    let sock = td.path().join("test.sock");
+    let (_h, calls) = mock_server::start_mock(&sock).await;
+    let state = uefi_common::State {
+        session_id: Some("s1".into()),
+        token: Some("t1".into()),
+        active_image_id: None,
+        sock_path: Some(sock.display().to_string()),
+    };
+    let mut client = uefi_tui::commands::connect(None, state).await.unwrap();
+    let mut app = uefi_tui::app::App::new();
+    uefi_tui::commands::execute_command(&mut app, "open /dev/null", &mut client)
+        .await
+        .unwrap();
+    let body = r#"{"forms":[{"id":10101}]}"#;
+    let file = schema_file(&td, "form.json", body);
+
+    let r = uefi_tui::commands::execute_command(
+        &mut app,
+        &format!("hii form add 11111111-2222-3333-4444-555555555555:0x19:0 {file}"),
+        &mut client,
+    )
+    .await
+    .unwrap();
+    assert_eq!(r, "10101");
+    let calls = calls.lock().await;
+    assert_eq!(calls[0].rpc, "HiiFormAdd");
+    assert_eq!(
+        calls[0].target,
+        "11111111-2222-3333-4444-555555555555:0x19:0"
+    );
+    assert_eq!(calls[0].schema_json, body);
+    assert_eq!(
+        app.status_msg,
+        "form added: forms 10101 · strings title=600"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hii_add_usage_and_file_errors() {
+    let td = tempfile::TempDir::new().unwrap();
+    let sock = td.path().join("test.sock");
+    let (_h, _calls) = mock_server::start_mock(&sock).await;
+    let state = uefi_common::State {
+        session_id: Some("s1".into()),
+        token: Some("t1".into()),
+        active_image_id: None,
+        sock_path: Some(sock.display().to_string()),
+    };
+    let mut client = uefi_tui::commands::connect(None, state).await.unwrap();
+    let mut app = uefi_tui::app::App::new();
+    uefi_tui::commands::execute_command(&mut app, "open /dev/null", &mut client)
+        .await
+        .unwrap();
+    let e = uefi_tui::commands::execute_command(&mut app, "hii", &mut client)
+        .await
+        .unwrap_err();
+    assert!(
+        e.contains("formset add"),
+        "usage перечисляет V3-глаголы: {e}"
+    );
+    assert!(
+        uefi_tui::commands::execute_command(&mut app, "hii formset", &mut client)
+            .await
+            .is_err()
+    );
+    assert!(
+        uefi_tui::commands::execute_command(
+            &mut app,
+            "hii form add 11111111-2222-3333-4444-555555555555:0x19:0",
+            &mut client
+        )
+        .await
+        .is_err()
+    );
+    let e = uefi_tui::commands::execute_command(
+        &mut app,
+        "hii formset add /nonexistent-9f1/schema.json",
+        &mut client,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        e.contains("/nonexistent-9f1/schema.json"),
+        "ошибка несёт путь: {e}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hii_question_add_item_id_and_status() {
+    let td = tempfile::TempDir::new().unwrap();
+    let sock = td.path().join("test.sock");
+    let (_h, calls) = mock_server::start_mock(&sock).await;
+    let state = uefi_common::State {
+        session_id: Some("s1".into()),
+        token: Some("t1".into()),
+        active_image_id: None,
+        sock_path: Some(sock.display().to_string()),
+    };
+    let mut client = uefi_tui::commands::connect(None, state).await.unwrap();
+    let mut app = uefi_tui::app::App::new();
+    uefi_tui::commands::execute_command(&mut app, "open /dev/null", &mut client)
+        .await
+        .unwrap();
+    let body = r#"{"questions":[{"form_id":10019,"question_id":512}]}"#;
+    let file = schema_file(&td, "questions.json", body);
+
+    let r = uefi_tui::commands::execute_command(
+        &mut app,
+        &format!("hii question add 11111111-2222-3333-4444-555555555555:0x19:0#10019 {file}"),
+        &mut client,
+    )
+    .await
+    .unwrap();
+    assert_eq!(r, "0x258", "возврат — qid вставленных вопросов (hex)");
+    let calls = calls.lock().await;
+    assert_eq!(calls[0].rpc, "HiiQuestionAdd");
+    assert_eq!(
+        calls[0].target, "11111111-2222-3333-4444-555555555555:0x19:0#10019",
+        "item_id: form_id десятичное (контракт parse_item_id)"
+    );
+    assert_eq!(calls[0].schema_json, body);
+    assert_eq!(
+        app.status_msg,
+        "question add: questions 0x258 · refs (none) · strings prompt=600"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hii_page_add_status() {
+    let td = tempfile::TempDir::new().unwrap();
+    let sock = td.path().join("test.sock");
+    let (_h, calls) = mock_server::start_mock(&sock).await;
+    let state = uefi_common::State {
+        session_id: Some("s1".into()),
+        token: Some("t1".into()),
+        active_image_id: None,
+        sock_path: Some(sock.display().to_string()),
+    };
+    let mut client = uefi_tui::commands::connect(None, state).await.unwrap();
+    let mut app = uefi_tui::app::App::new();
+    uefi_tui::commands::execute_command(&mut app, "open /dev/null", &mut client)
+        .await
+        .unwrap();
+    let file = schema_file(&td, "page.json", r#"{"title":"New"}"#);
+
+    let r = uefi_tui::commands::execute_command(
+        &mut app,
+        &format!("hii page add 11111111-2222-3333-4444-555555555555:0x19:0 {file}"),
+        &mut client,
+    )
+    .await
+    .unwrap();
+    assert_eq!(r, "10019");
+    let calls = calls.lock().await;
+    assert_eq!(calls[0].rpc, "HiiPageAdd");
+    assert_eq!(
+        app.status_msg,
+        "page added: form 10019 · slot 1 · offset 42 · title sid 600"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hii_hijack_with_and_without_setupdata_guid() {
+    let td = tempfile::TempDir::new().unwrap();
+    let sock = td.path().join("test.sock");
+    let (_h, calls) = mock_server::start_mock(&sock).await;
+    let state = uefi_common::State {
+        session_id: Some("s1".into()),
+        token: Some("t1".into()),
+        active_image_id: None,
+        sock_path: Some(sock.display().to_string()),
+    };
+    let mut client = uefi_tui::commands::connect(None, state).await.unwrap();
+    let mut app = uefi_tui::app::App::new();
+    uefi_tui::commands::execute_command(&mut app, "open /dev/null", &mut client)
+        .await
+        .unwrap();
+    let file = schema_file(&td, "hijack.json", r#"{"form":{"id":1}}"#);
+
+    uefi_tui::commands::execute_command(
+        &mut app,
+        &format!("hii hijack 11111111-2222-3333-4444-555555555555:0x19:0 {file}"),
+        &mut client,
+    )
+    .await
+    .unwrap();
+    {
+        let calls = calls.lock().await;
+        assert_eq!(calls[0].rpc, "HiiFormHijack");
+        assert_eq!(calls[0].extra, "", "setupdata_guid опционален");
+        assert_eq!(
+            app.status_msg,
+            "hijack: ifr 0x1000..0x1100 · flips pkg+0x1c: 01 00 -> ff ff · strings 1"
+        );
+    }
+
+    uefi_tui::commands::execute_command(
+        &mut app,
+        &format!("hii hijack 11111111-2222-3333-4444-555555555555:0x19:0 {file} SETUP-GUID"),
+        &mut client,
+    )
+    .await
+    .unwrap();
+    let calls = calls.lock().await;
+    assert_eq!(calls[1].extra, "SETUP-GUID");
+    drop(calls);
+    assert!(
+        uefi_tui::commands::execute_command(
+            &mut app,
+            "hii hijack 11111111-2222-3333-4444-555555555555:0x19:0",
+            &mut client
+        )
+        .await
+        .is_err(),
+        "без FILE — usage-ошибка"
+    );
+}

@@ -320,6 +320,11 @@ async fn handle_normal_forms(app: &mut App, ev: &AppEvent, client: &mut Option<c
                 }
             }
         }
+        AppEvent::Key('a') if !app.forms.show_strings => {
+            if let Some(pre) = commands::add_prefill(app) {
+                app.enter_insert_mode("hii", pre);
+            }
+        }
         AppEvent::Key('T') if !app.forms.show_strings => {
             app.forms.flat_mode = !app.forms.flat_mode;
             app.forms_sanitize_cursor();

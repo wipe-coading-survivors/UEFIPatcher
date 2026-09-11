@@ -33,6 +33,7 @@ FORMS VIEW (Tab / Shift-Tab, :forms / :image)
   h / l          collapse / expand формсета (и формы в REF-дереве)
   v              показать скрытую форму (unsuppress; скрытие не поддержано)
   u              unlock выбранной формы (:hii unlock)
+  a              add: FormSet → :hii formset add · Form → :hii form add <target>
   T              плоский список <-> REF-дерево (путь в details)
   S              strings-браузер (повторно — закрыть; Esc тоже)
   /              открыть strings + промпт фильтра (:filter TEXT)
@@ -59,6 +60,11 @@ EX-COMMANDS
   :hii set-value ITEM VALUE   (ITEM = target#form[:qid], form — десятичное)
   :hii visibility ITEM on|off
   :hii unlock ITEM
+  :hii formset add FILE [--ffs GUID]
+  :hii form add TARGET FILE
+  :hii question add TARGET#FORM FILE     (form_id — десятичное)
+  :hii page add TARGET FILE
+  :hii hijack TARGET FILE [SETUPDATA-GUID]
   :filter TEXT                фильтр strings-браузера (пустой — сброс)
   :refresh
   :artifacts
@@ -80,4 +86,26 @@ pub fn render(f: &mut Frame, app: &App) {
             .title("Help (? to close)"),
     );
     f.render_widget(p, area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::HELP;
+
+    #[test]
+    fn help_documents_v3_add_commands_and_a_key() {
+        for cmd in [
+            ":hii formset add FILE [--ffs GUID]",
+            ":hii form add TARGET FILE",
+            ":hii question add TARGET#FORM FILE",
+            ":hii page add TARGET FILE",
+            ":hii hijack TARGET FILE [SETUPDATA-GUID]",
+        ] {
+            assert!(HELP.contains(cmd), "help должен документировать {cmd}");
+        }
+        assert!(
+            HELP.contains("a              add"),
+            "клавиша a в FORMS VIEW-секции"
+        );
+    }
 }

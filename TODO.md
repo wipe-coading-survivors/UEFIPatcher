@@ -2679,3 +2679,78 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   get-value нет; кандидат в V3 — `HiiGetValue` или поле `current` в
   QuestionInfo + рендер `current: 0x5 "Auto"` в TUI.
   Контекст: `uefi-engine/src/hii/mod.rs` set_value (plans.from), спека §3.2.
+
+## Находки финального ревью ветки tui-forms-v3 (2026-09-11)
+
+> Финальное ревью V3 (schema-операции: `:hii` add/hijack-команды,
+> completion, prefill, help/hint). Must-fix — нет; тест-хардинг
+> (recorder-lock в hijack-интеграционном тесте) закрыт fix-коммитом
+> ветки; ниже — отложенные миноры.
+
+* [ ] **uefi-tui: `--ffs` в `:hii formset add` — жёсткий порядок и молчаливые отказы**
+  — грамматика `FILE [--ffs GUID]` строго позиционная: файл = parts[3]
+  без оглядки на флаги. (1) `--ffs` ПЕРЕД файлом (`hii formset add --ffs
+  /путь/np.json`) → файлом считается сам `--ffs` → read_schema даёт
+  вводящую в заблуждение ошибку `--ffs: No such file or directory`, а
+  реальный путь уходит значением флага; (2) completion после `--ffs `
+  предлагает гуиды формсетов (значение флага — GUID FFS в образе), а не
+  пути → TAB «молчит» на `/t…`; (3) dangling `--ffs` (флаг последним
+  токеном) → `unwrap_or_default()` молча шлёт пустой target_ffs_guid
+  (clap в CLI отклоняет). Фикс: flag-aware парсинг — FILE = первый
+  нефлаговый токен после `add` (любой порядок), `--ffs` без значения →
+  usage-ошибка; completion в позиции файла — пути при любом порядке.
+  Пользователю: `--ffs` опционален — без него движок сам выбирает FFS.
+  Воспроизведено владельцем на живом образе (2026-09-12). Контекст:
+  `crates/uefi-tui/src/commands.rs` (`:hii`-ветка `"formset"`;
+  complete-ветка `head.last() == "--ffs"`).
+* [ ] **CLI↔TUI: грамматика hijack расходится** — CLI:
+  `hii form hijack --target X --file Y --setupdata-guid Z` (long-flags),
+  TUI: `:hii hijack TARGET FILE [GUID]` (позиционные). Не баг, но сюрприз
+  для пользователя, переходящего между клиентами; заметка в spec §9
+  (`2026-09-11-tui-forms-view-design.md`) или help. Контекст:
+  `crates/uefi-cli/src/main.rs` (HiiFormCmd::Hijack) vs
+  `crates/uefi-tui/src/commands.rs` (`"hijack"`).
+* [ ] **uefi-tui V3, мелочи** — (1) join-дедуп formset_add_status/
+  form_add_status: блок `map(to_string).join(",")` у u32-списков
+  одинаков — хелпер `fmt_u32_ids`; (2) item-format `format!("{}#{}")`
+  дублируется в completion (form/question-кандидаты) и add_prefill —
+  свернуть в один хелпер; (3) пустой forms-список → `add_prefill` None
+  не покрыт ассертом теста; (4) `--ffs` флаг-guard в completion — по
+  вхождению токенов (`contains("formset") && contains("add")`), не по
+  позиции; (5) `complete_path` не спускается по симлинкам. Контекст:
+  `crates/uefi-tui/src/commands.rs` (formset/form_add_status;
+  complete-ветки form/question; add_prefill + тест; complete_head).
+* [ ] **uefi-tui: «форма под формой» — UX ref-шага** — form add
+  вставляет форму в конец формсета (в IFR нет позиции «под формой»);
+  вложенность выражается второй операцией — `question add` с refs
+  (GOTO из родительской формы, см. np_ref.json). В TUI обе команды
+  есть (включая completion item_id), но `a` префиллит только первый
+  шаг — одно-кнопочного флоу нет (владелец, 2026-09-12). Варианты:
+  (A) клавиша `A` (shift-a) на строке формы → prefill
+  `hii question add <target>#<form> ` — быстрый префилл второго шага;
+  (B) необязательное поле `ref_into: <form_id>` в schema-файле: TUI
+  вырезает его до RPC, после form add сам вызывает question add с
+  синтезированным ref — одна команда/один файл, движок не трогаем;
+  (C) `ref_into` в движке — одна RPC атомарно, движковые тесты;
+  чистейший вариант, но отдельная дуга. Контекст:
+  `crates/uefi-tui/src/commands.rs` (add_prefill, ветка `"form"`);
+  семантика — `uefi_engine::hii::add_ref` (`hii/mod.rs`).
+* [ ] **uefi-tui: help-экран подрезается на низких терминалах** — HELP
+  в `ui/help.rs` = 70 строк, рендерится одним Paragraph без скролла:
+  при высоте терминала меньше ~70 строк хвост (секция EX-COMMANDS, где
+  пять `:hii … add`-строк V3) не виден — владелец не нашёл документацию
+  команд добавления (2026-09-12). Фикс: скролл (j/k) или пагинация
+  help, либо переорганизация текста. Смягчения, уже работающие:
+  клавиша `a` на строке формы/формсета сама собирает команду (target
+  подставляется из выделения); TAB ведёт по позициям грамматики;
+  `:hii` без аргументов печатает usage всех пяти команд. Контекст:
+  `crates/uefi-tui/src/ui/help.rs` (render, const HELP).
+* [ ] **TUI/WebUI: UX write-режима** — образ по умолчанию открывается
+  read-only, HII-мутации требуют write; сейчас приходится заново
+  `:open <путь> --mode write` (владелец, 2026-09-12). Пожелания:
+  (1) клавиша `w` на выбранном образе — переоткрыть его в write;
+  (2) команда `:reopen --mode write [--image-id <id>]`;
+  (3) главное — показывать режим открытия образа в списке образов
+  (registry-панель TUI, список образов WebUI). Контекст:
+  `crates/uefi-tui/src/ui/registry.rs`, `crates/uefi-tui/src/commands.rs`
+  (`:open`/`:image`), proto — `ImageOpen`/`ImageMode` (uefi-proto).
