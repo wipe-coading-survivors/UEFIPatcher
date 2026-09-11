@@ -2720,6 +2720,21 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   позиции; (5) `complete_path` не спускается по симлинкам. Контекст:
   `crates/uefi-tui/src/commands.rs` (formset/form_add_status;
   complete-ветки form/question; add_prefill + тест; complete_head).
+* [ ] **uefi-tui: «форма под формой» — UX ref-шага** — form add
+  вставляет форму в конец формсета (в IFR нет позиции «под формой»);
+  вложенность выражается второй операцией — `question add` с refs
+  (GOTO из родительской формы, см. np_ref.json). В TUI обе команды
+  есть (включая completion item_id), но `a` префиллит только первый
+  шаг — одно-кнопочного флоу нет (владелец, 2026-09-12). Варианты:
+  (A) клавиша `A` (shift-a) на строке формы → prefill
+  `hii question add <target>#<form> ` — быстрый префилл второго шага;
+  (B) необязательное поле `ref_into: <form_id>` в schema-файле: TUI
+  вырезает его до RPC, после form add сам вызывает question add с
+  синтезированным ref — одна команда/один файл, движок не трогаем;
+  (C) `ref_into` в движке — одна RPC атомарно, движковые тесты;
+  чистейший вариант, но отдельная дуга. Контекст:
+  `crates/uefi-tui/src/commands.rs` (add_prefill, ветка `"form"`);
+  семантика — `uefi_engine::hii::add_ref` (`hii/mod.rs`).
 * [ ] **uefi-tui: help-экран подрезается на низких терминалах** — HELP
   в `ui/help.rs` = 70 строк, рендерится одним Paragraph без скролла:
   при высоте терминала меньше ~70 строк хвост (секция EX-COMMANDS, где
