@@ -2323,21 +2323,27 @@ async fn real_image_remove_save_clean_tree() {
 #[tokio::test]
 #[ignore = "needs real image"]
 async fn real_image_flash_regions_layout() {
-    // parse: есть Region-узлы Descriptor/ME/GbE?; ME имеет детей-партиций ($FPT,
-    // FTPR среди имён); build_image == исходные байты (round-trip); путь
-    // count DXE/PEI-файлов не изменился против фиксированного числа (снять
-    // константой при написании — это и есть регрессия FV-части).
-    // ops: remove на ME-ребёнке → ImmutableRegion (failed_precondition).
+    // Rule-11 фикс (2026-09-11): HNX-образ НЕ дескрипторный (0x0FF0A55A на 0x10,
+    // первые 16 байт 0xFF — вероятно BIOS-region-only update-файл), Region-узлов
+    // на нём нет — гейт «есть Descriptor/ME/GbE» невыполним. Дескрипторное
+    // поведение покрыто юнитами Task 6/7 (синтетические фикстуры, включая
+    // ImmutableRegion и $FPT-партиции). Гейт на живом образе меняет роль:
+    // инвариант НЕ-дескрипторного пути — parse без Region-узлов, volume-count
+    // равен константе (снять при первом прогоне — регрессия FV-части),
+    // build_image == исходные байты (round-trip), count DXE/PEI-файлов
+    // не изменился против константы.
 }
 ```
 
 Заполнить тела по фактическим хелперам файла; константу числа файлов зафиксировать при первом прогоне (живой образ — критерий). Прогон: `cargo test -p uefi-engine --test real_image -- --ignored` при наличии файла; зелёный — обязателен для закрытия цикла.
 
-- [ ] **Step 2: TODO-бухгалтерия** — в `TODO.md` закрыть `[x]` с указанием коммитов: «ТUI: метка для узла Image/Volume», «fallback-метка по subtype», «Имя файла не поднимается из UI-секции за GUIDED/LZMA», «Том ME показывает только одну секцию», пункты раздела «Stale-tree» (prune), FIND/GO, tab-completion, «TUI: `:upload PATH`», «Server: ImageUpload RPC» (server-часть); добавить остаточные заметки при наличии (маркеры действий в TUI мертвы после prune — отложенная косметика).
+- [ ] **Step 2: TODO-бухгалтерия** — в `TODO.md` закрыть `[x]` с указанием коммитов: «ТUI: метка для узла Image/Volume», «fallback-метка по subtype», «Имя файла не поднимается из UI-секции за GUIDED/LZMA», «Том ME показывает только одну секцию», пункты раздела «Stale-tree» (prune→re-parse), FIND/GO, tab-completion, «TUI: `:upload PATH`», «Server: ImageUpload RPC» (server-часть), снапшоты; добавить остаточные заметки: маркеры действий в TUI мертвы после flush-re-parse (отложенная косметика); common_prefix не-ASCII хардинг; parse_fpt length-гвард на tiny-телах; негативный тест upload-лимита не пинит причину; refresh_registry `?` против `let _ =` в upload/restore; image_open логируется как "image uploaded"; collapsed-state тест для goto-expansion; identity_op-чистка под clippy --all-targets.
+
+- [ ] **Step 2b: гигиена --all-targets** — `cargo clippy --all --all-targets -- -D warnings`: почистить identity_op-линты в тест-коде parser/image.rs (арифметика фикстур вида `0x400 + 1 * 4` из Task 6); только эти сайты, без поведения.
 
 - [ ] **Step 3: roadmap** — цикл A: «реализован (дата, коммиты)».
 
-- [ ] **Step 4: финальный прогон** — `cargo test --all && cargo clippy --all -- -D warnings && cargo fmt --all -- --check`.
+- [ ] **Step 4: финальный прогон** — `cargo test --all && cargo clippy --all -- -D warnings && cargo clippy --all --all-targets -- -D warnings && cargo fmt --all -- --check` + `cargo test -p uefi-engine --test real_image -- --ignored`.
 
 - [ ] **Step 5: commit** — `test(uefi-engine): real-image gates for cycle A (name-lift, prune, flash regions) + docs bookkeeping`
 
