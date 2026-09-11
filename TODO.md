@@ -2615,10 +2615,11 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   form_package_ranges не покрывает bare_form_packages: формы bare-канала
   видны в list-forms, вопросы по ним не возвращаются. Асимметрия уровня
   движка, не TUI. Контекст: `crates/uefi-engine/src/hii/mod.rs:209`.
-* [ ] **uefi-tui: App::forms_sanitize_cursor не используется** —
-  forms_set_expanded клампит курсор сам, refresh_forms сбрасывает в 0.
-  Кандидат на использование в V2 (скролл/навигация) или удаление.
-  Контекст: `crates/uefi-tui/src/app.rs:333`.
+* [x] **uefi-tui: App::forms_sanitize_cursor не используется** —
+  закрыто в V2: используется на T-toggle плоского режима
+  (`crates/uefi-tui/src/main.rs`, коммит Task 5 `a675780`) и как
+  fallback клампа курсора в reload_forms (`crates/uefi-tui/src/commands.rs`,
+  коммит Task 6 `14d872c`).
 
 ## Находки ручного TUI-гейта V1 (владелец, 2026-09-11)
 
@@ -2629,3 +2630,40 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
 > дизамбигуация одинаковых титулов путём) закрыта в V2 (REF-дерево +
 > путь, коммит Task 5 `a675780`); backlog-пункт убран, гейт V2 —
 > сценарий в аддендуме §8 спеки.
+
+## Находки финального ревью ветки tui-forms-v2 (2026-09-11)
+
+> Финальное ревью V2 (8 задач). Must-fix M1 (кросс-форменный prefill:
+> `selected_question_id` гейтился на is_some, а не на равенство
+> questions_key выделенной форме) закрыт fix-коммитом ветки; M4
+> отложен контроллером; stale-пункт про `forms_sanitize_cursor`
+> закрыт выше (раздел ревью V1). Ниже — отложенные миноры (M3 ревью).
+
+* [ ] **uefi-tui: `:hii`-ветка берёт image_id только из client.state** —
+  в отличие от «forms» (refresh_forms: `app.active_image_id` с
+  fallback на `client.state.active_image_id`); 3-строчный фикс паритета
+  при следующем касании. Контекст: `crates/uefi-tui/src/commands.rs`
+  (`"hii" =>` — iid из client.state; compare refresh_forms).
+* [ ] **uefi-tui: `:hii` молча игнорирует лишние позиционные аргументы** —
+  `hii unlock X Y` принимается (читаются фиксированные parts[i], хвост
+  не валидируется). Добавить проверку арности. Контекст:
+  `crates/uefi-tui/src/commands.rs` (ветка `"hii"`, sub set-value/
+  visibility/unlock).
+* [ ] **uefi-engine: O(n²) Vec::contains-дедуп в hii/ref_tree** —
+  package_edges/push_edges дедуплицируют рёбра линейным поиском по
+  Vec; при профилировании больших форм — HashSet. Контекст:
+  `crates/uefi-engine/src/hii/ref_tree.rs:23,102`.
+* [ ] **uefi-tui: refresh_forms (вход в Forms-view) all-or-nothing** —
+  при неудаче hii_form_tree формы не применяются (`?`), хотя forms-RPC
+  успешен; degraded-mode (пустые рёбра + статус) как улучшение.
+  Контекст: `crates/uefi-tui/src/commands.rs` (refresh_forms,
+  edges-запрос).
+* [ ] **uefi-engine: tracing::info! в hii_form_tree асимметричен
+  read-only соседям** — hii_list_forms/hii_list_strings без info-строки;
+  выровнять в лог-проходе. Контекст:
+  `crates/uefi-engine/src/rpc/server.rs` (758 vs 738/763).
+* [ ] **uefi-tui: мок не позволяет протестировать ветку unlock «no
+  flippable gates»** — фикстура hii_gates_list всегда возвращает
+  flippable:true; расширить при следующем касании unlock/V3.
+  Контекст: `crates/uefi-tui/tests/mock_server.rs:374`.
+
