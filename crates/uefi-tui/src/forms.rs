@@ -28,6 +28,7 @@ pub enum FormsRow {
         depth: usize,
         path: String,
         has_children: bool,
+        expanded: bool,
     },
     DanglingRef {
         form_id: u32,
@@ -66,6 +67,7 @@ pub fn build_rows(forms: &[FormInfo], expanded: &HashSet<String>) -> Vec<FormsRo
                     depth: 1,
                     path: String::new(),
                     has_children: false,
+                    expanded: false,
                 });
             }
         }
@@ -179,6 +181,7 @@ pub fn build_tree_rows(
         }
         let Some(f) = by_id.get(&form_id) else { return };
         let kids = children.get(&form_id).cloned().unwrap_or_default();
+        let is_expanded = expanded.contains(&format!("{guid}#{form_id}"));
         path.push(f.title.clone());
         rows.push(FormsRow::Form {
             key: FormKey {
@@ -191,9 +194,10 @@ pub fn build_tree_rows(
             depth,
             path: path.join(" → "),
             has_children: !kids.is_empty(),
+            expanded: is_expanded,
         });
         emitted.insert(form_id);
-        if !kids.is_empty() && expanded.contains(&format!("{guid}#{form_id}")) {
+        if !kids.is_empty() && is_expanded {
             on_path.insert(form_id);
             for child in kids {
                 if by_id.contains_key(&child) {
@@ -407,11 +411,11 @@ mod tests {
         let rows = build_tree_rows(&forms, &edges, &ex);
         assert_eq!(rows.len(), 5);
         assert!(
-            matches!(&rows[1], FormsRow::Form { key, depth: 1, path, has_children: true, .. }
+            matches!(&rows[1], FormsRow::Form { key, depth: 1, path, has_children: true, expanded: true, .. }
                 if key.form_id_ifr == 1 && path == "Main")
         );
         assert!(
-            matches!(&rows[2], FormsRow::Form { key, depth: 2, path, .. }
+            matches!(&rows[2], FormsRow::Form { key, depth: 2, path, expanded: true, .. }
                 if key.form_id_ifr == 2 && path == "Main → Advanced")
         );
         assert!(
@@ -474,6 +478,7 @@ mod tests {
             &rows[1],
             FormsRow::Form {
                 has_children: true,
+                expanded: false,
                 ..
             }
         ));
