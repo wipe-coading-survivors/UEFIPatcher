@@ -720,6 +720,7 @@ async fn hii_hijack_with_and_without_setupdata_guid() {
     .unwrap();
     let calls = calls.lock().await;
     assert_eq!(calls[1].extra, "SETUP-GUID");
+    drop(calls);
     assert!(
         uefi_tui::commands::execute_command(
             &mut app,
