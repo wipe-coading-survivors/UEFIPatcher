@@ -78,8 +78,9 @@ fn details_text(app: &App) -> String {
         return "no form selected".into();
     };
     let mut s = format!(
-        "Form:    {}\nFormSet: {}\nTarget:  {}\n",
+        "Form:    {}\nForm ID: {}\nFormSet: {}\nTarget:  {}\n",
         key.title,
+        key.form_id_ifr,
         short_guid(&key.formset_guid),
         key.target
     );
