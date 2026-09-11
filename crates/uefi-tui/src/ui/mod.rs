@@ -50,7 +50,7 @@ fn render_hint(f: &mut Frame, area: Rect, app: &App) {
             if app.forms.show_strings {
                 "NORMAL[Forms/Strings]: j/k move · /filter · S/Esc close · Ctrl-hjkl focus · :cmd · ?help · q"
             } else {
-                "NORMAL[Forms]: j/k move · h/l collapse/expand · S strings · Tab image-view · :cmd · ?help · q"
+                "NORMAL[Forms]: j/k move · h/l collapse/expand · v visibility · u unlock · T tree/flat · S strings · Tab image-view · :cmd · ?help · q"
             }
         }
         crate::app::Mode::Normal => match app.focus {

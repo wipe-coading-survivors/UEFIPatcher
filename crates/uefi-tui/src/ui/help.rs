@@ -30,7 +30,8 @@ REGISTRY focus
 
 FORMS VIEW (Tab / Shift-Tab, :forms / :image)
   j / k          move cursor (формы / строки)
-  h / l          collapse / expand формсета
+  h / l          collapse / expand формсета (и формы в REF-дереве)
+  T              плоский список <-> REF-дерево (путь в details)
   S              strings-браузер (повторно — закрыть; Esc тоже)
   /              открыть strings + промпт фильтра (:filter TEXT)
   Ctrl-hjkl      focus List <-> Details

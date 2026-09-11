@@ -24,10 +24,25 @@ fn row_item(row: &FormsRow) -> ListItem<'static> {
             let marker = if *expanded { "▾" } else { "▸" };
             ListItem::from(format!("{marker} FormSet {}", short_guid(guid)))
         }
-        FormsRow::Form { key, visible } => {
+        FormsRow::Form {
+            key,
+            visible,
+            depth,
+            ..
+        } => {
             let vis = if *visible { "[V]" } else { "[H]" };
-            ListItem::from(format!("  {:<6} {:<34} {vis}", key.form_id_ifr, key.title))
+            ListItem::from(format!(
+                "{}{:<6} {:<34} {vis}",
+                " ".repeat(2 * depth),
+                key.form_id_ifr,
+                key.title
+            ))
         }
+        FormsRow::DanglingRef { form_id, depth } => ListItem::from(format!(
+            "{}! {:<6} (dangling REF target)",
+            " ".repeat(2 * depth),
+            form_id
+        )),
     }
 }
 
@@ -74,7 +89,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
 }
 
 fn details_text(app: &App) -> String {
-    let Some(key) = app.selected_form_key() else {
+    let rows = app.forms_rows();
+    let Some(FormsRow::Form { key, path, .. }) = rows.get(app.forms.cursor) else {
         return "no form selected".into();
     };
     let mut s = format!(
@@ -84,7 +100,10 @@ fn details_text(app: &App) -> String {
         short_guid(&key.formset_guid),
         key.target
     );
-    if app.forms.questions_key.as_ref() == Some(&key) {
+    if !path.is_empty() {
+        s.push_str(&format!("Path:    {path}\n"));
+    }
+    if app.forms.questions_key.as_ref() == Some(key) {
         s.push_str(&format!(
             "\nQuestions ({}) — qid · kind · prompt:\n",
             app.forms.questions.len()

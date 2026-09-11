@@ -258,6 +258,10 @@ async fn handle_normal_forms(app: &mut App, ev: &AppEvent, client: &mut Option<c
                 app.status_msg = format!("error: {e}");
             }
         }
+        AppEvent::Key('T') if !app.forms.show_strings => {
+            app.forms.flat_mode = !app.forms.flat_mode;
+            app.forms_sanitize_cursor();
+        }
         AppEvent::Key('/') => {
             let need_fetch = app.forms.strings.is_empty();
             app.forms.show_strings = true;

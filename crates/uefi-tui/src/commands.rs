@@ -786,7 +786,7 @@ pub async fn refresh_forms(app: &mut App, client: &mut Client) -> Result<(), Str
         .edges;
     app.forms.forms = resp.forms;
     app.forms.edges = edges;
-    app.forms.expanded = crate::forms::all_formset_guids(&app.forms.forms);
+    app.forms.expanded = crate::forms::all_row_keys(&app.forms.forms, &app.forms.edges);
     app.forms.cursor = 0;
     app.forms.questions.clear();
     app.forms.questions_key = None;

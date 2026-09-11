@@ -65,6 +65,7 @@ impl FormsFocus {
 pub struct FormsData {
     pub forms: Vec<FormInfo>,
     pub edges: Vec<FormEdge>,
+    pub flat_mode: bool,
     pub expanded: HashSet<String>,
     pub cursor: usize,
     pub focus: FormsFocus,
@@ -288,7 +289,15 @@ impl App {
     }
 
     pub fn forms_rows(&self) -> Vec<crate::forms::FormsRow> {
-        crate::forms::build_rows(&self.forms.forms, &self.forms.expanded)
+        if self.forms.flat_mode {
+            crate::forms::build_rows(&self.forms.forms, &self.forms.expanded)
+        } else {
+            crate::forms::build_tree_rows(
+                &self.forms.forms,
+                &self.forms.edges,
+                &self.forms.expanded,
+            )
+        }
     }
 
     pub fn selected_form_key(&self) -> Option<crate::forms::FormKey> {
@@ -309,20 +318,29 @@ impl App {
     }
 
     /// h/l-семантика как в Image-view: на FormSet-строке — сам формсет,
-    /// на Form-строке — её родительский формсет. После сворачивания
-    /// курсор clamps к видимым строкам.
+    /// на Form-строке — её родительский формсет (в REF-дереве при
+    /// наличии детей — сама форма). После сворачивания курсор clamps
+    /// к видимым строкам.
     pub fn forms_set_expanded(&mut self, expand: bool) {
         let rows = self.forms_rows();
-        let guid = match rows.get(self.forms.cursor) {
+        let key = match rows.get(self.forms.cursor) {
             Some(crate::forms::FormsRow::FormSet { guid, .. }) => Some(guid.clone()),
-            Some(crate::forms::FormsRow::Form { key, .. }) => Some(key.formset_guid.clone()),
-            None => None,
+            Some(crate::forms::FormsRow::Form {
+                key, has_children, ..
+            }) => {
+                if !self.forms.flat_mode && *has_children {
+                    Some(format!("{}#{}", key.formset_guid, key.form_id_ifr))
+                } else {
+                    Some(key.formset_guid.clone())
+                }
+            }
+            _ => None,
         };
-        if let Some(guid) = guid {
+        if let Some(key) = key {
             if expand {
-                self.forms.expanded.insert(guid);
+                self.forms.expanded.insert(key);
             } else {
-                self.forms.expanded.remove(&guid);
+                self.forms.expanded.remove(&key);
             }
         }
         let n = self.forms_rows().len();

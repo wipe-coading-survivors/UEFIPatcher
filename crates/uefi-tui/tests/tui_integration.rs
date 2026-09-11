@@ -192,3 +192,47 @@ async fn forms_load_fetches_edges_and_reload_preserves_state() {
     );
     assert!(app.forms.questions.is_empty(), "per-form cache reset");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn forms_tree_mode_nested_path() {
+    let td = tempfile::TempDir::new().unwrap();
+    let sock = td.path().join("test.sock");
+    let _handle = mock_server::start_mock(&sock).await;
+    let state = uefi_common::State {
+        session_id: Some("s1".into()),
+        token: Some("t1".into()),
+        active_image_id: None,
+        sock_path: Some(sock.display().to_string()),
+    };
+    let mut client = uefi_tui::commands::connect(None, state).await.unwrap();
+    let mut app = uefi_tui::app::App::new();
+    uefi_tui::commands::execute_command(&mut app, "open /dev/null", &mut client)
+        .await
+        .unwrap();
+    uefi_tui::commands::execute_command(&mut app, "forms", &mut client)
+        .await
+        .unwrap();
+
+    let rows = app.forms_rows();
+    assert_eq!(
+        rows.len(),
+        5,
+        "SET1 + Main + Serial(вложенно) + SET2 + Platform"
+    );
+    assert!(
+        matches!(
+            &rows[2],
+            uefi_tui::forms::FormsRow::Form { key, depth: 2, path, .. }
+                if key.form_id_ifr == 10019
+                    && path == "Main → Serial Port 1 Configuration"
+        ),
+        "Serial вложена в Main, путь в details"
+    );
+
+    app.forms.flat_mode = true;
+    let flat = app.forms_rows();
+    assert!(
+        matches!(&flat[2], uefi_tui::forms::FormsRow::Form { depth: 1, path, .. } if path.is_empty()),
+        "плоский режим: без вложенности и пути"
+    );
+}
