@@ -107,7 +107,16 @@ impl EngineServer {
         atomic_write(&path, &bytes).map_err(|e| Status::internal(e.to_string()))?;
         let mut images = self.images.lock().await;
         if let Some(img) = images.get_mut(image_id) {
-            crate::ops::prune_applied(&mut img.root);
+            let mode = img.mode;
+            let session_id = img.session_id.clone();
+            match parse_image(&bytes, mode, image_id, &session_id) {
+                Ok(refreshed) => *img = refreshed,
+                Err(e) => {
+                    images.remove(image_id);
+                    drop(images);
+                    return Err(Status::internal(e.to_string()));
+                }
+            }
         }
         drop(images);
         self.sm
@@ -2106,7 +2115,7 @@ mod tests {
             f[0..16].copy_from_slice(guid.as_bytes());
             f[18] = 0x01;
             f[20..23].copy_from_slice(&crate::ffs::size_to_uint24(32));
-            f[24 + k] = 0xAA;
+            f[24] = [0xAA, 0xBB][k];
             buf[*at..*at + 32].copy_from_slice(&f);
         }
         buf
@@ -2154,9 +2163,78 @@ mod tests {
             .collect();
         assert_eq!(files.len(), 1, "removed file must disappear from the tree");
         assert_eq!(
-            files[0].offset, 88,
-            "the surviving file is the second fixture file"
+            files[0].offset, 56,
+            "survivor is re-materialized first in the rebuilt FV"
         );
+    }
+
+    fn two_fv_image_with_markers() -> Vec<u8> {
+        let mut buf = vec![0xFFu8; 512];
+        let guid = Guid::try_parse("5c60f367-a505-419a-859e-2a4ff6ca6fe5").unwrap();
+        let markers = [[0xAAu8, 0xBB], [0xCC, 0xDD]];
+        for (v, base) in [0usize, 256].iter().enumerate() {
+            let vol = &mut buf[*base..*base + 256];
+            vol[32..40].copy_from_slice(&256u64.to_le_bytes());
+            vol[40..44].copy_from_slice(&crate::ffs::EFI_FVH_SIGNATURE.to_le_bytes());
+            vol[44..48].copy_from_slice(&crate::ffs::EFI_FVB2_ERASE_POLARITY.to_le_bytes());
+            vol[48..50].copy_from_slice(&56u16.to_le_bytes());
+            vol[55] = 2;
+            for (k, &marker) in markers[v].iter().enumerate() {
+                let at = 56 + 32 * k;
+                let mut f = vec![0u8; 32];
+                f[0..16].copy_from_slice(&guid.to_bytes());
+                f[18] = 0x01;
+                f[20..23].copy_from_slice(&crate::ffs::size_to_uint24(32));
+                f[24] = marker;
+                vol[at..at + 32].copy_from_slice(&f);
+            }
+        }
+        buf
+    }
+
+    #[tokio::test]
+    async fn second_flush_does_not_resurrect_removed_file() {
+        let (_td, mut client) = setup().await;
+        let sid = create_session(&mut client).await;
+        let dir = _td.path().join("two.bin");
+        std::fs::write(&dir, two_fv_image_with_markers()).unwrap();
+        let open = client
+            .image_open(tonic::Request::new(ImageOpenRequest {
+                session_id: sid.clone(),
+                path: dir.display().to_string(),
+                mode: 1,
+                name: "t".into(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        for target in ["0/0", "1/0"] {
+            client
+                .image_node_remove(tonic::Request::new(ImageNodeRemoveRequest {
+                    image_id: open.image_id.clone(),
+                    target: target.into(),
+                }))
+                .await
+                .unwrap();
+        }
+        let img_path = _td
+            .path()
+            .join("sessions")
+            .join(&sid)
+            .join("images")
+            .join(format!("{}.bin", open.image_id));
+        let stored = std::fs::read(&img_path).unwrap();
+        assert_eq!(stored.len(), 512, "flash length must be preserved");
+        assert!(
+            !stored.contains(&0xAA),
+            "removed FV0 file marker must not resurrect via a flush that bypasses its FV"
+        );
+        assert!(stored.contains(&0xBB), "FV0 survivor marker must remain");
+        assert!(
+            !stored.contains(&0xCC),
+            "removed FV1 file marker must be gone"
+        );
+        assert!(stored.contains(&0xDD), "FV1 survivor marker must remain");
     }
 
     #[tokio::test]

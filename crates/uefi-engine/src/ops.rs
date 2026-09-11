@@ -148,19 +148,6 @@ pub fn mark_rebuild_to_root_by_path(root: &mut FfsNode, path: &[usize]) {
     }
 }
 
-pub fn prune_applied(root: &mut FfsNode) {
-    if matches!(root.action, Action::Rebuild | Action::Replace) {
-        root.action = Action::NoAction;
-    }
-    root.children.retain(|c| c.action != Action::Remove);
-    for child in &mut root.children {
-        if matches!(child.action, Action::Rebuild | Action::Replace) {
-            child.action = Action::NoAction;
-        }
-        prune_applied(child);
-    }
-}
-
 fn ensure_mutable(root: &FfsNode, path: &[usize], include_target: bool) -> Result<(), OpsError> {
     let mut node = root;
     let n = if include_target {
@@ -417,24 +404,6 @@ mod tests {
         let t = parse_target("0").unwrap();
         remove(&mut img.root, &t).unwrap();
         assert!(logs_contain("marked for removal"));
-    }
-
-    #[test]
-    fn prune_applied_drops_remove_and_resets_actions() {
-        let buf = make_simple_image();
-        let mut img = parse_image(&buf, ImageMode::Write, "i", "s").unwrap();
-        let ffs = make_ffs_file();
-        let t = parse_target("0").unwrap();
-        insert(&mut img.root, &t, &ffs, InsertMode::Into).unwrap();
-        let file_target = parse_target("0/0").unwrap();
-        remove(&mut img.root, &file_target).unwrap();
-        prune_applied(&mut img.root);
-        assert!(
-            img.root.children[0].children.is_empty(),
-            "Remove-marked child must be pruned"
-        );
-        assert_eq!(img.root.action, Action::NoAction);
-        assert_eq!(img.root.children[0].action, Action::NoAction);
     }
 
     #[test]
