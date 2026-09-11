@@ -441,8 +441,14 @@ V1 просмотр → V2 правки на месте → V3 schema-опера
 вкладки Tab/Shift-Tab (AMIBCP-канон «отдельный экран», TODO:151).
 
 - **Цикл A — TUI Revival**: Spec
-  `docs/superpowers/specs/2026-09-11-tui-revival-design.md`. Статус: спека
-  согласована, к writing-plans.
+  `docs/superpowers/specs/2026-09-11-tui-revival-design.md`. Статус:
+  реализован (2026-09-11, коммиты `b0eecac..55181c0` + закрывающий
+  real-image-гейт-коммит Task 14): name-lift через обёртки, метки узлов TUI,
+  flush re-parse (чистое дерево после мутаций), `:goto`, tab-completion +
+  `uefi-common::cli`, регионы flash-дескриптора (FLREG + ME/$FPT, read-only,
+  `Node.region`), `ImageUpload` RPC + `:upload`, снапшоты образа
+  (`:snapshot`/`:snapshots`/`:restore`). Real-image гейты Task 14: 42/42
+  `#[ignore]`-тестов зелёные. Остаточные миноры — TODO.md (раздел цикла).
 - **Цикл B — TUI Forms View**: Spec (живая, ступени V1–V3 с гейтами на реальном
   образе): `docs/superpowers/specs/2026-09-11-tui-forms-view-design.md`.
   Статус: спека согласована; план отдельный на ступень, закрытие — вердиктами

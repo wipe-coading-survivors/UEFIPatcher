@@ -4958,3 +4958,257 @@ fn real_image_ops_insert_serial_np4() {
         built.len()
     );
 }
+
+fn first_direct_ui_or_version_name(node: &FfsNode) -> Option<String> {
+    for child in &node.children {
+        if child.node_type == FfsType::Section
+            && (child.subtype == uefi_engine::ffs::EFI_SECTION_UI
+                || child.subtype == uefi_engine::ffs::EFI_SECTION_VERSION)
+        {
+            return Some(
+                String::from_utf16_lossy(
+                    &child
+                        .body
+                        .chunks_exact(2)
+                        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                        .take_while(|&u| u != 0)
+                        .collect::<Vec<u16>>(),
+                )
+                .trim_end_matches('\u{0}')
+                .to_string(),
+            );
+        }
+    }
+    None
+}
+
+fn find_file_lifted_through_wrapper(
+    node: &FfsNode,
+    path: &mut Vec<usize>,
+    out: &mut Option<(Vec<usize>, String)>,
+) {
+    if out.is_some() {
+        return;
+    }
+    if node.node_type == FfsType::File {
+        let direct_ui = node.children.iter().any(|c| {
+            c.node_type == FfsType::Section
+                && (c.subtype == uefi_engine::ffs::EFI_SECTION_UI
+                    || c.subtype == uefi_engine::ffs::EFI_SECTION_VERSION)
+        });
+        let first_is_wrapper = node.children.first().is_some_and(|c| {
+            c.node_type == FfsType::Section
+                && (c.subtype == uefi_engine::ffs::EFI_SECTION_COMPRESSION
+                    || c.subtype == EFI_SECTION_GUID_DEFINED)
+        });
+        if !direct_ui
+            && first_is_wrapper
+            && let Some(name) = first_direct_ui_or_version_name(&node.children[0])
+            && !name.is_empty()
+        {
+            *out = Some((path.clone(), name));
+            return;
+        }
+    }
+    for (i, child) in node.children.iter().enumerate() {
+        path.push(i);
+        find_file_lifted_through_wrapper(child, path, out);
+        path.pop();
+        if out.is_some() {
+            return;
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
+fn real_image_name_lift_dxe_setup() {
+    let data = load_fw();
+    let img = parse_image(&data, ImageMode::Write, "img1", "s1").expect("parse_image");
+
+    let mut found = None;
+    let mut path = vec![];
+    find_file_lifted_through_wrapper(&img.root, &mut path, &mut found);
+    let (file_path, ui_name) = found
+        .expect("File whose first child is a compression wrapper holding a UI/Version section");
+    let path_str = file_path
+        .iter()
+        .map(|i| i.to_string())
+        .collect::<Vec<_>>()
+        .join("/");
+
+    let items = list_items(&img.root, None);
+    let item = items
+        .iter()
+        .find(|i| i.path == path_str)
+        .unwrap_or_else(|| panic!("nodes list must contain the file at {path_str}"));
+    assert_eq!(item.r#type, FfsType::File as u32);
+    assert_eq!(
+        item.name, ui_name,
+        "file name must be lifted through the GUIDED/compression wrapper"
+    );
+
+    let named_dxe = items
+        .iter()
+        .filter(|i| i.r#type == FfsType::File as u32 && i.subtype == 0x07 && !i.name.is_empty())
+        .count();
+    assert!(
+        named_dxe >= 20,
+        "expected >=20 named DXE files (nodes list filter: type=66 subtype=0x07 name non-empty), got {named_dxe}"
+    );
+
+    eprintln!(
+        "real_image name-lift: file {path_str} lifted '{ui_name}' through compression wrapper; named DXE files: {named_dxe}"
+    );
+}
+
+#[test]
+#[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
+fn real_image_remove_save_clean_tree() {
+    use uefi_engine::builder::build_image;
+    use uefi_engine::ops::remove;
+    use uefi_engine::types::Target;
+
+    let data = load_fw();
+    assert_eq!(data.len(), 0x0100_0000, "16 MiB image expected");
+    let mut img = parse_image(&data, ImageMode::Write, "img1", "s1").expect("parse_image");
+
+    let vol_idx = img
+        .root
+        .children
+        .iter()
+        .position(|c| c.offset == 0x890000)
+        .expect("main FV @0x890000");
+    let file_idx = img.root.children[vol_idx]
+        .children
+        .iter()
+        .position(|f| f.subtype == 0x07)
+        .expect("first DXE file in main FV");
+    let files_before = img.root.children[vol_idx].children.len();
+    let removed_guid = img.root.children[vol_idx].children[file_idx]
+        .guid
+        .map(|g| uefi_engine::guid_to_upper_string(&g))
+        .expect("removed DXE file carries a GUID");
+
+    remove(&mut img.root, &Target::Path(vec![vol_idx, file_idx]))
+        .expect("remove first DXE file of main FV");
+
+    let built = build_image(&img).expect("build after remove");
+    assert_eq!(
+        built.len(),
+        data.len(),
+        "total flash length must be preserved"
+    );
+
+    let flushed =
+        parse_image(&built, ImageMode::Write, "img1", "s1").expect("re-parse after flush");
+    let items = list_items(&flushed.root, None);
+    assert!(
+        items.iter().all(|i| i.action == Action::NoAction as u32),
+        "clean tree: every node must be action 50 after the write-through flush re-parse"
+    );
+    assert!(
+        !items.iter().any(|i| i.guid == removed_guid),
+        "removed file {removed_guid} must be gone from the nodes list"
+    );
+    let vol_after = flushed
+        .root
+        .children
+        .iter()
+        .position(|c| c.offset == 0x890000)
+        .expect("main FV survives the rebuild");
+    assert_eq!(
+        flushed.root.children[vol_after].children.len(),
+        files_before - 1,
+        "main FV must hold one fewer file"
+    );
+
+    let reopened = parse_image(&built, ImageMode::Write, "img1", "s1").expect("reopen");
+    let items_reopen = list_items(&reopened.root, None);
+    assert_eq!(
+        items_reopen, items,
+        "re-opened image must yield the same tree as the post-flush nodes list"
+    );
+
+    eprintln!(
+        "real_image remove-clean-tree: removed first DXE file {removed_guid} of {files_before}, flushed tree {} nodes, reopen identical",
+        items.len()
+    );
+}
+
+#[test]
+#[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
+fn real_image_flash_regions_layout() {
+    use uefi_engine::builder::build_image;
+    use uefi_engine::parser::region::parse_flash_regions;
+
+    const HNX_VOLUME_COUNT: usize = 3;
+    const HNX_DXE_FV_FILES: usize = 216;
+    const HNX_PEI_FV_FILES: usize = 59;
+
+    let data = load_fw();
+    assert_eq!(data.len(), 0x0100_0000, "16 MiB image expected");
+
+    assert!(
+        data[..16].iter().all(|&b| b == 0xFF),
+        "premise: first 16 bytes erased (BIOS-region-only update image)"
+    );
+    assert_eq!(
+        u32::from_le_bytes(data[0x10..0x14].try_into().unwrap()),
+        0x0FF0_A55A,
+        "premise: descriptor signature sits at 0x10, not at 0"
+    );
+    assert!(
+        parse_flash_regions(&data).is_none(),
+        "engine must route the image to the classic FV scan"
+    );
+
+    let img = parse_image(&data, ImageMode::Read, "img1", "s1").expect("parse_image");
+    let items = list_items(&img.root, None);
+    assert!(
+        items.iter().all(|i| i.r#type != FfsType::Region as u32),
+        "non-descriptor parse must not produce Region nodes"
+    );
+
+    let volumes = items
+        .iter()
+        .filter(|i| i.r#type == FfsType::Volume as u32)
+        .count();
+    assert_eq!(
+        volumes, HNX_VOLUME_COUNT,
+        "volume count regression tripwire for the classic FV scan"
+    );
+
+    let rebuilt = build_image(&img).expect("build_image");
+    assert_eq!(
+        rebuilt.len(),
+        data.len(),
+        "full-flash size must be preserved"
+    );
+    assert_eq!(
+        rebuilt, data,
+        "non-descriptor round-trip must be byte-identical"
+    );
+
+    let vol = |off: u32| {
+        img.root
+            .children
+            .iter()
+            .find(|c| c.offset == off)
+            .unwrap_or_else(|| panic!("FV @{off:#x} in tree"))
+    };
+    assert_eq!(
+        vol(0x890000).children.len(),
+        HNX_DXE_FV_FILES,
+        "DXE FV @0x890000 file count regression tripwire"
+    );
+    assert_eq!(
+        vol(0xda0000).children.len(),
+        HNX_PEI_FV_FILES,
+        "PEI FV @0xda0000 file count regression tripwire"
+    );
+
+    eprintln!(
+        "real_image flash-layout: non-descriptor path, {volumes} volumes, round-trip byte-identical, DXE files={HNX_DXE_FV_FILES}, PEI files={HNX_PEI_FV_FILES}"
+    );
+}

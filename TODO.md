@@ -513,17 +513,25 @@
 это через `/api/v1/image/upload` (multipart → `/tmp/<uuid>.bin` →
 `image open /tmp/...`), но это двухшаговый hack.
 
-* [ ] **Добавить `ImageUpload` RPC** — принимает байты напрямую
+* [x] **Добавить `ImageUpload` RPC** — принимает байты напрямую
   (`bytes: bytes`, `session_id`, `name`, `mode`), persist'ит в data_dir,
   парсит, возвращает `image_id`. Аналог `ImageOpen`, но без round-trip
   через серверную FS.
+  Закрыто циклом TUI Revival A (коммит `32769f9`, server-часть): RPC
+  `image_upload` + лимит декодирования (негативный тест — минор ниже).
+  CLI-обёртка не делалась (пункт ниже остаётся открытым).
 * [ ] **CLI: `image upload <local-path> [--name <n>] [--mode ...]`** —
   читает файл локально, шлёт байты через `ImageUpload`. Для docker-use-case.
-* [ ] **TUI: `:upload PATH`** — аналог для интерактивного режима.
+* [x] **TUI: `:upload PATH`** — аналог для интерактивного режима.
+  Закрыто циклом TUI Revival A (коммит `fffcf07`): `:upload` читает файл
+  локально, шлёт байты через `ImageUpload`, refresh_tree+registry.
 * [ ] **Gateway: переиспользовать multipart-эндпоинт `/api/v1/image/upload`**
   и дёргать новый `ImageUpload` RPC вместо текущего tmp-file workflow.
-* [ ] **Server: переиспользовать `flush_image`/storage logic** — вынести
+* [x] **Server: переиспользовать `flush_image`/storage logic** — вынести
   общую часть `ImageOpen`/`ImageUpload` в helper.
+  Закрыто циклом TUI Revival A (коммит `32769f9`): общий
+  `open_from_bytes` (parse + store_image_file + insert_image + кэш)
+  обслуживает оба входа.
 
 ## TUI: migration + bugfix (после Плана A)
 
@@ -565,10 +573,12 @@
 > Из ревизии спеки `2026-08-12-tui-migration-bugfix-design.md`. Не вошло в цикл 3
 > по YAGNI; записано для будущих циклов.
 
-* [ ] **FIND/GO — jump to section** — интерактивным клиентам не нужен full-search
+* [x] **FIND/GO — jump to section** — интерактивным клиентам не нужен full-search
   как в CLI (`node search`), но нужен прямой переход по target/адресу (`:goto 0/3/1`
   или `/`-промпт), чтобы быстро прыгнуть на нужную секцию (например, на DXE/PEI при
   раскрытом первым ME). Curse перемещается + auto-expand родителей по пути.
+  Закрыто циклом TUI Revival A (коммит `f1f93df`): `:goto PATH` — курсор +
+  auto-expand предков по пути (collapsed-state покрытие — минор ниже).
 * [ ] **Persistent search-results panel** — если когда-либо добавим поиск по
   содержимому/имени секции (не прямой goto), результаты должны отображаться
   **постоянно** (не исчезать после первого выбора) с навигацией по ним. Вариант:
@@ -584,18 +594,21 @@
   Cross-cutting рефакторинг: engine parser, CLI `parser/target.rs`, proto-семантика,
   gateway, webui. **TUI переделывать не придётся** — `segments()` уже хэнделит оба
   формата идентично (`segments("") == segments("/") == []`).
-* [ ] **Tab-completion + shared flag-parsing в `uefi-common`** — вынести парсинг
+* [x] **Tab-completion + shared flag-parsing в `uefi-common`** — вынести парсинг
   флагов ex-команд (`--file`/`--artifact-id`/`--mode`/`--body-only`/TARGET-default)
   из `uefi-tui/src/commands.rs` и `uefi-cli` в общий модуль `uefi-common::cli` (или
   подобный), чтобы CLI/TUI не дублировали. Заодно — tab-completion для TUI-cmdline
   (имена команд, флаги, `--artifact-id` из текущего registry, target-ы из дерева).
+  Закрыто циклом TUI Revival A (коммит `e47ef49`): `uefi-common::cli`
+  (`NodeCmdArgs`/парсинг флагов) + Tab-completion в TUI (команды, флаги,
+  artifact-id из registry, tree-path target-ы; не-ASCII хардинг — минор ниже).
 
 ## Ревизия TUI cycle 3 (2026-08-13)
 
 > Находки пользовательского ревью после цикла `2026-08-12-tui-migration-bugfix`.
 > Дефекты парсера/engine (не TUI-специфичные) — ниже.
 
-* [ ] **Имя файла не поднимается из UI-секции, обёрнутой в GUIDED/LZMA** —
+* [x] **Имя файла не поднимается из UI-секции, обёрнутой в GUIDED/LZMA** —
   `node_name` (`crates/uefi-engine/src/parser/image.rs:225-232`) для `FfsType::File`
   инспектирует **только прямых детей** на `EFI_SECTION_UI`/`EFI_SECTION_VERSION`.
   На реальных образах UI/Setup-секция DXE-файлов часто завёрнута в GUIDED (LZMA)
@@ -605,7 +618,10 @@
   Контекст: подтверждено коммитом `fbd593eb` (display-and-search plan Task 12 fix).
   Влияет одинаково на CLI и TUI (оба берут имя из `node_name`). Фикс: рекурсивный
   спуск через GUIDED/compression-обёртки до UI/Version-секции (как делает UEFITool).
-* [ ] **Том ME показывает только одну секцию** — первый ребёнок образа (path `"0"`,
+  Закрыто циклом TUI Revival A (коммит `b0eecac`): `find_lifted_name` —
+  рекурсивный спуск через COMPRESSION/GUID_DEFINED до глубины 8;
+  real-image гейт `real_image_name_lift_dxe_setup` (Task 14 цикла).
+* [x] **Том ME показывает только одну секцию** — первый ребёнок образа (path `"0"`,
   ME-регион) парсится в одну секцию, хотя по памяти их там больше. Регион ME
   использует нестандартный формат (FTPR), а `parse_image`
   (`crates/uefi-engine/src/parser/image.rs:20-51`) сканирует только `EFI_FVH_SIGNATURE`.
@@ -615,6 +631,13 @@
   ME не выравниваются на FFS_ALIGN=8. Контекст: проверить парсер на реальном образе
   `refs/fw/HNX99TF_200525_original_E5C88C6F.bin`, сравнить кол-во узлов ME с UEFITool.
   Возможно потребуется отдельный распознаватель ME/FTPR-регионов (как flash-descriptor).
+  Закрыто циклом TUI Revival A (коммиты `a00703a` + `8152146`): дескрипторный
+  образ парсится в Region-узлы (полная таблица FLREG), ME — read-only Region
+  c $FPT-партициями (FTPR/NFTP/…), мутации регионов запрещены
+  (`OpsError::ImmutableRegion`). Уточнение по живому HNX-образу: он НЕ
+  дескрипторный (0x0FF0A55A @0x10, BIOS-region-only update-файл) — ME-байты
+  там остаются gap-aware Padding, инвариант закреплён real-image гейтом
+  `real_image_flash_regions_layout` (Task 14 цикла).
 
 ### TreeView: пустые элементы (issue I, ревизия 2026-08-13)
 
@@ -624,23 +647,30 @@
 > (только иконка). `node_name` (`parser/image.rs:218-235`) возвращает "" для
 > всего, кроме UI/Version-секций и файлов с прямым UI-ребёнком.
 
-* [ ] **TUI: метка для узла Image** — корневой узел (type 62, path `""`)
+* [x] **TUI: метка для узла Image** — корневой узел (type 62, path `""`)
   показывается пустым. Выводить имя образа из Registry (найти `ImageInfo.name`
   по `active_image_id`) или `image_id`. Контекст: `ui/tree.rs:35` рендерит
   `node.name`, для Image оно всегда пустое.
-* [ ] **TUI: метка для узла Volume** — тома (type 65) показываются пустыми.
+  Закрыто циклом TUI Revival A (коммит `7e8b902`): `App::node_label` — имя
+  образа из Registry по `active_image_id`, фолбэк на `image_id`/«Image».
+* [x] **TUI: метка для узла Volume** — тома (type 65) показываются пустыми.
   Минимум: вывести строку `"Volume"`. Идеал: классификация региона
   `Volume (ME/DXE/PEI)`. Контекст: регион кодируется не в GUID тома (у FV нет
   GUID-региона; `VolumeParsingData` содержит только `extended_header_guid` /
   `ffs_version`), а в Intel Flash Descriptor (первые 0x1000 байт full-flash
   образа). Требует парсера IFD — отдельная задача engine (связана с пунктом
   про ME-регион выше).
-* [ ] **TUI/engine: fallback-метка по subtype для безымянных узлов** — секции
+  Закрыто циклом TUI Revival A (коммиты `7e8b902` + `00f7b56`): минимум
+  «Volume»; классификация региона решена иначе — Region-узлы дескриптора
+  несут `Node.region` (ME/BIOS/Descriptor…), в TUI рендерятся dim-стилем.
+* [x] **TUI/engine: fallback-метка по subtype для безымянных узлов** — секции
   без UI-имени (DXE dependency, RAW, PE32…) и файлы без UI-ребёнка показываются
   пустыми. Выводить имя subtype через `section_type_name_or_raw` /
   `file_type_name_or_raw` (уже используется в `details_text`, `app.rs:245-254`).
   Контекст: `node_name` (`parser/image.rs:218`) возвращает "" — рендерер
   `ui/tree.rs` должен fallback'ить на subtype-name, когда `name` пуст.
+  Закрыто циклом TUI Revival A (коммит `7e8b902`): `node_label` fallback на
+  `file_type_name_or_raw`/`section_type_name_or_raw`/`0xNN`.
 
 ### Remove: root cause бага + stale-tree (issue II, ревизия 2026-08-13)
 
@@ -703,7 +733,7 @@
 > write-through на каждой мутации (commit `aa6ed56`) эту семантику нарушает:
 > изменение уже на диске, но показывается как «запланированное».
 
-* [ ] **ENGINE: prune Remove-узлов из дерева после успешного `build_image`**
+* [x] **ENGINE: prune Remove-узлов из дерева после успешного `build_image`**
   (вариант 2 из трёх рассмотренных). После того как `flush_image`
   (`server.rs:31-66`) успешно собрал и записал байты, удалить из
   `Image.root` все узлы с `action == Action::Remove` (рекурсивный splice
@@ -723,6 +753,16 @@
   `image_nodes_list` не содержит узел (без reopen); проверить что повторный
   `build_image` на том же дереве идемпотентен (байты совпадают). Регрессия на
   `real_image_ops_remove_last_file` (должен остаться зелёным).
+  Закрыто циклом TUI Revival A (коммит `9552cf8`) **вариантом 1**
+  (flush = re-parse записанных байт), не вариантом 2: при ревью Task 3
+  вскрылся дефект prune-подхода — stale-body воскресение
+  (`build_volume`/`build_file` на NoAction эммитят header+body+tail дословно,
+  поэтому после prune второй flush вернул бы удалённый файл в байты);
+  гейт `second_flush_does_not_resurrect_removed_file`. `prune_applied`
+  удалён как dead API. Цена — лишний parse на каждый flush (~700мс на
+  16MB, приемлемо); следствие — action-маркеры в TUI мертвы (минор ниже).
+  Real-image гейт чистого дерева — `real_image_remove_save_clean_tree`
+  (Task 14 цикла).
 
 ### rebuild/replace молча отменяют Remove (issue II-ter, ревизия 2026-08-13)
 
@@ -2457,3 +2497,58 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
 * [ ] **README.md — создать и сослаться на HOWTO** — короткий README
   (назначение, компоненты, сборка/контейнеры, указатель
   docs/howto/*.md).
+
+## Цикл TUI Revival A (2026-09-11): реализован
+
+> План `docs/superpowers/plans/2026-09-11-tui-revival.md`, ветка
+> `feat/tui-revival`, коммиты `b0eecac..55181c0` + закрывающий гейт-коммит
+> Task 14 (real-image гейты + эта бухгалтерия). Потреблённые пункты выше
+> закрыты по месту с указанием коммитов: name-lift (`b0eecac`), метки TUI
+> (`7e8b902`), stale-tree (`9552cf8`), `:goto` (`f1f93df`), tab-completion +
+> shared cli (`e47ef49`), flash regions (`a00703a`), $FPT (`8152146`),
+> Node.region (`00f7b56`), ImageUpload RPC + server-helper (`32769f9`),
+> `:upload` (`fffcf07`). Снапшоты образа (create/list `1e3b5b5`, restore
+> `fc9cbc2`, TUI `:snapshot/:snapshots/:restore` `55181c0`) — отдельного
+> TODO-пункта не имели, статус трекается в roadmap. Ниже — остаточные миноры
+> из per-task ревью цикла.
+
+* [ ] **TUI: маркеры действий мертвы после flush-re-parse** — после
+  `9552cf8` (flush = re-parse) каждая мутация пересобирает дерево из байтов,
+  `action` у всех узлов всегда 50 — pending-маркеры (`+`/`-`/`*`/`~`) и их
+  легенда в TUI не отображаются никогда. Контекст: отложенная косметика —
+  убрать маркеры/легенду либо показывать по явному запросу (journal-of-
+  operations отменён аддендумом спеки 2026-09-11).
+* [ ] **uefi-tui common_prefix: не-ASCII хардинг** — `String::truncate`
+  получает char-count как byte-index; на не-ASCII кандидатах возможна паника
+  (truncate не на char-границе). Недостижимо сейчас: команды/флаги/пути/
+  uuid — ASCII. Контекст: `crates/uefi-tui/src/commands.rs:605`
+  (`common_prefix`, tab-completion `e47ef49`).
+* [ ] **parser/region parse_fpt: length-гвард на tiny-телах** — тело
+  4..11 байт с $FPT-префиксом паникует (чтение заголовка за границей).
+  Недостижимо от движковых вызовов (ME-регион ≥ 0x1000). Контекст:
+  `crates/uefi-engine/src/parser/region.rs`, гвард по образцу
+  `refs/UEFITool-ai-fork/common/meparser.cpp:138-141`.
+* [ ] **server: негативный тест upload-лимита не пинит причину** —
+  `image_upload_rejected_over_small_limit` ассертит только факт ошибки:
+  is_err прошёл бы и без cap (парс упал бы на обрезанных байтах).
+  Контекст: `crates/uefi-engine/src/rpc/server.rs` tests; пинить
+  `Code::OutOfRange` / «maximum decode message size».
+* [ ] **uefi-tui: `refresh_registry` через `?` в `:upload`/`:restore`** — в
+  отличие от open/close (`let _ =`), падение registry-обновления репортит
+  ошибку команды при уже применённой операции (образ загружен / снапшот
+  восстановлен). Контекст: `crates/uefi-tui/src/commands.rs`
+  (`:upload`, `:restore` — `refresh_registry(app, client).await?`).
+* [ ] **server: `image_open` логируется как «image uploaded»** — общий
+  `open_from_bytes` (`32769f9`) пишет один и тот же message для обоих
+  входов; в логе не отличить open по пути от upload байтов.
+  Контекст: `crates/uefi-engine/src/rpc/server.rs:198` (observability).
+* [ ] **uefi-tui: collapsed-state тест для goto-expansion** — ветка
+  auto-expand предков у `:goto` покрыта тавтологично: `node()`-хелпер теста
+  строит уже-expanded узлы. Нужен тест с реально свёрнутым предком
+  (cursor+expansion из collapsed-состояния). Контекст: Task 4 цикла
+  (`f1f93df`), `crates/uefi-tui/src/app.rs`.
+* [ ] **гигиена clippy `--all-targets` не в чек-листе** — AGENTS.md
+  «Команды проверки» содержит только `cargo clippy --all -- -D warnings`;
+  identity_op-хвосты в тест-коде копятся незаметно (8 сайтов фикстур Task 6
+  почищены в Task 14 цикла A). Контекст: добавить `--all-targets` в
+  финальные гейты циклов (AGENTS.md).
