@@ -494,6 +494,7 @@ pub async fn execute_command(
                     app.cursor = 0;
                     app.active_image_id = Some(id.clone());
                     client.state.active_image_id = Some(id.clone());
+                    app.image_loaded = true;
                     app.status_msg = format!("switched to {id}");
                     let _ = refresh_registry(app, client).await;
                     if app.view == View::Forms {

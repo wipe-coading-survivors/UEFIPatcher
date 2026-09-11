@@ -12,10 +12,12 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         crate::app::Mode::Command => "COMMAND",
         crate::app::Mode::Insert => "INSERT",
     };
-    let img = if app.image_loaded {
-        "image:loaded"
+    let img = if let Some(id) = &app.active_image_id {
+        format!("image:{}", id.get(..8).unwrap_or(id.as_str()))
+    } else if app.image_loaded {
+        "image:loaded".to_string()
     } else {
-        "image:none"
+        "image:none".to_string()
     };
     let engine = if app.engine_online {
         ("engine:online", Color::Green)
