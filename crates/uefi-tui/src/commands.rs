@@ -946,6 +946,121 @@ pub fn form_visibility_command(item: &str, visible: bool) -> Option<String> {
     (!visible).then(|| format!("hii visibility {item} on"))
 }
 
+fn fmt_string_ids(ids: &std::collections::HashMap<String, u32>) -> String {
+    if ids.is_empty() {
+        return "(none)".into();
+    }
+    let mut v: Vec<(&String, &u32)> = ids.iter().collect();
+    v.sort_by_key(|(name, _)| name.to_string());
+    v.iter()
+        .map(|(name, sid)| format!("{name}={sid}"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// Однострочный статус :hii formset add. Спека tui-forms-view §4 V3.
+pub fn formset_add_status(
+    new_ffs_id: &str,
+    form_ids: &[u32],
+    string_ids: &std::collections::HashMap<String, u32>,
+) -> String {
+    let forms = if form_ids.is_empty() {
+        "(none)".into()
+    } else {
+        form_ids
+            .iter()
+            .map(|i| i.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    format!(
+        "formset added: ffs {new_ffs_id} · forms {forms} · strings {}",
+        fmt_string_ids(string_ids)
+    )
+}
+
+/// Однострочный статус :hii form add. Спека tui-forms-view §4 V3.
+pub fn form_add_status(
+    form_ids: &[u32],
+    string_ids: &std::collections::HashMap<String, u32>,
+) -> String {
+    let forms = if form_ids.is_empty() {
+        "(none)".into()
+    } else {
+        form_ids
+            .iter()
+            .map(|i| i.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    format!(
+        "form added: forms {forms} · strings {}",
+        fmt_string_ids(string_ids)
+    )
+}
+
+/// Однострочный статус :hii question add: qid в hex (конвенция q0xNNN),
+/// string_ids всех исходов вперёд, сортировка по имени. Спека §4 V3.
+pub fn question_add_status(
+    questions: &[HiiQuestionAddOutcome],
+    refs: &[HiiQuestionAddOutcome],
+) -> String {
+    let fmt_ids = |v: &[HiiQuestionAddOutcome]| {
+        if v.is_empty() {
+            "(none)".to_string()
+        } else {
+            v.iter()
+                .map(|o| format!("{:#x}", o.question_id))
+                .collect::<Vec<_>>()
+                .join(",")
+        }
+    };
+    let mut names: Vec<(String, u32)> = questions
+        .iter()
+        .chain(refs)
+        .flat_map(|o| o.string_ids.iter().map(|(n, s)| (n.clone(), *s)))
+        .collect();
+    names.sort_by_key(|(n, _)| n.clone());
+    let strings = if names.is_empty() {
+        "(none)".into()
+    } else {
+        names
+            .iter()
+            .map(|(n, s)| format!("{n}={s}"))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    format!(
+        "question add: questions {} · refs {} · strings {strings}",
+        fmt_ids(questions),
+        fmt_ids(refs)
+    )
+}
+
+/// Однострочный статус :hii page add (десятичные поля, как CLI). Спека §4 V3.
+pub fn page_add_status(resp: &HiiPageAddResponse) -> String {
+    format!(
+        "page added: form {} · slot {} · offset {} · title sid {}",
+        resp.form_id, resp.slot, resp.page_offset, resp.title_string_id
+    )
+}
+
+/// Однострочный статус :hii hijack: flips join как unlock (V2), строки —
+/// количеством (имён может быть много). Спека §4 V3.
+pub fn hijack_status(resp: &HiiFormHijackResponse) -> String {
+    let flips = if resp.unlock_flips.is_empty() {
+        "none".to_string()
+    } else {
+        resp.unlock_flips.join(" · ")
+    };
+    format!(
+        "hijack: ifr {:#x}..{:#x} · flips {flips} · strings {}",
+        resp.form_ifr_start,
+        resp.form_ifr_end,
+        resp.string_ids.len()
+    )
+}
+
 pub async fn refresh_forms(app: &mut App, client: &mut Client) -> Result<(), String> {
     let image_id = app
         .active_image_id
@@ -1262,6 +1377,85 @@ mod tests {
             form_visibility_command("G:0x19:0#42", true),
             None,
             "скрытие не поддержано движком — на видимой форме команды нет"
+        );
+    }
+
+    #[test]
+    fn schema_status_formats() {
+        let mut sids = std::collections::HashMap::new();
+        sids.insert("title".to_string(), 600);
+        sids.insert("help".to_string(), 601);
+        assert_eq!(
+            formset_add_status("ffs-9", &[10101, 10102], &sids),
+            "formset added: ffs ffs-9 · forms 10101,10102 · strings help=601,title=600"
+        );
+        assert_eq!(
+            formset_add_status("ffs-9", &[], &std::collections::HashMap::new()),
+            "formset added: ffs ffs-9 · forms (none) · strings (none)"
+        );
+        assert_eq!(
+            form_add_status(&[10101], &sids),
+            "form added: forms 10101 · strings help=601,title=600"
+        );
+        assert_eq!(
+            form_add_status(&[], &std::collections::HashMap::new()),
+            "form added: forms (none) · strings (none)"
+        );
+    }
+
+    #[test]
+    fn question_add_status_hex_qids_and_strings() {
+        let mk = |qid: u32, sids: &[(&str, u32)]| HiiQuestionAddOutcome {
+            question_id: qid,
+            string_ids: sids.iter().map(|(n, s)| (n.to_string(), *s)).collect(),
+            spf_record_offset: 0x1C,
+        };
+        assert_eq!(
+            question_add_status(&[mk(0x258, &[("prompt", 600)])], &[]),
+            "question add: questions 0x258 · refs (none) · strings prompt=600"
+        );
+        assert_eq!(
+            question_add_status(
+                &[mk(0x258, &[])],
+                &[mk(0x25A, &[("prompt", 600), ("help", 601)])]
+            ),
+            "question add: questions 0x258 · refs 0x25a · strings help=601,prompt=600"
+        );
+        assert_eq!(
+            question_add_status(&[], &[]),
+            "question add: questions (none) · refs (none) · strings (none)"
+        );
+    }
+
+    #[test]
+    fn page_and_hijack_status() {
+        let page = HiiPageAddResponse {
+            form_id: 10019,
+            slot: 1,
+            page_offset: 42,
+            title_string_id: 600,
+        };
+        assert_eq!(
+            page_add_status(&page),
+            "page added: form 10019 · slot 1 · offset 42 · title sid 600"
+        );
+        let mut sids = std::collections::HashMap::new();
+        sids.insert("title".to_string(), 600);
+        let hijack = HiiFormHijackResponse {
+            string_ids: sids,
+            form_ifr_start: 0x1000,
+            form_ifr_end: 0x1100,
+            unlock_flips: vec!["pkg+0x1c: 01 00 -> ff ff".into()],
+            ..Default::default()
+        };
+        assert_eq!(
+            hijack_status(&hijack),
+            "hijack: ifr 0x1000..0x1100 · flips pkg+0x1c: 01 00 -> ff ff · strings 1"
+        );
+        let no_flips = HiiFormHijackResponse::default();
+        assert_eq!(
+            hijack_status(&no_flips),
+            "hijack: ifr 0x0..0x0 · flips none · strings 0"
         );
     }
 
