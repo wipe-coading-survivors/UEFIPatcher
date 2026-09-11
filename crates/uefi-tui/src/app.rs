@@ -350,6 +350,8 @@ impl App {
             .collect()
     }
 
+    /// `strings_cursor` — индекс в `forms.strings` (НЕ позиция в видимом
+    /// списке): движение — к следующему/предыдущему видимому индексу.
     pub fn strings_cursor_down(&mut self) {
         if let Some(&next) = self
             .strings_visible()
