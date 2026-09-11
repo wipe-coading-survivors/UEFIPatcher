@@ -349,7 +349,7 @@ pub fn unlock(image: &mut Image, item_id: &str) -> Result<UnlockOutcome, HiiErro
             if found.is_empty() {
                 continue;
             }
-            match gates::plan_gates(pkg, &found) {
+            match gates::plan_gates_skip_unlocked(pkg, &found) {
                 Ok(flips) => {
                     for gate in &found {
                         infos.push(gate_info(pkg, gate));
@@ -2841,6 +2841,35 @@ mod tests {
         let err = unlock(&mut image, VENDOR_FORM_ITEM).unwrap_err();
         assert!(matches!(err, HiiError::GateExpressionUnsupported(_)));
         assert_eq!(image.root.children[0].children[0].children[0].body, pkg);
+    }
+
+    #[test]
+    fn unlock_skips_already_unlocked_gate() {
+        let mut eq = vec![r_efi::hii::IFR_EQ_ID_VAL_OP, 0x06, 0xB4, 0x00];
+        eq.extend_from_slice(&0xFFFFu16.to_le_bytes());
+        let pkg = forms_pkg(
+            [
+                g_form(10002),
+                g_opcode(r_efi::hii::IFR_SUPPRESS_IF_OP, true, &[]),
+                eq,
+                g_ref(10029),
+                g_end(),
+                g_end(),
+                g_end(),
+            ]
+            .concat(),
+        );
+        let mut image = vendor_image_with(0x19, pkg.clone());
+        let outcome = unlock(&mut image, VENDOR_FORM_ITEM).unwrap();
+        assert!(
+            outcome.applied.is_empty(),
+            "гейт с константой 0xFFFF уже разблокирован — флипать нечего"
+        );
+        assert_eq!(outcome.gates.len(), 1, "гейт всё равно перечислен в infos");
+        assert_eq!(
+            image.root.children[0].children[0].children[0].body, pkg,
+            "байты пакета не тронуты"
+        );
     }
 
     const NVAR_FV0_GUID_STR: &str = "10000000-0000-4000-8000-000000000001";
