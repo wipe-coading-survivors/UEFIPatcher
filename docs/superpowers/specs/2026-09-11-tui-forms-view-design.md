@@ -227,7 +227,7 @@ hii_list_questions_real_image_consistent_with_question_info`, #[ignore]).
 3. `Tab` → Forms-view: формсеты развёрнуты, титулы форм видны (сверка с
    `uefi-cli hii form list` — количество/названия/visible-маркеры);
 4. `j/k` до формы с вопросами → правая панель: вопросы с kind и prompt;
-   сверка выборочного вопроса с `uefi-cli hii question-info <item_id>`;
+   сверка выборочного вопроса с `uefi-cli hii question info <item_id>`;
 5. `S` → strings-браузер, `/` → фильтр по подстроке — счётчик строк
    сходится с `uefi-cli hii string list | grep -ci <подстрока>`;
 6. `Tab` → возврат в Image-view без потери состояния дерева.
