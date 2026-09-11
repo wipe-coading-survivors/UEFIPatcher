@@ -12,6 +12,8 @@ pub enum OpsError {
     InvalidFfs,
     #[error("mutation behind non-recompressable compression barrier")]
     MutationBehindCompression,
+    #[error("flash region is read-only")]
+    ImmutableRegion,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -159,6 +161,9 @@ fn ensure_mutable(root: &FfsNode, path: &[usize], include_target: bool) -> Resul
         let Some(child) = node.children.get(i) else {
             break;
         };
+        if child.node_type == FfsType::Region {
+            return Err(OpsError::ImmutableRegion);
+        }
         if child.node_type == FfsType::Section && child.subtype == EFI_SECTION_COMPRESSION {
             return Err(OpsError::MutationBehindCompression);
         }
@@ -404,6 +409,40 @@ mod tests {
         let t = parse_target("0").unwrap();
         remove(&mut img.root, &t).unwrap();
         assert!(logs_contain("marked for removal"));
+    }
+
+    fn descriptor_image(region_specs: &[(usize, u16, u16)], total: usize) -> Vec<u8> {
+        let mut buf = vec![0xFFu8; total];
+        buf[0..4].copy_from_slice(&crate::parser::region::FLASH_DESCRIPTOR_SIGNATURE.to_le_bytes());
+        buf[0x10..0x14].copy_from_slice(&0x0040_0000u32.to_le_bytes());
+        for &(i, base, limit) in region_specs {
+            let at = 0x400 + i * 4;
+            buf[at..at + 2].copy_from_slice(&base.to_le_bytes());
+            buf[at + 2..at + 4].copy_from_slice(&limit.to_le_bytes());
+        }
+        buf
+    }
+
+    #[test]
+    fn region_nodes_immutable() {
+        let buf = descriptor_image(&[(1, 4, 7), (2, 1, 3)], 0x10000);
+        let mut img = parse_image(&buf, ImageMode::Write, "i", "s").unwrap();
+        let me_idx = img
+            .root
+            .children
+            .iter()
+            .position(|c| {
+                matches!(
+                    &c.parsing_data,
+                    ParsingData::Region(rd) if rd.kind == FlashRegionKind::Me
+                )
+            })
+            .unwrap();
+        let t = parse_target(&me_idx.to_string()).unwrap();
+        assert!(matches!(
+            remove(&mut img.root, &t),
+            Err(OpsError::ImmutableRegion)
+        ));
     }
 
     #[test]

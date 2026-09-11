@@ -17,32 +17,32 @@ pub fn parse_image(
     session_id: &str,
 ) -> Result<Image, ParserError> {
     let mut children = vec![];
-    let mut off = 0usize;
     let mut last_end = 0usize;
-    while off + 44 <= buf.len() {
-        let sig = u32::from_le_bytes([buf[off + 40], buf[off + 41], buf[off + 42], buf[off + 43]]);
-        if sig != EFI_FVH_SIGNATURE {
-            off += FVH_SCAN_STEP;
-            continue;
-        }
-        match parse_firmware_volume(buf, off) {
-            Some(vol) => {
-                let vol_size = vol.header.len() + vol.body.len();
-                if vol_size == 0 {
-                    off += FVH_SCAN_STEP;
-                    continue;
-                }
-                if off > last_end {
-                    children.push(make_padding_node(buf, last_end, off));
-                }
-                children.push(vol);
-                last_end = off + vol_size;
-                off += vol_size;
+    if let Some(mut regions) = super::region::parse_flash_regions(buf) {
+        regions.sort_by_key(|r| r.offset);
+        for r in &regions {
+            if r.offset > last_end {
+                children.push(make_padding_node(buf, last_end, r.offset));
             }
-            None => {
-                off += FVH_SCAN_STEP;
+            match r.kind {
+                FlashRegionKind::Bios => {
+                    scan_volumes(
+                        buf,
+                        r.offset..r.offset + r.size,
+                        &mut children,
+                        &mut last_end,
+                    );
+                }
+                _ => {
+                    children.push(super::region::make_region_node(
+                        buf, r.kind, r.offset, r.size,
+                    ));
+                    last_end = r.offset + r.size;
+                }
             }
         }
+    } else {
+        scan_volumes(buf, 0..buf.len(), &mut children, &mut last_end);
     }
     if buf.len() > last_end {
         children.push(make_padding_node(buf, last_end, buf.len()));
@@ -73,6 +73,40 @@ pub fn parse_image(
         "image parsed"
     );
     Ok(img)
+}
+
+fn scan_volumes(
+    buf: &[u8],
+    window: std::ops::Range<usize>,
+    children: &mut Vec<FfsNode>,
+    last_end: &mut usize,
+) {
+    let mut off = window.start;
+    while off + 44 <= window.end {
+        let sig = u32::from_le_bytes([buf[off + 40], buf[off + 41], buf[off + 42], buf[off + 43]]);
+        if sig != EFI_FVH_SIGNATURE {
+            off += FVH_SCAN_STEP;
+            continue;
+        }
+        match parse_firmware_volume(buf, off) {
+            Some(vol) => {
+                let vol_size = vol.header.len() + vol.body.len();
+                if vol_size == 0 {
+                    off += FVH_SCAN_STEP;
+                    continue;
+                }
+                if off > *last_end {
+                    children.push(make_padding_node(buf, *last_end, off));
+                }
+                children.push(vol);
+                *last_end = off + vol_size;
+                off += vol_size;
+            }
+            None => {
+                off += FVH_SCAN_STEP;
+            }
+        }
+    }
 }
 
 pub(crate) fn parse_firmware_volume(buf: &[u8], off: usize) -> Option<FfsNode> {
@@ -278,6 +312,10 @@ fn node_name(node: &FfsNode) -> String {
             decode_utf16le_body(&node.body)
         }
         FfsType::File => find_lifted_name(&node.children, 0).unwrap_or_default(),
+        FfsType::Region => match &node.parsing_data {
+            ParsingData::Region(rd) => format!("{} region", rd.kind.label()),
+            _ => String::new(),
+        },
         _ => String::new(),
     }
 }
@@ -716,6 +754,40 @@ mod tests {
             100,
         );
         assert_eq!(res.len(), 0, "search must skip File nodes");
+    }
+
+    #[test]
+    fn parse_image_descriptor_path_regions_and_padding() {
+        let mut buf = vec![0xFFu8; 0x10000];
+        buf[0..4].copy_from_slice(&0x0FF0_A55Au32.to_le_bytes());
+        buf[0x10..0x14].copy_from_slice(&0x0040_0000u32.to_le_bytes());
+        buf[0x400 + 1 * 4..0x400 + 1 * 4 + 2].copy_from_slice(&1u16.to_le_bytes());
+        buf[0x400 + 1 * 4 + 2..0x400 + 1 * 4 + 4].copy_from_slice(&3u16.to_le_bytes());
+        buf[0x400 + 2 * 4..0x400 + 2 * 4 + 2].copy_from_slice(&4u16.to_le_bytes());
+        buf[0x400 + 2 * 4 + 2..0x400 + 2 * 4 + 4].copy_from_slice(&15u16.to_le_bytes());
+        buf[0x1000..0x1100].copy_from_slice(&make_image_with_volume());
+        let img = parse_image(&buf, ImageMode::Read, "i", "s").unwrap();
+        let kinds: Vec<&str> = img
+            .root
+            .children
+            .iter()
+            .filter(|c| c.node_type == FfsType::Region)
+            .map(|c| match &c.parsing_data {
+                ParsingData::Region(rd) => rd.kind.label(),
+                _ => "",
+            })
+            .collect();
+        assert!(kinds.contains(&"Descriptor"));
+        assert!(kinds.contains(&"ME"));
+        let bios_volumes = img
+            .root
+            .children
+            .iter()
+            .filter(|c| c.node_type == FfsType::Volume)
+            .count();
+        assert!(bios_volumes >= 1, "BIOS window scanned for FVs");
+        let rebuilt = crate::builder::build_image(&img).unwrap();
+        assert_eq!(rebuilt, buf, "descriptor round-trip byte-identical");
     }
 
     #[test]

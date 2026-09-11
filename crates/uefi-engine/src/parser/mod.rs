@@ -12,6 +12,7 @@ pub enum ParserError {
 
 pub mod file;
 pub mod image;
+pub mod region;
 pub mod section;
 pub mod target;
 pub mod volume;

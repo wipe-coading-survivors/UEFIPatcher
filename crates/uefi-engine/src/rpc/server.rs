@@ -41,7 +41,7 @@ fn builder_error_status(e: crate::builder::BuilderError) -> Status {
 
 fn ops_error_status(e: crate::ops::OpsError) -> Status {
     match e {
-        crate::ops::OpsError::MutationBehindCompression => {
+        crate::ops::OpsError::MutationBehindCompression | crate::ops::OpsError::ImmutableRegion => {
             Status::failed_precondition(e.to_string())
         }
         _ => Status::internal(e.to_string()),

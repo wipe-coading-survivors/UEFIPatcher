@@ -59,6 +59,76 @@ pub struct CompressedSectionParsingData {
     pub dictionary_size: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlashRegionKind {
+    Descriptor,
+    Bios,
+    Me,
+    Gbe,
+    Pdr,
+    DevExpansion1,
+    SecondaryBios,
+    Microcode,
+    Ec,
+    DevExpansion2,
+    Ie,
+    Tgbe1,
+    Tgbe2,
+    Reserved1,
+    Reserved2,
+    Ptt,
+}
+
+impl FlashRegionKind {
+    pub fn from_flreg_index(i: usize) -> Option<Self> {
+        Some(match i {
+            0 => Self::Descriptor,
+            1 => Self::Bios,
+            2 => Self::Me,
+            3 => Self::Gbe,
+            4 => Self::Pdr,
+            5 => Self::DevExpansion1,
+            6 => Self::SecondaryBios,
+            7 => Self::Microcode,
+            8 => Self::Ec,
+            9 => Self::DevExpansion2,
+            10 => Self::Ie,
+            11 => Self::Tgbe1,
+            12 => Self::Tgbe2,
+            13 => Self::Reserved1,
+            14 => Self::Reserved2,
+            15 => Self::Ptt,
+            _ => return None,
+        })
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Descriptor => "Descriptor",
+            Self::Bios => "BIOS",
+            Self::Me => "ME",
+            Self::Gbe => "GbE",
+            Self::Pdr => "PDR",
+            Self::DevExpansion1 => "Dev Expansion 1",
+            Self::SecondaryBios => "Secondary BIOS",
+            Self::Microcode => "Microcode",
+            Self::Ec => "EC",
+            Self::DevExpansion2 => "Dev Expansion 2",
+            Self::Ie => "IE",
+            Self::Tgbe1 => "10GbE 1",
+            Self::Tgbe2 => "10GbE 2",
+            Self::Reserved1 => "Reserved 1",
+            Self::Reserved2 => "Reserved 2",
+            Self::Ptt => "PTT",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RegionParsingData {
+    pub kind: FlashRegionKind,
+}
+
 #[derive(Debug, Clone)]
 pub enum ParsingData {
     None,
@@ -66,6 +136,7 @@ pub enum ParsingData {
     File(FileParsingData),
     GuidedSection(GuidedSectionParsingData),
     CompressedSection(CompressedSectionParsingData),
+    Region(RegionParsingData),
 }
 
 #[derive(Debug, Clone)]
