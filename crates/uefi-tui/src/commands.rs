@@ -571,8 +571,19 @@ pub async fn execute_command(
                         .await
                         .map_err(|e| e.message().to_string())?
                         .into_inner();
+                    let prev_qid = app.selected_question_id();
                     reload_forms(app, client).await?;
                     let _ = refresh_form_details_if_needed(app, client).await;
+                    if let Some(qid) = prev_qid
+                        && let Some(pos) = app
+                            .forms
+                            .questions
+                            .iter()
+                            .position(|q| q.question_id == qid)
+                    {
+                        app.forms.question_cursor = pos;
+                        let _ = refresh_question_info_if_needed(app, client).await;
+                    }
                     let flips = if r.applied_flips.is_empty() {
                         "none".to_string()
                     } else {

@@ -266,8 +266,18 @@ async fn handle_normal_forms(app: &mut App, ev: &AppEvent, client: &mut Option<c
         }
         AppEvent::Key('j') | AppEvent::Down if app.forms.show_strings => app.strings_cursor_down(),
         AppEvent::Key('k') | AppEvent::Up if app.forms.show_strings => app.strings_cursor_up(),
-        AppEvent::Key('h') if !app.forms.show_strings => app.forms_set_expanded(false),
-        AppEvent::Key('l') if !app.forms.show_strings => app.forms_set_expanded(true),
+        AppEvent::Key('h') if !app.forms.show_strings && app.forms.focus == FormsFocus::List => {
+            app.forms_set_expanded(false);
+            if let Some(c) = client.as_mut() {
+                let _ = commands::refresh_form_details_if_needed(app, c).await;
+            }
+        }
+        AppEvent::Key('l') if !app.forms.show_strings && app.forms.focus == FormsFocus::List => {
+            app.forms_set_expanded(true);
+            if let Some(c) = client.as_mut() {
+                let _ = commands::refresh_form_details_if_needed(app, c).await;
+            }
+        }
         AppEvent::Key('S') => {
             let need_fetch = app.forms.strings.is_empty();
             app.forms.show_strings = !app.forms.show_strings;
@@ -313,6 +323,9 @@ async fn handle_normal_forms(app: &mut App, ev: &AppEvent, client: &mut Option<c
         AppEvent::Key('T') if !app.forms.show_strings => {
             app.forms.flat_mode = !app.forms.flat_mode;
             app.forms_sanitize_cursor();
+            if let Some(c) = client.as_mut() {
+                let _ = commands::refresh_form_details_if_needed(app, c).await;
+            }
         }
         AppEvent::Key('/') => {
             let need_fetch = app.forms.strings.is_empty();

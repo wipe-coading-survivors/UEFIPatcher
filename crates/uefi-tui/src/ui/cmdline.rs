@@ -6,12 +6,12 @@ use crate::app::{App, Mode};
 
 pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let content = match app.mode {
-        Mode::Command => format!(":{}", app.cmdline),
+        Mode::Command => format!(":{}▌", app.cmdline),
         Mode::Insert => {
             if app.insert_cmd.is_empty() {
-                format!("> {}", app.cmdline)
+                format!("> {}▌", app.cmdline)
             } else {
-                format!("{}> {}", app.insert_cmd, app.cmdline)
+                format!("{}> {}▌", app.insert_cmd, app.cmdline)
             }
         }
         Mode::Normal => String::from("Press : for commands, i/r/d for insert/replace/remove"),

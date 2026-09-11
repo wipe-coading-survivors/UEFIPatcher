@@ -372,3 +372,44 @@ async fn image_switch_sets_active_state() {
     );
     assert!(!app.tree.is_empty());
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hii_set_value_keeps_question_cursor() {
+    let td = TempDir::new().unwrap();
+    let sock = td.path().join("test.sock");
+    let _handle = mock_server::start_mock(&sock).await;
+    let state = uefi_common::State {
+        session_id: Some("s1".into()),
+        token: Some("t1".into()),
+        active_image_id: None,
+        sock_path: Some(sock.display().to_string()),
+    };
+    let mut client = uefi_tui::commands::connect(None, state).await.unwrap();
+    let mut app = uefi_tui::app::App::new();
+    uefi_tui::commands::execute_command(&mut app, "open /dev/null", &mut client)
+        .await
+        .unwrap();
+    uefi_tui::commands::execute_command(&mut app, "forms", &mut client)
+        .await
+        .unwrap();
+    app.forms_cursor_down();
+    uefi_tui::commands::refresh_form_details_if_needed(&mut app, &mut client)
+        .await
+        .unwrap();
+    app.forms.question_cursor = 1;
+    assert_eq!(app.forms.questions[1].question_id, 0x211);
+
+    uefi_tui::commands::execute_command(
+        &mut app,
+        "hii set-value 11111111-2222-3333-4444-555555555555:0x19:0#10001:0x211 1",
+        &mut client,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(app.forms.questions.len(), 2, "детали перезагружены");
+    assert_eq!(
+        app.forms.question_cursor, 1,
+        "курсор вопроса остаётся на редактируемом вопросе после set-value"
+    );
+}
