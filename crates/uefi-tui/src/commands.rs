@@ -1096,6 +1096,20 @@ pub fn set_value_prefill(app: &App) -> Option<String> {
     ))
 }
 
+/// Insert-prefill для клавиши `a` в Forms-view: FormSet-строка —
+/// `hii formset add ` (target не нужен), Form-строка — `hii form add
+/// <target> ` из выделения (решение D6); DanglingRef — None.
+/// Спека tui-forms-view §4 V3.
+pub fn add_prefill(app: &App) -> Option<String> {
+    match app.forms_rows().get(app.forms.cursor) {
+        Some(crate::forms::FormsRow::FormSet { .. }) => Some("hii formset add ".into()),
+        Some(crate::forms::FormsRow::Form { key, .. }) => {
+            Some(format!("hii form add {} ", key.target))
+        }
+        _ => None,
+    }
+}
+
 /// Команда для клавиши `v` на выбранной форме. Движок реализует только
 /// unsuppress (visibility on); скрытие (off) — ошибка, поэтому на уже
 /// видимой форме возвращает None — вызывающий показывает пояснение,
@@ -1641,6 +1655,41 @@ mod tests {
         assert!(
             opts.is_empty(),
             "unique candidate completes directly, no menu"
+        );
+    }
+
+    #[test]
+    fn add_prefill_formset_form_and_dangling() {
+        let mut app = crate::app::App::new();
+        app.forms.forms = vec![uefi_proto::FormInfo {
+            form_id: "11111111-2222-3333-4444-555555555555:0x19:0".into(),
+            formset_guid: "SET-A".into(),
+            form_id_ifr: 10001,
+            title: "Main".into(),
+            visible: true,
+        }];
+        app.forms.edges = vec![uefi_proto::FormEdge {
+            formset_guid: "SET-A".into(),
+            parent_form_id: 10001,
+            form_id: 99,
+        }];
+        app.forms.expanded = crate::forms::all_row_keys(&app.forms.forms, &app.forms.edges);
+        app.forms.cursor = 0;
+        assert_eq!(
+            add_prefill(&app).as_deref(),
+            Some("hii formset add "),
+            "FormSet-строка: formset add не требует target"
+        );
+        app.forms.cursor = 1;
+        assert_eq!(
+            add_prefill(&app).as_deref(),
+            Some("hii form add 11111111-2222-3333-4444-555555555555:0x19:0 ")
+        );
+        app.forms.cursor = 2;
+        assert_eq!(
+            add_prefill(&app),
+            None,
+            "DanglingRef — не форма и не формсет, prefill нет"
         );
     }
 
