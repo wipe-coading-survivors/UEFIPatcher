@@ -10,6 +10,7 @@ pub mod ifr_builder;
 pub mod nvar;
 pub mod package_list;
 pub mod pe_resource;
+pub mod questions;
 pub mod schema;
 pub mod spf;
 pub mod string_pack;
