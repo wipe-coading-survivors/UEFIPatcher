@@ -399,5 +399,13 @@ async fn hii_question_list_outputs_item_ids() {
         ))
         .stderr(predicates::str::contains("19 = Raw"))
         .stderr(predicates::str::contains("kind:").not())
+        .stderr(predicates::str::contains(
+            "form_id = target of the form package",
+        ))
+        .stderr(predicates::str::contains("formset_guid = IFR formset GUID"))
+        .stderr(predicates::str::contains(
+            "form_id_ifr = IFR form id (decimal; append as #<form_id> to form_id)",
+        ))
+        .stderr(predicates::str::contains("visible = suppression state"))
         .stdout(predicates::str::contains("Main"));
 }

@@ -11,7 +11,10 @@ pub async fn form_list(cli_sock: Option<&str>, format: OutputFormat) -> Result<(
     let forms = client.hii_list_forms(&image_id).await?;
     if format == OutputFormat::Text {
         let codes = target_section_codes(forms.iter().map(|f| f.form_id.as_str()));
-        eprint!("{}", uefi_common::format::hii_legend(&codes, false));
+        eprint!(
+            "{}",
+            uefi_common::format::hii_legend(uefi_common::format::HiiLegendCmd::FormList, &codes)
+        );
     }
     crate::output::print_forms(&forms, format);
     Ok(())
@@ -54,7 +57,13 @@ pub async fn question_list(
         .await?;
     if format == OutputFormat::Text {
         let codes = target_section_codes(std::iter::once(target));
-        eprint!("{}", uefi_common::format::hii_legend(&codes, true));
+        eprint!(
+            "{}",
+            uefi_common::format::hii_legend(
+                uefi_common::format::HiiLegendCmd::QuestionList,
+                &codes
+            )
+        );
     }
     crate::output::print_questions(&questions, target, form_id, format);
     Ok(())

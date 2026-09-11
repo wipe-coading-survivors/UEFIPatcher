@@ -80,9 +80,15 @@ pub fn format_legend(rows: &[TreeRow]) -> String {
     out
 }
 
-/// Легенда грамматики item_id для hii-вывода CLI (в stderr, по образцу
-/// format_legend). section_codes — типы секций из target-частей item_id.
-pub fn hii_legend(section_codes: &[u8], questions: bool) -> String {
+/// Какая hii-команда печатает легенду — определяет блок колонок/подсказок.
+pub enum HiiLegendCmd {
+    FormList,
+    QuestionList,
+}
+
+/// Легенда грамматики item_id и колонок для hii-вывода CLI (в stderr, по
+/// образцу format_legend). section_codes — типы секций из target-частей item_id.
+pub fn hii_legend(cmd: HiiLegendCmd, section_codes: &[u8]) -> String {
     let mut out = String::from(
         "Legend:\n  item_id = <ffs-file-guid>:<section-type>:<index>#<form_id-dec>[:<question-id-hex>]\n",
     );
@@ -99,11 +105,13 @@ pub fn hii_legend(section_codes: &[u8], questions: bool) -> String {
             ));
         }
     }
-    if questions {
-        out.push_str(
-            "  kind: one_of = pick an option · checkbox = 0/1 · numeric = range · other = not settable\n",
-        );
-        out.push_str("  set-value accepts decimal or 0x-hex values\n");
+    match cmd {
+        HiiLegendCmd::FormList => out.push_str(
+            "  Columns:\n    form_id = target of the form package (left part of item_id)\n    formset_guid = IFR formset GUID\n    form_id_ifr = IFR form id (decimal; append as #<form_id> to form_id)\n    title = form title string\n    visible = suppression state (false = hidden by a suppress gate)\n",
+        ),
+        HiiLegendCmd::QuestionList => out.push_str(
+            "  kind: one_of = pick an option · checkbox = 0/1 · numeric = range · other = not settable\n  set-value accepts decimal or 0x-hex values\n  prompt \"-\" = string id not resolved\n",
+        ),
     }
     out
 }
@@ -151,7 +159,7 @@ mod tests {
 
     #[test]
     fn hii_legend_item_id_grammar_and_section_codes() {
-        let leg = hii_legend(&[0x19, 0x10, 0x19], false);
+        let leg = hii_legend(HiiLegendCmd::FormList, &[0x19, 0x10, 0x19]);
         assert!(leg.contains(
             "item_id = <ffs-file-guid>:<section-type>:<index>#<form_id-dec>[:<question-id-hex>]"
         ));
@@ -161,15 +169,21 @@ mod tests {
         let nineteen = leg.find("19 =").unwrap();
         assert!(ten < nineteen, "коды отсортированы");
         assert!(!leg.contains("kind:"));
+        assert!(leg.contains("form_id = target of the form package"));
+        assert!(leg.contains("formset_guid = IFR formset GUID"));
+        assert!(leg.contains("form_id_ifr = IFR form id (decimal"));
+        assert!(leg.contains("visible = suppression state"));
     }
 
     #[test]
     fn hii_legend_questions_variant() {
-        let leg = hii_legend(&[], true);
+        let leg = hii_legend(HiiLegendCmd::QuestionList, &[]);
         assert!(leg.contains("item_id ="));
         assert!(!leg.contains("Section types:"));
         assert!(leg.contains("kind: one_of = pick an option"));
         assert!(leg.contains("set-value accepts decimal or 0x-hex"));
+        assert!(leg.contains("prompt \"-\" = string id not resolved"));
+        assert!(!leg.contains("Columns:"));
     }
 
     #[test]
