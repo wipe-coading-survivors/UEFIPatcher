@@ -7,6 +7,7 @@ service EngineService {
   rpc SessionsList(SessionsListRequest)     returns (SessionsListResponse);
 
   rpc ImageOpen(ImageOpenRequest)     returns (ImageOpenResponse);
+  rpc ImageUpload(ImageUploadRequest)     returns (ImageOpenResponse);
   rpc ImageClose(ImageCloseRequest)   returns (Empty);
   rpc ImagesList(ImagesListRequest)   returns (ImagesListResponse);
   rpc ImageSave(ImageSaveRequest)     returns (Empty);
@@ -59,6 +60,13 @@ message ImageOpenResponse {
   string image_id = 1;
   string root_guid = 2;
   string name = 3;
+}
+
+message ImageUploadRequest {
+  string session_id = 1;
+  bytes data = 2;
+  ImageMode mode = 3;
+  string name = 4;
 }
 
 message ImageInfo {

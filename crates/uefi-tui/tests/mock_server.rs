@@ -63,6 +63,16 @@ impl EngineService for MockEngine {
             name: "mock.bin".into(),
         }))
     }
+    async fn image_upload(
+        &self,
+        _req: Request<ImageUploadRequest>,
+    ) -> Result<Response<ImageOpenResponse>, Status> {
+        Ok(Response::new(ImageOpenResponse {
+            image_id: "mock".into(),
+            root_guid: String::new(),
+            name: "mock.bin".into(),
+        }))
+    }
     async fn image_close(
         &self,
         _req: Request<ImageCloseRequest>,

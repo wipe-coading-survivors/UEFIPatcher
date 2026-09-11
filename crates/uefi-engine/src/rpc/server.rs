@@ -158,6 +158,47 @@ impl EngineServer {
             .insert(image_id.into(), img.clone());
         Ok(img)
     }
+
+    async fn open_from_bytes(
+        &self,
+        session_id: &str,
+        bytes: Vec<u8>,
+        mode: ImageMode,
+        name: &str,
+        path: &str,
+    ) -> RpcResult<ImageOpenResponse> {
+        let image_id = Uuid::new_v4().to_string();
+        let img = parse_image(&bytes, mode, &image_id, session_id)
+            .map_err(|e| Status::internal(e.to_string()))?;
+        store_image_file(&self.data_dir, session_id, &image_id, &bytes)
+            .map_err(|e| Status::internal(e.to_string()))?;
+        self.sm
+            .db
+            .lock()
+            .unwrap()
+            .insert_image(
+                &image_id,
+                session_id,
+                name,
+                path,
+                mode as i64,
+                bytes.len() as i64,
+            )
+            .map_err(|e| Status::internal(e.to_string()))?;
+        let root_guid = img
+            .root
+            .guid
+            .map(|g| crate::guid_to_upper_string(&g))
+            .unwrap_or_default();
+        self.images.lock().await.insert(image_id.clone(), img);
+        let _ = self.sm.touch(session_id);
+        tracing::info!(name = %name, size = bytes.len(), image_id = %image_id, "image uploaded");
+        Ok(Response::new(ImageOpenResponse {
+            image_id,
+            root_guid,
+            name: name.to_string(),
+        }))
+    }
 }
 
 #[tonic::async_trait]
@@ -225,7 +266,6 @@ impl EngineService for EngineServer {
             _ => return Err(Status::invalid_argument("bad mode")),
         };
         let bytes = fs::read(&r.path).map_err(|e| Status::not_found(e.to_string()))?;
-        let image_id = Uuid::new_v4().to_string();
         let name = if r.name.is_empty() {
             std::path::Path::new(&r.path)
                 .file_name()
@@ -234,43 +274,25 @@ impl EngineService for EngineServer {
         } else {
             r.name.clone()
         };
-        let img = parse_image(&bytes, mode, &image_id, &r.session_id)
-            .map_err(|e| Status::internal(e.to_string()))?;
-        store_image_file(&self.data_dir, &r.session_id, &image_id, &bytes)
-            .map_err(|e| Status::internal(e.to_string()))?;
-        self.sm
-            .db
-            .lock()
-            .unwrap()
-            .insert_image(
-                &image_id,
-                &r.session_id,
-                &name,
-                &r.path,
-                r.mode as i64,
-                bytes.len() as i64,
-            )
-            .map_err(|e| Status::internal(e.to_string()))?;
-        let root_guid = img
-            .root
-            .guid
-            .map(|g| crate::guid_to_upper_string(&g))
-            .unwrap_or_default();
-        self.images.lock().await.insert(image_id.clone(), img);
-        let _ = self.sm.touch(&r.session_id);
-        tracing::info!(
-            name = %name,
-            size = bytes.len(),
-            image_id = %image_id,
-            mode = ?mode,
-            root_guid = %root_guid,
-            "image opened"
-        );
-        Ok(Response::new(ImageOpenResponse {
-            image_id,
-            root_guid,
-            name,
-        }))
+        self.open_from_bytes(&r.session_id, bytes, mode, &name, &r.path)
+            .await
+    }
+
+    #[tracing::instrument(skip(self, req), err)]
+    async fn image_upload(&self, req: Request<ImageUploadRequest>) -> RpcResult<ImageOpenResponse> {
+        let r = req.into_inner();
+        let mode = match r.mode {
+            0 => ImageMode::Read,
+            1 => ImageMode::Write,
+            _ => return Err(Status::invalid_argument("bad mode")),
+        };
+        let name = if r.name.is_empty() {
+            "upload".to_string()
+        } else {
+            r.name.clone()
+        };
+        self.open_from_bytes(&r.session_id, r.data, mode, &name, &name)
+            .await
     }
 
     #[tracing::instrument(skip(self, req), err)]
@@ -1084,7 +1106,9 @@ pub fn serve(
             data_dir,
         };
         Server::builder()
-            .add_service(EngineServiceServer::new(server))
+            .add_service(
+                EngineServiceServer::new(server).max_decoding_message_size(64 * 1024 * 1024),
+            )
             .serve_with_incoming(incoming)
             .await
             .map_err(|e| anyhow::anyhow!(e))
@@ -1124,7 +1148,9 @@ mod tests {
         let incoming = tokio_stream::wrappers::UnixListenerStream::new(listener);
         tokio::spawn(async move {
             Server::builder()
-                .add_service(EngineServiceServer::new(server))
+                .add_service(
+                    EngineServiceServer::new(server).max_decoding_message_size(64 * 1024 * 1024),
+                )
                 .serve_with_incoming(incoming)
                 .await
                 .unwrap();
@@ -2119,6 +2145,92 @@ mod tests {
             buf[*at..*at + 32].copy_from_slice(&f);
         }
         buf
+    }
+
+    #[tokio::test]
+    async fn image_upload_roundtrip() {
+        let (_td, mut client) = setup().await;
+        let sid = create_session(&mut client).await;
+        let resp = client
+            .image_upload(tonic::Request::new(ImageUploadRequest {
+                session_id: sid,
+                data: fv_image_with_two_files(),
+                mode: 0,
+                name: "up.bin".into(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        let nodes = client
+            .image_nodes_list(tonic::Request::new(ImageNodesListRequest {
+                image_id: resp.image_id.clone(),
+                filter: String::new(),
+            }))
+            .await
+            .unwrap()
+            .into_inner()
+            .nodes;
+        assert!(!nodes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn image_upload_rejected_over_small_limit() {
+        let td = tempfile::TempDir::new().unwrap();
+        let sock = td.path().join("small.sock");
+        let db = crate::storage::open_db(&td.path().join("db.sqlite")).unwrap();
+        let sm = Arc::new(SessionManager::new(
+            db,
+            td.path().to_path_buf(),
+            Duration::from_secs(864000),
+            Duration::from_secs(3600),
+            false,
+        ));
+        let server = EngineServer {
+            sm,
+            images: Arc::new(Mutex::new(HashMap::new())),
+            data_dir: td.path().to_path_buf(),
+        };
+        let listener = tokio::net::UnixListener::bind(&sock).unwrap();
+        let incoming = tokio_stream::wrappers::UnixListenerStream::new(listener);
+        tokio::spawn(async move {
+            tonic::transport::Server::builder()
+                .add_service(
+                    EngineServiceServer::new(server).max_decoding_message_size(1024 * 1024),
+                )
+                .serve_with_incoming(incoming)
+                .await
+                .unwrap();
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let channel = Endpoint::try_from("http://localhost")
+            .unwrap()
+            .connect_with_connector(tower::service_fn({
+                let s = sock.to_string_lossy().to_string();
+                move |_: http::Uri| {
+                    let s = s.clone();
+                    async move {
+                        Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(
+                            tokio::net::UnixStream::connect(s).await?,
+                        ))
+                    }
+                }
+            }))
+            .await
+            .unwrap();
+        let mut client =
+            EngineServiceClient::new(channel).max_encoding_message_size(64 * 1024 * 1024);
+        let result = client
+            .image_upload(tonic::Request::new(ImageUploadRequest {
+                session_id: "s".into(),
+                data: vec![0u8; 2 * 1024 * 1024],
+                mode: 0,
+                name: "big".into(),
+            }))
+            .await;
+        assert!(
+            result.is_err(),
+            "server with 1MB decode limit must reject 2MB upload"
+        );
     }
 
     #[tokio::test]
