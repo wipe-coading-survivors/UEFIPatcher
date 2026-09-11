@@ -1,10 +1,18 @@
-use crate::types::{Action, FfsNode, FfsType, FlashRegionKind, ParsingData, RegionParsingData};
+use crate::types::{
+    Action, FfsNode, FfsType, FlashRegionKind, FptParsingData, ParsingData, RegionParsingData,
+};
 
 pub const FLASH_DESCRIPTOR_SIGNATURE: u32 = 0x0FF0A55A;
 pub const FLASH_DESCRIPTOR_SIZE: usize = 0x1000;
 const FLMAP0_OFFSET: usize = 0x10;
 const REGION_SECTION_ALIGN: usize = 0x10;
 const REGION_GRANULARITY: usize = 0x1000;
+
+pub const FPT_SIGNATURE: u32 = 0x5450_4624;
+const FPT_MAX_ENTRIES: u32 = 32;
+const FPT_HEADER_LEN: usize = 0x20;
+const FPT_ENTRY_LEN: usize = 0x20;
+const ME_ROM_BYPASS_VECTOR_SIZE: usize = 0x10;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FlashRegion {
@@ -83,9 +91,97 @@ pub fn make_region_node(buf: &[u8], kind: FlashRegionKind, offset: usize, size: 
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FptPartition {
+    pub name: String,
+    pub offset: u32,
+    pub size: u32,
+}
+
+/// Parses the ME $FPT partition table at offset 0 or behind the ROM bypass
+/// vector. Returns None on missing signature, NumEntries > 32 or entries
+/// beyond the buffer. Ref: UEFITool-ai-fork/common/meparser.cpp:138-170.
+pub fn parse_fpt(body: &[u8]) -> Option<Vec<FptPartition>> {
+    let base =
+        if body.len() >= 4 && u32::from_le_bytes(body[0..4].try_into().unwrap()) == FPT_SIGNATURE {
+            0
+        } else if body.len() >= ME_ROM_BYPASS_VECTOR_SIZE + 4
+            && u32::from_le_bytes(
+                body[ME_ROM_BYPASS_VECTOR_SIZE..ME_ROM_BYPASS_VECTOR_SIZE + 4]
+                    .try_into()
+                    .unwrap(),
+            ) == FPT_SIGNATURE
+        {
+            ME_ROM_BYPASS_VECTOR_SIZE
+        } else {
+            return None;
+        };
+    let hdr = &body[base..];
+    let num = u32::from_le_bytes(hdr[4..8].try_into().unwrap());
+    let mut hdr_len = hdr[10] as usize;
+    if hdr_len == 0 {
+        hdr_len = FPT_HEADER_LEN;
+    }
+    if num > FPT_MAX_ENTRIES || base + hdr_len + num as usize * FPT_ENTRY_LEN > body.len() {
+        return None;
+    }
+    let mut out = Vec::new();
+    for i in 0..num as usize {
+        let e = &hdr[hdr_len + i * FPT_ENTRY_LEN..];
+        let name: String = e[0..4]
+            .iter()
+            .map(|&b| b as char)
+            .filter(|c| c.is_ascii_graphic())
+            .collect();
+        let offset = u32::from_le_bytes(e[8..12].try_into().unwrap());
+        let size = u32::from_le_bytes(e[12..16].try_into().unwrap());
+        out.push(FptPartition { name, offset, size });
+    }
+    Some(out)
+}
+
+/// Makes fixed read-only Region children for ME $FPT partitions; partition
+/// bodies are slices of the parent region body and are never serialized by
+/// the builder. Returns empty when the region has no valid $FPT.
+pub fn fpt_children(body: &[u8], region_offset: usize, region_size: usize) -> Vec<FfsNode> {
+    let Some(parts) = parse_fpt(body) else {
+        tracing::warn!(
+            region_offset,
+            "ME region has no $FPT, no partition children"
+        );
+        return vec![];
+    };
+    parts
+        .iter()
+        .filter(|p| p.size > 0 && (p.offset as usize) < region_size)
+        .map(|p| {
+            let end = (p.offset as usize + p.size as usize).min(region_size);
+            FfsNode {
+                guid: None,
+                node_type: FfsType::Region,
+                subtype: 0,
+                offset: (region_offset + p.offset as usize) as u32,
+                header: vec![],
+                body: body[p.offset as usize..end].to_vec(),
+                tail: vec![],
+                children: vec![],
+                action: Action::NoAction,
+                parsing_data: ParsingData::FptPartition(FptParsingData {
+                    name: p.name.clone(),
+                }),
+                fixed: true,
+                compressed: false,
+                alignment_bytes: vec![],
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parser::image::parse_image;
+    use crate::types::ImageMode;
 
     fn descriptor_image(region_specs: &[(usize, u16, u16)], total: usize) -> Vec<u8> {
         let mut buf = vec![0xFFu8; total];
@@ -149,5 +245,90 @@ mod tests {
         let buf = descriptor_image(&[(1, 0, 3), (2, 0xF000, 0xFFFF)], 0x10000);
         let rs = parse_flash_regions(&buf).unwrap();
         assert!(rs.iter().all(|r| r.kind != FlashRegionKind::Me));
+    }
+
+    fn me_body_with_fpt() -> Vec<u8> {
+        let mut body = vec![0u8; 0x2000];
+        body[0..4].copy_from_slice(&0x5450_4624u32.to_le_bytes());
+        body[4..8].copy_from_slice(&2u32.to_le_bytes());
+        body[8] = 0x10;
+        body[10] = 0x20;
+        body[0x20..0x24].copy_from_slice(b"FTPR");
+        body[0x28..0x2C].copy_from_slice(&0x0000u32.to_le_bytes());
+        body[0x2C..0x30].copy_from_slice(&0x0800u32.to_le_bytes());
+        body[0x40..0x44].copy_from_slice(b"NFTP");
+        body[0x48..0x4C].copy_from_slice(&0x1000u32.to_le_bytes());
+        body[0x4C..0x50].copy_from_slice(&0x0400u32.to_le_bytes());
+        body
+    }
+
+    #[test]
+    fn parse_fpt_entries() {
+        let parts = parse_fpt(&me_body_with_fpt()).unwrap();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0].name, "FTPR");
+        assert_eq!(parts[0].offset, 0);
+        assert_eq!(parts[0].size, 0x800);
+        assert_eq!(parts[1].name, "NFTP");
+        assert_eq!(parts[1].offset, 0x1000);
+    }
+
+    #[test]
+    fn parse_fpt_bypass_vector_offset() {
+        let mut body = me_body_with_fpt();
+        body.copy_within(0..0x40, 0x10);
+        body[0..4].copy_from_slice(&0u32.to_le_bytes());
+        assert!(parse_fpt(&body).is_some());
+    }
+
+    #[test]
+    fn parse_fpt_graceful_on_garbage() {
+        assert!(parse_fpt(&[0xFFu8; 0x2000]).is_none());
+        let mut body = me_body_with_fpt();
+        body[4..8].copy_from_slice(&1000u32.to_le_bytes());
+        assert!(parse_fpt(&body).is_none());
+    }
+
+    #[test]
+    fn me_region_gets_fpt_children() {
+        let children = fpt_children(&me_body_with_fpt(), 0, 0x2000);
+        assert_eq!(children.len(), 2);
+        assert!(children.iter().all(|c| c.node_type == FfsType::Region));
+        assert!(
+            children
+                .iter()
+                .all(|c| matches!(&c.parsing_data, ParsingData::FptPartition(_)))
+        );
+    }
+
+    #[test]
+    fn fpt_partition_inside_me_immutable() {
+        let mut buf = descriptor_image(&[(1, 4, 7), (2, 1, 3)], 0x10000);
+        let me = me_body_with_fpt();
+        buf[0x1000..0x1000 + me.len()].copy_from_slice(&me);
+        let mut img = parse_image(&buf, ImageMode::Write, "i", "s").unwrap();
+        let me_idx = img
+            .root
+            .children
+            .iter()
+            .position(|c| {
+                matches!(
+                    &c.parsing_data,
+                    ParsingData::Region(rd) if rd.kind == FlashRegionKind::Me
+                )
+            })
+            .unwrap();
+        assert!(
+            !img.root.children[me_idx].children.is_empty(),
+            "ME has $FPT children"
+        );
+        let inside = format!("{me_idx}/0");
+        assert!(matches!(
+            crate::ops::remove(
+                &mut img.root,
+                &crate::parser::target::parse_target(&inside).unwrap()
+            ),
+            Err(crate::ops::OpsError::ImmutableRegion)
+        ));
     }
 }

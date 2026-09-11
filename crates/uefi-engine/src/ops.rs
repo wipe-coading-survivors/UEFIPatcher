@@ -151,28 +151,30 @@ pub fn mark_rebuild_to_root_by_path(root: &mut FfsNode, path: &[usize]) {
 }
 
 fn ensure_mutable(root: &FfsNode, path: &[usize], include_target: bool) -> Result<(), OpsError> {
-    let mut node = root;
     let n = if include_target {
         path.len()
     } else {
         path.len().saturating_sub(1)
     };
-    for &i in &path[..n] {
+    let mut node = root;
+    for (depth, &i) in path.iter().enumerate() {
         let Some(child) = node.children.get(i) else {
             break;
         };
         if child.node_type == FfsType::Region {
             return Err(OpsError::ImmutableRegion);
         }
-        if child.node_type == FfsType::Section && child.subtype == EFI_SECTION_COMPRESSION {
-            return Err(OpsError::MutationBehindCompression);
-        }
-        if child.node_type == FfsType::Section
-            && child.subtype == EFI_SECTION_GUID_DEFINED
-            && !matches!(&child.parsing_data, ParsingData::GuidedSection(d)
-                if crate::ffs::is_recompressable_lzma_guid(&d.guid))
-        {
-            return Err(OpsError::MutationBehindCompression);
+        if depth < n {
+            if child.node_type == FfsType::Section && child.subtype == EFI_SECTION_COMPRESSION {
+                return Err(OpsError::MutationBehindCompression);
+            }
+            if child.node_type == FfsType::Section
+                && child.subtype == EFI_SECTION_GUID_DEFINED
+                && !matches!(&child.parsing_data, ParsingData::GuidedSection(d)
+                    if crate::ffs::is_recompressable_lzma_guid(&d.guid))
+            {
+                return Err(OpsError::MutationBehindCompression);
+            }
         }
         node = child;
     }
@@ -441,6 +443,28 @@ mod tests {
         let t = parse_target(&me_idx.to_string()).unwrap();
         assert!(matches!(
             remove(&mut img.root, &t),
+            Err(OpsError::ImmutableRegion)
+        ));
+    }
+
+    #[test]
+    fn insert_before_me_region_refused() {
+        let buf = descriptor_image(&[(1, 4, 7), (2, 1, 3)], 0x10000);
+        let mut img = parse_image(&buf, ImageMode::Write, "i", "s").unwrap();
+        let me_idx = img
+            .root
+            .children
+            .iter()
+            .position(|c| {
+                matches!(
+                    &c.parsing_data,
+                    ParsingData::Region(rd) if rd.kind == FlashRegionKind::Me
+                )
+            })
+            .unwrap();
+        let t = parse_target(&me_idx.to_string()).unwrap();
+        assert!(matches!(
+            insert(&mut img.root, &t, &make_ffs_file(), InsertMode::Before),
             Err(OpsError::ImmutableRegion)
         ));
     }

@@ -34,9 +34,11 @@ pub fn parse_image(
                     );
                 }
                 _ => {
-                    children.push(super::region::make_region_node(
-                        buf, r.kind, r.offset, r.size,
-                    ));
+                    let mut node = super::region::make_region_node(buf, r.kind, r.offset, r.size);
+                    if r.kind == FlashRegionKind::Me {
+                        node.children = super::region::fpt_children(&node.body, r.offset, r.size);
+                    }
+                    children.push(node);
                     last_end = r.offset + r.size;
                 }
             }
@@ -314,6 +316,7 @@ fn node_name(node: &FfsNode) -> String {
         FfsType::File => find_lifted_name(&node.children, 0).unwrap_or_default(),
         FfsType::Region => match &node.parsing_data {
             ParsingData::Region(rd) => format!("{} region", rd.kind.label()),
+            ParsingData::FptPartition(pd) => pd.name.clone(),
             _ => String::new(),
         },
         _ => String::new(),
@@ -756,6 +759,21 @@ mod tests {
         assert_eq!(res.len(), 0, "search must skip File nodes");
     }
 
+    fn me_body_with_fpt() -> Vec<u8> {
+        let mut body = vec![0u8; 0x2000];
+        body[0..4].copy_from_slice(&0x5450_4624u32.to_le_bytes());
+        body[4..8].copy_from_slice(&2u32.to_le_bytes());
+        body[8] = 0x10;
+        body[10] = 0x20;
+        body[0x20..0x24].copy_from_slice(b"FTPR");
+        body[0x28..0x2C].copy_from_slice(&0x0000u32.to_le_bytes());
+        body[0x2C..0x30].copy_from_slice(&0x0800u32.to_le_bytes());
+        body[0x40..0x44].copy_from_slice(b"NFTP");
+        body[0x48..0x4C].copy_from_slice(&0x1000u32.to_le_bytes());
+        body[0x4C..0x50].copy_from_slice(&0x0400u32.to_le_bytes());
+        body
+    }
+
     #[test]
     fn parse_image_descriptor_path_regions_and_padding() {
         let mut buf = vec![0xFFu8; 0x10000];
@@ -766,6 +784,8 @@ mod tests {
         buf[0x400 + 2 * 4..0x400 + 2 * 4 + 2].copy_from_slice(&4u16.to_le_bytes());
         buf[0x400 + 2 * 4 + 2..0x400 + 2 * 4 + 4].copy_from_slice(&15u16.to_le_bytes());
         buf[0x1000..0x1100].copy_from_slice(&make_image_with_volume());
+        let me_body = me_body_with_fpt();
+        buf[0x4000..0x4000 + me_body.len()].copy_from_slice(&me_body);
         let img = parse_image(&buf, ImageMode::Read, "i", "s").unwrap();
         let kinds: Vec<&str> = img
             .root
@@ -786,6 +806,24 @@ mod tests {
             .filter(|c| c.node_type == FfsType::Volume)
             .count();
         assert!(bios_volumes >= 1, "BIOS window scanned for FVs");
+        let me_node = img
+            .root
+            .children
+            .iter()
+            .find(|c| {
+                matches!(
+                    &c.parsing_data,
+                    ParsingData::Region(rd) if rd.kind == FlashRegionKind::Me
+                )
+            })
+            .unwrap();
+        assert!(!me_node.children.is_empty(), "ME region has $FPT children");
+        assert!(
+            me_node
+                .children
+                .iter()
+                .all(|c| matches!(&c.parsing_data, ParsingData::FptPartition(_)))
+        );
         let rebuilt = crate::builder::build_image(&img).unwrap();
         assert_eq!(rebuilt, buf, "descriptor round-trip byte-identical");
     }

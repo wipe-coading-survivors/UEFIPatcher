@@ -130,6 +130,11 @@ pub struct RegionParsingData {
 }
 
 #[derive(Debug, Clone)]
+pub struct FptParsingData {
+    pub name: String,
+}
+
+#[derive(Debug, Clone)]
 pub enum ParsingData {
     None,
     Volume(VolumeParsingData),
@@ -137,6 +142,7 @@ pub enum ParsingData {
     GuidedSection(GuidedSectionParsingData),
     CompressedSection(CompressedSectionParsingData),
     Region(RegionParsingData),
+    FptPartition(FptParsingData),
 }
 
 #[derive(Debug, Clone)]
