@@ -1,6 +1,6 @@
 use uefi_proto::{
     FormInfo, GateInfo, HiiFormHijackResponse, HiiPageAddResponse, HiiQuestionAddOutcome,
-    ImageInfo, Node, QuestionInfo, SessionInfo, StringInfo,
+    ImageInfo, Node, QuestionInfo, QuestionSummary, SessionInfo, StringInfo,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -110,6 +110,48 @@ pub fn print_images_list(images: &[ImageInfo], format: OutputFormat) {
 
 pub fn print_image_status(info: &ImageInfo, format: OutputFormat) {
     print_image_info(info, format);
+}
+
+pub fn print_questions(
+    questions: &[QuestionSummary],
+    target: &str,
+    form_id: u32,
+    format: OutputFormat,
+) {
+    match format {
+        OutputFormat::Json => {
+            let v = serde_json::to_string_pretty(questions).unwrap_or_else(|_| "[]".into());
+            println!("{v}");
+        }
+        OutputFormat::Tsv => {
+            println!("item_id\tquestion_id\tkind\tprompt\tvar_store_id\tvar_offset\twidth");
+            for q in questions {
+                println!(
+                    "{target}#{form_id}:{:#x}\t{:#x}\t{}\t{}\t{}\t{:#x}\t{}",
+                    q.question_id,
+                    q.question_id,
+                    q.kind,
+                    q.prompt,
+                    q.var_store_id,
+                    q.var_offset,
+                    q.width
+                );
+            }
+        }
+        OutputFormat::Text => {
+            for q in questions {
+                let prompt = if q.prompt.is_empty() {
+                    "-".to_string()
+                } else {
+                    format!("\"{}\"", q.prompt)
+                };
+                println!(
+                    "{target}#{form_id}:{:#x}  {}  {prompt}",
+                    q.question_id, q.kind
+                );
+            }
+        }
+    }
 }
 
 pub fn print_forms(forms: &[FormInfo], format: OutputFormat) {

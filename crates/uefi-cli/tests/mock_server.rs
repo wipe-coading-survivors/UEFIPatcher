@@ -313,7 +313,24 @@ impl EngineService for MockEngine {
         _req: Request<HiiListQuestionsRequest>,
     ) -> Result<Response<HiiListQuestionsResponse>, Status> {
         Ok(Response::new(HiiListQuestionsResponse {
-            questions: vec![],
+            questions: vec![
+                QuestionSummary {
+                    question_id: 0x22,
+                    kind: "checkbox".into(),
+                    prompt: "Serial Port".into(),
+                    var_store_id: 21,
+                    var_offset: 0x0,
+                    width: 1,
+                },
+                QuestionSummary {
+                    question_id: 0x23,
+                    kind: "one_of".into(),
+                    prompt: "Change Settings".into(),
+                    var_store_id: 21,
+                    var_offset: 0x1,
+                    width: 1,
+                },
+            ],
         }))
     }
     async fn hii_form_tree(

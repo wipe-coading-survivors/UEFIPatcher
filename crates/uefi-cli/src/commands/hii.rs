@@ -13,6 +13,37 @@ pub async fn form_list(cli_sock: Option<&str>, format: OutputFormat) -> Result<(
     Ok(())
 }
 
+/// item_id формы: `<target>#<form_id>` (form_id — десятичное; вопросная
+/// часть `:qid` допускается и игнорируется). Грамматика target:
+/// `<ffs-file-guid>:<section-type-hex>:<index>` — из колонки form_id `hii form list`.
+pub async fn question_list(
+    item_id: &str,
+    cli_sock: Option<&str>,
+    format: OutputFormat,
+) -> Result<(), AppError> {
+    let st = state::require_state()?;
+    let mut client = Client::connect(cli_sock, st).await?;
+    let image_id = client.active_image()?;
+    let (target, disc) = item_id.rsplit_once('#').ok_or_else(|| {
+        AppError::new(
+            ErrKind::RpcInvalidArgument,
+            format!("item_id must be <target>#<form_id>: '{item_id}'"),
+        )
+    })?;
+    let form_str = disc.split_once(':').map(|(f, _)| f).unwrap_or(disc);
+    let form_id: u32 = form_str.parse().map_err(|e| {
+        AppError::new(
+            ErrKind::RpcInvalidArgument,
+            format!("form_id must be decimal: '{form_str}': {e}"),
+        )
+    })?;
+    let questions = client
+        .hii_list_questions(&image_id, target, form_id)
+        .await?;
+    crate::output::print_questions(&questions, target, form_id, format);
+    Ok(())
+}
+
 pub async fn form_set_visibility(
     form_id: &str,
     visible: bool,

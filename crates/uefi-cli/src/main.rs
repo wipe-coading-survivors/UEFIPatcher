@@ -276,6 +276,10 @@ enum HiiFormSetCmd {
 
 #[derive(Subcommand)]
 enum HiiQuestionCmd {
+    #[command(
+        about = "list questions of a form; item_id = TARGET#FORM_ID (copy from `hii form list` form_id column)"
+    )]
+    List { item_id: String },
     #[command(about = "list gates (suppress/grayout) guarding a question")]
     Gates { item_id: String },
     #[command(about = "flip gates to unlock a question")]
@@ -470,6 +474,9 @@ async fn dispatch(cli: &Cli, format: output::OutputFormat) -> Result<(), error::
                 }
             },
             HiiCmd::Question { sub } => match sub {
+                HiiQuestionCmd::List { item_id } => {
+                    commands::hii::question_list(item_id, sock, format).await
+                }
                 HiiQuestionCmd::Gates { item_id } => {
                     commands::hii::question_gates(item_id, sock, format).await
                 }
