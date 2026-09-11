@@ -50,12 +50,14 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
     }
     let list_focus = app.forms.focus == FormsFocus::List;
     f.render_stateful_widget(
-        List::new(items).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Forms")
-                .border_style(focus_style(list_focus)),
-        ),
+        List::new(items)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Forms")
+                    .border_style(focus_style(list_focus)),
+            )
+            .highlight_style(Style::default().bg(Color::DarkGray)),
         cols[0],
         &mut state,
     );
@@ -122,7 +124,9 @@ fn render_strings(f: &mut Frame, area: Rect, app: &mut App) {
         format!("Strings (filter: {})", app.forms.strings_filter)
     };
     f.render_stateful_widget(
-        List::new(items).block(Block::default().borders(Borders::ALL).title(title)),
+        List::new(items)
+            .block(Block::default().borders(Borders::ALL).title(title))
+            .highlight_style(Style::default().bg(Color::DarkGray)),
         area,
         &mut state,
     );
