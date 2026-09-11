@@ -2501,6 +2501,112 @@ mod tests {
         assert!(stored.contains(&0xDD), "FV1 survivor marker must remain");
     }
 
+    fn descriptor_image_with_bios_fv() -> Vec<u8> {
+        let mut buf = vec![0xFFu8; 0x10000];
+        buf[0..4].copy_from_slice(&crate::parser::region::FLASH_DESCRIPTOR_SIGNATURE.to_le_bytes());
+        buf[0x10..0x14].copy_from_slice(&0x0040_0000u32.to_le_bytes());
+        buf[0x404..0x406].copy_from_slice(&1u16.to_le_bytes());
+        buf[0x406..0x408].copy_from_slice(&3u16.to_le_bytes());
+        buf[0x408..0x40A].copy_from_slice(&4u16.to_le_bytes());
+        buf[0x40A..0x40C].copy_from_slice(&15u16.to_le_bytes());
+        buf[0x1000..0x1100].copy_from_slice(&fv_image_with_two_files());
+        let mut me = vec![0u8; 0x2000];
+        me[0..4].copy_from_slice(&crate::parser::region::FPT_SIGNATURE.to_le_bytes());
+        me[4..8].copy_from_slice(&2u32.to_le_bytes());
+        me[8] = 0x10;
+        me[10] = 0x20;
+        me[0x20..0x24].copy_from_slice(b"FTPR");
+        me[0x28..0x2C].copy_from_slice(&0u32.to_le_bytes());
+        me[0x2C..0x30].copy_from_slice(&0x0800u32.to_le_bytes());
+        me[0x40..0x44].copy_from_slice(b"NFTP");
+        me[0x48..0x4C].copy_from_slice(&0x1000u32.to_le_bytes());
+        me[0x4C..0x50].copy_from_slice(&0x0400u32.to_le_bytes());
+        buf[0x4000..0x6000].copy_from_slice(&me);
+        buf
+    }
+
+    #[tokio::test]
+    async fn descriptor_image_bios_mutation_keeps_regions() {
+        let (td, mut client) = setup().await;
+        let sid = create_session(&mut client).await;
+        let fixture = descriptor_image_with_bios_fv();
+        let src = td.path().join("desc.bin");
+        std::fs::write(&src, &fixture).unwrap();
+        let open = client
+            .image_open(tonic::Request::new(ImageOpenRequest {
+                session_id: sid.clone(),
+                path: src.display().to_string(),
+                mode: 1,
+                name: "t".into(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        let initial = list_nodes(&mut client, &open.image_id).await;
+        let vol_prefix = format!(
+            "{}/",
+            initial
+                .iter()
+                .find(|n| n.r#type == FfsType::Volume as u32)
+                .expect("descriptor BIOS window holds a Volume")
+                .path
+        );
+        let target = initial
+            .iter()
+            .find(|n| n.r#type == FfsType::File as u32 && n.path.starts_with(&vol_prefix))
+            .expect("first Volume has a File child")
+            .path
+            .clone();
+        client
+            .image_node_remove(tonic::Request::new(ImageNodeRemoveRequest {
+                image_id: open.image_id.clone(),
+                target,
+            }))
+            .await
+            .unwrap();
+        let nodes = list_nodes(&mut client, &open.image_id).await;
+        assert!(
+            nodes.iter().any(|n| n.r#type == FfsType::Volume as u32),
+            "BIOS Volume survives the flush re-parse"
+        );
+        assert!(
+            nodes.iter().all(|n| n.action == 50),
+            "flush re-parse must give a clean tree"
+        );
+        assert_eq!(
+            nodes
+                .iter()
+                .filter(|n| n.r#type == FfsType::File as u32 && n.path.starts_with(&vol_prefix))
+                .count(),
+            1,
+            "removed BIOS file is gone, survivor re-parsed"
+        );
+        assert!(
+            nodes
+                .iter()
+                .any(|n| n.r#type == FfsType::Region as u32 && n.region == "ME"),
+            "ME region node survives with non-empty region label"
+        );
+        assert!(
+            nodes
+                .iter()
+                .any(|n| n.r#type == FfsType::Region as u32 && n.region == "Descriptor"),
+            "Descriptor region node survives with non-empty region label"
+        );
+        let img_path = td
+            .path()
+            .join("sessions")
+            .join(&sid)
+            .join("images")
+            .join(format!("{}.bin", open.image_id));
+        let stored = std::fs::read(&img_path).unwrap();
+        assert_eq!(
+            stored.len(),
+            fixture.len(),
+            "stored descriptor image keeps total length, no double padding or truncation"
+        );
+    }
+
     #[tokio::test]
     async fn image_snapshot_create_and_list_roundtrip() {
         let (td, mut client) = setup().await;
