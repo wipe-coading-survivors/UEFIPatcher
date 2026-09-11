@@ -1,5 +1,7 @@
+use std::collections::HashSet;
+
 use ratatui::widgets::ListState;
-use uefi_proto::{ArtifactInfo, ImageInfo};
+use uefi_proto::{ArtifactInfo, FormInfo, ImageInfo, QuestionSummary, StringInfo};
 
 use crate::tree::visible_rows;
 
@@ -32,6 +34,45 @@ impl Focus {
             Focus::Registry => Focus::Details,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum View {
+    Image,
+    Forms,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FormsFocus {
+    #[default]
+    List,
+    Details,
+}
+
+impl FormsFocus {
+    pub fn next(self) -> Self {
+        match self {
+            FormsFocus::List => FormsFocus::Details,
+            FormsFocus::Details => FormsFocus::List,
+        }
+    }
+    pub fn prev(self) -> Self {
+        self.next()
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct FormsData {
+    pub forms: Vec<FormInfo>,
+    pub expanded: HashSet<String>,
+    pub cursor: usize,
+    pub focus: FormsFocus,
+    pub questions: Vec<QuestionSummary>,
+    pub questions_key: Option<crate::forms::FormKey>,
+    pub show_strings: bool,
+    pub strings: Vec<StringInfo>,
+    pub strings_filter: String,
+    pub strings_cursor: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -67,6 +108,8 @@ pub struct App {
     pub cursor: usize,
     pub focus: Focus,
     pub registry: RegistryData,
+    pub view: View,
+    pub forms: FormsData,
     pub active_image_id: Option<String>,
     pub selected: Option<String>,
     pub cmdline: String,
@@ -89,6 +132,8 @@ impl App {
             cursor: 0,
             focus: Focus::Tree,
             registry: RegistryData::default(),
+            view: View::Image,
+            forms: FormsData::default(),
             active_image_id: None,
             selected: None,
             cmdline: String::new(),
@@ -238,6 +283,93 @@ impl App {
     pub fn registry_cursor_up(&mut self) {
         if self.registry.cursor > 0 {
             self.registry.cursor -= 1;
+        }
+    }
+
+    pub fn forms_rows(&self) -> Vec<crate::forms::FormsRow> {
+        crate::forms::build_rows(&self.forms.forms, &self.forms.expanded)
+    }
+
+    pub fn selected_form_key(&self) -> Option<crate::forms::FormKey> {
+        crate::forms::selected_key(&self.forms_rows(), self.forms.cursor)
+    }
+
+    pub fn forms_cursor_down(&mut self) {
+        let n = self.forms_rows().len();
+        if n > 0 && self.forms.cursor + 1 < n {
+            self.forms.cursor += 1;
+        }
+    }
+
+    pub fn forms_cursor_up(&mut self) {
+        if self.forms.cursor > 0 {
+            self.forms.cursor -= 1;
+        }
+    }
+
+    /// h/l-семантика как в Image-view: на FormSet-строке — сам формсет,
+    /// на Form-строке — её родительский формсет. После сворачивания
+    /// курсор clamps к видимым строкам.
+    pub fn forms_set_expanded(&mut self, expand: bool) {
+        let rows = self.forms_rows();
+        let guid = match rows.get(self.forms.cursor) {
+            Some(crate::forms::FormsRow::FormSet { guid, .. }) => Some(guid.clone()),
+            Some(crate::forms::FormsRow::Form { key, .. }) => Some(key.formset_guid.clone()),
+            None => None,
+        };
+        if let Some(guid) = guid {
+            if expand {
+                self.forms.expanded.insert(guid);
+            } else {
+                self.forms.expanded.remove(&guid);
+            }
+        }
+        let n = self.forms_rows().len();
+        if self.forms.cursor >= n {
+            self.forms.cursor = n.saturating_sub(1);
+        }
+    }
+
+    pub fn forms_sanitize_cursor(&mut self) {
+        let n = self.forms_rows().len();
+        if n == 0 {
+            self.forms.cursor = 0;
+        } else if self.forms.cursor >= n {
+            self.forms.cursor = n - 1;
+        }
+    }
+
+    pub fn strings_visible(&self) -> Vec<usize> {
+        let needle = self.forms.strings_filter.to_lowercase();
+        self.forms
+            .strings
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| needle.is_empty() || s.text.to_lowercase().contains(&needle))
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// `strings_cursor` — индекс в `forms.strings` (НЕ позиция в видимом
+    /// списке): движение — к следующему/предыдущему видимому индексу.
+    pub fn strings_cursor_down(&mut self) {
+        if let Some(&next) = self
+            .strings_visible()
+            .iter()
+            .find(|&&i| i > self.forms.strings_cursor)
+        {
+            self.forms.strings_cursor = next;
+        }
+    }
+
+    pub fn strings_cursor_up(&mut self) {
+        if let Some(&prev) = self
+            .strings_visible()
+            .iter()
+            .rev()
+            .find(|&&i| i < self.forms.strings_cursor)
+        {
+            self.forms.strings_cursor = prev;
         }
     }
 
@@ -568,5 +700,55 @@ mod tests {
         let mut free = node("5", 1);
         free.node_type = crate::theme::TYPE_FREESPACE;
         assert_eq!(app.node_label(&free), "Free space");
+    }
+
+    fn form_info(set: &str, id: u32) -> uefi_proto::FormInfo {
+        uefi_proto::FormInfo {
+            form_id: "t:0x19:0".into(),
+            formset_guid: set.into(),
+            form_id_ifr: id,
+            title: format!("f{id}"),
+            visible: true,
+        }
+    }
+
+    #[test]
+    fn forms_cursor_and_collapse_parent() {
+        let mut app = App::new();
+        app.forms.forms = vec![form_info("S", 1), form_info("S", 2)];
+        app.forms.expanded = ["S".into()].into();
+        assert_eq!(app.forms_rows().len(), 3);
+        app.forms_cursor_down();
+        assert_eq!(app.selected_form_key().unwrap().form_id_ifr, 1);
+        app.forms.cursor = 2;
+        app.forms_set_expanded(false);
+        assert_eq!(app.forms_rows().len(), 1, "formset collapsed");
+        assert_eq!(app.forms.cursor, 0, "cursor clamped onto formset row");
+        app.forms_set_expanded(true);
+        assert_eq!(app.forms_rows().len(), 3);
+    }
+
+    #[test]
+    fn strings_visible_filters_case_insensitive() {
+        let mut app = App::new();
+        app.forms.strings = vec![
+            uefi_proto::StringInfo {
+                language: "en-US".into(),
+                string_id: 1,
+                text: "Setup".into(),
+            },
+            uefi_proto::StringInfo {
+                language: "en-US".into(),
+                string_id: 2,
+                text: "serial port".into(),
+            },
+        ];
+        assert_eq!(app.strings_visible().len(), 2);
+        app.forms.strings_filter = "SERIAL".into();
+        assert_eq!(app.strings_visible(), vec![1]);
+        app.strings_cursor_down();
+        assert_eq!(app.forms.strings_cursor, 1);
+        app.strings_cursor_down();
+        assert_eq!(app.forms.strings_cursor, 1, "clamp at last visible");
     }
 }

@@ -244,6 +244,14 @@ impl EngineService for MockEngine {
     ) -> Result<Response<HiiQuestionInfoResponse>, Status> {
         Ok(Response::new(HiiQuestionInfoResponse::default()))
     }
+    async fn hii_list_questions(
+        &self,
+        _req: Request<HiiListQuestionsRequest>,
+    ) -> Result<Response<HiiListQuestionsResponse>, Status> {
+        Ok(Response::new(HiiListQuestionsResponse {
+            questions: vec![],
+        }))
+    }
     async fn hii_set_value(
         &self,
         _req: Request<HiiSetValueRequest>,

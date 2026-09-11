@@ -207,7 +207,7 @@ pub fn varstore_map(pkg: &[u8]) -> Vec<VarStoreMap> {
     out
 }
 
-fn scan_options(
+pub(crate) fn scan_options(
     pkg: &[u8],
     mut i: usize,
     options: &mut Vec<OptionEntry>,
@@ -264,7 +264,7 @@ fn value_bytes_needed(v: u64) -> u8 {
     }
 }
 
-fn one_of_width(options: &[OptionEntry], defaults: &[DefaultEntry]) -> u8 {
+pub(crate) fn one_of_width(options: &[OptionEntry], defaults: &[DefaultEntry]) -> u8 {
     let mut width = 1u8;
     for o in options {
         width = width.max(value_bytes_needed(o.value));

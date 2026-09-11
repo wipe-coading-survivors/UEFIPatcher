@@ -7,7 +7,7 @@ use uefi_common::state::{State, resolve_sock};
 use uefi_proto::engine_service_client::EngineServiceClient;
 use uefi_proto::*;
 
-use crate::app::App;
+use crate::app::{App, View};
 
 pub struct Client {
     inner: EngineServiceClient<Channel>,
@@ -461,7 +461,11 @@ pub async fn execute_command(
             Ok(target)
         }
         "image" => {
-            let sub = parts.get(1).ok_or("usage: :image switch ID | close [ID]")?;
+            if parts.get(1).is_none() {
+                app.view = View::Image;
+                return Ok("image".into());
+            }
+            let sub = parts.get(1).expect("checked above");
             match *sub {
                 "switch" => {
                     let id = parts.get(2).ok_or("usage: :image switch ID")?.to_string();
@@ -483,6 +487,9 @@ pub async fn execute_command(
                     client.state.active_image_id = Some(id.clone());
                     app.status_msg = format!("switched to {id}");
                     let _ = refresh_registry(app, client).await;
+                    if app.view == View::Forms {
+                        refresh_forms(app, client).await?;
+                    }
                     Ok(id)
                 }
                 "close" => {
@@ -506,6 +513,7 @@ pub async fn execute_command(
                         app.tree.clear();
                         app.cursor = 0;
                         app.image_loaded = false;
+                        app.view = View::Image;
                     }
                     app.status_msg = format!("closed {id}");
                     let _ = refresh_registry(app, client).await;
@@ -513,6 +521,23 @@ pub async fn execute_command(
                 }
                 other => Err(format!("unknown image subcommand: {other}")),
             }
+        }
+        "forms" | "f" => {
+            if app.active_image_id.is_none() && client.state.active_image_id.is_none() {
+                return Err("no active image — :open PATH first".into());
+            }
+            refresh_forms(app, client).await?;
+            app.view = View::Forms;
+            app.status_msg = format!("forms: {}", app.forms.forms.len());
+            Ok("forms".into())
+        }
+        "filter" => {
+            if !app.forms.show_strings {
+                return Err("filter is for the strings browser (S to open)".into());
+            }
+            app.forms.strings_filter = parts[1..].join(" ");
+            app.forms.strings_cursor = 0;
+            Ok(app.forms.strings_filter.clone())
         }
         "refresh" => {
             refresh_registry(app, client).await?;
@@ -555,6 +580,9 @@ const COMMANDS: &[&str] = &[
     "rebuild",
     "image",
     "refresh",
+    "forms",
+    "f",
+    "filter",
     "goto",
     "g",
     "upload",
@@ -729,6 +757,77 @@ pub async fn refresh_registry(app: &mut App, client: &mut Client) -> Result<(), 
     if app.registry.cursor >= app.registry_selectable().len() {
         app.registry.cursor = 0;
     }
+    Ok(())
+}
+
+pub async fn refresh_forms(app: &mut App, client: &mut Client) -> Result<(), String> {
+    let image_id = app
+        .active_image_id
+        .clone()
+        .or_else(|| client.state.active_image_id.clone())
+        .ok_or("no active image")?;
+    let resp = client
+        .inner
+        .hii_list_forms(auth_req(&client.state, HiiListFormsRequest { image_id }))
+        .await
+        .map_err(|e| e.message().to_string())?
+        .into_inner();
+    app.forms.forms = resp.forms;
+    app.forms.expanded = crate::forms::all_formset_guids(&app.forms.forms);
+    app.forms.cursor = 0;
+    app.forms.questions.clear();
+    app.forms.questions_key = None;
+    app.forms.strings.clear();
+    app.forms.strings_filter.clear();
+    app.forms.strings_cursor = 0;
+    app.forms.show_strings = false;
+    Ok(())
+}
+
+pub async fn refresh_questions_if_needed(app: &mut App, client: &mut Client) -> Result<(), String> {
+    let Some(key) = app.selected_form_key() else {
+        return Ok(());
+    };
+    if app.forms.questions_key.as_ref() == Some(&key) {
+        return Ok(());
+    }
+    let image_id = app
+        .active_image_id
+        .clone()
+        .or_else(|| client.state.active_image_id.clone())
+        .ok_or("no active image")?;
+    let resp = client
+        .inner
+        .hii_list_questions(auth_req(
+            &client.state,
+            HiiListQuestionsRequest {
+                image_id,
+                target: key.target.clone(),
+                form_id: key.form_id_ifr,
+            },
+        ))
+        .await
+        .map_err(|e| e.message().to_string())?
+        .into_inner();
+    app.forms.questions = resp.questions;
+    app.forms.questions_key = Some(key);
+    Ok(())
+}
+
+pub async fn refresh_strings(app: &mut App, client: &mut Client) -> Result<(), String> {
+    let image_id = app
+        .active_image_id
+        .clone()
+        .or_else(|| client.state.active_image_id.clone())
+        .ok_or("no active image")?;
+    let resp = client
+        .inner
+        .hii_list_strings(auth_req(&client.state, HiiListStringsRequest { image_id }))
+        .await
+        .map_err(|e| e.message().to_string())?
+        .into_inner();
+    app.forms.strings = resp.strings;
+    app.forms.strings_cursor = 0;
     Ok(())
 }
 

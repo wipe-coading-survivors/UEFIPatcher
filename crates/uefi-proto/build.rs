@@ -11,6 +11,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .message_attribute("engine.OptionEntry", "#[derive(serde::Serialize)]")
         .message_attribute("engine.DefaultEntry", "#[derive(serde::Serialize)]")
         .message_attribute("engine.QuestionInfo", "#[derive(serde::Serialize)]")
+        .message_attribute("engine.QuestionSummary", "#[derive(serde::Serialize)]")
         .message_attribute("engine.ImageSnapshotInfo", "#[derive(serde::Serialize)]")
         .compile_protos(&["proto/engine.proto"], &["proto"])?;
     Ok(())

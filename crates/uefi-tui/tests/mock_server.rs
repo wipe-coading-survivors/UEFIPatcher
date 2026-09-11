@@ -248,7 +248,31 @@ impl EngineService for MockEngine {
         &self,
         _req: Request<HiiListFormsRequest>,
     ) -> Result<Response<HiiListFormsResponse>, Status> {
-        Ok(Response::new(HiiListFormsResponse { forms: vec![] }))
+        Ok(Response::new(HiiListFormsResponse {
+            forms: vec![
+                FormInfo {
+                    form_id: "11111111-2222-3333-4444-555555555555:0x19:0".into(),
+                    formset_guid: "11111111-2222-3333-4444-555555555555".into(),
+                    form_id_ifr: 10001,
+                    title: "Main".into(),
+                    visible: true,
+                },
+                FormInfo {
+                    form_id: "11111111-2222-3333-4444-555555555555:0x19:0".into(),
+                    formset_guid: "11111111-2222-3333-4444-555555555555".into(),
+                    form_id_ifr: 10019,
+                    title: "Serial Port 1 Configuration".into(),
+                    visible: false,
+                },
+                FormInfo {
+                    form_id: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE:0x19:0".into(),
+                    formset_guid: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE".into(),
+                    form_id_ifr: 902,
+                    title: "Platform".into(),
+                    visible: true,
+                },
+            ],
+        }))
     }
     async fn hii_set_form_visibility(
         &self,
@@ -260,7 +284,50 @@ impl EngineService for MockEngine {
         &self,
         _req: Request<HiiListStringsRequest>,
     ) -> Result<Response<HiiListStringsResponse>, Status> {
-        Ok(Response::new(HiiListStringsResponse { strings: vec![] }))
+        Ok(Response::new(HiiListStringsResponse {
+            strings: vec![
+                StringInfo {
+                    language: "en-US".into(),
+                    string_id: 1,
+                    text: "Setup".into(),
+                },
+                StringInfo {
+                    language: "en-US".into(),
+                    string_id: 2,
+                    text: "Advanced".into(),
+                },
+                StringInfo {
+                    language: "en-US".into(),
+                    string_id: 3,
+                    text: "Serial Port".into(),
+                },
+            ],
+        }))
+    }
+    async fn hii_list_questions(
+        &self,
+        _req: Request<HiiListQuestionsRequest>,
+    ) -> Result<Response<HiiListQuestionsResponse>, Status> {
+        Ok(Response::new(HiiListQuestionsResponse {
+            questions: vec![
+                QuestionSummary {
+                    question_id: 0x210,
+                    kind: "one_of".into(),
+                    prompt: "Serial Port".into(),
+                    var_store_id: 1,
+                    var_offset: 95,
+                    width: 1,
+                },
+                QuestionSummary {
+                    question_id: 0x211,
+                    kind: "numeric".into(),
+                    prompt: "Baud Rate".into(),
+                    var_store_id: 1,
+                    var_offset: 96,
+                    width: 1,
+                },
+            ],
+        }))
     }
     async fn hii_form_set_add(
         &self,
