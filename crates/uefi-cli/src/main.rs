@@ -277,7 +277,7 @@ enum HiiFormSetCmd {
 #[derive(Subcommand)]
 enum HiiQuestionCmd {
     #[command(
-        about = "list questions of a form; item_id = TARGET#FORM_ID (copy from `hii form list` form_id column)"
+        about = "list questions of a form; item_id = TARGET#FORM_ID — e.g. `hii question list 899407d7-99fe-43d8-9a21-79ec328cac21:0x10:0#10019` (copy TARGET from the form_id column of `hii form list`)"
     )]
     List { item_id: String },
     #[command(about = "list gates (suppress/grayout) guarding a question")]

@@ -69,6 +69,19 @@ pub async fn close(
     Ok(())
 }
 
+/// Относительный путь image save абсолютизируется от CWD клиента: файл
+/// пишет engine-процесс, и без этого путь резолвится от его каталога запуска.
+fn absolutize_save_path(raw: &str) -> String {
+    let p = std::path::Path::new(raw);
+    if p.is_absolute() {
+        return raw.to_string();
+    }
+    match std::env::current_dir() {
+        Ok(cwd) => cwd.join(p).display().to_string(),
+        Err(_) => raw.to_string(),
+    }
+}
+
 pub async fn save(
     output: &str,
     cli_sock: Option<&str>,
@@ -77,7 +90,8 @@ pub async fn save(
     let st = state::require_state()?;
     let mut client = Client::connect(cli_sock, st).await?;
     let image_id = client.active_image()?;
-    client.image_save(&image_id, output).await?;
+    let path = absolutize_save_path(output);
+    client.image_save(&image_id, &path).await?;
     crate::output::print_ok(format);
     Ok(())
 }
@@ -102,4 +116,17 @@ pub async fn status(cli_sock: Option<&str>, format: OutputFormat) -> Result<(), 
     let info = client.image_status(&active).await?;
     crate::output::print_image_status(&info, format);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn absolutize_save_path_relative_to_client_cwd() {
+        assert_eq!(absolutize_save_path("/tmp/x.bin"), "/tmp/x.bin");
+        let rel = absolutize_save_path("out.bin");
+        let cwd = std::env::current_dir().unwrap();
+        assert_eq!(rel, cwd.join("out.bin").display().to_string());
+    }
 }
