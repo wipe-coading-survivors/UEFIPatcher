@@ -337,8 +337,14 @@ impl App {
         }
     }
 
+    /// qid вопроса под `question_cursor` — только когда кэш вопросов
+    /// (`questions_key`) принадлежит выделенной строке-форме (гейт как в
+    /// `form_details_text`); иначе None — кросс-форменный prefill исключён.
     pub fn selected_question_id(&self) -> Option<u32> {
-        self.forms.questions_key.as_ref()?;
+        let key = self.selected_form_key()?;
+        if self.forms.questions_key.as_ref() != Some(&key) {
+            return None;
+        }
         self.forms
             .questions
             .get(self.forms.question_cursor)
@@ -811,6 +817,7 @@ mod tests {
         let mut app = App::new();
         app.forms.forms = vec![form_info("S", 1)];
         app.forms.expanded = ["S".into()].into();
+        app.forms.cursor = 1;
         app.forms.questions_key = Some(crate::forms::FormKey {
             target: "t:0x19:0".into(),
             formset_guid: "S".into(),
@@ -838,6 +845,37 @@ mod tests {
         );
         app.forms_question_cursor_up();
         assert_eq!(app.selected_question_id(), Some(0x210));
+    }
+
+    #[test]
+    fn selected_question_id_none_when_questions_from_other_form() {
+        let mut app = App::new();
+        app.forms.forms = vec![form_info("S", 1), form_info("S", 2)];
+        app.forms.expanded = ["S".into()].into();
+        app.forms.questions_key = Some(crate::forms::FormKey {
+            target: "t:0x19:0".into(),
+            formset_guid: "S".into(),
+            form_id_ifr: 1,
+            title: "f1".into(),
+        });
+        app.forms.questions = vec![uefi_proto::QuestionSummary {
+            question_id: 0x210,
+            ..Default::default()
+        }];
+        app.forms.cursor = 1;
+        assert_eq!(app.selected_question_id(), Some(0x210));
+        app.forms.cursor = 2;
+        assert_eq!(
+            app.selected_question_id(),
+            None,
+            "кэш вопросов формы 1 не отвечает за курсор на форме 2"
+        );
+        app.forms.cursor = 0;
+        assert_eq!(
+            app.selected_question_id(),
+            None,
+            "FormSet-строка не форма — вопросов нет"
+        );
     }
 
     #[test]
