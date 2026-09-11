@@ -247,7 +247,11 @@ mod tests {
 
     #[test]
     fn package_edges_skips_short_and_orphan_refs() {
-        let short = opcode(IFR_REF_OP, false, &question_header(0x10, 0x30, 0xFFFF, 0)[..10]);
+        let short = opcode(
+            IFR_REF_OP,
+            false,
+            &question_header(0x10, 0x30, 0xFFFF, 0)[..10],
+        );
         let outside = ref_op(0x33, 10040);
         let pkg = package(
             &[
