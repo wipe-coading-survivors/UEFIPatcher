@@ -90,6 +90,7 @@ message Node {
   uint64 size = 6;
   string name = 7;
   uint32 action = 8;
+  string region = 9;
 }
 message ImageNodesResponse { repeated Node nodes = 1; }
 

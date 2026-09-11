@@ -677,6 +677,7 @@ mod tests {
             subtype: 0,
             guid: None,
             name: String::new(),
+            region: String::new(),
             action: crate::theme::ACTION_NO,
             expanded: true,
             has_children: false,

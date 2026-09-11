@@ -27,15 +27,20 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
             };
             let marker = action_marker(node.action);
             let color = action_color(node.action);
+            let immutable = node.node_type == TYPE_REGION;
+            let icon_style = if immutable {
+                immutable_style()
+            } else {
+                Style::default().fg(type_color(node.node_type))
+            };
+            let name_style = if immutable {
+                immutable_style()
+            } else {
+                Style::default().fg(color)
+            };
             ListItem::new(Line::from(vec![
-                Span::styled(
-                    format!("{indent}{expand} {icon} "),
-                    Style::default().fg(type_color(node.node_type)),
-                ),
-                Span::styled(
-                    format!("{} ", app.node_label(node)),
-                    Style::default().fg(color),
-                ),
+                Span::styled(format!("{indent}{expand} {icon} "), icon_style),
+                Span::styled(format!("{} ", app.node_label(node)), name_style),
                 Span::raw(format!("{} {marker}", node.guid.as_deref().unwrap_or(""))),
             ]))
         })

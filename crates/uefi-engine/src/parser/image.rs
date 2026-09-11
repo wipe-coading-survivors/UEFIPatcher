@@ -212,6 +212,11 @@ fn list_recursive(node: &FfsNode, path: &str, items: &mut Vec<Node>, filter: Opt
             size: (node.header.len() + node.body.len() + node.tail.len()) as u64,
             name,
             action: node.action as u32,
+            region: match &node.parsing_data {
+                ParsingData::Region(rd) => rd.kind.label().to_string(),
+                ParsingData::FptPartition(_) => "ME".to_string(),
+                _ => String::new(),
+            },
         });
     }
     for (i, child) in node.children.iter().enumerate() {
@@ -265,6 +270,11 @@ fn search_recursive(
             size: (node.header.len() + node.body.len() + node.tail.len()) as u64,
             name,
             action: node.action as u32,
+            region: match &node.parsing_data {
+                ParsingData::Region(rd) => rd.kind.label().to_string(),
+                ParsingData::FptPartition(_) => "ME".to_string(),
+                _ => String::new(),
+            },
         });
         if out.len() >= limit {
             return;
@@ -826,6 +836,42 @@ mod tests {
         );
         let rebuilt = crate::builder::build_image(&img).unwrap();
         assert_eq!(rebuilt, buf, "descriptor round-trip byte-identical");
+    }
+
+    #[test]
+    fn list_items_fills_region_for_region_and_fpt_nodes() {
+        let mut buf = vec![0xFFu8; 0x10000];
+        buf[0..4].copy_from_slice(&0x0FF0_A55Au32.to_le_bytes());
+        buf[0x10..0x14].copy_from_slice(&0x0040_0000u32.to_le_bytes());
+        buf[0x400 + 1 * 4..0x400 + 1 * 4 + 2].copy_from_slice(&1u16.to_le_bytes());
+        buf[0x400 + 1 * 4 + 2..0x400 + 1 * 4 + 4].copy_from_slice(&3u16.to_le_bytes());
+        buf[0x400 + 2 * 4..0x400 + 2 * 4 + 2].copy_from_slice(&4u16.to_le_bytes());
+        buf[0x400 + 2 * 4 + 2..0x400 + 2 * 4 + 4].copy_from_slice(&15u16.to_le_bytes());
+        buf[0x1000..0x1100].copy_from_slice(&make_image_with_volume());
+        let me_body = me_body_with_fpt();
+        buf[0x4000..0x4000 + me_body.len()].copy_from_slice(&me_body);
+        let img = parse_image(&buf, ImageMode::Read, "i", "s").unwrap();
+        let items = list_items(&img.root, None);
+        let desc = items
+            .iter()
+            .find(|n| n.region == "Descriptor")
+            .expect("Descriptor region node carries region label");
+        assert_eq!(desc.r#type, FfsType::Region as u32);
+        let me = items.iter().find(|n| n.name == "ME region").unwrap();
+        assert_eq!(me.region, "ME");
+        let ftp = items.iter().find(|n| n.name == "FTPR").unwrap();
+        assert_eq!(ftp.region, "ME");
+        assert_eq!(
+            items.iter().filter(|n| n.region == "ME").count(),
+            3,
+            "ME region + FTPR + NFTP carry ME"
+        );
+        assert!(
+            items
+                .iter()
+                .filter(|n| n.r#type != FfsType::Region as u32)
+                .all(|n| n.region.is_empty())
+        );
     }
 
     #[test]

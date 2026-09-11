@@ -1,6 +1,7 @@
 use ratatui::style::Color;
 
 pub const TYPE_IMAGE: u8 = 62;
+pub const TYPE_REGION: u8 = 63;
 pub const TYPE_VOLUME: u8 = 65;
 pub const TYPE_FILE: u8 = 66;
 pub const TYPE_SECTION: u8 = 67;
@@ -34,6 +35,7 @@ pub fn type_icon(node_type: u8, subtype: u8) -> &'static str {
         },
         TYPE_PADDING => "\u{EB7D}",
         TYPE_FREESPACE => "\u{F10C}",
+        TYPE_REGION => "\u{F492}",
         _ => "?",
     }
 }
@@ -45,8 +47,13 @@ pub fn type_color(node_type: u8) -> Color {
         TYPE_FILE => Color::Green,
         TYPE_SECTION => Color::Yellow,
         TYPE_PADDING | TYPE_FREESPACE => Color::DarkGray,
+        TYPE_REGION => Color::DarkGray,
         _ => Color::Gray,
     }
+}
+
+pub fn immutable_style() -> ratatui::style::Style {
+    ratatui::style::Style::default().fg(ratatui::style::Color::DarkGray)
 }
 
 pub fn action_marker(action: u8) -> &'static str {
@@ -111,5 +118,25 @@ mod tests {
     #[test]
     fn color_for_remove() {
         assert_eq!(action_color(ACTION_REMOVE), Color::Red);
+    }
+
+    #[test]
+    fn immutable_style_is_dark_gray() {
+        assert_eq!(immutable_style().fg, Some(Color::DarkGray));
+    }
+
+    #[test]
+    fn region_icon_distinct_from_other_types() {
+        let region = type_icon(TYPE_REGION, 0);
+        for other in [
+            TYPE_IMAGE,
+            TYPE_VOLUME,
+            TYPE_FILE,
+            TYPE_SECTION,
+            TYPE_PADDING,
+            TYPE_FREESPACE,
+        ] {
+            assert_ne!(region, type_icon(other, 0));
+        }
     }
 }

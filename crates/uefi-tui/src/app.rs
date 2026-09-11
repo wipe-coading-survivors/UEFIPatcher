@@ -42,6 +42,7 @@ pub struct TreeNode {
     pub subtype: u8,
     pub guid: Option<String>,
     pub name: String,
+    pub region: String,
     pub action: u8,
     pub expanded: bool,
     pub has_children: bool,
@@ -299,8 +300,13 @@ pub fn details_text(node: &TreeNode) -> String {
     } else {
         format!("{} (0x{:02X})", sub_name, node.subtype)
     };
+    let region_part = if node.region.is_empty() {
+        String::new()
+    } else {
+        format!("\nRegion:   {} (read-only)", node.region)
+    };
     format!(
-        "Path:     {}\nType:     {} ({} / 0x{:02X})\nSubtype:  {}\nGUID:     {}\nName:     {}\nAction:   {}\nChildren: {}",
+        "Path:     {}\nType:     {} ({} / 0x{:02X})\nSubtype:  {}\nGUID:     {}\nName:     {}\nAction:   {}\nChildren: {}{}",
         node.path,
         type_name,
         node.node_type,
@@ -310,6 +316,7 @@ pub fn details_text(node: &TreeNode) -> String {
         node.name,
         node.action,
         node.has_children,
+        region_part,
     )
 }
 
@@ -326,6 +333,7 @@ mod tests {
             subtype: 0,
             guid: None,
             name: String::new(),
+            region: String::new(),
             action: ACTION_NO,
             expanded: true,
             has_children: depth == 0,
@@ -443,6 +451,7 @@ mod tests {
             subtype: 0x07,
             guid: Some("ABC".into()),
             name: "Setup".into(),
+            region: String::new(),
             action: ACTION_NO,
             expanded: false,
             has_children: true,
@@ -466,11 +475,30 @@ mod tests {
             action: ACTION_NO,
             expanded: true,
             has_children: true,
+            region: String::new(),
         };
         let t = details_text(&v);
         assert!(t.contains("Type:     Volume (65 / 0x41)"));
         assert!(t.contains("Subtype:  0x00"));
         assert!(t.contains("GUID:     (none)"));
+    }
+
+    #[test]
+    fn details_text_region_read_only_line() {
+        let r = TreeNode {
+            path: "0".into(),
+            depth: 1,
+            node_type: crate::theme::TYPE_REGION,
+            subtype: 0,
+            guid: None,
+            name: "ME region".into(),
+            action: ACTION_NO,
+            expanded: false,
+            has_children: true,
+            region: "ME".into(),
+        };
+        let t = details_text(&r);
+        assert!(t.contains("Region:   ME (read-only)"));
     }
 
     #[test]

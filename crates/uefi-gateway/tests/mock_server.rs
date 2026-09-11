@@ -104,6 +104,7 @@ impl EngineService for MockEngine {
                 size: 256,
                 name: String::new(),
                 action: 0,
+                region: String::new(),
             }],
         }))
     }
