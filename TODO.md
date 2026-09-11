@@ -2679,3 +2679,33 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   get-value нет; кандидат в V3 — `HiiGetValue` или поле `current` в
   QuestionInfo + рендер `current: 0x5 "Auto"` в TUI.
   Контекст: `uefi-engine/src/hii/mod.rs` set_value (plans.from), спека §3.2.
+
+## Находки финального ревью ветки tui-forms-v3 (2026-09-11)
+
+> Финальное ревью V3 (schema-операции: `:hii` add/hijack-команды,
+> completion, prefill, help/hint). Must-fix — нет; тест-хардинг
+> (recorder-lock в hijack-интеграционном тесте) закрыт fix-коммитом
+> ветки; ниже — отложенные миноры.
+
+* [ ] **uefi-tui: `--ffs` без значения молча шлёт пустой target_ffs_guid**
+  — парсинг через `position(--ffs).and_then(get(i+1)).unwrap_or_default()`:
+  флаг последним токеном → "" уходит в RPC без usage-ошибки; clap в CLI
+  такой случай отклоняет. Вернуть ошибку usage при отсутствующем значении.
+  Контекст: `crates/uefi-tui/src/commands.rs` (`:hii` ветка `"formset"`).
+* [ ] **CLI↔TUI: грамматика hijack расходится** — CLI:
+  `hii form hijack --target X --file Y --setupdata-guid Z` (long-flags),
+  TUI: `:hii hijack TARGET FILE [GUID]` (позиционные). Не баг, но сюрприз
+  для пользователя, переходящего между клиентами; заметка в spec §9
+  (`2026-09-11-tui-forms-view-design.md`) или help. Контекст:
+  `crates/uefi-cli/src/main.rs` (HiiFormCmd::Hijack) vs
+  `crates/uefi-tui/src/commands.rs` (`"hijack"`).
+* [ ] **uefi-tui V3, мелочи** — (1) join-дедуп formset_add_status/
+  form_add_status: блок `map(to_string).join(",")` у u32-списков
+  одинаков — хелпер `fmt_u32_ids`; (2) item-format `format!("{}#{}")`
+  дублируется в completion (form/question-кандидаты) и add_prefill —
+  свернуть в один хелпер; (3) пустой forms-список → `add_prefill` None
+  не покрыт ассертом теста; (4) `--ffs` флаг-guard в completion — по
+  вхождению токенов (`contains("formset") && contains("add")`), не по
+  позиции; (5) `complete_path` не спускается по симлинкам. Контекст:
+  `crates/uefi-tui/src/commands.rs` (formset/form_add_status;
+  complete-ветки form/question; add_prefill + тест; complete_head).
