@@ -16,7 +16,9 @@ use crate::parser::image::{list_items, parse_image};
 use crate::parser::target::{find_item, parse_target};
 use crate::session::SessionManager;
 use crate::storage::Db;
-use crate::storage::image::{atomic_write, read_image_file, remove_image_file, store_image_file};
+use crate::storage::image::{
+    atomic_write, read_image_file, remove_image_file, store_image_file, store_snapshot_file,
+};
 use crate::types::{Guid, Image, ImageMode};
 
 pub struct EngineServer {
@@ -1073,6 +1075,84 @@ impl EngineService for EngineServer {
             slot: result.slot as u32,
             page_offset: result.page_offset as u32,
             title_string_id: u32::from(result.title_string_id),
+        }))
+    }
+
+    #[tracing::instrument(skip(self, req), err)]
+    async fn image_snapshot_create(
+        &self,
+        req: Request<ImageSnapshotCreateRequest>,
+    ) -> RpcResult<ImageSnapshotCreateResponse> {
+        let r = req.into_inner();
+        let row = self
+            .sm
+            .db
+            .lock()
+            .unwrap()
+            .get_image(&r.image_id)
+            .map_err(|e| Status::internal(e.to_string()))?
+            .ok_or_else(|| Status::not_found("image not found"))?;
+        let bytes = read_image_file(&self.data_dir, &row.session_id, &r.image_id)
+            .map_err(|e| Status::internal(e.to_string()))?;
+        let snapshot_id = Uuid::new_v4().to_string();
+        let name = if r.name.is_empty() {
+            format!(
+                "snap-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs()
+            )
+        } else {
+            r.name
+        };
+        store_snapshot_file(
+            &self.data_dir,
+            &row.session_id,
+            &r.image_id,
+            &snapshot_id,
+            &bytes,
+        )
+        .map_err(|e| Status::internal(e.to_string()))?;
+        let created_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        self.sm
+            .db
+            .lock()
+            .unwrap()
+            .insert_image_snapshot(&snapshot_id, &r.image_id, &name, bytes.len() as i64)
+            .map_err(|e| Status::internal(e.to_string()))?;
+        Ok(Response::new(ImageSnapshotCreateResponse {
+            snapshot_id,
+            created_at,
+        }))
+    }
+
+    #[tracing::instrument(skip(self, req), err)]
+    async fn image_snapshots_list(
+        &self,
+        req: Request<ImageSnapshotsListRequest>,
+    ) -> RpcResult<ImageSnapshotsListResponse> {
+        let r = req.into_inner();
+        let rows = self
+            .sm
+            .db
+            .lock()
+            .unwrap()
+            .list_image_snapshots(&r.image_id)
+            .map_err(|e| Status::internal(e.to_string()))?;
+        Ok(Response::new(ImageSnapshotsListResponse {
+            snapshots: rows
+                .into_iter()
+                .map(|s| ImageSnapshotInfo {
+                    snapshot_id: s.id,
+                    name: s.name,
+                    created_at: s.created_at,
+                    size: s.size as u64,
+                })
+                .collect(),
         }))
     }
 }
@@ -2347,6 +2427,57 @@ mod tests {
             "removed FV1 file marker must be gone"
         );
         assert!(stored.contains(&0xDD), "FV1 survivor marker must remain");
+    }
+
+    #[tokio::test]
+    async fn image_snapshot_create_and_list_roundtrip() {
+        let (td, mut client) = setup().await;
+        let sid = create_session(&mut client).await;
+        let src = td.path().join("snap.bin");
+        std::fs::write(&src, fv_image_with_two_files()).unwrap();
+        let open = client
+            .image_open(tonic::Request::new(ImageOpenRequest {
+                session_id: sid,
+                path: src.display().to_string(),
+                mode: 1,
+                name: "t".into(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        let created = client
+            .image_snapshot_create(tonic::Request::new(ImageSnapshotCreateRequest {
+                image_id: open.image_id.clone(),
+                name: "before-patch".into(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(!created.snapshot_id.is_empty());
+        let list = client
+            .image_snapshots_list(tonic::Request::new(ImageSnapshotsListRequest {
+                image_id: open.image_id.clone(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(list.snapshots.len(), 1);
+        assert_eq!(list.snapshots[0].name, "before-patch");
+        assert_eq!(list.snapshots[0].snapshot_id, created.snapshot_id);
+        assert_eq!(list.snapshots[0].size, 256);
+    }
+
+    #[tokio::test]
+    async fn image_snapshot_create_on_missing_image_is_not_found() {
+        let (_td, mut client) = setup().await;
+        let st = client
+            .image_snapshot_create(tonic::Request::new(ImageSnapshotCreateRequest {
+                image_id: "nope".into(),
+                name: String::new(),
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(st.code(), tonic::Code::NotFound);
     }
 
     #[tokio::test]

@@ -344,6 +344,23 @@ impl EngineService for MockEngine {
             title_string_id: 0x1A7,
         }))
     }
+    async fn image_snapshot_create(
+        &self,
+        _req: Request<ImageSnapshotCreateRequest>,
+    ) -> Result<Response<ImageSnapshotCreateResponse>, Status> {
+        Ok(Response::new(ImageSnapshotCreateResponse {
+            snapshot_id: "mock-snap".into(),
+            created_at: 0,
+        }))
+    }
+    async fn image_snapshots_list(
+        &self,
+        _req: Request<ImageSnapshotsListRequest>,
+    ) -> Result<Response<ImageSnapshotsListResponse>, Status> {
+        Ok(Response::new(ImageSnapshotsListResponse {
+            snapshots: vec![],
+        }))
+    }
 }
 
 fn mock_question() -> QuestionInfo {

@@ -28,4 +28,12 @@ CREATE TABLE IF NOT EXISTS images (
     last_activity INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_images_session ON images(session_id);
+CREATE TABLE IF NOT EXISTS image_snapshots (
+    id         TEXT PRIMARY KEY,
+    image_id   TEXT NOT NULL REFERENCES images(id) ON DELETE CASCADE,
+    name       TEXT NOT NULL,
+    size       INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_image_snapshots_image ON image_snapshots(image_id);
 "#;

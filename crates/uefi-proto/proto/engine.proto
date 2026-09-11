@@ -37,6 +37,9 @@ service EngineService {
   rpc HiiSetValue(HiiSetValueRequest)                   returns (HiiSetValueResponse);
   rpc HiiQuestionAdd(HiiQuestionAddRequest)             returns (HiiQuestionAddResponse);
   rpc HiiPageAdd(HiiPageAddRequest)                     returns (HiiPageAddResponse);
+
+  rpc ImageSnapshotCreate(ImageSnapshotCreateRequest)   returns (ImageSnapshotCreateResponse);
+  rpc ImageSnapshotsList(ImageSnapshotsListRequest)     returns (ImageSnapshotsListResponse);
 }
 
 enum ImageMode { READ = 0; WRITE = 1; }
@@ -298,5 +301,16 @@ message HiiPageAddResponse {
   uint32 page_offset = 3;
   uint32 title_string_id = 4;
 }
+
+message ImageSnapshotCreateRequest  { string image_id = 1; string name = 2; }
+message ImageSnapshotCreateResponse { string snapshot_id = 1; int64 created_at = 2; }
+message ImageSnapshotInfo {
+  string snapshot_id = 1;
+  string name = 2;
+  int64 created_at = 3;
+  uint64 size = 4;
+}
+message ImageSnapshotsListRequest  { string image_id = 1; }
+message ImageSnapshotsListResponse { repeated ImageSnapshotInfo snapshots = 1; }
 
 message Empty {}
