@@ -1,8 +1,19 @@
-use r_efi::hii::{IFR_CHECKBOX_OP, IFR_NUMERIC_OP, IFR_NUMERIC_SIZE, IFR_ONE_OF_OP};
+use std::collections::HashMap;
 
+use r_efi::hii::{
+    IFR_CHECKBOX_OP, IFR_NUMERIC_OP, IFR_NUMERIC_SIZE, IFR_ONE_OF_OP, PACKAGE_STRINGS,
+};
+
+use crate::ffs::{
+    EFI_SECTION_COMPRESSION, EFI_SECTION_GUID_DEFINED, EFI_SECTION_PE32, EFI_SECTION_RAW,
+};
+use crate::hii::package_list::parse_package_list;
+use crate::hii::pe_resource::hii_resource_blobs;
+use crate::hii::strings::{declared_len_sane, parse_string_package};
 use crate::hii::values::{
     QuestionKind, is_question_op, one_of_width, scan_options, walk_statements,
 };
+use crate::types::{FfsNode, FfsType};
 
 pub struct RawQuestion {
     pub question_id: u16,
@@ -49,6 +60,54 @@ pub fn questions(pkg: &[u8], form_id: u16) -> Vec<RawQuestion> {
         });
     });
     out
+}
+
+/// string_id → text для файла formset'а: string-пакеты обоих каналов
+/// (RAW-секция + PE-resource), рекурсивно через compression/GUIDED.
+/// Та же схема, что у титулов форм (forms.rs). Спека tui-forms-view §3.4.
+pub fn prompt_texts(file: &FfsNode) -> HashMap<u16, String> {
+    let mut titles = HashMap::new();
+    collect_string_sections(file, &mut titles);
+    titles
+}
+
+fn collect_string_sections(node: &FfsNode, titles: &mut HashMap<u16, String>) {
+    for child in &node.children {
+        if child.node_type != FfsType::Section {
+            continue;
+        }
+        match child.subtype {
+            EFI_SECTION_RAW => {
+                if declared_len_sane(&child.body)
+                    && let Some(pkg) = parse_string_package(&child.body)
+                {
+                    for (sid, text) in pkg.strings {
+                        titles.entry(sid).or_insert(text);
+                    }
+                }
+            }
+            EFI_SECTION_PE32 => {
+                for blob in hii_resource_blobs(&child.body) {
+                    let Some(list) = parse_package_list(blob) else {
+                        continue;
+                    };
+                    for pkg in &list.packages {
+                        if pkg.kind == PACKAGE_STRINGS
+                            && let Some(sp) = parse_string_package(pkg.bytes)
+                        {
+                            for (sid, text) in sp.strings {
+                                titles.entry(sid).or_insert(text);
+                            }
+                        }
+                    }
+                }
+            }
+            EFI_SECTION_COMPRESSION | EFI_SECTION_GUID_DEFINED => {
+                collect_string_sections(child, titles);
+            }
+            _ => {}
+        }
+    }
 }
 
 #[cfg(test)]

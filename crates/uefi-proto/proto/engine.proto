@@ -34,6 +34,7 @@ service EngineService {
   rpc HiiGatesList(HiiGatesListRequest)                 returns (HiiGatesListResponse);
   rpc HiiUnlock(HiiUnlockRequest)                       returns (HiiUnlockResponse);
   rpc HiiQuestionInfo(HiiQuestionInfoRequest)           returns (HiiQuestionInfoResponse);
+  rpc HiiListQuestions(HiiListQuestionsRequest)         returns (HiiListQuestionsResponse);
   rpc HiiSetValue(HiiSetValueRequest)                   returns (HiiSetValueResponse);
   rpc HiiQuestionAdd(HiiQuestionAddRequest)             returns (HiiQuestionAddResponse);
   rpc HiiPageAdd(HiiPageAddRequest)                     returns (HiiPageAddResponse);
@@ -275,6 +276,17 @@ message HiiQuestionInfoRequest  { string image_id = 1; string item_id = 2; }
 message HiiQuestionInfoResponse { QuestionInfo question = 1; }
 message HiiSetValueRequest      { string image_id = 1; string item_id = 2; uint64 value = 3; }
 message HiiSetValueResponse     { QuestionInfo question = 1; repeated string applied_flips = 2; repeated string stores = 3; }
+
+message QuestionSummary {
+  uint32 question_id = 1;
+  string kind = 2;
+  string prompt = 3;
+  uint32 var_store_id = 4;
+  uint32 var_offset = 5;
+  uint32 width = 6;
+}
+message HiiListQuestionsRequest  { string image_id = 1; string target = 2; uint32 form_id = 3; }
+message HiiListQuestionsResponse { repeated QuestionSummary questions = 1; }
 
 message HiiQuestionAddRequest {
   string image_id = 1;

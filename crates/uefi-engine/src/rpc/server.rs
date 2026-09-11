@@ -973,6 +973,19 @@ impl EngineService for EngineServer {
     }
 
     #[tracing::instrument(skip(self, req), err)]
+    async fn hii_list_questions(
+        &self,
+        req: Request<HiiListQuestionsRequest>,
+    ) -> RpcResult<HiiListQuestionsResponse> {
+        let r = req.into_inner();
+        let img = self.get_or_load_image(&r.image_id).await?;
+        let questions = crate::hii::list_questions(&img, &r.target, r.form_id as u16)
+            .map_err(|e| hii_error_status_ctx(e, &r.target))?;
+        let _ = self.sm.touch(&img.session_id);
+        Ok(Response::new(HiiListQuestionsResponse { questions }))
+    }
+
+    #[tracing::instrument(skip(self, req), err)]
     async fn hii_set_value(
         &self,
         req: Request<HiiSetValueRequest>,

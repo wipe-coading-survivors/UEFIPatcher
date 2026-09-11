@@ -477,6 +477,46 @@ pub fn question_info(image: &Image, item_id: &str) -> Result<uefi_proto::Questio
     Ok(question_info_proto(form_id, &map))
 }
 
+/// Вопросы формы по target-строке (например "GUID:0x19:0") + числовой
+/// form_id. Read-only: работает в любом ImageMode. НЕ проверяет
+/// writability-барьеры — это просмотр (мутации — set_value/unlock).
+/// Спека tui-forms-view §3.4.
+pub fn list_questions(
+    image: &Image,
+    target_str: &str,
+    form_id: u16,
+) -> Result<Vec<uefi_proto::QuestionSummary>, HiiError> {
+    let target = crate::parser::target::parse_target(target_str).map_err(|_| HiiError::NotFound)?;
+    let path =
+        crate::parser::target::find_item_path(&image.root, &target).ok_or(HiiError::NotFound)?;
+    let mut node = &image.root;
+    for &i in &path {
+        node = &node.children[i];
+    }
+    if node.node_type != FfsType::Section {
+        return Err(HiiError::NotASetupItem);
+    }
+    let mut file = &image.root;
+    for &i in &path[..path.len() - 1] {
+        file = &file.children[i];
+    }
+    let titles = questions::prompt_texts(file);
+    let mut out = Vec::new();
+    for (start, len) in form_package_ranges(node) {
+        for q in questions::questions(&node.body[start..start + len], form_id) {
+            out.push(uefi_proto::QuestionSummary {
+                question_id: q.question_id as u32,
+                kind: question_kind_str(q.kind).to_string(),
+                prompt: titles.get(&q.prompt_sid).cloned().unwrap_or_default(),
+                var_store_id: q.var_store_id as u32,
+                var_offset: q.var_offset as u32,
+                width: q.width as u32,
+            });
+        }
+    }
+    Ok(out)
+}
+
 fn validate_set_value(map: &values::QuestionMap, value: u64) -> Result<u8, HiiError> {
     if matches!(map.kind, values::QuestionKind::Other) {
         return Err(HiiError::ValueOpUnsupported(
@@ -2942,6 +2982,34 @@ mod tests {
             vec![0x30, 0x00]
         );
         assert!(q.defaults.is_empty());
+    }
+
+    #[test]
+    fn list_questions_reports_vendor_form() {
+        let mut image = image_with_nvar_stores();
+        image.mode = ImageMode::Read;
+        let target = format!("{}:0x19:0", VENDOR_FORMSET_GUID_STR.to_lowercase());
+        let qs = list_questions(&image, &target, 10029).unwrap();
+        assert_eq!(qs.len(), 1);
+        let q = &qs[0];
+        assert_eq!(q.question_id, 0x3B);
+        assert_eq!(q.kind, "one_of");
+        assert_eq!(q.var_store_id, 1);
+        assert_eq!(q.var_offset, 0x3A);
+        assert_eq!(q.width, 1);
+        assert!(q.prompt.is_empty(), "fixture has no string package");
+    }
+
+    #[test]
+    fn list_questions_bad_target_and_unknown_form() {
+        let mut image = image_with_nvar_stores();
+        image.mode = ImageMode::Read;
+        assert!(matches!(
+            list_questions(&image, "not-a-target", 10029),
+            Err(HiiError::NotFound)
+        ));
+        let target = format!("{}:0x19:0", VENDOR_FORMSET_GUID_STR.to_lowercase());
+        assert!(list_questions(&image, &target, 65535).unwrap().is_empty());
     }
 
     #[test]
