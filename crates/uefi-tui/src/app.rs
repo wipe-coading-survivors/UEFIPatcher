@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use ratatui::widgets::ListState;
-use uefi_proto::{ArtifactInfo, FormInfo, ImageInfo, QuestionSummary, StringInfo};
+use uefi_proto::{ArtifactInfo, FormEdge, FormInfo, ImageInfo, QuestionSummary, StringInfo};
 
 use crate::tree::visible_rows;
 
@@ -64,6 +64,7 @@ impl FormsFocus {
 #[derive(Debug, Clone, Default)]
 pub struct FormsData {
     pub forms: Vec<FormInfo>,
+    pub edges: Vec<FormEdge>,
     pub expanded: HashSet<String>,
     pub cursor: usize,
     pub focus: FormsFocus,

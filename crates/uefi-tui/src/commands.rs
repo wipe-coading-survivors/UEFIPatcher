@@ -768,11 +768,24 @@ pub async fn refresh_forms(app: &mut App, client: &mut Client) -> Result<(), Str
         .ok_or("no active image")?;
     let resp = client
         .inner
-        .hii_list_forms(auth_req(&client.state, HiiListFormsRequest { image_id }))
+        .hii_list_forms(auth_req(
+            &client.state,
+            HiiListFormsRequest {
+                image_id: image_id.clone(),
+            },
+        ))
         .await
         .map_err(|e| e.message().to_string())?
         .into_inner();
+    let edges = client
+        .inner
+        .hii_form_tree(auth_req(&client.state, HiiFormTreeRequest { image_id }))
+        .await
+        .map_err(|e| e.message().to_string())?
+        .into_inner()
+        .edges;
     app.forms.forms = resp.forms;
+    app.forms.edges = edges;
     app.forms.expanded = crate::forms::all_formset_guids(&app.forms.forms);
     app.forms.cursor = 0;
     app.forms.questions.clear();
@@ -781,6 +794,62 @@ pub async fn refresh_forms(app: &mut App, client: &mut Client) -> Result<(), Str
     app.forms.strings_filter.clear();
     app.forms.strings_cursor = 0;
     app.forms.show_strings = false;
+    Ok(())
+}
+
+/// Re-fetch форм И рёбер после мутации: сохраняет flat_mode,
+/// развёрнутость, выделение (по formset+form_id), strings-браузер;
+/// сбрасывает per-form кэши (questions). Вход во view —
+/// refresh_forms (сброс), не эта функция. Спека tui-forms-view §3.3.
+pub async fn reload_forms(app: &mut App, client: &mut Client) -> Result<(), String> {
+    let image_id = app
+        .active_image_id
+        .clone()
+        .or_else(|| client.state.active_image_id.clone())
+        .ok_or("no active image")?;
+    let sel = app
+        .selected_form_key()
+        .map(|k| (k.formset_guid, k.form_id_ifr));
+    let forms = client
+        .inner
+        .hii_list_forms(auth_req(
+            &client.state,
+            HiiListFormsRequest {
+                image_id: image_id.clone(),
+            },
+        ))
+        .await
+        .map_err(|e| e.message().to_string())?
+        .into_inner()
+        .forms;
+    let edges = client
+        .inner
+        .hii_form_tree(auth_req(&client.state, HiiFormTreeRequest { image_id }))
+        .await
+        .map_err(|e| e.message().to_string())?
+        .into_inner()
+        .edges;
+    app.forms.forms = forms;
+    app.forms.edges = edges;
+    app.forms.questions.clear();
+    app.forms.questions_key = None;
+    match sel {
+        Some((guid, fid)) => {
+            let rows = app.forms_rows();
+            let idx = rows.iter().position(|r| {
+                matches!(
+                    r,
+                    crate::forms::FormsRow::Form { key, .. }
+                        if key.formset_guid == guid && key.form_id_ifr == fid
+                )
+            });
+            match idx {
+                Some(i) => app.forms.cursor = i,
+                None => app.forms_sanitize_cursor(),
+            }
+        }
+        None => app.forms_sanitize_cursor(),
+    }
     Ok(())
 }
 
