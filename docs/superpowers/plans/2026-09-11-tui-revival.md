@@ -1132,8 +1132,9 @@ fn region_outside_image_skipped() {
 ```rust
 pub fn parse_image(...) -> Result<Image, ParserError> {
     let mut children = vec![];
-    if let Some(regions) = super::region::parse_flash_regions(buf) {
-        let mut last_end = 0usize;
+    let mut last_end = 0usize;
+    if let Some(mut regions) = super::region::parse_flash_regions(buf) {
+        regions.sort_by_key(|r| r.offset);
         for r in &regions {
             if r.offset > last_end {
                 children.push(make_padding_node(buf, last_end, r.offset));
@@ -1148,16 +1149,17 @@ pub fn parse_image(...) -> Result<Image, ParserError> {
                 }
             }
         }
-        if buf.len() > last_end {
-            children.push(make_padding_node(buf, last_end, buf.len()));
-        }
     } else {
-        let mut last_end = 0usize;
         scan_volumes(buf, 0..buf.len(), &mut children, &mut last_end);
+    }
+    if buf.len() > last_end {
+        children.push(make_padding_node(buf, last_end, buf.len()));
     }
     ...
 }
 ```
+
+(регионы сортируются по offset: FLREG-таблица индексно-упорядочена, а не по смещению — без сортировки walk в порядке индекса дублирует байты межрегионных гэпов и ломает round-trip; `last_end` и хвостовой паддинг общие для обеих веток, иначе не-дескрипторный путь теряет trailing-паддинг.)
 
 `scan_volumes` — тело сегодняшнего while-цикла, но границы `off + 44 <= window.end`, старт `off = window.start`, паддинги только внутри окна. `use crate::types::FlashRegionKind;` в `image.rs`. `node_name` — добавить ветку:
 
@@ -1173,8 +1175,6 @@ FfsType::Region => match &node.parsing_data {
 ```rust
 #[test]
 fn parse_image_descriptor_path_regions_and_padding() {
-    use crate::parser::region::FlashRegion;
-    use crate::types::FlashRegionKind;
     let mut buf = vec![0xFFu8; 0x10000];
     buf[0..4].copy_from_slice(&0x0FF0_A55Au32.to_le_bytes());
     buf[0x10..0x14].copy_from_slice(&0x0040_0000u32.to_le_bytes());
@@ -1182,6 +1182,7 @@ fn parse_image_descriptor_path_regions_and_padding() {
     buf[0x400 + 1 * 4 + 2..0x400 + 1 * 4 + 4].copy_from_slice(&3u16.to_le_bytes());
     buf[0x400 + 2 * 4..0x400 + 2 * 4 + 2].copy_from_slice(&4u16.to_le_bytes());
     buf[0x400 + 2 * 4 + 2..0x400 + 2 * 4 + 4].copy_from_slice(&15u16.to_le_bytes());
+    buf[0x1000..0x1100].copy_from_slice(&make_image_with_volume());
     let img = parse_image(&buf, ImageMode::Read, "i", "s").unwrap();
     let kinds: Vec<&str> = img
         .root
