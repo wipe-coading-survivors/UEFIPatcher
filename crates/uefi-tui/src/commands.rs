@@ -138,6 +138,19 @@ fn parse_u64_loose(s: &str) -> Result<u64, String> {
     .map_err(|e| format!("invalid value '{s}': {e}"))
 }
 
+/// Относительный путь :save абсолютизируется от CWD клиента: файл пишет
+/// engine-процесс, и без этого путь резолвится от его каталога запуска.
+fn absolutize_path(raw: &str) -> String {
+    let p = std::path::Path::new(raw);
+    if p.is_absolute() {
+        return raw.to_string();
+    }
+    match std::env::current_dir() {
+        Ok(cwd) => cwd.join(p).display().to_string(),
+        Err(_) => raw.to_string(),
+    }
+}
+
 pub async fn execute_command(
     app: &mut App,
     cmdline: &str,
@@ -258,7 +271,8 @@ pub async fn execute_command(
             Ok(snap_id.to_string())
         }
         "save" | "s" => {
-            let path = parts.get(1).ok_or("usage: :save OUTPUT")?;
+            let raw = parts.get(1).ok_or("usage: :save OUTPUT")?;
+            let path = absolutize_path(raw);
             let iid = client
                 .state
                 .active_image_id
@@ -1227,6 +1241,15 @@ mod tests {
         assert_eq!(parse_u64_loose("42").unwrap(), 42);
         assert!(parse_u64_loose("0xG").is_err());
         assert!(parse_u64_loose("").is_err());
+    }
+
+    #[test]
+    fn absolutize_path_relative_to_client_cwd() {
+        let abs = absolutize_path("/tmp/x.bin");
+        assert_eq!(abs, "/tmp/x.bin");
+        let rel = absolutize_path("out.bin");
+        let cwd = std::env::current_dir().unwrap();
+        assert_eq!(rel, cwd.join("out.bin").display().to_string());
     }
 
     #[test]

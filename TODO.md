@@ -2667,3 +2667,15 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   flippable:true; расширить при следующем касании unlock/V3.
   Контекст: `crates/uefi-tui/tests/mock_server.rs:374`.
 
+
+### Находки гейта V2 tui-forms-v2, раунды 2–4 (2026-09-11)
+
+> Живой прогон владельца на HNX99TF. Часть закрыта в ветке `feat/tui-forms-v2`
+> (раунды 2–3 — см. аддендум плана); здесь — оставшееся.
+
+* [ ] **Текущее значение вопроса не отображается** — в Details видны
+  диапазон/опции, но не текущие байты (ни до, ни после set-value). Нужен
+  read-back: движок умеет читать (set_value смотрит `from`-байты), но RPC
+  get-value нет; кандидат в V3 — `HiiGetValue` или поле `current` в
+  QuestionInfo + рендер `current: 0x5 "Auto"` в TUI.
+  Контекст: `uefi-engine/src/hii/mod.rs` set_value (plans.from), спека §3.2.
