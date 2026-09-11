@@ -292,6 +292,36 @@ hii_list_questions_real_image_consistent_with_question_info`, #[ignore]).
 V1 засчитана; переход к плану V2 (правки: visibility/unlock/set-value; REF-дерево форм
 включено в V2-состав — дизайн §3.5, решение владельца 2026-09-11).
 
+## 8. Гейт V2 — сценарий для владельца (аддендум, 2026-09-11)
+
+Engine-часть автоматизирована (`real_image.rs::form_tree_real_image_edges_consistent`,
+#[ignore]). Ручная TUI-часть (на живом движке и HNX99TF; байт-в-байт сравнения —
+sha256sum):
+
+1. `cargo run -p uefi-engine`, в другом терминале `cargo run -p uefi-tui`;
+   `:open <HNX99TF> --mode write`; `Tab` → Forms-view.
+2. REF-дерево: «Serial Port 1 Configuration» вложена в «Advanced» (отступ), в
+   details — путь «… → Advanced → Serial Port 1 Configuration»; сверка parent
+   с `uefi-cli hii form list`.
+3. Две «Boot» в формсете 7B59104A-C00D различимы путём в details.
+4. `T` — плоский режим (V1-вид) и обратно; сумма Form-строк дерева ≥
+   `hii form list` по формсету (кратные родители учитываются дважды).
+5. Висячие REF-цели помечены «! … (dangling REF target)»; навигация не
+   зацикливается на циклических рёбрах.
+6. `v` на видимой форме → маркер `[H]`, статус «visibility …: off»; сверка с
+   `uefi-cli hii form list` после правки.
+7. Unlock-паритет: `:snapshot`, `u` на форме, `:save /tmp/tui-unlock.bin`;
+   `:restore`, из CLI `uefi-cli hii form unlock <item>` + сохранение образа;
+   `sha256sum` обоих файлов совпадает.
+8. Set-value-паритет: `:snapshot`, Details-focus → `j` до вопроса → `Enter`
+   (prefill `hii set-value …`), ввести значение, `:save /tmp/tui-setval.bin`;
+   `:restore`, CLI `uefi-cli hii question set-value <item> <value>` +
+   сохранение; sha256 совпадает. Перед вводом details показывает диапазон/
+   options (подсказка).
+
+Вердикт (все пункты да/нет + скриншоты) — аддендумом сюда; при негативе —
+бисект по задаче плана. Успех = переход к плану V3 (операции добавления).
+
 ## Решения (decisions log)
 
 - **D1:** Полноэкранные вкладки `Tab`/`Shift-Tab` (Image ↔ Forms), не панель и не оверлей —
