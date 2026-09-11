@@ -331,7 +331,7 @@ impl EngineService for MockEngine {
         _req: Request<ImageSnapshotCreateRequest>,
     ) -> Result<Response<ImageSnapshotCreateResponse>, Status> {
         Ok(Response::new(ImageSnapshotCreateResponse {
-            snapshot_id: "mock-snap".into(),
+            snapshot_id: "snap-1".into(),
             created_at: 0,
         }))
     }
@@ -340,7 +340,12 @@ impl EngineService for MockEngine {
         _req: Request<ImageSnapshotsListRequest>,
     ) -> Result<Response<ImageSnapshotsListResponse>, Status> {
         Ok(Response::new(ImageSnapshotsListResponse {
-            snapshots: vec![],
+            snapshots: vec![ImageSnapshotInfo {
+                snapshot_id: "snap-1".into(),
+                name: "before".into(),
+                created_at: 1,
+                size: 16,
+            }],
         }))
     }
     async fn image_snapshot_restore(
@@ -455,6 +460,86 @@ mod tests {
         assert!(app.image_loaded);
         assert!(!app.tree.is_empty());
         let _ = std::fs::remove_file(&out);
+    }
+
+    #[tokio::test]
+    async fn snapshot_returns_id() {
+        let td = TempDir::new().unwrap();
+        let sock = td.path().join("mock.sock");
+        let _handle = start_mock(&sock).await;
+        let state = uefi_common::state::State {
+            session_id: Some("s1".into()),
+            token: Some("t1".into()),
+            ..Default::default()
+        };
+        let mut client = commands::connect(Some(sock.to_str().unwrap()), state)
+            .await
+            .unwrap();
+        let mut app = App::new();
+        commands::execute_command(&mut app, "open /tmp/mock.bin", &mut client)
+            .await
+            .unwrap();
+        let r = commands::execute_command(&mut app, "snapshot before", &mut client)
+            .await
+            .unwrap();
+        assert_eq!(r, "snap-1");
+        assert_eq!(app.status_msg, "snapshot snap-1 (before)");
+    }
+
+    #[tokio::test]
+    async fn snapshots_puts_list_into_status_msg() {
+        let td = TempDir::new().unwrap();
+        let sock = td.path().join("mock.sock");
+        let _handle = start_mock(&sock).await;
+        let state = uefi_common::state::State {
+            session_id: Some("s1".into()),
+            token: Some("t1".into()),
+            ..Default::default()
+        };
+        let mut client = commands::connect(Some(sock.to_str().unwrap()), state)
+            .await
+            .unwrap();
+        let mut app = App::new();
+        commands::execute_command(&mut app, "open /tmp/mock.bin", &mut client)
+            .await
+            .unwrap();
+        let r = commands::execute_command(&mut app, "snapshots", &mut client)
+            .await
+            .unwrap();
+        assert_eq!(app.status_msg, "snap-1  before  16B");
+        assert_eq!(r, "snap-1");
+    }
+
+    #[tokio::test]
+    async fn restore_refreshes_tree_and_registry() {
+        let td = TempDir::new().unwrap();
+        let sock = td.path().join("mock.sock");
+        let _handle = start_mock(&sock).await;
+        let state = uefi_common::state::State {
+            session_id: Some("s1".into()),
+            token: Some("t1".into()),
+            ..Default::default()
+        };
+        let mut client = commands::connect(Some(sock.to_str().unwrap()), state)
+            .await
+            .unwrap();
+        let mut app = App::new();
+        commands::execute_command(&mut app, "open /tmp/mock.bin", &mut client)
+            .await
+            .unwrap();
+        app.tree.clear();
+        app.registry.images.clear();
+        let r = commands::execute_command(&mut app, "restore snap-1", &mut client)
+            .await
+            .unwrap();
+        assert_eq!(r, "snap-1");
+        assert!(!app.tree.is_empty(), ":restore should refresh tree");
+        assert_eq!(
+            app.registry.images.len(),
+            1,
+            ":restore should refresh registry"
+        );
+        assert_eq!(app.status_msg, "restored snap-1");
     }
 
     #[tokio::test]

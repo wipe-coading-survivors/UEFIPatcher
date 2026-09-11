@@ -66,6 +66,58 @@ impl Client {
             .map_err(|e| e.message().to_string())
             .map(|r| r.into_inner())
     }
+
+    pub async fn image_snapshot_create(
+        &mut self,
+        image_id: &str,
+        name: &str,
+    ) -> Result<ImageSnapshotCreateResponse, String> {
+        self.inner
+            .image_snapshot_create(auth_req(
+                &self.state,
+                ImageSnapshotCreateRequest {
+                    image_id: image_id.into(),
+                    name: name.into(),
+                },
+            ))
+            .await
+            .map_err(|e| e.message().to_string())
+            .map(|r| r.into_inner())
+    }
+
+    pub async fn image_snapshots_list(
+        &mut self,
+        image_id: &str,
+    ) -> Result<Vec<ImageSnapshotInfo>, String> {
+        self.inner
+            .image_snapshots_list(auth_req(
+                &self.state,
+                ImageSnapshotsListRequest {
+                    image_id: image_id.into(),
+                },
+            ))
+            .await
+            .map_err(|e| e.message().to_string())
+            .map(|r| r.into_inner().snapshots)
+    }
+
+    pub async fn image_snapshot_restore(
+        &mut self,
+        image_id: &str,
+        snapshot_id: &str,
+    ) -> Result<Empty, String> {
+        self.inner
+            .image_snapshot_restore(auth_req(
+                &self.state,
+                ImageSnapshotRestoreRequest {
+                    image_id: image_id.into(),
+                    snapshot_id: snapshot_id.into(),
+                },
+            ))
+            .await
+            .map_err(|e| e.message().to_string())
+            .map(|r| r.into_inner())
+    }
 }
 
 fn mode_to_i32(s: &str) -> Result<i32, String> {
@@ -147,6 +199,54 @@ pub async fn execute_command(
             refresh_registry(app, client).await?;
             app.status_msg = format!("uploaded {} ({})", resp.name, resp.image_id);
             Ok(resp.image_id)
+        }
+        "snapshot" => {
+            let iid = client
+                .state
+                .active_image_id
+                .clone()
+                .ok_or("no active image")?;
+            let name = parts.get(1).copied().unwrap_or_default().to_string();
+            let resp = client.image_snapshot_create(&iid, &name).await?;
+            app.status_msg = format!("snapshot {} ({})", resp.snapshot_id, name);
+            Ok(resp.snapshot_id)
+        }
+        "snapshots" => {
+            let iid = client
+                .state
+                .active_image_id
+                .clone()
+                .ok_or("no active image")?;
+            let snaps = client.image_snapshots_list(&iid).await?;
+            app.status_msg = if snaps.is_empty() {
+                "no snapshots".into()
+            } else {
+                snaps
+                    .iter()
+                    .map(|s| format!("{}  {}  {}B", s.snapshot_id, s.name, s.size))
+                    .collect::<Vec<_>>()
+                    .join("  ·  ")
+            };
+            Ok(snaps
+                .iter()
+                .map(|s| s.snapshot_id.clone())
+                .collect::<Vec<_>>()
+                .join(","))
+        }
+        "restore" => {
+            let iid = client
+                .state
+                .active_image_id
+                .clone()
+                .ok_or("no active image")?;
+            let snap_id = parts
+                .get(1)
+                .ok_or("usage: :restore SNAPSHOT_ID (see :snapshots)")?;
+            client.image_snapshot_restore(&iid, snap_id).await?;
+            refresh_tree(app, client).await?;
+            refresh_registry(app, client).await?;
+            app.status_msg = format!("restored {snap_id}");
+            Ok(snap_id.to_string())
         }
         "save" | "s" => {
             let path = parts.get(1).ok_or("usage: :save OUTPUT")?;
