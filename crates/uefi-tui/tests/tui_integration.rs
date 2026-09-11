@@ -99,3 +99,44 @@ async fn forms_view_strings_fetch() {
         .unwrap();
     assert_eq!(app.forms.strings.len(), 3, "mock fixture: 3 strings");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn forms_view_strings_filter() {
+    let td = TempDir::new().unwrap();
+    let sock = td.path().join("test.sock");
+    let _handle = mock_server::start_mock(&sock).await;
+    let state = uefi_common::State {
+        session_id: Some("s1".into()),
+        token: Some("t1".into()),
+        active_image_id: None,
+        sock_path: Some(sock.display().to_string()),
+    };
+    let mut client = uefi_tui::commands::connect(None, state).await.unwrap();
+    let mut app = uefi_tui::app::App::new();
+    uefi_tui::commands::execute_command(&mut app, "open /dev/null", &mut client)
+        .await
+        .unwrap();
+    app.forms.show_strings = true;
+    uefi_tui::commands::refresh_strings(&mut app, &mut client)
+        .await
+        .unwrap();
+
+    uefi_tui::commands::execute_command(&mut app, "filter serial", &mut client)
+        .await
+        .unwrap();
+    assert_eq!(app.strings_visible(), vec![2]);
+    assert_eq!(app.forms.strings_cursor, 0);
+
+    uefi_tui::commands::execute_command(&mut app, "filter", &mut client)
+        .await
+        .unwrap();
+    assert_eq!(app.strings_visible().len(), 3, "empty filter clears");
+
+    app.forms.show_strings = false;
+    assert!(
+        uefi_tui::commands::execute_command(&mut app, "filter x", &mut client)
+            .await
+            .is_err(),
+        "filter requires strings view open"
+    );
+}

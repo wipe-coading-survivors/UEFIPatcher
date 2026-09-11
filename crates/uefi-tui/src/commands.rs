@@ -531,6 +531,14 @@ pub async fn execute_command(
             app.status_msg = format!("forms: {}", app.forms.forms.len());
             Ok("forms".into())
         }
+        "filter" => {
+            if !app.forms.show_strings {
+                return Err("filter is for the strings browser (S to open)".into());
+            }
+            app.forms.strings_filter = parts[1..].join(" ");
+            app.forms.strings_cursor = 0;
+            Ok(app.forms.strings_filter.clone())
+        }
         "refresh" => {
             refresh_registry(app, client).await?;
             app.status_msg = format!(
