@@ -151,6 +151,12 @@ fn absolutize_path(raw: &str) -> String {
     }
 }
 
+/// Читает schema-файл в TUI-процессе (клиент): в RPC уходит содержимое
+/// строкой, путь до движка не доходит (не :save — там пишет engine).
+fn read_schema(file: &str) -> Result<String, String> {
+    std::fs::read_to_string(file).map_err(|e| format!("{file}: {e}"))
+}
+
 pub async fn execute_command(
     app: &mut App,
     cmdline: &str,
@@ -557,7 +563,7 @@ pub async fn execute_command(
         }
         "hii" => {
             let sub = parts.get(1).copied().ok_or(
-                "usage: :hii set-value ITEM VALUE | :hii visibility ITEM on|off | :hii unlock ITEM",
+                "usage: :hii set-value ITEM VALUE | :hii visibility ITEM on|off | :hii unlock ITEM | :hii formset add FILE [--ffs GUID] | :hii form add TARGET FILE | :hii question add TARGET#FORM FILE | :hii page add TARGET FILE | :hii hijack TARGET FILE [SETUPDATA-GUID]",
             )?;
             let iid = client
                 .state
@@ -664,6 +670,69 @@ pub async fn execute_command(
                         format!("unlock {item}: {}", r.applied_flips.join(" · "))
                     };
                     Ok(item)
+                }
+                "formset" => {
+                    if parts.get(2).copied() != Some("add") {
+                        return Err("usage: :hii formset add FILE [--ffs GUID]".into());
+                    }
+                    let file = parts
+                        .get(3)
+                        .ok_or("usage: :hii formset add FILE [--ffs GUID]")?;
+                    let ffs = parts
+                        .iter()
+                        .position(|p| *p == "--ffs")
+                        .and_then(|i| parts.get(i + 1).copied())
+                        .unwrap_or_default();
+                    let schema_json = read_schema(file)?;
+                    let r = client
+                        .inner
+                        .hii_form_set_add(auth_req(
+                            &client.state,
+                            HiiFormSetAddRequest {
+                                image_id: iid,
+                                schema_json,
+                                target_ffs_guid: ffs.to_string(),
+                            },
+                        ))
+                        .await
+                        .map_err(|e| e.message().to_string())?
+                        .into_inner();
+                    refresh_tree(app, client).await?;
+                    reload_forms(app, client).await?;
+                    let _ = refresh_form_details_if_needed(app, client).await;
+                    app.status_msg =
+                        formset_add_status(&r.new_ffs_id, &r.inserted_form_ids, &r.string_ids);
+                    Ok(r.new_ffs_id)
+                }
+                "form" => {
+                    if parts.get(2).copied() != Some("add") {
+                        return Err("usage: :hii form add TARGET FILE".into());
+                    }
+                    let target = parts.get(3).ok_or("usage: :hii form add TARGET FILE")?;
+                    let file = parts.get(4).ok_or("usage: :hii form add TARGET FILE")?;
+                    let schema_json = read_schema(file)?;
+                    let r = client
+                        .inner
+                        .hii_form_add(auth_req(
+                            &client.state,
+                            HiiFormAddRequest {
+                                image_id: iid,
+                                target: target.to_string(),
+                                schema_json,
+                            },
+                        ))
+                        .await
+                        .map_err(|e| e.message().to_string())?
+                        .into_inner();
+                    refresh_tree(app, client).await?;
+                    reload_forms(app, client).await?;
+                    let _ = refresh_form_details_if_needed(app, client).await;
+                    app.status_msg = form_add_status(&r.inserted_form_ids, &r.string_ids);
+                    Ok(r.inserted_form_ids
+                        .iter()
+                        .map(|i| i.to_string())
+                        .collect::<Vec<_>>()
+                        .join(","))
                 }
                 other => Err(format!("unknown hii subcommand: {other}")),
             }
