@@ -364,27 +364,65 @@ impl App {
     /// к видимым строкам.
     pub fn forms_set_expanded(&mut self, expand: bool) {
         let rows = self.forms_rows();
-        let key = match rows.get(self.forms.cursor) {
-            Some(crate::forms::FormsRow::FormSet { guid, .. }) => Some(guid.clone()),
+        let (exp_key, sel) = match rows.get(self.forms.cursor) {
+            Some(crate::forms::FormsRow::FormSet { guid, .. }) => {
+                (Some(guid.clone()), Some((guid.clone(), None)))
+            }
             Some(crate::forms::FormsRow::Form {
                 key, has_children, ..
             }) => {
-                if !self.forms.flat_mode && *has_children {
+                let exp = if !self.forms.flat_mode && *has_children {
                     Some(format!("{}#{}", key.formset_guid, key.form_id_ifr))
+                } else if !self.forms.flat_mode {
+                    self.forms
+                        .edges
+                        .iter()
+                        .find(|e| {
+                            e.formset_guid == key.formset_guid && e.form_id == key.form_id_ifr
+                        })
+                        .map(|e| format!("{}#{}", key.formset_guid, e.parent_form_id))
+                        .or_else(|| Some(key.formset_guid.clone()))
                 } else {
                     Some(key.formset_guid.clone())
-                }
+                };
+                (exp, Some((key.formset_guid.clone(), Some(key.form_id_ifr))))
             }
-            _ => None,
+            _ => (None, None),
         };
-        if let Some(key) = key {
+        if let Some(key) = &exp_key {
             if expand {
-                self.forms.expanded.insert(key);
+                self.forms.expanded.insert(key.clone());
             } else {
-                self.forms.expanded.remove(&key);
+                self.forms.expanded.remove(key);
             }
         }
-        let n = self.forms_rows().len();
+        let rows = self.forms_rows();
+        let target = sel
+            .and_then(|(guid, id)| {
+                rows.iter().position(|r| match (id, r) {
+                    (Some(fid), crate::forms::FormsRow::Form { key, .. }) => {
+                        key.formset_guid == guid && key.form_id_ifr == fid
+                    }
+                    (None, crate::forms::FormsRow::FormSet { guid: g, .. }) => *g == guid,
+                    _ => false,
+                })
+            })
+            .or_else(|| {
+                let flat = self.forms.flat_mode;
+                exp_key.as_ref().and_then(|k| {
+                    rows.iter().position(|r| match r {
+                        crate::forms::FormsRow::FormSet { guid, .. } => guid == k,
+                        crate::forms::FormsRow::Form { key, .. } => {
+                            !flat && k == &format!("{}#{}", key.formset_guid, key.form_id_ifr)
+                        }
+                        _ => false,
+                    })
+                })
+            });
+        if let Some(i) = target {
+            self.forms.cursor = i;
+        }
+        let n = rows.len();
         if self.forms.cursor >= n {
             self.forms.cursor = n.saturating_sub(1);
         }
@@ -786,6 +824,56 @@ mod tests {
         assert_eq!(app.forms.cursor, 0, "cursor clamped onto formset row");
         app.forms_set_expanded(true);
         assert_eq!(app.forms_rows().len(), 3);
+    }
+
+    #[test]
+    fn forms_collapse_from_form_lands_cursor_on_formset_row() {
+        let mut app = App::new();
+        app.forms.forms = vec![form_info("S", 1), form_info("T", 9)];
+        app.forms.expanded = ["S".into(), "T".into()].into();
+        app.forms.cursor = 1;
+        app.forms_set_expanded(false);
+        assert_eq!(
+            app.forms.cursor, 0,
+            "свёрнут формсет выделенного листа — курсор на его строке, не на чужом формсете"
+        );
+        assert!(matches!(
+            &app.forms_rows()[app.forms.cursor],
+            crate::forms::FormsRow::FormSet { guid, .. } if guid == "S"
+        ));
+    }
+
+    #[test]
+    fn forms_collapse_parent_form_lands_cursor_on_parent_row() {
+        let mut app = App::new();
+        app.forms.forms = vec![form_info("S", 1), form_info("S", 2)];
+        app.forms.edges = vec![uefi_proto::FormEdge {
+            formset_guid: "S".into(),
+            parent_form_id: 1,
+            form_id: 2,
+        }];
+        app.forms.expanded = ["S".into(), "S#1".into()].into();
+        app.forms.cursor = 2;
+        app.forms_set_expanded(false);
+        assert_eq!(app.forms_rows().len(), 2, "родительская форма свёрнута");
+        assert_eq!(app.forms.cursor, 1, "курсор на строке свернутого родителя");
+        assert!(matches!(
+            &app.forms_rows()[app.forms.cursor],
+            crate::forms::FormsRow::Form { key, .. } if key.form_id_ifr == 1
+        ));
+    }
+
+    #[test]
+    fn forms_expand_keeps_cursor_on_selected_row() {
+        let mut app = App::new();
+        app.forms.forms = vec![form_info("S", 1)];
+        app.forms.cursor = 0;
+        app.forms_set_expanded(true);
+        assert_eq!(app.forms_rows().len(), 2);
+        assert_eq!(
+            app.forms.cursor, 0,
+            "разворачивание не уводит курсор с формсета"
+        );
     }
 
     #[test]
