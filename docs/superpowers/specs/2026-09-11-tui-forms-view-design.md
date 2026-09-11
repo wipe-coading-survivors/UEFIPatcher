@@ -141,6 +141,40 @@ package → walker).
 ленивость обязательна; консьюмеры `HiiListForms` (CLI TSV-вывод) не меняются; item_id-паттерн
 уже per-action.
 
+### 3.5 Engine-добавка V2: `HiiFormTree` (REF-дерево форм)
+
+IFR хранит формы плоско — иерархии «форма в форме» нет. Вложенность реального Setup-меню
+(Main → Advanced → Serial Port 1 Configuration) строится браузером из **REF-вопросов**: в
+родительской форме стоит `IFR_REF_OP`, чей payload содержит `FormId` целевой формы. Все
+REF-варианты (REF..REF5) — один опкод `0x0F` (в r-efi отдельных констант REF2..REF5 нет),
+различаются длиной; `FormId u16 @ +13` при `length >= 15` — паттерн чтения уже реализован в
+движке (`gates.rs`, ветка `Wraps::Ref`).
+
+```proto
+rpc HiiFormTree(HiiFormTreeRequest) returns (HiiFormTreeResponse);
+message FormEdge {
+  string formset_guid = 1;
+  uint32 parent_form_id = 2;
+  uint32 form_id = 3;      // цель REF-вопроса
+}
+message HiiFormTreeRequest  { string image_id = 1; }
+message HiiFormTreeResponse { repeated FormEdge edges = 1; }
+```
+
+Драйвер — walker поверх того же `walk_statements` (quirk-маски/bounds — общий фундамент,
+риск §5): в форме X каждый REF-опкод даёт ребро `X → FormId@+13`; рёбра дедуплицируются;
+висячие цели (формы нет в `HiiListForms`) отдаются как есть — не молча отбрасываются.
+Отдельный RPC (не поле в `FormInfo`) по той же причине, что и 3.4: TSV-вывод
+`uefi-cli hii form list` не меняется.
+
+TUI строит дерево клиент-side: корни — формы без входящих рёбер (первая форма формсета,
+затем «сироты» в порядке появления); дети группируются по родителю; форма с несколькими
+родителями показывается у каждого. Рендер — вложенные отступы, `h`/`l` сворачивают и формы
+(не только формсеты); защита от циклов — visited при обходе. Details-панель показывает
+полный путь (`Main → Advanced → Serial Port 1 Configuration`) — это дизамбигуирует
+одинаковые титулы (две «Boot» в одном формсете, гейт-находка V1). Плоский режим (текущий)
+остаётся переключателем — дерево не должно прятать «сирот».
+
 ## 4. Лестница V1–V3
 
 ### V1 — Просмотр (forms + questions + strings, read-only)
@@ -158,6 +192,8 @@ walker (3.4), strings-браузер, `:forms`/`:image`.
 ### V2 — Правки на месте
 
 Состав:
+- REF-дерево форм (3.5): список строится по рёбрам `HiiFormTree` — вложенные отступы, путь в
+  details; плоский режим — переключателем;
 - форма: `v` — toggle visibility (`HiiSetFormVisibility`), `u` — unlock (`HiiUnlock`); результат —
   applied_flips в status_msg + re-fetch форм (visible-маркер меняется);
 - детали: блок гейтов из `HiiGatesList` (gate_kind/expression/flippable);
@@ -168,7 +204,9 @@ walker (3.4), strings-браузер, `:forms`/`:image`.
 
 **Гейт V2:** unlock/set-value из TUI дают байт-в-байт тот же образ, что те же операции из CLI
 (sha256 сравнение сохранённых образов); visible-маркер в TUI сходится с `hii form list` после
-правки.
+правки. REF-дерево: у «Serial Port 1 Configuration» виден родитель «Advanced» (путь в details);
+две «Boot» различимы путём; сумма узлов дерева == `hii form list` по формсету (с учётом кратных
+родителей); висячие REF-цели помечены, циклы не зацикливают рендер.
 
 ### V3 — Операции добавления (schema-файлы)
 
@@ -251,8 +289,8 @@ hii_list_questions_real_image_consistent_with_question_info`, #[ignore]).
    дизамбигуированы. Частично закрыто строкой «Form ID» в деталях
    (`4320e54`); полное решение — путь по REF-дереву (V2).
 
-V1 засчитана; переход к плану V2 (правки: visibility/unlock/set-value;
-кандидат на добавление — REF-дерево форм).
+V1 засчитана; переход к плану V2 (правки: visibility/unlock/set-value; REF-дерево форм
+включено в V2-состав — дизайн §3.5, решение владельца 2026-09-11).
 
 ## Решения (decisions log)
 

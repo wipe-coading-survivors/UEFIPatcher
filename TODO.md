@@ -2626,7 +2626,9 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
 > tui-forms-view §7. Дизамбигуация-минимум (строка Form ID в деталях)
 > исполнена fix'ом ветки (`4320e54`); подсветка курсора — `bac5598`.
 
-* [ ] **uefi-engine+uefi-tui (Forms V2): REF-дерево форм** — IFR хранит
+* [ ] **uefi-engine+uefi-tui (Forms V2): REF-дерево форм** (принято в спеку
+  V2 — дизайн §3.5 `HiiFormTree`, гейт V2 дополнен; пункт остаётся до
+  реализации) — IFR хранит
   формы плоско; вложенность реального меню (Advanced → Serial Port 1
   Configuration) строится из REF-вопросов. Все REF-варианты — один опкод
   `IFR_REF_OP` 0x0F (в r-efi, REF2..REF5 отдельных опкодов нет),
