@@ -87,12 +87,14 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
     );
     let text = crate::forms::form_details_text(&app.forms, &rows, app.forms.cursor);
     f.render_widget(
-        Paragraph::new(text).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Form")
-                .border_style(focus_style(!list_focus)),
-        ),
+        Paragraph::new(text)
+            .wrap(ratatui::widgets::Wrap { trim: false })
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Form")
+                    .border_style(focus_style(!list_focus)),
+            ),
         cols[1],
     );
 }

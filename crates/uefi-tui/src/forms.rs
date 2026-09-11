@@ -301,18 +301,22 @@ pub fn form_details_text(forms: &FormsData, rows: &[FormsRow], cursor: usize) ->
                     ));
                 }
                 "one_of" => {
-                    let opts: Vec<String> = qi
-                        .options
-                        .iter()
-                        .map(|o| {
-                            if o.text.is_empty() {
-                                format!("{:#x}(sid {})", o.value, o.string_id)
-                            } else {
-                                format!("{:#x} \"{}\"", o.value, o.text)
-                            }
-                        })
-                        .collect();
-                    s.push_str(&format!("  options: {}\n", opts.join(" · ")));
+                    if qi.options.is_empty() {
+                        s.push_str("  options: (none)\n");
+                    }
+                    for (i, o) in qi.options.iter().enumerate() {
+                        let item = if o.text.is_empty() {
+                            format!("{:#x}(sid {})", o.value, o.string_id)
+                        } else {
+                            format!("{:#x} \"{}\"", o.value, o.text)
+                        };
+                        let prefix = if i == 0 {
+                            "  options: ".to_string()
+                        } else {
+                            " ".repeat(11)
+                        };
+                        s.push_str(&format!("{prefix}{item}\n"));
+                    }
                 }
                 _ => {}
             }
@@ -629,7 +633,7 @@ mod tests {
             ..Default::default()
         });
         let t = form_details_text(&fd, &rows, 2);
-        assert!(t.contains("options: 0x0 \"Disabled\" · 0x1 \"Enabled\""));
+        assert!(t.contains("options: 0x0 \"Disabled\"\n           0x1 \"Enabled\""));
 
         fd.question_info = Some(uefi_proto::QuestionInfo {
             question_id: 0x210,
@@ -652,8 +656,8 @@ mod tests {
         });
         let t = form_details_text(&fd, &rows, 2);
         assert!(
-            t.contains("options: 0x0(sid 18) · 0x1(sid 17)"),
-            "пустой text — fallback на sid"
+            t.contains("options: 0x0(sid 18)\n           0x1(sid 17)"),
+            "пустой text — fallback на sid, каждая опция на своей строке"
         );
     }
 }
