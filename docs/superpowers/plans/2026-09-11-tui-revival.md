@@ -1364,6 +1364,8 @@ fn fpt_partition_inside_me_immutable() {
 
 - [ ] **Step 2: красный** — `cargo test -p uefi-engine fpt` → FAIL.
 
+> **Rule-11 фикс (2026-09-11, по итогам ревью Task 6):** в `ops::ensure_mutable` якорь-Region обязан проверяться и при `include_target=false` (insert Before/After): сегодня одноэлементный путь даёт `n=0` → ни один узел не проверяется → вставка соседа к ME-региону разрешена и рушит дескрипторную раскладку. Правка: проверку `FfsType::Region → Err(ImmutableRegion)` применять к элементам `path[..path.len()]` ВСЕГДА (для Before/After — включая якорь), а COMPRESSION/GUID_DEFINED-барьеры — только к `path[..n]` (предки, как сегодня). Тест: `insert_before_me_region_refused` — дескрипторная фикстура, `insert(&mut img.root, &parse_target(&me_idx.to_string()).unwrap(), &make_ffs_file(), InsertMode::Before)` → `Err(ImmutableRegion)`.
+
 - [ ] **Step 3: реализация** (в `region.rs`; обход — референс `meparser.cpp:138-170`, структуры `me.h:38-87`):
 
 ```rust
