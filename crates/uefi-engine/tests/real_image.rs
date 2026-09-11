@@ -846,6 +846,58 @@ fn hii_list_questions_real_image_consistent_with_question_info() {
 
 #[test]
 #[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
+fn form_tree_real_image_edges_consistent() {
+    let data = load_fw();
+    let img = parse_image(&data, ImageMode::Read, "img1", "s1").expect("parse_image");
+    let forms = uefi_engine::hii::forms::collect_forms(&img);
+    assert!(!forms.is_empty());
+
+    let edges = uefi_engine::hii::ref_tree::collect_edges(&img);
+    assert!(
+        !edges.is_empty(),
+        "HNX99TF Setup menu is REF-nested (V1 verdict)"
+    );
+
+    let mut by_set: std::collections::HashMap<String, std::collections::HashSet<u32>> =
+        std::collections::HashMap::new();
+    for f in &forms {
+        by_set
+            .entry(f.formset_guid.clone())
+            .or_default()
+            .insert(f.form_id_ifr);
+    }
+    let mut dangling = 0usize;
+    let mut live = 0usize;
+    for e in &edges {
+        let parent_ok = by_set
+            .get(&e.formset_guid)
+            .is_some_and(|ids| ids.contains(&e.parent_form_id));
+        assert!(
+            parent_ok,
+            "edge parent {} must exist in formset {} (walker only walks existing forms)",
+            e.parent_form_id, e.formset_guid
+        );
+        if by_set
+            .get(&e.formset_guid)
+            .is_some_and(|ids| ids.contains(&e.form_id))
+        {
+            live += 1;
+        } else {
+            dangling += 1;
+        }
+    }
+    assert!(live > 0, "at least one non-dangling REF edge expected");
+    println!(
+        "form_tree real-image: {} edges ({} live, {} dangling), {} formsets with forms",
+        edges.len(),
+        live,
+        dangling,
+        by_set.len()
+    );
+}
+
+#[test]
+#[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
 fn real_image_hii_form_visibility_round_trip() {
     use uefi_engine::builder::build_image;
     use uefi_engine::hii::forms::collect_forms;
