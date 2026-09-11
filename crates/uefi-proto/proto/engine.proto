@@ -265,7 +265,7 @@ message HiiUnlockRequest     { string image_id = 1; string item_id = 2; }
 message HiiUnlockResponse    { repeated GateInfo gates = 1; repeated string applied_flips = 2; }
 
 message VarStoreInfo { uint32 id = 1; string guid = 2; uint32 size = 3; string name = 4; }
-message OptionEntry  { uint32 string_id = 1; uint64 value = 2; uint32 flags = 3; }
+message OptionEntry  { uint32 string_id = 1; uint64 value = 2; uint32 flags = 3; string text = 4; }
 message DefaultEntry { uint32 default_id = 1; uint32 type = 2; uint64 value = 3; }
 message QuestionInfo {
   uint32 form_id = 1;

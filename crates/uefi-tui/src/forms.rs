@@ -611,11 +611,13 @@ mod tests {
                     string_id: 18,
                     value: 0,
                     flags: 0,
+                    ..Default::default()
                 },
                 uefi_proto::OptionEntry {
                     string_id: 17,
                     value: 1,
                     flags: 0,
+                    ..Default::default()
                 },
             ],
             ..Default::default()

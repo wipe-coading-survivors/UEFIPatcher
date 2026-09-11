@@ -668,11 +668,13 @@ mod tests {
                     string_id: 4,
                     value: 0,
                     flags: 0x30,
+                    ..Default::default()
                 },
                 uefi_proto::OptionEntry {
                     string_id: 3,
                     value: 1,
                     flags: 0x00,
+                    ..Default::default()
                 },
             ],
             defaults: vec![],
@@ -718,6 +720,7 @@ mod tests {
                 string_id: 3,
                 value: 1,
                 flags: 0x00,
+                ..Default::default()
             }],
             defaults: vec![DefaultEntry {
                 default_id: 0,
