@@ -3618,7 +3618,7 @@ fn real_image_add_question_discovers_nested_setupdata() {
     );
     let path = uefi_engine::hii::ami_patcher::discover_pfs_payload_path(&img)
         .expect("deep discovery must resolve the live SetupData");
-    assert_eq!(path, vec![3, 208, 0, 0]);
+    assert_eq!(path, vec![4, 208, 0, 0]);
     let mut node = &img.root;
     for &i in &path {
         node = &node.children[i];
@@ -3644,7 +3644,7 @@ fn real_image_add_question_discovers_nested_setupdata() {
         }],
         defaults: None,
     };
-    let err = uefi_engine::hii::add_question(&mut live, "3/28/1/0#10019", &schema)
+    let err = uefi_engine::hii::add_question(&mut live, "4/28/1/0#10019", &schema)
         .expect_err("out-of-bounds var_offset must be rejected");
     eprintln!("live add_question probe error: {err}");
     assert!(
@@ -3663,7 +3663,7 @@ fn spf_body_of(img: &Image) -> Vec<u8> {
 }
 
 fn setup_forms_package(img: &Image) -> Vec<u8> {
-    let t = parse_target("3/28/1/0").unwrap();
+    let t = parse_target("4/28/1/0").unwrap();
     let node = find_item(&img.root, &t).unwrap();
     for blob in uefi_engine::hii::pe_resource::hii_resource_blobs(&node.body) {
         if let Some(list) = uefi_engine::hii::package_list::parse_package_list(blob) {
@@ -3674,7 +3674,7 @@ fn setup_forms_package(img: &Image) -> Vec<u8> {
             }
         }
     }
-    panic!("no forms package in Setup PE 3/28/1/0");
+    panic!("no forms package in Setup PE 4/28/1/0");
 }
 
 fn live_question_schema(qid: u16, voff: u16) -> uefi_engine::hii::schema::QuestionAddSchema {
@@ -3732,11 +3732,11 @@ fn real_image_add_question_selective_ifr_fixup() {
     assert_eq!(foreign_base.len(), 357);
 
     let mut img = parse_image(&data, ImageMode::Write, "i", "s").unwrap();
-    uefi_engine::hii::add_question(&mut img, "3/28/1/0#10019", &live_question_schema(512, 93))
+    uefi_engine::hii::add_question(&mut img, "4/28/1/0#10019", &live_question_schema(512, 93))
         .expect("first live add_question");
     let pkg_after1 = setup_forms_package(&img);
     let delta1 = pkg_after1.len() - pkg_base.len();
-    uefi_engine::hii::add_question(&mut img, "3/28/1/0#10019", &live_question_schema(513, 94))
+    uefi_engine::hii::add_question(&mut img, "4/28/1/0#10019", &live_question_schema(513, 94))
         .expect("second live add_question");
     let pkg_after2 = setup_forms_package(&img);
     let delta2 = pkg_after2.len() - pkg_after1.len();
@@ -5140,35 +5140,82 @@ fn real_image_remove_save_clean_tree() {
 #[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
 fn real_image_flash_regions_layout() {
     use uefi_engine::builder::build_image;
+    use uefi_engine::ops::{self, OpsError};
     use uefi_engine::parser::region::parse_flash_regions;
+    use uefi_engine::parser::target::parse_target;
 
     const HNX_VOLUME_COUNT: usize = 3;
     const HNX_DXE_FV_FILES: usize = 216;
     const HNX_PEI_FV_FILES: usize = 59;
+    const HNX_ME_PARTITIONS: usize = 9;
 
     let data = load_fw();
     assert_eq!(data.len(), 0x0100_0000, "16 MiB image expected");
 
     assert!(
         data[..16].iter().all(|&b| b == 0xFF),
-        "premise: first 16 bytes erased (BIOS-region-only update image)"
+        "premise: 16-byte reserved vector is 0xFF (descriptor.h:22-26)"
     );
     assert_eq!(
         u32::from_le_bytes(data[0x10..0x14].try_into().unwrap()),
         0x0FF0_A55A,
-        "premise: descriptor signature sits at 0x10, not at 0"
+        "premise: canonical descriptor signature at 0x10"
+    );
+    let regions = parse_flash_regions(&data).expect("descriptor regions");
+    let kinds: Vec<&str> = regions.iter().map(|r| r.kind.label()).collect();
+    assert!(kinds.contains(&"Descriptor"), "regions: {kinds:?}");
+    assert!(kinds.contains(&"ME"), "regions: {kinds:?}");
+    assert!(kinds.contains(&"BIOS"), "regions: {kinds:?}");
+
+    let img = parse_image(&data, ImageMode::Write, "img1", "s1").expect("parse_image");
+    let items = list_items(&img.root, None);
+    let region_labels: Vec<&str> = items
+        .iter()
+        .filter(|i| i.r#type == FfsType::Region as u32)
+        .map(|i| i.region.as_str())
+        .collect();
+    assert!(
+        region_labels.contains(&"Descriptor"),
+        "Region nodes: {region_labels:?}"
     );
     assert!(
-        parse_flash_regions(&data).is_none(),
-        "engine must route the image to the classic FV scan"
+        region_labels.contains(&"ME"),
+        "Region nodes: {region_labels:?}"
     );
 
-    let img = parse_image(&data, ImageMode::Read, "img1", "s1").expect("parse_image");
-    let items = list_items(&img.root, None);
-    assert!(
-        items.iter().all(|i| i.r#type != FfsType::Region as u32),
-        "non-descriptor parse must not produce Region nodes"
+    let me_idx = img
+        .root
+        .children
+        .iter()
+        .position(|c| {
+            matches!(
+                &c.parsing_data,
+                uefi_engine::types::ParsingData::Region(rd)
+                    if rd.kind == uefi_engine::types::FlashRegionKind::Me
+            )
+        })
+        .expect("ME region node");
+    let me_children: Vec<String> = img.root.children[me_idx]
+        .children
+        .iter()
+        .map(|c| match &c.parsing_data {
+            uefi_engine::types::ParsingData::FptPartition(pd) => pd.name.clone(),
+            _ => String::new(),
+        })
+        .collect();
+    assert_eq!(
+        me_children.len(),
+        HNX_ME_PARTITIONS,
+        "$FPT partitions: {me_children:?}"
     );
+    assert!(me_children.contains(&"FTPR".to_string()), "{me_children:?}");
+    assert!(me_children.contains(&"NFTP".to_string()), "{me_children:?}");
+
+    let inside = format!("{me_idx}/0");
+    assert!(matches!(
+        ops::remove(&mut img.root.clone(), &parse_target(&inside).unwrap()),
+        Err(OpsError::ImmutableRegion)
+    ));
 
     let volumes = items
         .iter()
@@ -5176,7 +5223,7 @@ fn real_image_flash_regions_layout() {
         .count();
     assert_eq!(
         volumes, HNX_VOLUME_COUNT,
-        "volume count regression tripwire for the classic FV scan"
+        "volume count regression tripwire inside the BIOS window"
     );
 
     let rebuilt = build_image(&img).expect("build_image");
@@ -5187,7 +5234,7 @@ fn real_image_flash_regions_layout() {
     );
     assert_eq!(
         rebuilt, data,
-        "non-descriptor round-trip must be byte-identical"
+        "descriptor round-trip must be byte-identical"
     );
 
     let vol = |off: u32| {
@@ -5209,6 +5256,6 @@ fn real_image_flash_regions_layout() {
     );
 
     eprintln!(
-        "real_image flash-layout: non-descriptor path, {volumes} volumes, round-trip byte-identical, DXE files={HNX_DXE_FV_FILES}, PEI files={HNX_PEI_FV_FILES}"
+        "real_image flash-layout: descriptor path, regions={kinds:?}, $FPT partitions={me_children:?}, {volumes} volumes, round-trip byte-identical, DXE files={HNX_DXE_FV_FILES}, PEI files={HNX_PEI_FV_FILES}"
     );
 }

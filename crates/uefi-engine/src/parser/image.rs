@@ -787,8 +787,8 @@ mod tests {
     #[test]
     fn parse_image_descriptor_path_regions_and_padding() {
         let mut buf = vec![0xFFu8; 0x10000];
-        buf[0..4].copy_from_slice(&0x0FF0_A55Au32.to_le_bytes());
-        buf[0x10..0x14].copy_from_slice(&0x0040_0000u32.to_le_bytes());
+        buf[0x10..0x14].copy_from_slice(&0x0FF0_A55Au32.to_le_bytes());
+        buf[0x14..0x18].copy_from_slice(&0x0040_0000u32.to_le_bytes());
         buf[0x400 + 4..0x400 + 4 + 2].copy_from_slice(&1u16.to_le_bytes());
         buf[0x400 + 4 + 2..0x400 + 4 + 4].copy_from_slice(&3u16.to_le_bytes());
         buf[0x400 + 2 * 4..0x400 + 2 * 4 + 2].copy_from_slice(&4u16.to_le_bytes());
@@ -841,8 +841,8 @@ mod tests {
     #[test]
     fn list_items_fills_region_for_region_and_fpt_nodes() {
         let mut buf = vec![0xFFu8; 0x10000];
-        buf[0..4].copy_from_slice(&0x0FF0_A55Au32.to_le_bytes());
-        buf[0x10..0x14].copy_from_slice(&0x0040_0000u32.to_le_bytes());
+        buf[0x10..0x14].copy_from_slice(&0x0FF0_A55Au32.to_le_bytes());
+        buf[0x14..0x18].copy_from_slice(&0x0040_0000u32.to_le_bytes());
         buf[0x400 + 4..0x400 + 4 + 2].copy_from_slice(&1u16.to_le_bytes());
         buf[0x400 + 4 + 2..0x400 + 4 + 4].copy_from_slice(&3u16.to_le_bytes());
         buf[0x400 + 2 * 4..0x400 + 2 * 4 + 2].copy_from_slice(&4u16.to_le_bytes());

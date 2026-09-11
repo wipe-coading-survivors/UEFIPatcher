@@ -2503,8 +2503,9 @@ mod tests {
 
     fn descriptor_image_with_bios_fv() -> Vec<u8> {
         let mut buf = vec![0xFFu8; 0x10000];
-        buf[0..4].copy_from_slice(&crate::parser::region::FLASH_DESCRIPTOR_SIGNATURE.to_le_bytes());
-        buf[0x10..0x14].copy_from_slice(&0x0040_0000u32.to_le_bytes());
+        buf[0x10..0x14]
+            .copy_from_slice(&crate::parser::region::FLASH_DESCRIPTOR_SIGNATURE.to_le_bytes());
+        buf[0x14..0x18].copy_from_slice(&0x0040_0000u32.to_le_bytes());
         buf[0x404..0x406].copy_from_slice(&1u16.to_le_bytes());
         buf[0x406..0x408].copy_from_slice(&3u16.to_le_bytes());
         buf[0x408..0x40A].copy_from_slice(&4u16.to_le_bytes());

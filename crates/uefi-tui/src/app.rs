@@ -275,6 +275,8 @@ impl App {
                 None => "Image".into(),
             },
             crate::theme::TYPE_VOLUME => "Volume".into(),
+            crate::theme::TYPE_PADDING => "Padding".into(),
+            crate::theme::TYPE_FREESPACE => "Free space".into(),
             66 => uefi_common::names::file_type_name_or_raw(node.subtype),
             67 => uefi_common::names::section_type_name_or_raw(node.subtype),
             _ => format!("0x{:02X}", node.subtype),
@@ -560,5 +562,11 @@ mod tests {
         unk.node_type = 99;
         unk.subtype = 0x42;
         assert_eq!(app.node_label(&unk), "0x42");
+        let mut pad = node("4", 1);
+        pad.node_type = crate::theme::TYPE_PADDING;
+        assert_eq!(app.node_label(&pad), "Padding");
+        let mut free = node("5", 1);
+        free.node_type = crate::theme::TYPE_FREESPACE;
+        assert_eq!(app.node_label(&free), "Free space");
     }
 }

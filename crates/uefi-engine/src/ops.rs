@@ -415,8 +415,9 @@ mod tests {
 
     fn descriptor_image(region_specs: &[(usize, u16, u16)], total: usize) -> Vec<u8> {
         let mut buf = vec![0xFFu8; total];
-        buf[0..4].copy_from_slice(&crate::parser::region::FLASH_DESCRIPTOR_SIGNATURE.to_le_bytes());
-        buf[0x10..0x14].copy_from_slice(&0x0040_0000u32.to_le_bytes());
+        buf[0x10..0x14]
+            .copy_from_slice(&crate::parser::region::FLASH_DESCRIPTOR_SIGNATURE.to_le_bytes());
+        buf[0x14..0x18].copy_from_slice(&0x0040_0000u32.to_le_bytes());
         for &(i, base, limit) in region_specs {
             let at = 0x400 + i * 4;
             buf[at..at + 2].copy_from_slice(&base.to_le_bytes());

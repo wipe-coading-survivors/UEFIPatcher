@@ -2512,6 +2512,27 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
 > TODO-пункта не имели, статус трекается в roadmap. Ниже — остаточные миноры
 > из per-task ревью цикла.
 
+* [ ] **uefi-tui не создаёт сессию сам** — при старте TUI коннектится к
+  движку, но `session_create` не вызывает; `:open`/`:upload` падают с
+  «no session», пока сессию кто-то не создал. Воркараунд: инициализировать
+  сессию через `uefi-cli`, затем работать в TUI. Контекст: живое
+  использование 2026-09-11; надо звать `session_create` при первом
+  `:open`/`:upload` (или на старте) в `commands.rs`.
+* [x] **Смещения дескриптора были неверны — исправлено по живому
+  использованию (2026-09-11)** — FLVALSIG канонически лежит за 16-байтовым
+  reserved vector (offset 0x10), FLMAP0 сразу за сигнатурой (0x14), секции
+  абсолютные (`refs/UEFITool-ai-fork/common/descriptor.h:22-26`); раньше
+  парсер искал сигнатуру на 0x0 — все реальные x86-образы (HNX-фикстура,
+  Huananzhi X99) уходили на non-descriptor путь без регионов. Заодно
+  `parse_fpt` ходит по фиксированному 0x20-заголовку: байт HeaderLength
+  информационный и на живых ME считает bypass-vector (0x30 = 0x10+0x20),
+  референс `meparser.cpp:151-176` его не использует. Real-image гейт
+  `real_image_flash_regions_layout` перевёручен на дескрипторный путь
+  (регионы Descriptor/ME/BIOS, $FPT FTPR/NFTP, round-trip).
+* [ ] **parse_flash_regions: underflow на malformed FLREG (limit < base)**
+  — `(limit+1-base)` паникует в debug, wraps в release (bounds-check может
+  быть обойдён wrap'ом). Контекст: испорченный/враждебный дескриптор;
+  хардинг `checked_sub` + skip.
 * [ ] **TUI: маркеры действий мертвы после flush-re-parse** — после
   `9552cf8` (flush = re-parse) каждая мутация пересобирает дерево из байтов,
   `action` у всех узлов всегда 50 — pending-маркеры (`+`/`-`/`*`/`~`) и их
