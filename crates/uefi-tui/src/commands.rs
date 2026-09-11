@@ -734,6 +734,95 @@ pub async fn execute_command(
                         .collect::<Vec<_>>()
                         .join(","))
                 }
+                "question" => {
+                    if parts.get(2).copied() != Some("add") {
+                        return Err("usage: :hii question add TARGET#FORM FILE".into());
+                    }
+                    let item = parts
+                        .get(3)
+                        .ok_or("usage: :hii question add TARGET#FORM FILE")?;
+                    let file = parts
+                        .get(4)
+                        .ok_or("usage: :hii question add TARGET#FORM FILE")?;
+                    let schema_json = read_schema(file)?;
+                    let r = client
+                        .inner
+                        .hii_question_add(auth_req(
+                            &client.state,
+                            HiiQuestionAddRequest {
+                                image_id: iid,
+                                target: item.to_string(),
+                                schema_json,
+                            },
+                        ))
+                        .await
+                        .map_err(|e| e.message().to_string())?
+                        .into_inner();
+                    refresh_tree(app, client).await?;
+                    reload_forms(app, client).await?;
+                    let _ = refresh_form_details_if_needed(app, client).await;
+                    app.status_msg = question_add_status(&r.questions, &r.refs);
+                    Ok(r.questions
+                        .iter()
+                        .map(|o| format!("{:#x}", o.question_id))
+                        .collect::<Vec<_>>()
+                        .join(","))
+                }
+                "page" => {
+                    if parts.get(2).copied() != Some("add") {
+                        return Err("usage: :hii page add TARGET FILE".into());
+                    }
+                    let target = parts.get(3).ok_or("usage: :hii page add TARGET FILE")?;
+                    let file = parts.get(4).ok_or("usage: :hii page add TARGET FILE")?;
+                    let schema_json = read_schema(file)?;
+                    let r = client
+                        .inner
+                        .hii_page_add(auth_req(
+                            &client.state,
+                            HiiPageAddRequest {
+                                image_id: iid,
+                                target: target.to_string(),
+                                schema_json,
+                            },
+                        ))
+                        .await
+                        .map_err(|e| e.message().to_string())?
+                        .into_inner();
+                    refresh_tree(app, client).await?;
+                    reload_forms(app, client).await?;
+                    let _ = refresh_form_details_if_needed(app, client).await;
+                    app.status_msg = page_add_status(&r);
+                    Ok(r.form_id.to_string())
+                }
+                "hijack" => {
+                    let target = parts
+                        .get(2)
+                        .ok_or("usage: :hii hijack TARGET FILE [SETUPDATA-GUID]")?;
+                    let file = parts
+                        .get(3)
+                        .ok_or("usage: :hii hijack TARGET FILE [SETUPDATA-GUID]")?;
+                    let setupdata_guid = parts.get(4).copied().unwrap_or_default();
+                    let schema_json = read_schema(file)?;
+                    let r = client
+                        .inner
+                        .hii_form_hijack(auth_req(
+                            &client.state,
+                            HiiFormHijackRequest {
+                                image_id: iid,
+                                target: target.to_string(),
+                                schema_json,
+                                setupdata_guid: setupdata_guid.to_string(),
+                            },
+                        ))
+                        .await
+                        .map_err(|e| e.message().to_string())?
+                        .into_inner();
+                    refresh_tree(app, client).await?;
+                    reload_forms(app, client).await?;
+                    let _ = refresh_form_details_if_needed(app, client).await;
+                    app.status_msg = hijack_status(&r);
+                    Ok(target.to_string())
+                }
                 other => Err(format!("unknown hii subcommand: {other}")),
             }
         }
