@@ -477,11 +477,11 @@ async fn remove_rpc_leaves_clean_tree() {
     );
     let files: Vec<&_> = nodes.iter().filter(|n| n.node_type == 66).collect();
     assert_eq!(files.len(), 1, "removed file must disappear from the tree");
-    assert_eq!(files[0].offset, 88, "survivor is the second fixture file");
+    assert_eq!(files[0].offset, 56, "survivor re-materialized first in the rebuilt FV");
 }
 ```
 
-(Rule-11-фикс ассерта: пути позиционные — после удаления выживший файл занимает "0/0"; проверяем «остался один File и это выживший».)
+(Rule-11-фикс ассерта: пути позиционные — после удаления выживший файл занимает "0/0". Дополнительный фикс финального ревью: с механизмом flush-re-parse (фикс 4f991d7) offset выжившего — 56, не 88 — пересобранный FV кладёт оставшийся файл в начало тела, а re-parse отражает записанные байты.)
 
 Дополнительный гейт воскрешения (rule-11-фикс №2 — регрессия stale-body, которую prune не ловил): после `remove "0/0"` повторно сохранить образ (мутация в другом поддереве или явный save — что даёт второй flush) и проверить записанные байты уровня данных, а не дерева:
 
