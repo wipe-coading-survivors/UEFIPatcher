@@ -341,6 +341,33 @@ set-value 0x5` → `image save`. Паритет §8: sha256 TUI- и CLI-резу
 Ступень V2 закрыта. Следующий шаг дуги — план V3 (операции добавления:
 `:hii question-add/page-add` из TUI, schema-файлы, решение D5).
 
+## 9. Гейт V3 — сценарий для владельца (аддендум, 2026-09-11)
+
+Гейт — паритет байт-в-байт (sha256) TUI/CLI на операциях добавления; спека-схемы —
+fixtures дуги setup-new-page (`crates/uefi-engine/tests/data/serial/`). Живой движок,
+образ HNX99TF, режим write.
+
+1. `cargo run -p uefi-engine`; в другом терминале `cargo run -p uefi-tui`;
+   `:open <HNX99TF> --mode write`; `Tab` → Forms-view.
+2. Prefill: `a` на FormSet-строке → `hii formset add `; `Esc`; `a` на форме →
+   `hii form add <target> ` (target подставлен из выделения, D6).
+3. Formset-add: `:hii formset add crates/uefi-engine/tests/data/serial/np_form.json`
+   → статус «formset added: ffs … · forms … · strings …»; список форм пополнился
+   (reload); `Tab` → Image-view: новый FFS-файл в дереве.
+4. Question-add паритет: `:snapshot`; `:hii question add <TARGET>#<FORM>
+   <…>/s3_questions.json`; `:save /tmp/tui-qadd.bin`; `:restore <snap-id>`.
+   Затем CLI: `uefi-cli image open <HNX99TF> --mode write` →
+   `uefi-cli hii question add <ITEM> --file <…>/s3_questions.json` →
+   `uefi-cli image save /tmp/cli-qadd.bin`. `sha256sum` обоих файлов совпадает.
+5. Form-add паритет: тот же цикл с form-add fixture из `data/serial/` (`np_form*.json`)
+   против живого формсета образа; sha256 совпадает.
+6. Completion: `hii q<TAB>` → `question`; `hii question add <TAB>` → item-кандидаты;
+   позиция файла — `<TAB>` по префиксу каталога (спуск в каталоги через `/`);
+   `hii formset add f.json --<TAB>` → `--ffs`, значение — гуиды формсетов.
+
+Вердикт (да/нет по пунктам + выводы sha256sum) — аддендумом сюда; успех = дуга
+V1–V3 закрыта: полный редактор форм в TUI (просмотр → правки → добавление).
+
 ## Решения (decisions log)
 
 - **D1:** Полноэкранные вкладки `Tab`/`Shift-Tab` (Image ↔ Forms), не панель и не оверлей —
