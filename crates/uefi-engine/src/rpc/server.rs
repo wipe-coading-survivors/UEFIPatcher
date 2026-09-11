@@ -17,7 +17,8 @@ use crate::parser::target::{find_item, parse_target};
 use crate::session::SessionManager;
 use crate::storage::Db;
 use crate::storage::image::{
-    atomic_write, read_image_file, remove_image_file, store_image_file, store_snapshot_file,
+    atomic_write, read_image_file, read_snapshot_file, remove_image_file, store_image_file,
+    store_snapshot_file,
 };
 use crate::types::{Guid, Image, ImageMode};
 
@@ -1095,14 +1096,12 @@ impl EngineService for EngineServer {
         let bytes = read_image_file(&self.data_dir, &row.session_id, &r.image_id)
             .map_err(|e| Status::internal(e.to_string()))?;
         let snapshot_id = Uuid::new_v4().to_string();
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
         let name = if r.name.is_empty() {
-            format!(
-                "snap-{}",
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs()
-            )
+            format!("snap-{now_secs}")
         } else {
             r.name
         };
@@ -1114,19 +1113,22 @@ impl EngineService for EngineServer {
             &bytes,
         )
         .map_err(|e| Status::internal(e.to_string()))?;
-        let created_at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
         self.sm
             .db
             .lock()
             .unwrap()
-            .insert_image_snapshot(&snapshot_id, &r.image_id, &name, bytes.len() as i64)
+            .insert_image_snapshot(
+                &snapshot_id,
+                &r.image_id,
+                &name,
+                bytes.len() as i64,
+                now_secs as i64,
+            )
             .map_err(|e| Status::internal(e.to_string()))?;
+        let _ = self.sm.touch(&row.session_id);
         Ok(Response::new(ImageSnapshotCreateResponse {
             snapshot_id,
-            created_at,
+            created_at: now_secs as i64,
         }))
     }
 
@@ -1154,6 +1156,54 @@ impl EngineService for EngineServer {
                 })
                 .collect(),
         }))
+    }
+
+    #[tracing::instrument(skip(self, req), err)]
+    async fn image_snapshot_restore(
+        &self,
+        req: Request<ImageSnapshotRestoreRequest>,
+    ) -> RpcResult<Empty> {
+        let r = req.into_inner();
+        let snap = self
+            .sm
+            .db
+            .lock()
+            .unwrap()
+            .get_image_snapshot(&r.snapshot_id)
+            .map_err(|e| Status::internal(e.to_string()))?
+            .ok_or_else(|| Status::not_found("snapshot not found"))?;
+        if snap.image_id != r.image_id {
+            return Err(Status::invalid_argument(
+                "snapshot belongs to another image",
+            ));
+        }
+        let row = self
+            .sm
+            .db
+            .lock()
+            .unwrap()
+            .get_image(&r.image_id)
+            .map_err(|e| Status::internal(e.to_string()))?
+            .ok_or_else(|| Status::not_found("image not found"))?;
+        let bytes =
+            read_snapshot_file(&self.data_dir, &row.session_id, &r.image_id, &r.snapshot_id)
+                .map_err(|e| Status::internal(e.to_string()))?;
+        let path = self
+            .data_dir
+            .join("sessions")
+            .join(&row.session_id)
+            .join("images")
+            .join(format!("{}.bin", r.image_id));
+        atomic_write(&path, &bytes).map_err(|e| Status::internal(e.to_string()))?;
+        self.images.lock().await.remove(&r.image_id);
+        self.sm
+            .db
+            .lock()
+            .unwrap()
+            .touch_image(&r.image_id)
+            .map_err(|e| Status::internal(e.to_string()))?;
+        tracing::info!(image_id = %r.image_id, snapshot_id = %r.snapshot_id, "snapshot restored");
+        Ok(Response::new(Empty {}))
     }
 }
 
@@ -1207,13 +1257,17 @@ mod tests {
     use tower::service_fn;
     use uefi_proto::engine_service_client::EngineServiceClient;
 
-    async fn setup() -> (TempDir, EngineServiceClient<Channel>) {
-        let td = TempDir::new().unwrap();
-        let sock = td.path().join("test.sock");
-        let db = crate::storage::open_db(&td.path().join("db.sqlite")).unwrap();
+    async fn spawn_engine_on(
+        dir: &Path,
+    ) -> (
+        EngineServiceClient<Channel>,
+        Vec<tokio::task::JoinHandle<()>>,
+    ) {
+        let sock = dir.join(format!("{}.sock", uuid::Uuid::new_v4().simple()));
+        let db = crate::storage::open_db(&dir.join("db.sqlite")).unwrap();
         let sm = Arc::new(SessionManager::new(
             db,
-            td.path().to_path_buf(),
+            dir.to_path_buf(),
             Duration::from_secs(864000),
             Duration::from_secs(3600),
             false,
@@ -1222,11 +1276,11 @@ mod tests {
         let server = EngineServer {
             sm,
             images,
-            data_dir: td.path().to_path_buf(),
+            data_dir: dir.to_path_buf(),
         };
         let listener = tokio::net::UnixListener::bind(&sock).unwrap();
         let incoming = tokio_stream::wrappers::UnixListenerStream::new(listener);
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             Server::builder()
                 .add_service(
                     EngineServiceServer::new(server).max_decoding_message_size(64 * 1024 * 1024),
@@ -1247,7 +1301,13 @@ mod tests {
             }))
             .await
             .unwrap();
-        (td, EngineServiceClient::new(channel))
+        (EngineServiceClient::new(channel), vec![handle])
+    }
+
+    async fn setup() -> (TempDir, EngineServiceClient<Channel>) {
+        let td = TempDir::new().unwrap();
+        let (client, _keep) = spawn_engine_on(td.path()).await;
+        (td, client)
     }
 
     #[test]
@@ -2208,6 +2268,18 @@ mod tests {
             .session_id
     }
 
+    async fn list_nodes(client: &mut EngineServiceClient<Channel>, image_id: &str) -> Vec<Node> {
+        client
+            .image_nodes_list(tonic::Request::new(ImageNodesListRequest {
+                image_id: image_id.into(),
+                filter: String::new(),
+            }))
+            .await
+            .unwrap()
+            .into_inner()
+            .nodes
+    }
+
     fn fv_image_with_two_files() -> Vec<u8> {
         let mut buf = vec![0xFFu8; 256];
         buf[32..40].copy_from_slice(&256u64.to_le_bytes());
@@ -2478,6 +2550,84 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(st.code(), tonic::Code::NotFound);
+    }
+
+    #[tokio::test]
+    async fn snapshot_restore_rolls_tree_back() {
+        let td = tempfile::TempDir::new().unwrap();
+        let (mut client, _keep) = spawn_engine_on(td.path()).await;
+        let sid = create_session(&mut client).await;
+        let src = td.path().join("img.bin");
+        std::fs::write(&src, fv_image_with_two_files()).unwrap();
+        let open = client
+            .image_open(tonic::Request::new(ImageOpenRequest {
+                session_id: sid,
+                path: src.display().to_string(),
+                mode: 1,
+                name: "t".into(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+
+        client
+            .image_node_remove(tonic::Request::new(ImageNodeRemoveRequest {
+                image_id: open.image_id.clone(),
+                target: "0/0".into(),
+            }))
+            .await
+            .unwrap();
+        let nodes_at_snapshot = list_nodes(&mut client, &open.image_id).await;
+        let snap = client
+            .image_snapshot_create(tonic::Request::new(ImageSnapshotCreateRequest {
+                image_id: open.image_id.clone(),
+                name: "before-second-cut".into(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+
+        client
+            .image_node_remove(tonic::Request::new(ImageNodeRemoveRequest {
+                image_id: open.image_id.clone(),
+                target: "0/0".into(),
+            }))
+            .await
+            .unwrap();
+
+        client
+            .image_snapshot_restore(tonic::Request::new(ImageSnapshotRestoreRequest {
+                image_id: open.image_id.clone(),
+                snapshot_id: snap.snapshot_id.clone(),
+            }))
+            .await
+            .unwrap();
+        let nodes_after = list_nodes(&mut client, &open.image_id).await;
+        assert_eq!(
+            nodes_at_snapshot, nodes_after,
+            "restore must roll the tree back to snapshot state"
+        );
+
+        drop(client);
+        let (mut client2, _keep2) = spawn_engine_on(td.path()).await;
+        let listed = client2
+            .image_snapshots_list(tonic::Request::new(ImageSnapshotsListRequest {
+                image_id: open.image_id.clone(),
+            }))
+            .await
+            .unwrap()
+            .into_inner()
+            .snapshots;
+        assert_eq!(listed.len(), 1, "snapshots survive engine restart");
+        assert_eq!(listed[0].name, "before-second-cut");
+
+        let bad = client2
+            .image_snapshot_restore(tonic::Request::new(ImageSnapshotRestoreRequest {
+                image_id: open.image_id.clone(),
+                snapshot_id: "nope".into(),
+            }))
+            .await;
+        assert!(bad.is_err());
     }
 
     #[tokio::test]

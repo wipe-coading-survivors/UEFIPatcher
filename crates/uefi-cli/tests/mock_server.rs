@@ -361,6 +361,12 @@ impl EngineService for MockEngine {
             snapshots: vec![],
         }))
     }
+    async fn image_snapshot_restore(
+        &self,
+        _req: Request<ImageSnapshotRestoreRequest>,
+    ) -> Result<Response<Empty>, Status> {
+        Ok(Response::new(Empty {}))
+    }
 }
 
 fn mock_question() -> QuestionInfo {

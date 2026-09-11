@@ -305,10 +305,11 @@ impl Db {
         image_id: &str,
         name: &str,
         size: i64,
+        created_at: i64,
     ) -> Result<()> {
         self.conn.execute(
             "INSERT INTO image_snapshots (id, image_id, name, size, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![id, image_id, name, size, now()],
+            params![id, image_id, name, size, created_at],
         )?;
         Ok(())
     }
@@ -501,10 +502,12 @@ mod tests {
         let (_td, db) = test_db();
         db.insert_session("s1", "tok", "n").unwrap();
         db.insert_image("i1", "s1", "n", "p", 1, 16).unwrap();
-        db.insert_image_snapshot("sn1", "i1", "before", 16).unwrap();
+        db.insert_image_snapshot("sn1", "i1", "before", 16, 123)
+            .unwrap();
         let rows = db.list_image_snapshots("i1").unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].name, "before");
+        assert_eq!(rows[0].created_at, 123);
         assert_eq!(
             db.get_image_snapshot("sn1").unwrap().unwrap().image_id,
             "i1"

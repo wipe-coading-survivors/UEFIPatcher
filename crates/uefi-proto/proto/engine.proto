@@ -40,6 +40,7 @@ service EngineService {
 
   rpc ImageSnapshotCreate(ImageSnapshotCreateRequest)   returns (ImageSnapshotCreateResponse);
   rpc ImageSnapshotsList(ImageSnapshotsListRequest)     returns (ImageSnapshotsListResponse);
+  rpc ImageSnapshotRestore(ImageSnapshotRestoreRequest) returns (Empty);
 }
 
 enum ImageMode { READ = 0; WRITE = 1; }
@@ -312,5 +313,9 @@ message ImageSnapshotInfo {
 }
 message ImageSnapshotsListRequest  { string image_id = 1; }
 message ImageSnapshotsListResponse { repeated ImageSnapshotInfo snapshots = 1; }
+message ImageSnapshotRestoreRequest {
+  string image_id = 1;
+  string snapshot_id = 2;
+}
 
 message Empty {}
