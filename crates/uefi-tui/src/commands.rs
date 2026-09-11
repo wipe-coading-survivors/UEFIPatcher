@@ -129,6 +129,15 @@ fn mode_to_i32(s: &str) -> Result<i32, String> {
     }
 }
 
+fn parse_u64_loose(s: &str) -> Result<u64, String> {
+    if let Some(hex) = s.strip_prefix("0x") {
+        u64::from_str_radix(hex, 16)
+    } else {
+        s.parse::<u64>()
+    }
+    .map_err(|e| format!("invalid value '{s}': {e}"))
+}
+
 pub async fn execute_command(
     app: &mut App,
     cmdline: &str,
@@ -531,6 +540,108 @@ pub async fn execute_command(
             app.status_msg = format!("forms: {}", app.forms.forms.len());
             Ok("forms".into())
         }
+        "hii" => {
+            let sub = parts.get(1).copied().ok_or(
+                "usage: :hii set-value ITEM VALUE | :hii visibility ITEM on|off | :hii unlock ITEM",
+            )?;
+            let iid = client
+                .state
+                .active_image_id
+                .clone()
+                .ok_or("no active image")?;
+            match sub {
+                "set-value" => {
+                    let item = parts
+                        .get(2)
+                        .ok_or("usage: :hii set-value ITEM VALUE")?
+                        .to_string();
+                    let value =
+                        parse_u64_loose(parts.get(3).ok_or("usage: :hii set-value ITEM VALUE")?)?;
+                    let r = client
+                        .inner
+                        .hii_set_value(auth_req(
+                            &client.state,
+                            HiiSetValueRequest {
+                                image_id: iid,
+                                item_id: item.clone(),
+                                value,
+                            },
+                        ))
+                        .await
+                        .map_err(|e| e.message().to_string())?
+                        .into_inner();
+                    reload_forms(app, client).await?;
+                    let _ = refresh_questions_if_needed(app, client).await;
+                    let flips = if r.applied_flips.is_empty() {
+                        "none".to_string()
+                    } else {
+                        r.applied_flips.join(" · ")
+                    };
+                    let stores = if r.stores.is_empty() {
+                        "none".to_string()
+                    } else {
+                        r.stores.join(" · ")
+                    };
+                    app.status_msg = format!("set {item}={value}: flips {flips} · stores {stores}");
+                    Ok(item)
+                }
+                "visibility" => {
+                    let item = parts
+                        .get(2)
+                        .ok_or("usage: :hii visibility ITEM on|off")?
+                        .to_string();
+                    let visible = match parts.get(3) {
+                        Some(&"on") => true,
+                        Some(&"off") => false,
+                        _ => return Err("usage: :hii visibility ITEM on|off".into()),
+                    };
+                    client
+                        .inner
+                        .hii_set_form_visibility(auth_req(
+                            &client.state,
+                            HiiSetFormVisibilityRequest {
+                                image_id: iid,
+                                item_id: item.clone(),
+                                visible,
+                            },
+                        ))
+                        .await
+                        .map_err(|e| e.message().to_string())?;
+                    reload_forms(app, client).await?;
+                    let _ = refresh_questions_if_needed(app, client).await;
+                    app.status_msg =
+                        format!("visibility {item}: {}", if visible { "on" } else { "off" });
+                    Ok(item)
+                }
+                "unlock" => {
+                    let item = parts.get(2).ok_or("usage: :hii unlock ITEM")?.to_string();
+                    let r = client
+                        .inner
+                        .hii_unlock(auth_req(
+                            &client.state,
+                            HiiUnlockRequest {
+                                image_id: iid,
+                                item_id: item.clone(),
+                            },
+                        ))
+                        .await
+                        .map_err(|e| e.message().to_string())?
+                        .into_inner();
+                    reload_forms(app, client).await?;
+                    let _ = refresh_questions_if_needed(app, client).await;
+                    app.status_msg = if r.applied_flips.is_empty() {
+                        format!(
+                            "unlock {item}: no flippable gates ({} gates)",
+                            r.gates.len()
+                        )
+                    } else {
+                        format!("unlock {item}: {}", r.applied_flips.join(" · "))
+                    };
+                    Ok(item)
+                }
+                other => Err(format!("unknown hii subcommand: {other}")),
+            }
+        }
         "filter" => {
             if !app.forms.show_strings {
                 return Err("filter is for the strings browser (S to open)".into());
@@ -585,6 +696,7 @@ const COMMANDS: &[&str] = &[
     "filter",
     "goto",
     "g",
+    "hii",
     "upload",
     "snapshot",
     "snapshots",
@@ -666,6 +778,27 @@ fn context_candidates(app: &App, cmd: &str, head: &[&str], token: &str) -> Vec<S
             .filter(|c| c.starts_with(token))
             .map(|s| s.to_string())
             .collect();
+    }
+    if cmd == "hii" {
+        if head.len() == 1 {
+            return ["set-value", "visibility", "unlock"]
+                .iter()
+                .filter(|c| c.starts_with(token))
+                .map(|s| s.to_string())
+                .collect();
+        }
+        if matches!(head[1], "set-value" | "visibility" | "unlock")
+            && !head[2..].iter().any(|s| !s.starts_with("--"))
+        {
+            return app
+                .forms
+                .forms
+                .iter()
+                .map(|f| format!("{}#{}", f.form_id, f.form_id_ifr))
+                .filter(|c| c.starts_with(token))
+                .collect();
+        }
+        return vec![];
     }
     let has_positional = head[1..].iter().any(|s| !s.starts_with("--"));
     let target_cmds = [
@@ -977,6 +1110,42 @@ mod tests {
                 "--artifact-id".to_string(),
                 "--mode".to_string()
             ]
+        );
+    }
+
+    #[test]
+    fn parse_u64_loose_hex_and_dec() {
+        assert_eq!(parse_u64_loose("0x1").unwrap(), 1);
+        assert_eq!(parse_u64_loose("0xFF").unwrap(), 255);
+        assert_eq!(parse_u64_loose("42").unwrap(), 42);
+        assert!(parse_u64_loose("0xG").is_err());
+        assert!(parse_u64_loose("").is_err());
+    }
+
+    #[test]
+    fn complete_hii_verbs_and_item_ids() {
+        let mut app = crate::app::App::new();
+        app.forms.forms = vec![uefi_proto::FormInfo {
+            form_id: "t:0x19:0".into(),
+            formset_guid: "S".into(),
+            form_id_ifr: 10001,
+            title: "Main".into(),
+            visible: true,
+        }];
+        let (_, opts) = complete(&app, "hii ");
+        assert_eq!(
+            opts,
+            vec![
+                "set-value".to_string(),
+                "visibility".to_string(),
+                "unlock".to_string()
+            ]
+        );
+        let (rep, opts) = complete(&app, "hii set-value ");
+        assert_eq!(rep.as_deref(), Some("hii set-value t:0x19:0#10001"));
+        assert!(
+            opts.is_empty(),
+            "unique candidate completes directly, no menu"
         );
     }
 

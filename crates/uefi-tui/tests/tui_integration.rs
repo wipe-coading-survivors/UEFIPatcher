@@ -236,3 +236,66 @@ async fn forms_tree_mode_nested_path() {
         "плоский режим: без вложенности и пути"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hii_verbs_visibility_setvalue_unlock() {
+    let td = tempfile::TempDir::new().unwrap();
+    let sock = td.path().join("test.sock");
+    let _handle = mock_server::start_mock(&sock).await;
+    let state = uefi_common::State {
+        session_id: Some("s1".into()),
+        token: Some("t1".into()),
+        active_image_id: None,
+        sock_path: Some(sock.display().to_string()),
+    };
+    let mut client = uefi_tui::commands::connect(None, state).await.unwrap();
+    let mut app = uefi_tui::app::App::new();
+    uefi_tui::commands::execute_command(&mut app, "open /dev/null", &mut client)
+        .await
+        .unwrap();
+    uefi_tui::commands::execute_command(&mut app, "forms", &mut client)
+        .await
+        .unwrap();
+    let item = "11111111-2222-3333-4444-555555555555:0x19:0#10001";
+
+    uefi_tui::commands::execute_command(
+        &mut app,
+        &format!("hii visibility {item} off"),
+        &mut client,
+    )
+    .await
+    .unwrap();
+    assert!(app.status_msg.contains("visibility"));
+    assert_eq!(app.forms.forms.len(), 3, "forms reloaded after mutation");
+
+    uefi_tui::commands::execute_command(
+        &mut app,
+        &format!("hii set-value {item}:0x210 1"),
+        &mut client,
+    )
+    .await
+    .unwrap();
+    assert!(app.status_msg.contains("flips pkg+0x3e: 01 -> 00"));
+
+    uefi_tui::commands::execute_command(&mut app, &format!("hii unlock {item}"), &mut client)
+        .await
+        .unwrap();
+    assert!(app.status_msg.contains("unlock"));
+
+    assert!(
+        uefi_tui::commands::execute_command(
+            &mut app,
+            &format!("hii set-value {item} abc"),
+            &mut client
+        )
+        .await
+        .is_err(),
+        "нечисловой value — ошибка"
+    );
+    assert!(
+        uefi_tui::commands::execute_command(&mut app, "hii bogus x", &mut client)
+            .await
+            .is_err(),
+        "неизвестный глагол — ошибка"
+    );
+}

@@ -378,7 +378,7 @@ impl EngineService for MockEngine {
     ) -> Result<Response<HiiUnlockResponse>, Status> {
         Ok(Response::new(HiiUnlockResponse {
             gates: vec![],
-            applied_flips: vec![],
+            applied_flips: vec!["pkg+0x1c: 01 00 -> ff ff".into()],
         }))
     }
     async fn hii_question_info(
@@ -391,7 +391,15 @@ impl EngineService for MockEngine {
         &self,
         _req: Request<HiiSetValueRequest>,
     ) -> Result<Response<HiiSetValueResponse>, Status> {
-        Ok(Response::new(HiiSetValueResponse::default()))
+        Ok(Response::new(HiiSetValueResponse {
+            question: Some(QuestionInfo {
+                question_id: 0x210,
+                kind: "one_of".into(),
+                ..Default::default()
+            }),
+            applied_flips: vec!["pkg+0x3e: 01 -> 00".into()],
+            stores: vec!["Setup".into()],
+        }))
     }
     async fn hii_question_add(
         &self,
