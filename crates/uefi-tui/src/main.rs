@@ -122,6 +122,9 @@ async fn handle_normal(app: &mut App, ev: &AppEvent, client: &mut Option<command
         AppEvent::Enter if app.focus == Focus::Registry => {
             handle_registry_enter(app, client).await;
         }
+        AppEvent::Key('/') => {
+            app.enter_insert_mode("goto", "goto ".into());
+        }
         _ => {}
     }
 }
@@ -144,6 +147,16 @@ async fn handle_command(app: &mut App, ev: &AppEvent, client: &mut Option<comman
         AppEvent::Esc => app.exit_to_normal(),
         AppEvent::Backspace => {
             app.cmdline.pop();
+        }
+        AppEvent::Tab => {
+            let cmdline = app.cmdline.clone();
+            let (rep, opts) = commands::complete(app, &cmdline);
+            if let Some(r) = rep {
+                app.cmdline = r;
+            }
+            if !opts.is_empty() {
+                app.status_msg = format!("options: {}", opts.join(" "));
+            }
         }
         _ => {}
     }

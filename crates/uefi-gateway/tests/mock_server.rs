@@ -63,6 +63,16 @@ impl EngineService for MockEngine {
             name: "mock.bin".into(),
         }))
     }
+    async fn image_upload(
+        &self,
+        _req: Request<ImageUploadRequest>,
+    ) -> Result<Response<ImageOpenResponse>, Status> {
+        Ok(Response::new(ImageOpenResponse {
+            image_id: "mock".into(),
+            root_guid: String::new(),
+            name: "mock.bin".into(),
+        }))
+    }
     async fn image_close(
         &self,
         _req: Request<ImageCloseRequest>,
@@ -104,6 +114,7 @@ impl EngineService for MockEngine {
                 size: 256,
                 name: String::new(),
                 action: 0,
+                region: String::new(),
             }],
         }))
     }
@@ -250,6 +261,29 @@ impl EngineService for MockEngine {
         _req: Request<HiiPageAddRequest>,
     ) -> Result<Response<HiiPageAddResponse>, Status> {
         Ok(Response::new(HiiPageAddResponse::default()))
+    }
+    async fn image_snapshot_create(
+        &self,
+        _req: Request<ImageSnapshotCreateRequest>,
+    ) -> Result<Response<ImageSnapshotCreateResponse>, Status> {
+        Ok(Response::new(ImageSnapshotCreateResponse {
+            snapshot_id: "mock-snap".into(),
+            created_at: 0,
+        }))
+    }
+    async fn image_snapshots_list(
+        &self,
+        _req: Request<ImageSnapshotsListRequest>,
+    ) -> Result<Response<ImageSnapshotsListResponse>, Status> {
+        Ok(Response::new(ImageSnapshotsListResponse {
+            snapshots: vec![],
+        }))
+    }
+    async fn image_snapshot_restore(
+        &self,
+        _req: Request<ImageSnapshotRestoreRequest>,
+    ) -> Result<Response<Empty>, Status> {
+        Ok(Response::new(Empty {}))
     }
 }
 

@@ -49,14 +49,14 @@
 - **Что включено**: наполнение `uefi-common` (state.rs, error.rs — полная реализация); команды session (init/list/destroy, name=CWD), image (open/switch/close/dump/list/find/save, extract/export/import/artifacts), edit (insert/remove/replace/rebuild, --from-artifact), setup (set-visibility/list-items); клиентская сессия в `.uefipatcher` (TOML) в CWD; JSON/text/tsv вывод.
 - **Вопросы для brainstorm**: разрешены — синтаксис, state, вывод, lifecycle согласованы.
 
-### Цикл 3 — TUI (план готов, к реализации)
+### Цикл 3 — TUI (реализован)
 
 - **Scope**: TUI (п.2.2) с ANSI + UTF-8 (иконки, псевдографика), аналог yazi/nvim.
 - **Зависимости**: цикл 1 (gRPC-контракт, `uefi-common`), цикл 2 (переиспользование commands).
 - **Spec**: `docs/superpowers/specs/2026-07-22-uefi-tui-design.md`
 - **Plan**: `docs/superpowers/plans/2026-07-22-uefi-tui.md`
-- **Статус**: план реализации готов (8 задач TDD), к исполнению.
-- **Что включено**: крейт `uefi-tui` (ratatui + crossterm); `uefi-common` уже существует из цикла 1 (не нужен шаг извлечения); vim-like режимы; `:`-command-line для всех операций движка (включая :extract/:export/:import/:artifacts); `:help` popup.
+- **Статус**: реализован (2026-08); пост-миграционный багфикс-цикл —
+  `2026-08-12-tui-migration-bugfix-design.md`. Дальнейшее развитие — дуга TUI (ниже).
 
 ### Цикл 4 — Менеджер сессий (ОТМЕНЁН)
 
@@ -426,6 +426,37 @@ E32-конвейер (дуга serial на E32-базе, вердикт E34).
     в гейте np1.
 Зависимости: движок + $SPF-аппенд S3/E31 (железо) + карта каналов
 hijack-v2.1 (E24–E29).
+
+## Дуга TUI Revival + Forms View (2026-09-11)
+
+Возвращение TUI к статусу полноценного рабочего инструмента + полноэкранный
+Forms View для работы с HII-формами. Решение владельца 2026-09-11: два цикла.
+Revival — «максимум всего» (метки узлов, FIND/GO, tab-completion + общий парсер
+флагов, engine name-lift через обёртки, prune Remove-узлов после flush,
+регионы flash-дескриптора: полная таблица FLREG + ME/FTPR-парсер + read-only
+индикация, `ImageUpload` RPC + `:upload`, снапшоты образа — именованные точки
+отката, аддендум 2026-09-11: журнал pending-операций отменён — все мутации
+уже write-through, персистентность правок обеспечена). Forms View — дуга малых ступеней
+V1 просмотр → V2 правки на месте → V3 schema-операции добавления; полноэкранные
+вкладки Tab/Shift-Tab (AMIBCP-канон «отдельный экран», TODO:151).
+
+- **Цикл A — TUI Revival**: Spec
+  `docs/superpowers/specs/2026-09-11-tui-revival-design.md`. Статус:
+  реализован (2026-09-11, коммиты `b0eecac..55181c0` + закрывающий
+  real-image-гейт-коммит Task 14): name-lift через обёртки, метки узлов TUI,
+  flush re-parse (чистое дерево после мутаций), `:goto`, tab-completion +
+  `uefi-common::cli`, регионы flash-дескриптора (FLREG + ME/$FPT, read-only,
+  `Node.region`), `ImageUpload` RPC + `:upload`, снапшоты образа
+  (`:snapshot`/`:snapshots`/`:restore`). Real-image гейты Task 14: 42/42
+  `#[ignore]`-тестов зелёные. Остаточные миноры — TODO.md (раздел цикла).
+- **Цикл B — TUI Forms View**: Spec (живая, ступени V1–V3 с гейтами на реальном
+  образе): `docs/superpowers/specs/2026-09-11-tui-forms-view-design.md`.
+  Статус: спека согласована; план отдельный на ступень, закрытие — вердиктами
+  (аддендумы к спеке, паттерн serial-ladder).
+
+Зависимости: циклы 1–2 (RPC-контракт, CLI-паритет); engine-добавки —
+`HiiListQuestions` (B/V1), `ImageUpload` (A7). HII-мутационная база — дуги
+hijack/setup-new-page.
 
 ## Связи между циклами
 

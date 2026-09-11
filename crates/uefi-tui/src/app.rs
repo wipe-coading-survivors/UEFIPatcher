@@ -42,6 +42,7 @@ pub struct TreeNode {
     pub subtype: u8,
     pub guid: Option<String>,
     pub name: String,
+    pub region: String,
     pub action: u8,
     pub expanded: bool,
     pub has_children: bool,
@@ -177,6 +178,31 @@ impl App {
         }
     }
 
+    pub fn goto_path(&mut self, target: &str) -> Result<(), String> {
+        let norm = target.trim_start_matches('/');
+        let idx = self
+            .tree
+            .iter()
+            .position(|n| n.path == norm)
+            .ok_or_else(|| format!("no node at path {target}"))?;
+        let want = crate::tree::segments(norm);
+        for node in &mut self.tree {
+            let segs = crate::tree::segments(&node.path);
+            if segs.len() < want.len()
+                && segs.iter().zip(want.iter()).all(|(a, b)| a == b)
+                && node.has_children
+            {
+                node.expanded = true;
+            }
+        }
+        let vis = self.visible();
+        self.cursor = vis
+            .iter()
+            .position(|&v| v == idx)
+            .ok_or("node hidden after expand")?;
+        Ok(())
+    }
+
     pub fn focus_next(&mut self) {
         self.focus = self.focus.next();
     }
@@ -232,6 +258,30 @@ impl App {
         self.cmdline.clear();
         self.insert_cmd = "";
     }
+
+    pub fn node_label(&self, node: &TreeNode) -> String {
+        if !node.name.is_empty() {
+            return node.name.clone();
+        }
+        match node.node_type {
+            crate::theme::TYPE_IMAGE => match &self.active_image_id {
+                Some(id) => self
+                    .registry
+                    .images
+                    .iter()
+                    .find(|i| &i.image_id == id)
+                    .map(|i| i.name.clone())
+                    .unwrap_or_else(|| id.clone()),
+                None => "Image".into(),
+            },
+            crate::theme::TYPE_VOLUME => "Volume".into(),
+            crate::theme::TYPE_PADDING => "Padding".into(),
+            crate::theme::TYPE_FREESPACE => "Free space".into(),
+            66 => uefi_common::names::file_type_name_or_raw(node.subtype),
+            67 => uefi_common::names::section_type_name_or_raw(node.subtype),
+            _ => format!("0x{:02X}", node.subtype),
+        }
+    }
 }
 
 impl Default for App {
@@ -252,8 +302,13 @@ pub fn details_text(node: &TreeNode) -> String {
     } else {
         format!("{} (0x{:02X})", sub_name, node.subtype)
     };
+    let region_part = if node.region.is_empty() {
+        String::new()
+    } else {
+        format!("\nRegion:   {} (read-only)", node.region)
+    };
     format!(
-        "Path:     {}\nType:     {} ({} / 0x{:02X})\nSubtype:  {}\nGUID:     {}\nName:     {}\nAction:   {}\nChildren: {}",
+        "Path:     {}\nType:     {} ({} / 0x{:02X})\nSubtype:  {}\nGUID:     {}\nName:     {}\nAction:   {}\nChildren: {}{}",
         node.path,
         type_name,
         node.node_type,
@@ -263,6 +318,7 @@ pub fn details_text(node: &TreeNode) -> String {
         node.name,
         node.action,
         node.has_children,
+        region_part,
     )
 }
 
@@ -279,6 +335,7 @@ mod tests {
             subtype: 0,
             guid: None,
             name: String::new(),
+            region: String::new(),
             action: ACTION_NO,
             expanded: true,
             has_children: depth == 0,
@@ -396,6 +453,7 @@ mod tests {
             subtype: 0x07,
             guid: Some("ABC".into()),
             name: "Setup".into(),
+            region: String::new(),
             action: ACTION_NO,
             expanded: false,
             has_children: true,
@@ -419,10 +477,96 @@ mod tests {
             action: ACTION_NO,
             expanded: true,
             has_children: true,
+            region: String::new(),
         };
         let t = details_text(&v);
         assert!(t.contains("Type:     Volume (65 / 0x41)"));
         assert!(t.contains("Subtype:  0x00"));
         assert!(t.contains("GUID:     (none)"));
+    }
+
+    #[test]
+    fn details_text_region_read_only_line() {
+        let r = TreeNode {
+            path: "0".into(),
+            depth: 1,
+            node_type: crate::theme::TYPE_REGION,
+            subtype: 0,
+            guid: None,
+            name: "ME region".into(),
+            action: ACTION_NO,
+            expanded: false,
+            has_children: true,
+            region: "ME".into(),
+        };
+        let t = details_text(&r);
+        assert!(t.contains("Region:   ME (read-only)"));
+    }
+
+    #[test]
+    fn node_label_image_from_registry_name() {
+        let mut app = App::new();
+        app.active_image_id = Some("img-9".into());
+        app.registry.images = vec![ImageInfo {
+            image_id: "img-9".into(),
+            name: "HNX99TF.bin".into(),
+            ..Default::default()
+        }];
+        assert_eq!(app.node_label(&node("", 0)), "HNX99TF.bin");
+    }
+
+    #[test]
+    fn node_label_image_fallback_when_no_registry_match() {
+        let mut app = App::new();
+        app.active_image_id = Some("img-9".into());
+        assert_eq!(app.node_label(&node("", 0)), "img-9");
+        app.active_image_id = None;
+        assert_eq!(app.node_label(&node("", 0)), "Image");
+    }
+
+    #[test]
+    fn goto_path_expands_ancestors_and_moves_cursor() {
+        let mut app = App::new();
+        app.tree = vec![node("", 0), node("0", 1), node("0/0", 2), node("0/0/0", 3)];
+        app.cursor = 0;
+        app.goto_path("0/0/0").unwrap();
+        assert!(app.tree[1].expanded);
+        assert!(app.tree[2].expanded);
+        assert_eq!(app.selected_path().as_deref(), Some("0/0/0"));
+    }
+
+    #[test]
+    fn goto_path_accepts_leading_slash_and_errors_on_miss() {
+        let mut app = App::new();
+        app.tree = vec![node("", 0), node("0", 1)];
+        app.goto_path("/0").unwrap();
+        assert_eq!(app.selected_path().as_deref(), Some("0"));
+        assert!(app.goto_path("9/9").is_err());
+    }
+
+    #[test]
+    fn node_label_volume_and_subtype_fallback() {
+        let app = App::new();
+        let mut vol = node("0", 1);
+        vol.node_type = 65;
+        assert_eq!(app.node_label(&vol), "Volume");
+        let mut file = node("1/0", 2);
+        file.node_type = 66;
+        file.subtype = 0x07;
+        assert_eq!(app.node_label(&file), "DXE driver");
+        let mut sec = node("1/0/0", 3);
+        sec.node_type = 67;
+        sec.subtype = 0x77;
+        assert_eq!(app.node_label(&sec), "Unknown 77h");
+        let mut unk = node("3", 1);
+        unk.node_type = 99;
+        unk.subtype = 0x42;
+        assert_eq!(app.node_label(&unk), "0x42");
+        let mut pad = node("4", 1);
+        pad.node_type = crate::theme::TYPE_PADDING;
+        assert_eq!(app.node_label(&pad), "Padding");
+        let mut free = node("5", 1);
+        free.node_type = crate::theme::TYPE_FREESPACE;
+        assert_eq!(app.node_label(&free), "Free space");
     }
 }

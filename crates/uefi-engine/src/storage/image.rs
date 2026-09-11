@@ -36,6 +36,37 @@ pub fn remove_image_file(data_dir: &Path, session_id: &str, image_id: &str) -> R
     Ok(())
 }
 
+pub fn store_snapshot_file(
+    data_dir: &Path,
+    session_id: &str,
+    image_id: &str,
+    snapshot_id: &str,
+    bytes: &[u8],
+) -> Result<()> {
+    let dir = data_dir
+        .join("sessions")
+        .join(session_id)
+        .join("images")
+        .join(format!("{image_id}.snapshots"));
+    fs::create_dir_all(&dir)?;
+    atomic_write(&dir.join(format!("{snapshot_id}.bin")), bytes)
+}
+
+pub fn read_snapshot_file(
+    data_dir: &Path,
+    session_id: &str,
+    image_id: &str,
+    snapshot_id: &str,
+) -> Result<Vec<u8>> {
+    let p = data_dir
+        .join("sessions")
+        .join(session_id)
+        .join("images")
+        .join(format!("{image_id}.snapshots"))
+        .join(format!("{snapshot_id}.bin"));
+    fs::read(p).map_err(Into::into)
+}
+
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;

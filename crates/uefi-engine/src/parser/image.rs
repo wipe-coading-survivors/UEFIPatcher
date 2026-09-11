@@ -17,32 +17,34 @@ pub fn parse_image(
     session_id: &str,
 ) -> Result<Image, ParserError> {
     let mut children = vec![];
-    let mut off = 0usize;
     let mut last_end = 0usize;
-    while off + 44 <= buf.len() {
-        let sig = u32::from_le_bytes([buf[off + 40], buf[off + 41], buf[off + 42], buf[off + 43]]);
-        if sig != EFI_FVH_SIGNATURE {
-            off += FVH_SCAN_STEP;
-            continue;
-        }
-        match parse_firmware_volume(buf, off) {
-            Some(vol) => {
-                let vol_size = vol.header.len() + vol.body.len();
-                if vol_size == 0 {
-                    off += FVH_SCAN_STEP;
-                    continue;
-                }
-                if off > last_end {
-                    children.push(make_padding_node(buf, last_end, off));
-                }
-                children.push(vol);
-                last_end = off + vol_size;
-                off += vol_size;
+    if let Some(mut regions) = super::region::parse_flash_regions(buf) {
+        regions.sort_by_key(|r| r.offset);
+        for r in &regions {
+            if r.offset > last_end {
+                children.push(make_padding_node(buf, last_end, r.offset));
             }
-            None => {
-                off += FVH_SCAN_STEP;
+            match r.kind {
+                FlashRegionKind::Bios => {
+                    scan_volumes(
+                        buf,
+                        r.offset..r.offset + r.size,
+                        &mut children,
+                        &mut last_end,
+                    );
+                }
+                _ => {
+                    let mut node = super::region::make_region_node(buf, r.kind, r.offset, r.size);
+                    if r.kind == FlashRegionKind::Me {
+                        node.children = super::region::fpt_children(&node.body, r.offset, r.size);
+                    }
+                    children.push(node);
+                    last_end = r.offset + r.size;
+                }
             }
         }
+    } else {
+        scan_volumes(buf, 0..buf.len(), &mut children, &mut last_end);
     }
     if buf.len() > last_end {
         children.push(make_padding_node(buf, last_end, buf.len()));
@@ -73,6 +75,40 @@ pub fn parse_image(
         "image parsed"
     );
     Ok(img)
+}
+
+fn scan_volumes(
+    buf: &[u8],
+    window: std::ops::Range<usize>,
+    children: &mut Vec<FfsNode>,
+    last_end: &mut usize,
+) {
+    let mut off = window.start;
+    while off + 44 <= window.end {
+        let sig = u32::from_le_bytes([buf[off + 40], buf[off + 41], buf[off + 42], buf[off + 43]]);
+        if sig != EFI_FVH_SIGNATURE {
+            off += FVH_SCAN_STEP;
+            continue;
+        }
+        match parse_firmware_volume(buf, off) {
+            Some(vol) => {
+                let vol_size = vol.header.len() + vol.body.len();
+                if vol_size == 0 {
+                    off += FVH_SCAN_STEP;
+                    continue;
+                }
+                if off > *last_end {
+                    children.push(make_padding_node(buf, *last_end, off));
+                }
+                children.push(vol);
+                *last_end = off + vol_size;
+                off += vol_size;
+            }
+            None => {
+                off += FVH_SCAN_STEP;
+            }
+        }
+    }
 }
 
 pub(crate) fn parse_firmware_volume(buf: &[u8], off: usize) -> Option<FfsNode> {
@@ -176,6 +212,11 @@ fn list_recursive(node: &FfsNode, path: &str, items: &mut Vec<Node>, filter: Opt
             size: (node.header.len() + node.body.len() + node.tail.len()) as u64,
             name,
             action: node.action as u32,
+            region: match &node.parsing_data {
+                ParsingData::Region(rd) => rd.kind.label().to_string(),
+                ParsingData::FptPartition(_) => "ME".to_string(),
+                _ => String::new(),
+            },
         });
     }
     for (i, child) in node.children.iter().enumerate() {
@@ -229,6 +270,11 @@ fn search_recursive(
             size: (node.header.len() + node.body.len() + node.tail.len()) as u64,
             name,
             action: node.action as u32,
+            region: match &node.parsing_data {
+                ParsingData::Region(rd) => rd.kind.label().to_string(),
+                ParsingData::FptPartition(_) => "ME".to_string(),
+                _ => String::new(),
+            },
         });
         if out.len() >= limit {
             return;
@@ -277,16 +323,37 @@ fn node_name(node: &FfsNode) -> String {
         {
             decode_utf16le_body(&node.body)
         }
-        FfsType::File => {
-            for child in &node.children {
-                if child.node_type == FfsType::Section && child.subtype == EFI_SECTION_UI {
-                    return decode_utf16le_body(&child.body);
-                }
-            }
-            String::new()
-        }
+        FfsType::File => find_lifted_name(&node.children, 0).unwrap_or_default(),
+        FfsType::Region => match &node.parsing_data {
+            ParsingData::Region(rd) => format!("{} region", rd.kind.label()),
+            ParsingData::FptPartition(pd) => pd.name.clone(),
+            _ => String::new(),
+        },
         _ => String::new(),
     }
+}
+
+fn find_lifted_name(children: &[FfsNode], depth: usize) -> Option<String> {
+    if depth >= 8 {
+        return None;
+    }
+    for child in children {
+        if child.node_type == FfsType::Section
+            && (child.subtype == EFI_SECTION_UI || child.subtype == EFI_SECTION_VERSION)
+        {
+            return Some(decode_utf16le_body(&child.body));
+        }
+    }
+    for child in children {
+        if child.node_type == FfsType::Section
+            && (child.subtype == EFI_SECTION_COMPRESSION
+                || child.subtype == EFI_SECTION_GUID_DEFINED)
+            && let Some(name) = find_lifted_name(&child.children, depth + 1)
+        {
+            return Some(name);
+        }
+    }
+    None
 }
 
 fn decode_utf16le_body(body: &[u8]) -> String {
@@ -379,6 +446,89 @@ mod tests {
             alignment_bytes: vec![],
         };
         assert_eq!(node_name(&file), "Setup");
+    }
+
+    fn guided_with_ui_child() -> FfsNode {
+        let ui = FfsNode {
+            guid: None,
+            node_type: FfsType::Section,
+            subtype: EFI_SECTION_UI,
+            offset: 0,
+            header: vec![0; 4],
+            body: encode_utf16le_null("DeepSetup"),
+            tail: vec![],
+            children: vec![],
+            action: Action::NoAction,
+            parsing_data: ParsingData::None,
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        };
+        FfsNode {
+            guid: None,
+            node_type: FfsType::Section,
+            subtype: EFI_SECTION_GUID_DEFINED,
+            offset: 0,
+            header: vec![0; 4],
+            body: vec![],
+            tail: vec![],
+            children: vec![ui],
+            action: Action::NoAction,
+            parsing_data: ParsingData::None,
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        }
+    }
+
+    #[test]
+    fn node_name_lifts_ui_through_guided_wrapper() {
+        let mut file = FfsNode {
+            guid: None,
+            node_type: FfsType::File,
+            subtype: 0x07,
+            offset: 0,
+            header: vec![0; 24],
+            body: vec![],
+            tail: vec![],
+            children: vec![guided_with_ui_child()],
+            action: Action::NoAction,
+            parsing_data: ParsingData::None,
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        };
+        assert_eq!(node_name(&file), "DeepSetup");
+        let mut wrapper = guided_with_ui_child();
+        wrapper.subtype = EFI_SECTION_COMPRESSION;
+        file.children = vec![wrapper];
+        assert_eq!(node_name(&file), "DeepSetup");
+    }
+
+    #[test]
+    fn node_name_lift_stops_at_depth_limit() {
+        let mut node = guided_with_ui_child();
+        for _ in 0..10 {
+            let mut w = guided_with_ui_child();
+            w.children = vec![node];
+            node = w;
+        }
+        let file = FfsNode {
+            guid: None,
+            node_type: FfsType::File,
+            subtype: 0x07,
+            offset: 0,
+            header: vec![0; 24],
+            body: vec![],
+            tail: vec![],
+            children: vec![node],
+            action: Action::NoAction,
+            parsing_data: ParsingData::None,
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        };
+        assert_eq!(node_name(&file), "");
     }
 
     #[test]
@@ -617,6 +767,111 @@ mod tests {
             100,
         );
         assert_eq!(res.len(), 0, "search must skip File nodes");
+    }
+
+    fn me_body_with_fpt() -> Vec<u8> {
+        let mut body = vec![0u8; 0x2000];
+        body[0..4].copy_from_slice(&0x5450_4624u32.to_le_bytes());
+        body[4..8].copy_from_slice(&2u32.to_le_bytes());
+        body[8] = 0x10;
+        body[10] = 0x20;
+        body[0x20..0x24].copy_from_slice(b"FTPR");
+        body[0x28..0x2C].copy_from_slice(&0x0000u32.to_le_bytes());
+        body[0x2C..0x30].copy_from_slice(&0x0800u32.to_le_bytes());
+        body[0x40..0x44].copy_from_slice(b"NFTP");
+        body[0x48..0x4C].copy_from_slice(&0x1000u32.to_le_bytes());
+        body[0x4C..0x50].copy_from_slice(&0x0400u32.to_le_bytes());
+        body
+    }
+
+    #[test]
+    fn parse_image_descriptor_path_regions_and_padding() {
+        let mut buf = vec![0xFFu8; 0x10000];
+        buf[0x10..0x14].copy_from_slice(&0x0FF0_A55Au32.to_le_bytes());
+        buf[0x14..0x18].copy_from_slice(&0x0040_0000u32.to_le_bytes());
+        buf[0x400 + 4..0x400 + 4 + 2].copy_from_slice(&1u16.to_le_bytes());
+        buf[0x400 + 4 + 2..0x400 + 4 + 4].copy_from_slice(&3u16.to_le_bytes());
+        buf[0x400 + 2 * 4..0x400 + 2 * 4 + 2].copy_from_slice(&4u16.to_le_bytes());
+        buf[0x400 + 2 * 4 + 2..0x400 + 2 * 4 + 4].copy_from_slice(&15u16.to_le_bytes());
+        buf[0x1000..0x1100].copy_from_slice(&make_image_with_volume());
+        let me_body = me_body_with_fpt();
+        buf[0x4000..0x4000 + me_body.len()].copy_from_slice(&me_body);
+        let img = parse_image(&buf, ImageMode::Read, "i", "s").unwrap();
+        let kinds: Vec<&str> = img
+            .root
+            .children
+            .iter()
+            .filter(|c| c.node_type == FfsType::Region)
+            .map(|c| match &c.parsing_data {
+                ParsingData::Region(rd) => rd.kind.label(),
+                _ => "",
+            })
+            .collect();
+        assert!(kinds.contains(&"Descriptor"));
+        assert!(kinds.contains(&"ME"));
+        let bios_volumes = img
+            .root
+            .children
+            .iter()
+            .filter(|c| c.node_type == FfsType::Volume)
+            .count();
+        assert!(bios_volumes >= 1, "BIOS window scanned for FVs");
+        let me_node = img
+            .root
+            .children
+            .iter()
+            .find(|c| {
+                matches!(
+                    &c.parsing_data,
+                    ParsingData::Region(rd) if rd.kind == FlashRegionKind::Me
+                )
+            })
+            .unwrap();
+        assert!(!me_node.children.is_empty(), "ME region has $FPT children");
+        assert!(
+            me_node
+                .children
+                .iter()
+                .all(|c| matches!(&c.parsing_data, ParsingData::FptPartition(_)))
+        );
+        let rebuilt = crate::builder::build_image(&img).unwrap();
+        assert_eq!(rebuilt, buf, "descriptor round-trip byte-identical");
+    }
+
+    #[test]
+    fn list_items_fills_region_for_region_and_fpt_nodes() {
+        let mut buf = vec![0xFFu8; 0x10000];
+        buf[0x10..0x14].copy_from_slice(&0x0FF0_A55Au32.to_le_bytes());
+        buf[0x14..0x18].copy_from_slice(&0x0040_0000u32.to_le_bytes());
+        buf[0x400 + 4..0x400 + 4 + 2].copy_from_slice(&1u16.to_le_bytes());
+        buf[0x400 + 4 + 2..0x400 + 4 + 4].copy_from_slice(&3u16.to_le_bytes());
+        buf[0x400 + 2 * 4..0x400 + 2 * 4 + 2].copy_from_slice(&4u16.to_le_bytes());
+        buf[0x400 + 2 * 4 + 2..0x400 + 2 * 4 + 4].copy_from_slice(&15u16.to_le_bytes());
+        buf[0x1000..0x1100].copy_from_slice(&make_image_with_volume());
+        let me_body = me_body_with_fpt();
+        buf[0x4000..0x4000 + me_body.len()].copy_from_slice(&me_body);
+        let img = parse_image(&buf, ImageMode::Read, "i", "s").unwrap();
+        let items = list_items(&img.root, None);
+        let desc = items
+            .iter()
+            .find(|n| n.region == "Descriptor")
+            .expect("Descriptor region node carries region label");
+        assert_eq!(desc.r#type, FfsType::Region as u32);
+        let me = items.iter().find(|n| n.name == "ME region").unwrap();
+        assert_eq!(me.region, "ME");
+        let ftp = items.iter().find(|n| n.name == "FTPR").unwrap();
+        assert_eq!(ftp.region, "ME");
+        assert_eq!(
+            items.iter().filter(|n| n.region == "ME").count(),
+            3,
+            "ME region + FTPR + NFTP carry ME"
+        );
+        assert!(
+            items
+                .iter()
+                .filter(|n| n.r#type != FfsType::Region as u32)
+                .all(|n| n.region.is_empty())
+        );
     }
 
     #[test]

@@ -28,6 +28,7 @@ pub fn build_tree(nodes: &[Node]) -> Vec<TreeNode> {
                     Some(nd.guid.clone())
                 },
                 name: nd.name.clone(),
+                region: nd.region.clone(),
                 action: nd.action as u8,
                 expanded: depth == 0,
                 has_children,
@@ -89,6 +90,7 @@ mod tests {
             size: 0,
             name: String::new(),
             action: 0,
+            region: String::new(),
         }
     }
 
@@ -140,6 +142,15 @@ mod tests {
         assert!(!tree[1].expanded);
         assert!(!tree[2].expanded);
         assert!(!tree[3].expanded);
+    }
+
+    #[test]
+    fn build_tree_transfers_region() {
+        let mut me = nd("0", 63, 0);
+        me.region = "ME".into();
+        let tree = build_tree(&[nd("", 62, 0), me]);
+        assert_eq!(tree[0].region, "");
+        assert_eq!(tree[1].region, "ME");
     }
 
     #[test]

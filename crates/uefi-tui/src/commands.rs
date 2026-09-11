@@ -2,6 +2,7 @@ use http::Uri;
 use hyper_util::rt::TokioIo;
 use tonic::Request;
 use tonic::transport::{Channel, Endpoint};
+use uefi_common::cli::{Source, parse_node_flags};
 use uefi_common::state::{State, resolve_sock};
 use uefi_proto::engine_service_client::EngineServiceClient;
 use uefi_proto::*;
@@ -38,56 +39,85 @@ pub async fn connect(cli_sock: Option<&str>, state: State) -> Result<Client, Str
         .await
         .map_err(|e| e.to_string())?;
     Ok(Client {
-        inner: EngineServiceClient::new(channel),
+        inner: EngineServiceClient::new(channel).max_encoding_message_size(64 * 1024 * 1024),
         state,
     })
 }
 
-struct NodeCmdArgs {
-    target: Option<String>,
-    file: Option<String>,
-    artifact_id: Option<String>,
-    mode: Option<String>,
-    body_only: bool,
-}
-
-fn parse_node_cmd_args(parts: &[&str]) -> NodeCmdArgs {
-    let mut a = NodeCmdArgs {
-        target: None,
-        file: None,
-        artifact_id: None,
-        mode: None,
-        body_only: false,
-    };
-    let mut i = 1;
-    while i < parts.len() {
-        match parts[i] {
-            "--file" => {
-                a.file = parts.get(i + 1).map(|s| s.to_string());
-                i += 2;
-            }
-            "--artifact-id" => {
-                a.artifact_id = parts.get(i + 1).map(|s| s.to_string());
-                i += 2;
-            }
-            "--mode" => {
-                a.mode = parts.get(i + 1).map(|s| s.to_string());
-                i += 2;
-            }
-            "--body-only" => {
-                a.body_only = true;
-                i += 1;
-            }
-            other if !other.starts_with("--") && a.target.is_none() => {
-                a.target = Some(other.to_string());
-                i += 1;
-            }
-            _ => {
-                i += 1;
-            }
-        }
+impl Client {
+    pub async fn image_upload(
+        &mut self,
+        session_id: &str,
+        data: Vec<u8>,
+        mode: i32,
+        name: &str,
+    ) -> Result<ImageOpenResponse, String> {
+        self.inner
+            .image_upload(auth_req(
+                &self.state,
+                ImageUploadRequest {
+                    session_id: session_id.into(),
+                    data,
+                    mode,
+                    name: name.into(),
+                },
+            ))
+            .await
+            .map_err(|e| e.message().to_string())
+            .map(|r| r.into_inner())
     }
-    a
+
+    pub async fn image_snapshot_create(
+        &mut self,
+        image_id: &str,
+        name: &str,
+    ) -> Result<ImageSnapshotCreateResponse, String> {
+        self.inner
+            .image_snapshot_create(auth_req(
+                &self.state,
+                ImageSnapshotCreateRequest {
+                    image_id: image_id.into(),
+                    name: name.into(),
+                },
+            ))
+            .await
+            .map_err(|e| e.message().to_string())
+            .map(|r| r.into_inner())
+    }
+
+    pub async fn image_snapshots_list(
+        &mut self,
+        image_id: &str,
+    ) -> Result<Vec<ImageSnapshotInfo>, String> {
+        self.inner
+            .image_snapshots_list(auth_req(
+                &self.state,
+                ImageSnapshotsListRequest {
+                    image_id: image_id.into(),
+                },
+            ))
+            .await
+            .map_err(|e| e.message().to_string())
+            .map(|r| r.into_inner().snapshots)
+    }
+
+    pub async fn image_snapshot_restore(
+        &mut self,
+        image_id: &str,
+        snapshot_id: &str,
+    ) -> Result<Empty, String> {
+        self.inner
+            .image_snapshot_restore(auth_req(
+                &self.state,
+                ImageSnapshotRestoreRequest {
+                    image_id: image_id.into(),
+                    snapshot_id: snapshot_id.into(),
+                },
+            ))
+            .await
+            .map_err(|e| e.message().to_string())
+            .map(|r| r.into_inner())
+    }
 }
 
 fn mode_to_i32(s: &str) -> Result<i32, String> {
@@ -148,6 +178,75 @@ pub async fn execute_command(
             client.state.active_image_id = Some(r.image_id.clone());
             let _ = refresh_registry(app, client).await;
             Ok(r.image_id)
+        }
+        "upload" => {
+            let path = parts
+                .get(1)
+                .ok_or("usage: :upload PATH [--mode read|write]")?;
+            let mode = if parts.contains(&"write") { 1 } else { 0 };
+            let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
+            let name = std::path::Path::new(path)
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let sid = client.state.session_id.clone().ok_or("no session")?;
+            let resp = client.image_upload(&sid, bytes, mode, &name).await?;
+            app.active_image_id = Some(resp.image_id.clone());
+            client.state.active_image_id = Some(resp.image_id.clone());
+            app.image_loaded = true;
+            app.cursor = 0;
+            refresh_tree(app, client).await?;
+            refresh_registry(app, client).await?;
+            app.status_msg = format!("uploaded {} ({})", resp.name, resp.image_id);
+            Ok(resp.image_id)
+        }
+        "snapshot" => {
+            let iid = client
+                .state
+                .active_image_id
+                .clone()
+                .ok_or("no active image")?;
+            let name = parts.get(1).copied().unwrap_or_default().to_string();
+            let resp = client.image_snapshot_create(&iid, &name).await?;
+            app.status_msg = format!("snapshot {} ({})", resp.snapshot_id, name);
+            Ok(resp.snapshot_id)
+        }
+        "snapshots" => {
+            let iid = client
+                .state
+                .active_image_id
+                .clone()
+                .ok_or("no active image")?;
+            let snaps = client.image_snapshots_list(&iid).await?;
+            app.status_msg = if snaps.is_empty() {
+                "no snapshots".into()
+            } else {
+                snaps
+                    .iter()
+                    .map(|s| format!("{}  {}  {}B", s.snapshot_id, s.name, s.size))
+                    .collect::<Vec<_>>()
+                    .join("  ·  ")
+            };
+            Ok(snaps
+                .iter()
+                .map(|s| s.snapshot_id.clone())
+                .collect::<Vec<_>>()
+                .join(","))
+        }
+        "restore" => {
+            let iid = client
+                .state
+                .active_image_id
+                .clone()
+                .ok_or("no active image")?;
+            let snap_id = parts
+                .get(1)
+                .ok_or("usage: :restore SNAPSHOT_ID (see :snapshots)")?;
+            client.image_snapshot_restore(&iid, snap_id).await?;
+            refresh_tree(app, client).await?;
+            refresh_registry(app, client).await?;
+            app.status_msg = format!("restored {snap_id}");
+            Ok(snap_id.to_string())
         }
         "save" | "s" => {
             let path = parts.get(1).ok_or("usage: :save OUTPUT")?;
@@ -241,7 +340,7 @@ pub async fn execute_command(
             Ok(format!("{} artifacts", r.artifacts.len()))
         }
         "insert" => {
-            let a = parse_node_cmd_args(&parts);
+            let a = parse_node_flags(&parts);
             let iid = client
                 .state
                 .active_image_id
@@ -249,17 +348,14 @@ pub async fn execute_command(
                 .ok_or("no active image")?;
             let target = a
                 .target
+                .clone()
                 .or_else(|| app.selected_path())
                 .ok_or("no target (select a node or pass TARGET)")?;
-            let (ffs_path, artifact_id) = match (a.file, a.artifact_id) {
-                (Some(p), None) => (p, String::new()),
-                (None, Some(id)) => (String::new(), id),
-                _ => {
-                    return Err(
-                        "usage: :insert [TARGET] (--file PATH | --artifact-id ID) [--mode into|before|after]"
-                            .into(),
-                    )
-                }
+            let (ffs_path, artifact_id) = match a.source() {
+                Ok(Some(Source::File)) => (a.file.unwrap_or_default(), String::new()),
+                Ok(Some(Source::Artifact)) => (String::new(), a.artifact_id.unwrap_or_default()),
+                Ok(None) => return Err("exactly one of --file / --artifact-id is required".into()),
+                Err(e) => return Err(e),
             };
             let mode = mode_to_i32(a.mode.as_deref().unwrap_or(""))?;
             let req = ImageNodeInsertRequest {
@@ -281,7 +377,7 @@ pub async fn execute_command(
             Ok(r.item_id)
         }
         "replace" => {
-            let a = parse_node_cmd_args(&parts);
+            let a = parse_node_flags(&parts);
             let iid = client
                 .state
                 .active_image_id
@@ -289,17 +385,15 @@ pub async fn execute_command(
                 .ok_or("no active image")?;
             let target = a
                 .target
+                .clone()
                 .or_else(|| app.selected_path())
                 .ok_or("no target")?;
-            let (ffs_path, artifact_id) =
-                match (a.file, a.artifact_id) {
-                    (Some(p), None) => (p, String::new()),
-                    (None, Some(id)) => (String::new(), id),
-                    _ => return Err(
-                        "usage: :replace [TARGET] (--file PATH | --artifact-id ID) [--body-only]"
-                            .into(),
-                    ),
-                };
+            let (ffs_path, artifact_id) = match a.source() {
+                Ok(Some(Source::File)) => (a.file.unwrap_or_default(), String::new()),
+                Ok(Some(Source::Artifact)) => (String::new(), a.artifact_id.unwrap_or_default()),
+                Ok(None) => return Err("exactly one of --file / --artifact-id is required".into()),
+                Err(e) => return Err(e),
+            };
             let req = ImageNodeReplaceRequest {
                 image_id: iid,
                 target,
@@ -319,7 +413,7 @@ pub async fn execute_command(
             Ok(r.item_id)
         }
         "remove" => {
-            let a = parse_node_cmd_args(&parts);
+            let a = parse_node_flags(&parts);
             let iid = client
                 .state
                 .active_image_id
@@ -343,7 +437,7 @@ pub async fn execute_command(
             Ok(target)
         }
         "rebuild" => {
-            let a = parse_node_cmd_args(&parts);
+            let a = parse_node_flags(&parts);
             let iid = client
                 .state
                 .active_image_id
@@ -429,6 +523,11 @@ pub async fn execute_command(
             );
             Ok("refreshed".into())
         }
+        "goto" | "g" => {
+            let target = parts.get(1).ok_or("usage: :goto PATH (e.g. 1/28/1)")?;
+            app.goto_path(target)?;
+            Ok(format!("→ {target}"))
+        }
         "quit" | "q" => {
             app.quit = true;
             Ok("quitting".into())
@@ -439,6 +538,120 @@ pub async fn execute_command(
         }
         _ => Err(format!("unknown command: :{cmd}, try :help")),
     }
+}
+
+const COMMANDS: &[&str] = &[
+    "open",
+    "o",
+    "save",
+    "s",
+    "extract",
+    "export",
+    "import",
+    "artifacts",
+    "insert",
+    "replace",
+    "remove",
+    "rebuild",
+    "image",
+    "refresh",
+    "goto",
+    "g",
+    "upload",
+    "snapshot",
+    "snapshots",
+    "restore",
+    "help",
+    "h",
+    "quit",
+    "q",
+];
+
+pub fn complete(app: &App, cmdline: &str) -> (Option<String>, Vec<String>) {
+    let ends_space = cmdline.ends_with(' ');
+    let mut parts: Vec<&str> = cmdline.split_whitespace().collect();
+    let token = if ends_space || parts.is_empty() {
+        String::new()
+    } else {
+        parts.pop().unwrap().to_string()
+    };
+    let head: Vec<&str> = parts.clone();
+    let candidates: Vec<String> = if head.is_empty() {
+        COMMANDS
+            .iter()
+            .filter(|c| c.starts_with(token.as_str()))
+            .map(|s| s.to_string())
+            .collect()
+    } else {
+        context_candidates(app, head[0], &head, &token)
+    };
+    if candidates.is_empty() {
+        return (None, vec![]);
+    }
+    let mut out = head.join(" ");
+    if !out.is_empty() {
+        out.push(' ');
+    }
+    if candidates.len() == 1 {
+        out.push_str(&candidates[0]);
+        (Some(out), vec![])
+    } else {
+        let prefix = common_prefix(&candidates);
+        out.push_str(&prefix);
+        (Some(out), candidates)
+    }
+}
+
+fn common_prefix(items: &[String]) -> String {
+    let mut p = items[0].clone();
+    for s in items {
+        p.truncate(p.chars().zip(s.chars()).take_while(|(a, b)| a == b).count());
+    }
+    p
+}
+
+fn context_candidates(app: &App, cmd: &str, head: &[&str], token: &str) -> Vec<String> {
+    if head.last() == Some(&"--mode") {
+        return ["into", "before", "after"]
+            .iter()
+            .filter(|c| c.starts_with(token))
+            .map(|s| s.to_string())
+            .collect();
+    }
+    if head.last() == Some(&"--artifact-id") {
+        return app
+            .registry
+            .artifacts
+            .iter()
+            .map(|a| a.artifact_id.clone())
+            .filter(|c| c.starts_with(token))
+            .collect();
+    }
+    if token.starts_with("--") {
+        let flags: &[&str] = match cmd {
+            "insert" => &["--file", "--artifact-id", "--mode"],
+            "replace" => &["--file", "--artifact-id", "--body-only"],
+            _ => &[],
+        };
+        return flags
+            .iter()
+            .filter(|c| c.starts_with(token))
+            .map(|s| s.to_string())
+            .collect();
+    }
+    let has_positional = head[1..].iter().any(|s| !s.starts_with("--"));
+    let target_cmds = [
+        "insert", "replace", "remove", "rebuild", "extract", "goto", "restore",
+    ];
+    if target_cmds.contains(&cmd) && !has_positional {
+        return app
+            .visible()
+            .iter()
+            .map(|&i| app.tree[i].path.clone())
+            .filter(|p| p.starts_with(token))
+            .collect();
+    }
+    vec![]
 }
 
 pub async fn refresh_tree(app: &mut App, client: &mut Client) -> Result<(), String> {
@@ -559,27 +772,63 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_node_cmd_target_and_flags() {
-        let a = parse_node_cmd_args(&["insert", "1/0", "--file", "/x.bin", "--mode", "into"]);
-        assert_eq!(a.target.as_deref(), Some("1/0"));
-        assert_eq!(a.file.as_deref(), Some("/x.bin"));
-        assert_eq!(a.mode.as_deref(), Some("into"));
-        assert!(a.artifact_id.is_none());
-        assert!(!a.body_only);
+    fn complete_first_token_to_unique_command() {
+        let app = crate::app::App::new();
+        let (rep, opts) = complete(&app, "rebui");
+        assert_eq!(rep.as_deref(), Some("rebuild"));
+        assert!(opts.is_empty());
     }
 
     #[test]
-    fn parse_node_cmd_artifact_and_body_only() {
-        let a = parse_node_cmd_args(&["replace", "--artifact-id", "art1", "--body-only"]);
-        assert_eq!(a.artifact_id.as_deref(), Some("art1"));
-        assert!(a.body_only);
-        assert!(a.target.is_none());
-        assert!(a.file.is_none());
+    fn complete_artifact_ids_after_flag() {
+        let mut app = crate::app::App::new();
+        app.registry.artifacts = vec![
+            uefi_proto::ArtifactInfo {
+                artifact_id: "art-1".into(),
+                ..Default::default()
+            },
+            uefi_proto::ArtifactInfo {
+                artifact_id: "art-2".into(),
+                ..Default::default()
+            },
+        ];
+        let (rep, _) = complete(&app, "insert 0/3 --artifact-id art-");
+        assert_eq!(rep.as_deref(), Some("insert 0/3 --artifact-id art-"));
+        let (_, opts) = complete(&app, "insert 0/3 --artifact-id ");
+        assert_eq!(opts, vec!["art-1".to_string(), "art-2".to_string()]);
     }
 
     #[test]
-    fn parse_node_cmd_target_is_first_non_flag() {
-        let a = parse_node_cmd_args(&["remove", "0/3"]);
-        assert_eq!(a.target.as_deref(), Some("0/3"));
+    fn complete_flags_of_insert() {
+        let app = crate::app::App::new();
+        let (_, opts) = complete(&app, "insert 0/3 --");
+        assert_eq!(
+            opts,
+            vec![
+                "--file".to_string(),
+                "--artifact-id".to_string(),
+                "--mode".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn complete_target_from_visible_tree() {
+        let mut app = crate::app::App::new();
+        let mk = |path: &str, node_type: u8| crate::app::TreeNode {
+            path: path.into(),
+            depth: 1,
+            node_type,
+            subtype: 0,
+            guid: None,
+            name: String::new(),
+            region: String::new(),
+            action: crate::theme::ACTION_NO,
+            expanded: true,
+            has_children: false,
+        };
+        app.tree = vec![mk("1", 65), mk("1/28", 66)];
+        let (rep, _) = complete(&app, "remove 1/2");
+        assert_eq!(rep.as_deref(), Some("remove 1/28"));
     }
 }

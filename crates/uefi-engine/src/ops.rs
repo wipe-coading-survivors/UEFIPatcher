@@ -1,3 +1,4 @@
+use crate::ffs::{EFI_SECTION_COMPRESSION, EFI_SECTION_GUID_DEFINED};
 use crate::parser::ParserError;
 use crate::types::*;
 
@@ -9,6 +10,10 @@ pub enum OpsError {
     InvalidParent,
     #[error("invalid FFS data")]
     InvalidFfs,
+    #[error("mutation behind non-recompressable compression barrier")]
+    MutationBehindCompression,
+    #[error("flash region is read-only")]
+    ImmutableRegion,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,6 +44,10 @@ pub fn insert(
             parent_path[..parent_path.len() - 1].to_vec()
         }
     };
+    match mode {
+        InsertMode::Into => ensure_mutable(root, &parent_path, true)?,
+        InsertMode::Before | InsertMode::After => ensure_mutable(root, &parent_path, false)?,
+    }
     if enclosing_volume_empty_byte(root, &vol_path) == Some(0xFF)
         && new_node.header.get(23) == Some(&0x07)
     {
@@ -73,6 +82,7 @@ pub fn insert(
 #[tracing::instrument(level = "debug", skip(root), fields(target = ?target), err)]
 pub fn remove(root: &mut FfsNode, target: &Target) -> Result<(), OpsError> {
     let path = target_path(root, target)?;
+    ensure_mutable(root, &path, true)?;
     let node = find_mut(root, &path).ok_or(OpsError::NotFound)?;
     node.action = Action::Remove;
     mark_rebuild_to_root_by_path(root, &path);
@@ -88,6 +98,7 @@ pub fn replace(
     body_only: bool,
 ) -> Result<(), OpsError> {
     let path = target_path(root, target)?;
+    ensure_mutable(root, &path, true)?;
     let node = find_mut(root, &path).ok_or(OpsError::NotFound)?;
     if body_only {
         node.children.clear();
@@ -112,6 +123,7 @@ pub fn replace(
 #[tracing::instrument(level = "debug", skip(root), fields(target = ?target), err)]
 pub fn rebuild(root: &mut FfsNode, target: &Target) -> Result<(), OpsError> {
     let path = target_path(root, target)?;
+    ensure_mutable(root, &path, true)?;
     let node = find_mut(root, &path).ok_or(OpsError::NotFound)?;
     if node.action == Action::Remove {
         return Ok(());
@@ -136,6 +148,37 @@ pub fn mark_rebuild_to_root_by_path(root: &mut FfsNode, path: &[usize]) {
         }
         node = child;
     }
+}
+
+fn ensure_mutable(root: &FfsNode, path: &[usize], include_target: bool) -> Result<(), OpsError> {
+    let n = if include_target {
+        path.len()
+    } else {
+        path.len().saturating_sub(1)
+    };
+    let mut node = root;
+    for (depth, &i) in path.iter().enumerate() {
+        let Some(child) = node.children.get(i) else {
+            break;
+        };
+        if child.node_type == FfsType::Region {
+            return Err(OpsError::ImmutableRegion);
+        }
+        if depth < n {
+            if child.node_type == FfsType::Section && child.subtype == EFI_SECTION_COMPRESSION {
+                return Err(OpsError::MutationBehindCompression);
+            }
+            if child.node_type == FfsType::Section
+                && child.subtype == EFI_SECTION_GUID_DEFINED
+                && !matches!(&child.parsing_data, ParsingData::GuidedSection(d)
+                    if crate::ffs::is_recompressable_lzma_guid(&d.guid))
+            {
+                return Err(OpsError::MutationBehindCompression);
+            }
+        }
+        node = child;
+    }
+    Ok(())
 }
 
 fn target_path(root: &FfsNode, target: &Target) -> Result<Vec<usize>, OpsError> {
@@ -172,7 +215,9 @@ fn parse_ffs_bytes(data: &[u8]) -> Result<FfsNode, ParserError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ffs::{EFI_FVB2_ERASE_POLARITY, EFI_FVH_SIGNATURE, size_to_uint24};
+    use crate::ffs::{
+        EFI_FVB2_ERASE_POLARITY, EFI_FVH_SIGNATURE, EFI_SECTION_COMPRESSION, size_to_uint24,
+    };
     use crate::parser::image::parse_image;
     use crate::parser::target::parse_target;
 
@@ -366,5 +411,106 @@ mod tests {
         let t = parse_target("0").unwrap();
         remove(&mut img.root, &t).unwrap();
         assert!(logs_contain("marked for removal"));
+    }
+
+    fn descriptor_image(region_specs: &[(usize, u16, u16)], total: usize) -> Vec<u8> {
+        let mut buf = vec![0xFFu8; total];
+        buf[0x10..0x14]
+            .copy_from_slice(&crate::parser::region::FLASH_DESCRIPTOR_SIGNATURE.to_le_bytes());
+        buf[0x14..0x18].copy_from_slice(&0x0040_0000u32.to_le_bytes());
+        for &(i, base, limit) in region_specs {
+            let at = 0x400 + i * 4;
+            buf[at..at + 2].copy_from_slice(&base.to_le_bytes());
+            buf[at + 2..at + 4].copy_from_slice(&limit.to_le_bytes());
+        }
+        buf
+    }
+
+    #[test]
+    fn region_nodes_immutable() {
+        let buf = descriptor_image(&[(1, 4, 7), (2, 1, 3)], 0x10000);
+        let mut img = parse_image(&buf, ImageMode::Write, "i", "s").unwrap();
+        let me_idx = img
+            .root
+            .children
+            .iter()
+            .position(|c| {
+                matches!(
+                    &c.parsing_data,
+                    ParsingData::Region(rd) if rd.kind == FlashRegionKind::Me
+                )
+            })
+            .unwrap();
+        let t = parse_target(&me_idx.to_string()).unwrap();
+        assert!(matches!(
+            remove(&mut img.root, &t),
+            Err(OpsError::ImmutableRegion)
+        ));
+    }
+
+    #[test]
+    fn insert_before_me_region_refused() {
+        let buf = descriptor_image(&[(1, 4, 7), (2, 1, 3)], 0x10000);
+        let mut img = parse_image(&buf, ImageMode::Write, "i", "s").unwrap();
+        let me_idx = img
+            .root
+            .children
+            .iter()
+            .position(|c| {
+                matches!(
+                    &c.parsing_data,
+                    ParsingData::Region(rd) if rd.kind == FlashRegionKind::Me
+                )
+            })
+            .unwrap();
+        let t = parse_target(&me_idx.to_string()).unwrap();
+        assert!(matches!(
+            insert(&mut img.root, &t, &make_ffs_file(), InsertMode::Before),
+            Err(OpsError::ImmutableRegion)
+        ));
+    }
+
+    #[test]
+    fn remove_behind_tiano_compression_refused() {
+        let buf = make_simple_image();
+        let mut img = parse_image(&buf, ImageMode::Write, "i", "s").unwrap();
+        let mut file = parse_ffs_bytes(&make_ffs_file()).unwrap();
+        let mut inner = FfsNode {
+            guid: None,
+            node_type: FfsType::Section,
+            subtype: 0x19,
+            offset: 0,
+            header: vec![0u8; 4],
+            body: vec![0xAA; 8],
+            tail: vec![],
+            children: vec![],
+            action: Action::NoAction,
+            parsing_data: ParsingData::None,
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        };
+        inner.action = Action::Rebuild;
+        file.children.push(FfsNode {
+            guid: None,
+            node_type: FfsType::Section,
+            subtype: EFI_SECTION_COMPRESSION,
+            offset: 0,
+            header: vec![0u8; 4],
+            body: vec![0xBB; 16],
+            tail: vec![],
+            children: vec![inner],
+            action: Action::NoAction,
+            parsing_data: ParsingData::None,
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        });
+        img.root.children[0].children.push(file);
+        let t = parse_target("0/0/0/0").unwrap();
+        assert!(matches!(
+            remove(&mut img.root, &t),
+            Err(OpsError::MutationBehindCompression)
+        ));
     }
 }

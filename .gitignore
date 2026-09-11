@@ -33,3 +33,5 @@ session-ses_*.md
 # External reference repos (symlink refs -> ../refs/)
 /refs
 .opencode/
+
+.superpowers/

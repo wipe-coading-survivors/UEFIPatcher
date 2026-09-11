@@ -7,6 +7,7 @@ service EngineService {
   rpc SessionsList(SessionsListRequest)     returns (SessionsListResponse);
 
   rpc ImageOpen(ImageOpenRequest)     returns (ImageOpenResponse);
+  rpc ImageUpload(ImageUploadRequest)     returns (ImageOpenResponse);
   rpc ImageClose(ImageCloseRequest)   returns (Empty);
   rpc ImagesList(ImagesListRequest)   returns (ImagesListResponse);
   rpc ImageSave(ImageSaveRequest)     returns (Empty);
@@ -36,6 +37,10 @@ service EngineService {
   rpc HiiSetValue(HiiSetValueRequest)                   returns (HiiSetValueResponse);
   rpc HiiQuestionAdd(HiiQuestionAddRequest)             returns (HiiQuestionAddResponse);
   rpc HiiPageAdd(HiiPageAddRequest)                     returns (HiiPageAddResponse);
+
+  rpc ImageSnapshotCreate(ImageSnapshotCreateRequest)   returns (ImageSnapshotCreateResponse);
+  rpc ImageSnapshotsList(ImageSnapshotsListRequest)     returns (ImageSnapshotsListResponse);
+  rpc ImageSnapshotRestore(ImageSnapshotRestoreRequest) returns (Empty);
 }
 
 enum ImageMode { READ = 0; WRITE = 1; }
@@ -59,6 +64,13 @@ message ImageOpenResponse {
   string image_id = 1;
   string root_guid = 2;
   string name = 3;
+}
+
+message ImageUploadRequest {
+  string session_id = 1;
+  bytes data = 2;
+  ImageMode mode = 3;
+  string name = 4;
 }
 
 message ImageInfo {
@@ -90,6 +102,7 @@ message Node {
   uint64 size = 6;
   string name = 7;
   uint32 action = 8;
+  string region = 9;
 }
 message ImageNodesResponse { repeated Node nodes = 1; }
 
@@ -288,6 +301,21 @@ message HiiPageAddResponse {
   uint32 slot = 2;
   uint32 page_offset = 3;
   uint32 title_string_id = 4;
+}
+
+message ImageSnapshotCreateRequest  { string image_id = 1; string name = 2; }
+message ImageSnapshotCreateResponse { string snapshot_id = 1; int64 created_at = 2; }
+message ImageSnapshotInfo {
+  string snapshot_id = 1;
+  string name = 2;
+  int64 created_at = 3;
+  uint64 size = 4;
+}
+message ImageSnapshotsListRequest  { string image_id = 1; }
+message ImageSnapshotsListResponse { repeated ImageSnapshotInfo snapshots = 1; }
+message ImageSnapshotRestoreRequest {
+  string image_id = 1;
+  string snapshot_id = 2;
 }
 
 message Empty {}

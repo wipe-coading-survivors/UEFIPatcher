@@ -32,7 +32,7 @@ pub fn build_image(image: &Image) -> Result<Vec<u8>, BuilderError> {
 
 fn build_node(node: &FfsNode, out: &mut Vec<u8>) -> Result<(), BuilderError> {
     match node.node_type {
-        FfsType::Image | FfsType::Capsule | FfsType::Region | FfsType::Root => {
+        FfsType::Image | FfsType::Capsule | FfsType::Root => {
             for child in &node.children {
                 build_node(child, out)?;
             }
@@ -40,7 +40,9 @@ fn build_node(node: &FfsNode, out: &mut Vec<u8>) -> Result<(), BuilderError> {
         FfsType::Volume => build_volume(node, out)?,
         FfsType::File => build_file(node, out)?,
         FfsType::Section => build_section(node, out)?,
-        FfsType::Padding | FfsType::FreeSpace => out.extend_from_slice(&node.body),
+        FfsType::Padding | FfsType::FreeSpace | FfsType::Region => {
+            out.extend_from_slice(&node.body)
+        }
     }
     Ok(())
 }

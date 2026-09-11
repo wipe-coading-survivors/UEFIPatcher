@@ -16,7 +16,10 @@ use crate::parser::image::{list_items, parse_image};
 use crate::parser::target::{find_item, parse_target};
 use crate::session::SessionManager;
 use crate::storage::Db;
-use crate::storage::image::{atomic_write, read_image_file, remove_image_file, store_image_file};
+use crate::storage::image::{
+    atomic_write, read_image_file, read_snapshot_file, remove_image_file, store_image_file,
+    store_snapshot_file,
+};
 use crate::types::{Guid, Image, ImageMode};
 
 pub struct EngineServer {
@@ -33,6 +36,15 @@ fn builder_error_status(e: crate::builder::BuilderError) -> Status {
             Status::failed_precondition(e.to_string())
         }
         crate::builder::BuilderError::Compression(crate::compress::CompressError::EmptyInput) => {
+            Status::failed_precondition(e.to_string())
+        }
+        _ => Status::internal(e.to_string()),
+    }
+}
+
+fn ops_error_status(e: crate::ops::OpsError) -> Status {
+    match e {
+        crate::ops::OpsError::MutationBehindCompression | crate::ops::OpsError::ImmutableRegion => {
             Status::failed_precondition(e.to_string())
         }
         _ => Status::internal(e.to_string()),
@@ -96,6 +108,20 @@ impl EngineServer {
             }
         }
         atomic_write(&path, &bytes).map_err(|e| Status::internal(e.to_string()))?;
+        let mut images = self.images.lock().await;
+        if let Some(img) = images.get_mut(image_id) {
+            let mode = img.mode;
+            let session_id = img.session_id.clone();
+            match parse_image(&bytes, mode, image_id, &session_id) {
+                Ok(refreshed) => *img = refreshed,
+                Err(e) => {
+                    images.remove(image_id);
+                    drop(images);
+                    return Err(Status::internal(e.to_string()));
+                }
+            }
+        }
+        drop(images);
         self.sm
             .db
             .lock()
@@ -134,6 +160,47 @@ impl EngineServer {
             .await
             .insert(image_id.into(), img.clone());
         Ok(img)
+    }
+
+    async fn open_from_bytes(
+        &self,
+        session_id: &str,
+        bytes: Vec<u8>,
+        mode: ImageMode,
+        name: &str,
+        path: &str,
+    ) -> RpcResult<ImageOpenResponse> {
+        let image_id = Uuid::new_v4().to_string();
+        let img = parse_image(&bytes, mode, &image_id, session_id)
+            .map_err(|e| Status::internal(e.to_string()))?;
+        store_image_file(&self.data_dir, session_id, &image_id, &bytes)
+            .map_err(|e| Status::internal(e.to_string()))?;
+        self.sm
+            .db
+            .lock()
+            .unwrap()
+            .insert_image(
+                &image_id,
+                session_id,
+                name,
+                path,
+                mode as i64,
+                bytes.len() as i64,
+            )
+            .map_err(|e| Status::internal(e.to_string()))?;
+        let root_guid = img
+            .root
+            .guid
+            .map(|g| crate::guid_to_upper_string(&g))
+            .unwrap_or_default();
+        self.images.lock().await.insert(image_id.clone(), img);
+        let _ = self.sm.touch(session_id);
+        tracing::info!(name = %name, size = bytes.len(), image_id = %image_id, "image uploaded");
+        Ok(Response::new(ImageOpenResponse {
+            image_id,
+            root_guid,
+            name: name.to_string(),
+        }))
     }
 }
 
@@ -202,7 +269,6 @@ impl EngineService for EngineServer {
             _ => return Err(Status::invalid_argument("bad mode")),
         };
         let bytes = fs::read(&r.path).map_err(|e| Status::not_found(e.to_string()))?;
-        let image_id = Uuid::new_v4().to_string();
         let name = if r.name.is_empty() {
             std::path::Path::new(&r.path)
                 .file_name()
@@ -211,43 +277,25 @@ impl EngineService for EngineServer {
         } else {
             r.name.clone()
         };
-        let img = parse_image(&bytes, mode, &image_id, &r.session_id)
-            .map_err(|e| Status::internal(e.to_string()))?;
-        store_image_file(&self.data_dir, &r.session_id, &image_id, &bytes)
-            .map_err(|e| Status::internal(e.to_string()))?;
-        self.sm
-            .db
-            .lock()
-            .unwrap()
-            .insert_image(
-                &image_id,
-                &r.session_id,
-                &name,
-                &r.path,
-                r.mode as i64,
-                bytes.len() as i64,
-            )
-            .map_err(|e| Status::internal(e.to_string()))?;
-        let root_guid = img
-            .root
-            .guid
-            .map(|g| crate::guid_to_upper_string(&g))
-            .unwrap_or_default();
-        self.images.lock().await.insert(image_id.clone(), img);
-        let _ = self.sm.touch(&r.session_id);
-        tracing::info!(
-            name = %name,
-            size = bytes.len(),
-            image_id = %image_id,
-            mode = ?mode,
-            root_guid = %root_guid,
-            "image opened"
-        );
-        Ok(Response::new(ImageOpenResponse {
-            image_id,
-            root_guid,
-            name,
-        }))
+        self.open_from_bytes(&r.session_id, bytes, mode, &name, &r.path)
+            .await
+    }
+
+    #[tracing::instrument(skip(self, req), err)]
+    async fn image_upload(&self, req: Request<ImageUploadRequest>) -> RpcResult<ImageOpenResponse> {
+        let r = req.into_inner();
+        let mode = match r.mode {
+            0 => ImageMode::Read,
+            1 => ImageMode::Write,
+            _ => return Err(Status::invalid_argument("bad mode")),
+        };
+        let name = if r.name.is_empty() {
+            "upload".to_string()
+        } else {
+            r.name.clone()
+        };
+        self.open_from_bytes(&r.session_id, r.data, mode, &name, &name)
+            .await
     }
 
     #[tracing::instrument(skip(self, req), err)]
@@ -401,7 +449,7 @@ impl EngineService for EngineServer {
                 .get_mut(&r.image_id)
                 .ok_or_else(|| Status::not_found("image not found"))?;
             crate::ops::insert(&mut img_slot.root, &t, &ffs_bytes, mode)
-                .map_err(|e| Status::internal(e.to_string()))?;
+                .map_err(ops_error_status)?;
         }
         self.flush_image(&r.image_id).await?;
         let _ = self.sm.touch(&img.session_id);
@@ -431,8 +479,7 @@ impl EngineService for EngineServer {
                 .get_mut(&r.image_id)
                 .ok_or_else(|| Status::not_found("image not found"))?;
             let t = parse_target(&r.target).map_err(|e| Status::invalid_argument(e.to_string()))?;
-            crate::ops::remove(&mut img_slot.root, &t)
-                .map_err(|e| Status::internal(e.to_string()))?;
+            crate::ops::remove(&mut img_slot.root, &t).map_err(ops_error_status)?;
         }
         self.flush_image(&r.image_id).await?;
         let _ = self.sm.touch(&img.session_id);
@@ -468,7 +515,7 @@ impl EngineService for EngineServer {
                 .ok_or_else(|| Status::not_found("image not found"))?;
             let t = parse_target(&r.target).map_err(|e| Status::invalid_argument(e.to_string()))?;
             crate::ops::replace(&mut img_slot.root, &t, &data, r.body_only)
-                .map_err(|e| Status::internal(e.to_string()))?;
+                .map_err(ops_error_status)?;
         }
         self.flush_image(&r.image_id).await?;
         let _ = self.sm.touch(&img.session_id);
@@ -498,8 +545,7 @@ impl EngineService for EngineServer {
                 .get_mut(&r.image_id)
                 .ok_or_else(|| Status::not_found("image not found"))?;
             let t = parse_target(&r.target).map_err(|e| Status::invalid_argument(e.to_string()))?;
-            crate::ops::rebuild(&mut img_slot.root, &t)
-                .map_err(|e| Status::internal(e.to_string()))?;
+            crate::ops::rebuild(&mut img_slot.root, &t).map_err(ops_error_status)?;
         }
         self.flush_image(&r.image_id).await?;
         let _ = self.sm.touch(&img.session_id);
@@ -1032,6 +1078,133 @@ impl EngineService for EngineServer {
             title_string_id: u32::from(result.title_string_id),
         }))
     }
+
+    #[tracing::instrument(skip(self, req), err)]
+    async fn image_snapshot_create(
+        &self,
+        req: Request<ImageSnapshotCreateRequest>,
+    ) -> RpcResult<ImageSnapshotCreateResponse> {
+        let r = req.into_inner();
+        let row = self
+            .sm
+            .db
+            .lock()
+            .unwrap()
+            .get_image(&r.image_id)
+            .map_err(|e| Status::internal(e.to_string()))?
+            .ok_or_else(|| Status::not_found("image not found"))?;
+        let bytes = read_image_file(&self.data_dir, &row.session_id, &r.image_id)
+            .map_err(|e| Status::internal(e.to_string()))?;
+        let snapshot_id = Uuid::new_v4().to_string();
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let name = if r.name.is_empty() {
+            format!("snap-{now_secs}")
+        } else {
+            r.name
+        };
+        store_snapshot_file(
+            &self.data_dir,
+            &row.session_id,
+            &r.image_id,
+            &snapshot_id,
+            &bytes,
+        )
+        .map_err(|e| Status::internal(e.to_string()))?;
+        self.sm
+            .db
+            .lock()
+            .unwrap()
+            .insert_image_snapshot(
+                &snapshot_id,
+                &r.image_id,
+                &name,
+                bytes.len() as i64,
+                now_secs as i64,
+            )
+            .map_err(|e| Status::internal(e.to_string()))?;
+        let _ = self.sm.touch(&row.session_id);
+        Ok(Response::new(ImageSnapshotCreateResponse {
+            snapshot_id,
+            created_at: now_secs as i64,
+        }))
+    }
+
+    #[tracing::instrument(skip(self, req), err)]
+    async fn image_snapshots_list(
+        &self,
+        req: Request<ImageSnapshotsListRequest>,
+    ) -> RpcResult<ImageSnapshotsListResponse> {
+        let r = req.into_inner();
+        let rows = self
+            .sm
+            .db
+            .lock()
+            .unwrap()
+            .list_image_snapshots(&r.image_id)
+            .map_err(|e| Status::internal(e.to_string()))?;
+        Ok(Response::new(ImageSnapshotsListResponse {
+            snapshots: rows
+                .into_iter()
+                .map(|s| ImageSnapshotInfo {
+                    snapshot_id: s.id,
+                    name: s.name,
+                    created_at: s.created_at,
+                    size: s.size as u64,
+                })
+                .collect(),
+        }))
+    }
+
+    #[tracing::instrument(skip(self, req), err)]
+    async fn image_snapshot_restore(
+        &self,
+        req: Request<ImageSnapshotRestoreRequest>,
+    ) -> RpcResult<Empty> {
+        let r = req.into_inner();
+        let snap = self
+            .sm
+            .db
+            .lock()
+            .unwrap()
+            .get_image_snapshot(&r.snapshot_id)
+            .map_err(|e| Status::internal(e.to_string()))?
+            .ok_or_else(|| Status::not_found("snapshot not found"))?;
+        if snap.image_id != r.image_id {
+            return Err(Status::invalid_argument(
+                "snapshot belongs to another image",
+            ));
+        }
+        let row = self
+            .sm
+            .db
+            .lock()
+            .unwrap()
+            .get_image(&r.image_id)
+            .map_err(|e| Status::internal(e.to_string()))?
+            .ok_or_else(|| Status::not_found("image not found"))?;
+        let bytes =
+            read_snapshot_file(&self.data_dir, &row.session_id, &r.image_id, &r.snapshot_id)
+                .map_err(|e| Status::internal(e.to_string()))?;
+        let path = self
+            .data_dir
+            .join("sessions")
+            .join(&row.session_id)
+            .join("images")
+            .join(format!("{}.bin", r.image_id));
+        atomic_write(&path, &bytes).map_err(|e| Status::internal(e.to_string()))?;
+        self.images.lock().await.remove(&r.image_id);
+        self.sm
+            .db
+            .lock()
+            .unwrap()
+            .touch_image(&r.image_id)
+            .map_err(|e| Status::internal(e.to_string()))?;
+        tracing::info!(image_id = %r.image_id, snapshot_id = %r.snapshot_id, "snapshot restored");
+        Ok(Response::new(Empty {}))
+    }
 }
 
 #[cfg(unix)]
@@ -1063,7 +1236,9 @@ pub fn serve(
             data_dir,
         };
         Server::builder()
-            .add_service(EngineServiceServer::new(server))
+            .add_service(
+                EngineServiceServer::new(server).max_decoding_message_size(64 * 1024 * 1024),
+            )
             .serve_with_incoming(incoming)
             .await
             .map_err(|e| anyhow::anyhow!(e))
@@ -1082,13 +1257,17 @@ mod tests {
     use tower::service_fn;
     use uefi_proto::engine_service_client::EngineServiceClient;
 
-    async fn setup() -> (TempDir, EngineServiceClient<Channel>) {
-        let td = TempDir::new().unwrap();
-        let sock = td.path().join("test.sock");
-        let db = crate::storage::open_db(&td.path().join("db.sqlite")).unwrap();
+    async fn spawn_engine_on(
+        dir: &Path,
+    ) -> (
+        EngineServiceClient<Channel>,
+        Vec<tokio::task::JoinHandle<()>>,
+    ) {
+        let sock = dir.join(format!("{}.sock", uuid::Uuid::new_v4().simple()));
+        let db = crate::storage::open_db(&dir.join("db.sqlite")).unwrap();
         let sm = Arc::new(SessionManager::new(
             db,
-            td.path().to_path_buf(),
+            dir.to_path_buf(),
             Duration::from_secs(864000),
             Duration::from_secs(3600),
             false,
@@ -1097,13 +1276,15 @@ mod tests {
         let server = EngineServer {
             sm,
             images,
-            data_dir: td.path().to_path_buf(),
+            data_dir: dir.to_path_buf(),
         };
         let listener = tokio::net::UnixListener::bind(&sock).unwrap();
         let incoming = tokio_stream::wrappers::UnixListenerStream::new(listener);
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             Server::builder()
-                .add_service(EngineServiceServer::new(server))
+                .add_service(
+                    EngineServiceServer::new(server).max_decoding_message_size(64 * 1024 * 1024),
+                )
                 .serve_with_incoming(incoming)
                 .await
                 .unwrap();
@@ -1120,7 +1301,13 @@ mod tests {
             }))
             .await
             .unwrap();
-        (td, EngineServiceClient::new(channel))
+        (EngineServiceClient::new(channel), vec![handle])
+    }
+
+    async fn setup() -> (TempDir, EngineServiceClient<Channel>) {
+        let td = TempDir::new().unwrap();
+        let (client, _keep) = spawn_engine_on(td.path()).await;
+        (td, client)
     }
 
     #[test]
@@ -2070,6 +2257,484 @@ mod tests {
         assert!(img_path.exists(), "image bytes must be persisted on open");
         let saved = std::fs::read(&img_path).unwrap();
         assert_eq!(saved, fixture_volume());
+    }
+
+    async fn create_session(client: &mut EngineServiceClient<Channel>) -> String {
+        client
+            .session_create(SessionCreateRequest::default())
+            .await
+            .unwrap()
+            .into_inner()
+            .session_id
+    }
+
+    async fn list_nodes(client: &mut EngineServiceClient<Channel>, image_id: &str) -> Vec<Node> {
+        client
+            .image_nodes_list(tonic::Request::new(ImageNodesListRequest {
+                image_id: image_id.into(),
+                filter: String::new(),
+            }))
+            .await
+            .unwrap()
+            .into_inner()
+            .nodes
+    }
+
+    fn fv_image_with_two_files() -> Vec<u8> {
+        let mut buf = vec![0xFFu8; 256];
+        buf[32..40].copy_from_slice(&256u64.to_le_bytes());
+        buf[40..44].copy_from_slice(&crate::ffs::EFI_FVH_SIGNATURE.to_le_bytes());
+        buf[44..48].copy_from_slice(&crate::ffs::EFI_FVB2_ERASE_POLARITY.to_le_bytes());
+        buf[48..50].copy_from_slice(&56u16.to_le_bytes());
+        buf[55] = 2;
+        let guid = uuid::Uuid::new_v4();
+        for (k, at) in [56usize, 88].iter().enumerate() {
+            let mut f = vec![0u8; 32];
+            f[0..16].copy_from_slice(guid.as_bytes());
+            f[18] = 0x01;
+            f[20..23].copy_from_slice(&crate::ffs::size_to_uint24(32));
+            f[24] = [0xAA, 0xBB][k];
+            buf[*at..*at + 32].copy_from_slice(&f);
+        }
+        buf
+    }
+
+    #[tokio::test]
+    async fn image_upload_roundtrip() {
+        let (_td, mut client) = setup().await;
+        let sid = create_session(&mut client).await;
+        let resp = client
+            .image_upload(tonic::Request::new(ImageUploadRequest {
+                session_id: sid,
+                data: fv_image_with_two_files(),
+                mode: 0,
+                name: "up.bin".into(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        let nodes = client
+            .image_nodes_list(tonic::Request::new(ImageNodesListRequest {
+                image_id: resp.image_id.clone(),
+                filter: String::new(),
+            }))
+            .await
+            .unwrap()
+            .into_inner()
+            .nodes;
+        assert!(!nodes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn image_upload_rejected_over_small_limit() {
+        let td = tempfile::TempDir::new().unwrap();
+        let sock = td.path().join("small.sock");
+        let db = crate::storage::open_db(&td.path().join("db.sqlite")).unwrap();
+        let sm = Arc::new(SessionManager::new(
+            db,
+            td.path().to_path_buf(),
+            Duration::from_secs(864000),
+            Duration::from_secs(3600),
+            false,
+        ));
+        let server = EngineServer {
+            sm,
+            images: Arc::new(Mutex::new(HashMap::new())),
+            data_dir: td.path().to_path_buf(),
+        };
+        let listener = tokio::net::UnixListener::bind(&sock).unwrap();
+        let incoming = tokio_stream::wrappers::UnixListenerStream::new(listener);
+        tokio::spawn(async move {
+            tonic::transport::Server::builder()
+                .add_service(
+                    EngineServiceServer::new(server).max_decoding_message_size(1024 * 1024),
+                )
+                .serve_with_incoming(incoming)
+                .await
+                .unwrap();
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let channel = Endpoint::try_from("http://localhost")
+            .unwrap()
+            .connect_with_connector(tower::service_fn({
+                let s = sock.to_string_lossy().to_string();
+                move |_: http::Uri| {
+                    let s = s.clone();
+                    async move {
+                        Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(
+                            tokio::net::UnixStream::connect(s).await?,
+                        ))
+                    }
+                }
+            }))
+            .await
+            .unwrap();
+        let mut client =
+            EngineServiceClient::new(channel).max_encoding_message_size(64 * 1024 * 1024);
+        let result = client
+            .image_upload(tonic::Request::new(ImageUploadRequest {
+                session_id: "s".into(),
+                data: vec![0u8; 2 * 1024 * 1024],
+                mode: 0,
+                name: "big".into(),
+            }))
+            .await;
+        assert!(
+            result.is_err(),
+            "server with 1MB decode limit must reject 2MB upload"
+        );
+    }
+
+    #[tokio::test]
+    async fn remove_rpc_leaves_clean_tree() {
+        let (_td, mut client) = setup().await;
+        let sid = create_session(&mut client).await;
+        let dir = _td.path().join("src.bin");
+        std::fs::write(&dir, fv_image_with_two_files()).unwrap();
+        let open = client
+            .image_open(tonic::Request::new(ImageOpenRequest {
+                session_id: sid.clone(),
+                path: dir.display().to_string(),
+                mode: 1,
+                name: "t".into(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        client
+            .image_node_remove(tonic::Request::new(ImageNodeRemoveRequest {
+                image_id: open.image_id.clone(),
+                target: "0/0".into(),
+            }))
+            .await
+            .unwrap();
+        let nodes = client
+            .image_nodes_list(tonic::Request::new(ImageNodesListRequest {
+                image_id: open.image_id.clone(),
+                filter: String::new(),
+            }))
+            .await
+            .unwrap()
+            .into_inner()
+            .nodes;
+        assert!(
+            nodes.iter().all(|n| n.action == 50),
+            "no pending markers after write-through flush"
+        );
+        let files: Vec<_> = nodes
+            .iter()
+            .filter(|n| n.r#type == FfsType::File as u32)
+            .collect();
+        assert_eq!(files.len(), 1, "removed file must disappear from the tree");
+        assert_eq!(
+            files[0].offset, 56,
+            "survivor is re-materialized first in the rebuilt FV"
+        );
+    }
+
+    fn two_fv_image_with_markers() -> Vec<u8> {
+        let mut buf = vec![0xFFu8; 512];
+        let guid = Guid::try_parse("5c60f367-a505-419a-859e-2a4ff6ca6fe5").unwrap();
+        let markers = [[0xAAu8, 0xBB], [0xCC, 0xDD]];
+        for (v, base) in [0usize, 256].iter().enumerate() {
+            let vol = &mut buf[*base..*base + 256];
+            vol[32..40].copy_from_slice(&256u64.to_le_bytes());
+            vol[40..44].copy_from_slice(&crate::ffs::EFI_FVH_SIGNATURE.to_le_bytes());
+            vol[44..48].copy_from_slice(&crate::ffs::EFI_FVB2_ERASE_POLARITY.to_le_bytes());
+            vol[48..50].copy_from_slice(&56u16.to_le_bytes());
+            vol[55] = 2;
+            for (k, &marker) in markers[v].iter().enumerate() {
+                let at = 56 + 32 * k;
+                let mut f = vec![0u8; 32];
+                f[0..16].copy_from_slice(&guid.to_bytes());
+                f[18] = 0x01;
+                f[20..23].copy_from_slice(&crate::ffs::size_to_uint24(32));
+                f[24] = marker;
+                vol[at..at + 32].copy_from_slice(&f);
+            }
+        }
+        buf
+    }
+
+    #[tokio::test]
+    async fn second_flush_does_not_resurrect_removed_file() {
+        let (_td, mut client) = setup().await;
+        let sid = create_session(&mut client).await;
+        let dir = _td.path().join("two.bin");
+        std::fs::write(&dir, two_fv_image_with_markers()).unwrap();
+        let open = client
+            .image_open(tonic::Request::new(ImageOpenRequest {
+                session_id: sid.clone(),
+                path: dir.display().to_string(),
+                mode: 1,
+                name: "t".into(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        for target in ["0/0", "1/0"] {
+            client
+                .image_node_remove(tonic::Request::new(ImageNodeRemoveRequest {
+                    image_id: open.image_id.clone(),
+                    target: target.into(),
+                }))
+                .await
+                .unwrap();
+        }
+        let img_path = _td
+            .path()
+            .join("sessions")
+            .join(&sid)
+            .join("images")
+            .join(format!("{}.bin", open.image_id));
+        let stored = std::fs::read(&img_path).unwrap();
+        assert_eq!(stored.len(), 512, "flash length must be preserved");
+        assert!(
+            !stored.contains(&0xAA),
+            "removed FV0 file marker must not resurrect via a flush that bypasses its FV"
+        );
+        assert!(stored.contains(&0xBB), "FV0 survivor marker must remain");
+        assert!(
+            !stored.contains(&0xCC),
+            "removed FV1 file marker must be gone"
+        );
+        assert!(stored.contains(&0xDD), "FV1 survivor marker must remain");
+    }
+
+    fn descriptor_image_with_bios_fv() -> Vec<u8> {
+        let mut buf = vec![0xFFu8; 0x10000];
+        buf[0x10..0x14]
+            .copy_from_slice(&crate::parser::region::FLASH_DESCRIPTOR_SIGNATURE.to_le_bytes());
+        buf[0x14..0x18].copy_from_slice(&0x0040_0000u32.to_le_bytes());
+        buf[0x404..0x406].copy_from_slice(&1u16.to_le_bytes());
+        buf[0x406..0x408].copy_from_slice(&3u16.to_le_bytes());
+        buf[0x408..0x40A].copy_from_slice(&4u16.to_le_bytes());
+        buf[0x40A..0x40C].copy_from_slice(&15u16.to_le_bytes());
+        buf[0x1000..0x1100].copy_from_slice(&fv_image_with_two_files());
+        let mut me = vec![0u8; 0x2000];
+        me[0..4].copy_from_slice(&crate::parser::region::FPT_SIGNATURE.to_le_bytes());
+        me[4..8].copy_from_slice(&2u32.to_le_bytes());
+        me[8] = 0x10;
+        me[10] = 0x20;
+        me[0x20..0x24].copy_from_slice(b"FTPR");
+        me[0x28..0x2C].copy_from_slice(&0u32.to_le_bytes());
+        me[0x2C..0x30].copy_from_slice(&0x0800u32.to_le_bytes());
+        me[0x40..0x44].copy_from_slice(b"NFTP");
+        me[0x48..0x4C].copy_from_slice(&0x1000u32.to_le_bytes());
+        me[0x4C..0x50].copy_from_slice(&0x0400u32.to_le_bytes());
+        buf[0x4000..0x6000].copy_from_slice(&me);
+        buf
+    }
+
+    #[tokio::test]
+    async fn descriptor_image_bios_mutation_keeps_regions() {
+        let (td, mut client) = setup().await;
+        let sid = create_session(&mut client).await;
+        let fixture = descriptor_image_with_bios_fv();
+        let src = td.path().join("desc.bin");
+        std::fs::write(&src, &fixture).unwrap();
+        let open = client
+            .image_open(tonic::Request::new(ImageOpenRequest {
+                session_id: sid.clone(),
+                path: src.display().to_string(),
+                mode: 1,
+                name: "t".into(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        let initial = list_nodes(&mut client, &open.image_id).await;
+        let vol_prefix = format!(
+            "{}/",
+            initial
+                .iter()
+                .find(|n| n.r#type == FfsType::Volume as u32)
+                .expect("descriptor BIOS window holds a Volume")
+                .path
+        );
+        let target = initial
+            .iter()
+            .find(|n| n.r#type == FfsType::File as u32 && n.path.starts_with(&vol_prefix))
+            .expect("first Volume has a File child")
+            .path
+            .clone();
+        client
+            .image_node_remove(tonic::Request::new(ImageNodeRemoveRequest {
+                image_id: open.image_id.clone(),
+                target,
+            }))
+            .await
+            .unwrap();
+        let nodes = list_nodes(&mut client, &open.image_id).await;
+        assert!(
+            nodes.iter().any(|n| n.r#type == FfsType::Volume as u32),
+            "BIOS Volume survives the flush re-parse"
+        );
+        assert!(
+            nodes.iter().all(|n| n.action == 50),
+            "flush re-parse must give a clean tree"
+        );
+        assert_eq!(
+            nodes
+                .iter()
+                .filter(|n| n.r#type == FfsType::File as u32 && n.path.starts_with(&vol_prefix))
+                .count(),
+            1,
+            "removed BIOS file is gone, survivor re-parsed"
+        );
+        assert!(
+            nodes
+                .iter()
+                .any(|n| n.r#type == FfsType::Region as u32 && n.region == "ME"),
+            "ME region node survives with non-empty region label"
+        );
+        assert!(
+            nodes
+                .iter()
+                .any(|n| n.r#type == FfsType::Region as u32 && n.region == "Descriptor"),
+            "Descriptor region node survives with non-empty region label"
+        );
+        let img_path = td
+            .path()
+            .join("sessions")
+            .join(&sid)
+            .join("images")
+            .join(format!("{}.bin", open.image_id));
+        let stored = std::fs::read(&img_path).unwrap();
+        assert_eq!(
+            stored.len(),
+            fixture.len(),
+            "stored descriptor image keeps total length, no double padding or truncation"
+        );
+    }
+
+    #[tokio::test]
+    async fn image_snapshot_create_and_list_roundtrip() {
+        let (td, mut client) = setup().await;
+        let sid = create_session(&mut client).await;
+        let src = td.path().join("snap.bin");
+        std::fs::write(&src, fv_image_with_two_files()).unwrap();
+        let open = client
+            .image_open(tonic::Request::new(ImageOpenRequest {
+                session_id: sid,
+                path: src.display().to_string(),
+                mode: 1,
+                name: "t".into(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        let created = client
+            .image_snapshot_create(tonic::Request::new(ImageSnapshotCreateRequest {
+                image_id: open.image_id.clone(),
+                name: "before-patch".into(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(!created.snapshot_id.is_empty());
+        let list = client
+            .image_snapshots_list(tonic::Request::new(ImageSnapshotsListRequest {
+                image_id: open.image_id.clone(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(list.snapshots.len(), 1);
+        assert_eq!(list.snapshots[0].name, "before-patch");
+        assert_eq!(list.snapshots[0].snapshot_id, created.snapshot_id);
+        assert_eq!(list.snapshots[0].size, 256);
+    }
+
+    #[tokio::test]
+    async fn image_snapshot_create_on_missing_image_is_not_found() {
+        let (_td, mut client) = setup().await;
+        let st = client
+            .image_snapshot_create(tonic::Request::new(ImageSnapshotCreateRequest {
+                image_id: "nope".into(),
+                name: String::new(),
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(st.code(), tonic::Code::NotFound);
+    }
+
+    #[tokio::test]
+    async fn snapshot_restore_rolls_tree_back() {
+        let td = tempfile::TempDir::new().unwrap();
+        let (mut client, _keep) = spawn_engine_on(td.path()).await;
+        let sid = create_session(&mut client).await;
+        let src = td.path().join("img.bin");
+        std::fs::write(&src, fv_image_with_two_files()).unwrap();
+        let open = client
+            .image_open(tonic::Request::new(ImageOpenRequest {
+                session_id: sid,
+                path: src.display().to_string(),
+                mode: 1,
+                name: "t".into(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+
+        client
+            .image_node_remove(tonic::Request::new(ImageNodeRemoveRequest {
+                image_id: open.image_id.clone(),
+                target: "0/0".into(),
+            }))
+            .await
+            .unwrap();
+        let nodes_at_snapshot = list_nodes(&mut client, &open.image_id).await;
+        let snap = client
+            .image_snapshot_create(tonic::Request::new(ImageSnapshotCreateRequest {
+                image_id: open.image_id.clone(),
+                name: "before-second-cut".into(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+
+        client
+            .image_node_remove(tonic::Request::new(ImageNodeRemoveRequest {
+                image_id: open.image_id.clone(),
+                target: "0/0".into(),
+            }))
+            .await
+            .unwrap();
+
+        client
+            .image_snapshot_restore(tonic::Request::new(ImageSnapshotRestoreRequest {
+                image_id: open.image_id.clone(),
+                snapshot_id: snap.snapshot_id.clone(),
+            }))
+            .await
+            .unwrap();
+        let nodes_after = list_nodes(&mut client, &open.image_id).await;
+        assert_eq!(
+            nodes_at_snapshot, nodes_after,
+            "restore must roll the tree back to snapshot state"
+        );
+
+        drop(client);
+        let (mut client2, _keep2) = spawn_engine_on(td.path()).await;
+        let listed = client2
+            .image_snapshots_list(tonic::Request::new(ImageSnapshotsListRequest {
+                image_id: open.image_id.clone(),
+            }))
+            .await
+            .unwrap()
+            .into_inner()
+            .snapshots;
+        assert_eq!(listed.len(), 1, "snapshots survive engine restart");
+        assert_eq!(listed[0].name, "before-second-cut");
+
+        let bad = client2
+            .image_snapshot_restore(tonic::Request::new(ImageSnapshotRestoreRequest {
+                image_id: open.image_id.clone(),
+                snapshot_id: "nope".into(),
+            }))
+            .await;
+        assert!(bad.is_err());
     }
 
     #[tokio::test]

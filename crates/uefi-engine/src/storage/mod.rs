@@ -43,6 +43,15 @@ pub struct ImageRow {
     pub last_activity: i64,
 }
 
+#[derive(Debug, Clone)]
+pub struct ImageSnapshotRow {
+    pub id: String,
+    pub image_id: String,
+    pub name: String,
+    pub size: i64,
+    pub created_at: i64,
+}
+
 fn now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -289,6 +298,60 @@ impl Db {
         )?;
         Ok(())
     }
+
+    pub fn insert_image_snapshot(
+        &self,
+        id: &str,
+        image_id: &str,
+        name: &str,
+        size: i64,
+        created_at: i64,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO image_snapshots (id, image_id, name, size, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id, image_id, name, size, created_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_image_snapshot(&self, id: &str) -> Result<Option<ImageSnapshotRow>> {
+        self.conn
+            .query_row(
+                "SELECT id, image_id, name, size, created_at FROM image_snapshots WHERE id=?1",
+                params![id],
+                |r| {
+                    Ok(ImageSnapshotRow {
+                        id: r.get(0)?,
+                        image_id: r.get(1)?,
+                        name: r.get(2)?,
+                        size: r.get(3)?,
+                        created_at: r.get(4)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    pub fn list_image_snapshots(&self, image_id: &str) -> Result<Vec<ImageSnapshotRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, image_id, name, size, created_at FROM image_snapshots WHERE image_id=?1 ORDER BY created_at",
+        )?;
+        let rows = stmt.query_map(params![image_id], |r| {
+            Ok(ImageSnapshotRow {
+                id: r.get(0)?,
+                image_id: r.get(1)?,
+                name: r.get(2)?,
+                size: r.get(3)?,
+                created_at: r.get(4)?,
+            })
+        })?;
+        let mut v = vec![];
+        for r in rows {
+            v.push(r?);
+        }
+        Ok(v)
+    }
 }
 
 #[cfg(test)]
@@ -432,5 +495,24 @@ mod tests {
             .unwrap();
         db.delete_session("s1").unwrap();
         assert!(db.get_image("img1").unwrap().is_none());
+    }
+
+    #[test]
+    fn image_snapshots_roundtrip_and_cascade() {
+        let (_td, db) = test_db();
+        db.insert_session("s1", "tok", "n").unwrap();
+        db.insert_image("i1", "s1", "n", "p", 1, 16).unwrap();
+        db.insert_image_snapshot("sn1", "i1", "before", 16, 123)
+            .unwrap();
+        let rows = db.list_image_snapshots("i1").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].name, "before");
+        assert_eq!(rows[0].created_at, 123);
+        assert_eq!(
+            db.get_image_snapshot("sn1").unwrap().unwrap().image_id,
+            "i1"
+        );
+        db.delete_session_metadata("s1").unwrap();
+        assert!(db.list_image_snapshots("i1").unwrap().is_empty());
     }
 }
