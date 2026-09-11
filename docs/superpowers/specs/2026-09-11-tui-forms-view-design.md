@@ -215,6 +215,26 @@ add `. Вывод (inserted ids, string_ids) — в status_msg + refresh. Таб
 - Каждая ступень заканчивается `cargo test --all` + `cargo clippy --all -- -D warnings` (урок
   `9933f59`).
 
+## 7. Гейт V1 — сценарий для владельца (аддендум, 2026-09-11)
+
+Engine-часть гейта автоматизирована (`real_image.rs::
+hii_list_questions_real_image_consistent_with_question_info`, #[ignore]).
+Ручная TUI-часть (запускается владельцем на живом движке и HNX99TF):
+
+1. `cargo run -p uefi-engine` (сокет по умолчанию), в другом терминале
+   `cargo run -p uefi-tui`;
+2. `:open <путь к HNX99TF-образу> --mode write`;
+3. `Tab` → Forms-view: формсеты развёрнуты, титулы форм видны (сверка с
+   `uefi-cli hii form list` — количество/названия/visible-маркеры);
+4. `j/k` до формы с вопросами → правая панель: вопросы с kind и prompt;
+   сверка выборочного вопроса с `uefi-cli hii question-info <item_id>`;
+5. `S` → strings-браузер, `/` → фильтр по подстроке — счётчик строк
+   сходится с `uefi-cli hii string list | grep -ci <подстрока>`;
+6. `Tab` → возврат в Image-view без потери состояния дерева.
+
+Вердикт (все пункты да/нет + скриншоты) — аддендумом сюда; при негативе —
+бисект по задаче цикла. Успех = переход к плану V2.
+
 ## Решения (decisions log)
 
 - **D1:** Полноэкранные вкладки `Tab`/`Shift-Tab` (Image ↔ Forms), не панель и не оверлей —

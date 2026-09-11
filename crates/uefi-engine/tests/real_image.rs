@@ -800,6 +800,52 @@ fn real_image_hii_forms_and_strings() {
 
 #[test]
 #[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
+fn hii_list_questions_real_image_consistent_with_question_info() {
+    let data = load_fw();
+    let img = parse_image(&data, ImageMode::Read, "img1", "s1").expect("parse_image");
+    let forms = uefi_engine::hii::forms::collect_forms(&img);
+    assert!(!forms.is_empty());
+
+    let mut forms_with_questions = 0usize;
+    let mut total_questions = 0usize;
+    let mut prompts_resolved = 0usize;
+    let mut cross_checked = 0usize;
+    for f in &forms {
+        let qs = uefi_engine::hii::list_questions(&img, &f.form_id, f.form_id_ifr as u16)
+            .unwrap_or_else(|e| panic!("list_questions {}: {e:?}", f.form_id));
+        if qs.is_empty() {
+            continue;
+        }
+        forms_with_questions += 1;
+        total_questions += qs.len();
+        prompts_resolved += qs.iter().filter(|q| !q.prompt.is_empty()).count();
+        if cross_checked == 0 {
+            let q = &qs[0];
+            let item_id = format!("{}#{}:{:#x}", f.form_id, f.form_id_ifr, q.question_id);
+            let info = uefi_engine::hii::question_info(&img, &item_id)
+                .unwrap_or_else(|e| panic!("question_info {item_id}: {e:?}"));
+            assert_eq!(info.question_id, q.question_id);
+            assert_eq!(info.kind, q.kind);
+            assert_eq!(info.var_store_id, q.var_store_id);
+            cross_checked += 1;
+        }
+    }
+    assert!(forms_with_questions > 0, "real image has questions");
+    assert!(
+        total_questions >= 10,
+        "HNX99TF Setup has dozens of questions"
+    );
+    assert!(
+        prompts_resolved > 0,
+        "string packages resolve at least some prompts"
+    );
+    println!(
+        "hii_list_questions real-image: {forms_with_questions} forms with questions, {total_questions} questions, {prompts_resolved} prompts resolved"
+    );
+}
+
+#[test]
+#[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
 fn real_image_hii_form_visibility_round_trip() {
     use uefi_engine::builder::build_image;
     use uefi_engine::hii::forms::collect_forms;
