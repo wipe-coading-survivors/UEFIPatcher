@@ -277,14 +277,16 @@ pub fn form_details_text(forms: &FormsData, rows: &[FormsRow], cursor: usize) ->
         for (i, q) in forms.questions.iter().enumerate() {
             let marker = if i == forms.question_cursor { ">" } else { " " };
             let prompt = if q.prompt.is_empty() { "-" } else { &q.prompt };
+            let icon = crate::theme::question_icon(&q.kind);
             s.push_str(&format!(
-                "{marker} q{:#x}  {}  {}\n",
+                "{marker} {icon} q{:#x}  {}  {}\n",
                 q.question_id, q.kind, prompt
             ));
         }
         if let Some(qi) = &forms.question_info {
+            let icon = crate::theme::question_icon(&qi.kind);
             s.push_str(&format!(
-                "\nQuestion q{:#x} ({}):\n",
+                "\n{icon} Question q{:#x} ({}):\n",
                 qi.question_id, qi.kind
             ));
             s.push_str(&format!(
@@ -585,14 +587,14 @@ mod tests {
         let t = form_details_text(&fd, &rows, 2);
         assert!(t.contains("Path:    Main → Serial"));
         assert!(
-            t.contains("> q0x211  numeric  Baud"),
-            "курсор вопроса маркерится"
+            t.contains("> \u{F1EC} q0x211  numeric  Baud"),
+            "курсор вопроса маркеруется, numeric — глиф-иконка"
         );
         assert!(
-            t.contains("  q0x210  one_of  Serial Port"),
-            "не выбранный — без маркера"
+            t.contains("  \u{F0CA} q0x210  one_of  Serial Port"),
+            "не выбранный — без маркера, one_of — глиф-иконка"
         );
-        assert!(t.contains("Question q0x211 (numeric):"));
+        assert!(t.contains("\u{F1EC} Question q0x211 (numeric):"));
         assert!(t.contains("range 0..=255 step 1"));
         assert!(t.contains("Gates (1):"));
         let gates_line = t

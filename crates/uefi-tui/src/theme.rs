@@ -40,6 +40,17 @@ pub fn type_icon(node_type: u8, subtype: u8) -> &'static str {
     }
 }
 
+/// Nerd Font-пиктограмма типа HII-вопроса (аналог type_icon для Image View);
+/// неизвестный kind — тот же глиф-фолбэк, что у нераспознанных секций.
+pub fn question_icon(kind: &str) -> &'static str {
+    match kind {
+        "one_of" => "\u{F0CA}",
+        "checkbox" => "\u{F14A}",
+        "numeric" => "\u{F1EC}",
+        _ => "\u{F016}",
+    }
+}
+
 pub fn type_color(node_type: u8) -> Color {
     match node_type {
         TYPE_IMAGE => Color::Cyan,
@@ -138,5 +149,19 @@ mod tests {
         ] {
             assert_ne!(region, type_icon(other, 0));
         }
+    }
+
+    #[test]
+    fn question_icon_mappings() {
+        assert_eq!(question_icon("one_of"), "\u{F0CA}");
+        assert_eq!(question_icon("checkbox"), "\u{F14A}");
+        assert_eq!(question_icon("numeric"), "\u{F1EC}");
+    }
+
+    #[test]
+    fn question_icon_fallback_is_unknown_section_glyph() {
+        assert_eq!(question_icon("other"), "\u{F016}");
+        assert_eq!(question_icon(""), "\u{F016}");
+        assert_eq!(question_icon("whatever"), type_icon(TYPE_SECTION, 0xFF));
     }
 }
