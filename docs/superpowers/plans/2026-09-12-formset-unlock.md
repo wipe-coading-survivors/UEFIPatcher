@@ -207,7 +207,7 @@ mod ref_variant;
 Реализация уже в файле из Step 1 (файл создаётся целиком). Если предпочитешь строгий red-first: закомментируй тело `parse_ref` (`unimplemented!()`), прогони, верни тело. Практический минимум: убедиться, что тесты ВИДНЫ (не «0 из 0»).
 
 Run: `cargo test -p uefi-engine ref_variant`
-Expected: 6 passed (не «0 filtered out» — module-first).
+Expected: 5 passed (не «0 filtered out» — module-first).
 
 - [ ] **Step 3: Прогнать крейт + clippy**
 
