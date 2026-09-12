@@ -1088,7 +1088,10 @@ struct SpfAppendPlan {
     page_slot: usize,
     page_offset: usize,
     record_template: usize,
-    ctrl_template: usize,
+    /// None — $SPF без string-control блоков (поколение 450x): план строится,
+    /// но add_question обязан отказаться (apply_spf_question требует шаблон);
+    /// add_ref использует только selected_records.
+    ctrl_template: Option<usize>,
     counter: u32,
     selected_records: Vec<usize>,
 }
@@ -1165,9 +1168,8 @@ fn plan_spf_append(
     let ctrl_template = controls
         .iter()
         .find(|c| c.offset >= base + page_offset)
-        .unwrap_or(controls.first().ok_or(HiiError::NotFound)?)
-        .offset
-        - base;
+        .or_else(|| controls.first())
+        .map(|c| c.offset - base);
     Ok(SpfAppendPlan {
         page_slot,
         page_offset,
@@ -1209,7 +1211,12 @@ fn apply_spf_question(
         failsafe_v,
         optimal,
     );
-    spf::append_string_control(body, plan.ctrl_template, help_id);
+    spf::append_string_control(
+        body,
+        plan.ctrl_template
+            .expect("add_question rejects controlless $SPF upfront"),
+        help_id,
+    );
     let clone_off = spf::clone_page_with_controls(body, plan.page_offset, &[rec_off as u32]);
     spf::repoint_page_slot(body, plan.page_slot, clone_off as u32);
     let base = spf::container_start(body).expect("$SPF survives appends");
@@ -1414,13 +1421,15 @@ pub fn add_question(
     let sd_path = ami_patcher::discover_pfs_payload_path(image)?;
     let spf_plan = {
         let body = node_at(&image.root, &sd_path).body.clone();
-        plan_spf_append(
+        let plan = plan_spf_append(
             &body,
             &qt.pkg,
             qt.span.form_op as u32,
             qt.span.next_form_op as u32,
             qt.form_id,
-        )?
+        )?;
+        plan.ctrl_template.ok_or(HiiError::NotFound)?;
+        plan
     };
     check_question_slots(schema, &qt.pkg, &[], &[])?;
 
@@ -1538,13 +1547,16 @@ pub fn check_question_add(
     let sd_path = ami_patcher::discover_pfs_payload_path(image)?;
     {
         let body = node_at(&image.root, &sd_path).body.clone();
-        plan_spf_append(
+        let plan = plan_spf_append(
             &body,
             &qt.pkg,
             qt.span.form_op as u32,
             qt.span.next_form_op as u32,
             qt.form_id,
         )?;
+        if !schemas.is_empty() {
+            plan.ctrl_template.ok_or(HiiError::NotFound)?;
+        }
     }
     let mut pending: Vec<(u16, u16, u32, u32)> = Vec::new();
     for schema in schemas {
@@ -2145,6 +2157,27 @@ pub(crate) mod question_add_fixtures {
     pub(crate) fn question_add_flash_image() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
         let pkg = question_add_forms_pkg();
         let spf_body = question_add_spf_body_for(&pkg);
+        let blob = hii_list_blob(&[&pkg, &string_package_bytes()]);
+        let pe = crate::hii::pe_resource::synth_hii_pe("HII", &blob);
+        let setup = ffs_file_bytes(
+            &Guid::from_str(FILE_GUID).unwrap(),
+            &section_bytes(EFI_SECTION_PE32, &pe),
+        );
+        let sd = sd_file_direct(&spf_body);
+        (flash_with_files(vec![setup, sd]), pkg, spf_body)
+    }
+
+    /// Образ с $SPF без string-control блоков (поколение 450x: эвристика
+    /// scan_string_controls не находит ни одного контрола).
+    pub(crate) fn question_add_controlless_spf_flash_image() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        let pkg = question_add_forms_pkg();
+        let mut spf_body = question_add_spf_body_for(&pkg);
+        let first_ctrl = spf::scan_string_controls(&spf_body)
+            .first()
+            .map(|c| c.offset - spf::SPF_STRING_CONTROL_STR_ID)
+            .expect("fixture $SPF carries a control");
+        spf_body[first_ctrl..first_ctrl + spf::SPF_STRING_CONTROL_SIZE].fill(0);
+        assert!(spf::scan_string_controls(&spf_body).is_empty());
         let blob = hii_list_blob(&[&pkg, &string_package_bytes()]);
         let pe = crate::hii::pe_resource::synth_hii_pe("HII", &blob);
         let setup = ffs_file_bytes(
@@ -4321,6 +4354,31 @@ mod tests {
             );
         }
 
+        /// 450x: $SPF без string-control блоков — add_question требует
+        /// контрол-шаблон (apply_spf_question) и обязан отказаться ДО мутаций.
+        #[test]
+        fn add_question_refuses_controlless_spf_before_mutations() {
+            let (flash, _, _) = question_add_controlless_spf_flash_image();
+            let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+            let before = snapshot_bodies(&img.root);
+            let err =
+                add_question(&mut img, ITEM_FORM, &question_add_schema(0x200, 0x80)).unwrap_err();
+            assert!(matches!(err, HiiError::NotFound), "got {err:?}");
+            assert!(
+                matches!(
+                    check_question_add(&img, ITEM_FORM, &[question_add_schema(0x200, 0x80)], &[])
+                        .unwrap_err(),
+                    HiiError::NotFound
+                ),
+                "preflight parity: check_question_add отклоняет тем же кодом"
+            );
+            assert_eq!(
+                snapshot_bodies(&img.root),
+                before,
+                "контрол-less $SPF — отказ до первой мутации"
+            );
+        }
+
         #[test]
         fn add_question_growth_failure_after_strings_keeps_image_identical() {
             let flash = question_add_growth_blocked_flash();
@@ -4599,6 +4657,39 @@ mod tests {
                     crate::hii::form_hijack::locate_form(&pkg_after, 10099).is_none(),
                     "fixture must not contain the dangling destination"
                 );
+            }
+
+            /// 450x: $SPF без string-control блоков — add_ref обязан работать
+            /// (путь использует только selected_records, не ctrl_template).
+            #[test]
+            fn add_ref_works_on_controlless_spf() {
+                let (flash, _, _) = question_add_controlless_spf_flash_image();
+                let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+                let res = add_ref(&mut img, ITEM_FORM, &ref_add_schema(0x300, 10020))
+                    .expect("add_ref не требует string-control шаблон (450x)");
+                assert_eq!(res.question_id, 0x300);
+                let pkg_after = pkg_of(&img, "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x10:0");
+                let r = find_ref_op(&pkg_after, 10019).expect("REF op in form 10019");
+                assert_eq!(pkg_u16(&pkg_after, r + 13), 10020);
+            }
+
+            /// plan_spf_append на $SPF без контролов: Ok + ctrl_template None.
+            #[test]
+            fn plan_spf_append_tolerates_controlless_spf() {
+                let (flash, pkg, spf_body) = question_add_controlless_spf_flash_image();
+                let _ = flash;
+                assert!(spf::scan_string_controls(&spf_body).is_empty());
+                let span = crate::hii::form_hijack::locate_form(&pkg, 10019).unwrap();
+                let plan = plan_spf_append(
+                    &spf_body,
+                    &pkg,
+                    span.form_op as u32,
+                    span.next_form_op as u32,
+                    10019,
+                )
+                .expect("план строится и без контролов");
+                assert!(plan.ctrl_template.is_none());
+                assert!(!plan.selected_records.is_empty());
             }
 
             const CROSS_FORMSET_GUID: &str = "EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9";
