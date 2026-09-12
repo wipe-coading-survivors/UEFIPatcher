@@ -413,9 +413,11 @@ pub fn unlock(image: &mut Image, item_id: &str) -> Result<UnlockOutcome, HiiErro
             true
         }
     };
-    let cross_applied = apply_cross_formset_gates(image, &target, gt, &mut infos, &mut applied)?;
-    let mutated = mutated || cross_applied;
     if mutated {
+        ops::mark_rebuild_to_root_by_path(&mut image.root, &path);
+    }
+    let cross_applied = apply_cross_formset_gates(image, &target, gt, &mut infos, &mut applied)?;
+    if cross_applied {
         ops::mark_rebuild_to_root_by_path(&mut image.root, &path);
     }
     tracing::debug!(flips = applied.len(), "unlock done");
@@ -3340,6 +3342,96 @@ mod tests {
         assert!(
             listed.is_empty(),
             "gates_list-кросс-фаза тоже отключена для question-таргетов"
+        );
+    }
+
+    #[test]
+    fn unlock_marks_own_rebuild_when_cross_donor_behind_compression() {
+        let g = Guid::from_str(cross_formset::cross_fixtures::RC_SET).unwrap();
+        let mut p = g.to_bytes().to_vec();
+        p.extend_from_slice(&7u16.to_le_bytes());
+        p.extend_from_slice(&0u16.to_le_bytes());
+        p.push(0);
+        let mut ifr = cross_formset::cross_fixtures::opcode(r_efi::hii::IFR_FORM_SET_OP, true, &p);
+        ifr.extend(cross_formset::cross_fixtures::opcode(
+            r_efi::hii::IFR_SUPPRESS_IF_OP,
+            true,
+            &[],
+        ));
+        ifr.extend(cross_formset::cross_fixtures::uint64(1));
+        ifr.extend(cross_formset::cross_fixtures::uint64(1));
+        ifr.extend(vec![r_efi::hii::IFR_EQUAL_OP, 0x02]);
+        ifr.extend(cross_formset::cross_fixtures::opcode(
+            r_efi::hii::IFR_FORM_OP,
+            true,
+            &[1u16.to_le_bytes(), 21u16.to_le_bytes()].concat(),
+        ));
+        for _ in 0..4 {
+            ifr.extend(vec![r_efi::hii::IFR_END_OP, 0x02]);
+        }
+        let own_pkg = cross_formset::cross_fixtures::package(&ifr);
+
+        let donor_inner = cross_formset::cross_fixtures::mk_node(
+            None,
+            FfsType::Section,
+            0x19,
+            cross_formset::cross_fixtures::donor_pkg(),
+            vec![],
+        );
+        let donor_wrapper = cross_formset::cross_fixtures::mk_node(
+            None,
+            FfsType::Section,
+            crate::ffs::EFI_SECTION_GUID_DEFINED,
+            vec![],
+            vec![donor_inner],
+        );
+        let donor_file = cross_formset::cross_fixtures::mk_node(
+            Some(Guid::from_str(cross_formset::cross_fixtures::SETUP_FILE).unwrap()),
+            FfsType::File,
+            0x07,
+            vec![],
+            vec![donor_wrapper],
+        );
+        let target_sec = cross_formset::cross_fixtures::mk_node(
+            None,
+            FfsType::Section,
+            0x19,
+            own_pkg.clone(),
+            vec![],
+        );
+        let target_file = cross_formset::cross_fixtures::mk_node(
+            Some(Guid::from_str(cross_formset::cross_fixtures::TARGET_FILE).unwrap()),
+            FfsType::File,
+            0x07,
+            vec![],
+            vec![target_sec],
+        );
+        let volume = cross_formset::cross_fixtures::mk_node(
+            None,
+            FfsType::Volume,
+            0,
+            vec![],
+            vec![donor_file, target_file],
+        );
+        let root =
+            cross_formset::cross_fixtures::mk_node(None, FfsType::Image, 0, vec![], vec![volume]);
+        let mut image = Image {
+            image_id: "img".into(),
+            session_id: "s".into(),
+            root,
+            mode: ImageMode::Write,
+        };
+
+        assert!(matches!(
+            unlock(&mut image, "ABBCE13D-E25A-4D9F-A1F9-2F7710786892:0x19:0#1"),
+            Err(HiiError::MutationBehindCompression)
+        ));
+        let own = &image.root.children[0].children[1].children[0];
+        assert_ne!(own.body, own_pkg, "own-флипы применены до отказа донора");
+        assert_eq!(
+            own.action,
+            Action::Rebuild,
+            "own-путь помечен до кросс-фазы: иначе применённые флипы теряются при save"
         );
     }
 
