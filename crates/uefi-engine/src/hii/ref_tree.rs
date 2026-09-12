@@ -8,20 +8,30 @@ use crate::hii::values::walk_statements;
 use crate::types::{FfsNode, FfsType, Image, guid_to_upper_string};
 use r_efi::hii::{IFR_REF_OP, PACKAGE_FORMS};
 
-/// REF-рёбра одного form-пакета: в форме X каждый IFR_REF_OP с
-/// length >= 15 даёт ребро X → FormId@+13 (паттерн чтения — gates.rs,
-/// ветка Wraps::Ref). REF вне формы и короткие REF пропускаются;
-/// дубликаты схлопываются. Спека tui-forms-view §3.5.
-pub(crate) fn package_edges(pkg: &[u8]) -> Vec<(u16, u16)> {
-    let mut out: Vec<(u16, u16)> = Vec::new();
+/// REF-рёбра одного form-пакета: (родитель, цель, формсет цели).
+/// REF3/REF4 (len 33/35) несут FormSetGuid@17 — цель чужого формсета;
+/// REF5 (Dynamic) рёбер не даёт. Спека formset-unlock §3 U1c.
+pub(crate) fn package_edges(pkg: &[u8]) -> Vec<(u16, u16, Option<crate::types::Guid>)> {
+    let mut out: Vec<(u16, u16, Option<crate::types::Guid>)> = Vec::new();
     walk_statements(pkg, |op, off, len, current| {
         if op != IFR_REF_OP || len < 15 {
             return;
         }
         let Some(parent) = current else { return };
-        let child = u16::from_le_bytes([pkg[off + 13], pkg[off + 14]]);
-        if !out.contains(&(parent, child)) {
-            out.push((parent, child));
+        let (child, cross) = match crate::hii::ref_variant::parse_ref(op, &pkg[off..off + len]) {
+            Some(crate::hii::ref_variant::RefTarget::Formset {
+                formset_guid,
+                form_id,
+                ..
+            }) => (form_id, Some(formset_guid)),
+            Some(crate::hii::ref_variant::RefTarget::Form { form_id })
+            | Some(crate::hii::ref_variant::RefTarget::FormQuestion { form_id, .. }) => {
+                (form_id, None)
+            }
+            _ => return,
+        };
+        if !out.contains(&(parent, child, cross)) {
+            out.push((parent, child, cross));
         }
     });
     out
@@ -93,11 +103,12 @@ fn walk_sections(node: &FfsNode, out: &mut Vec<uefi_proto::FormEdge>) {
 
 fn push_edges(pkg: &[u8], formset: &crate::types::Guid, out: &mut Vec<uefi_proto::FormEdge>) {
     let guid = guid_to_upper_string(formset);
-    for (parent, child) in package_edges(pkg) {
+    for (parent, child, cross) in package_edges(pkg) {
         let e = uefi_proto::FormEdge {
             formset_guid: guid.clone(),
             parent_form_id: u32::from(parent),
             form_id: u32::from(child),
+            target_formset_guid: cross.as_ref().map(guid_to_upper_string).unwrap_or_default(),
         };
         if !out.contains(&e) {
             out.push(e);
@@ -164,6 +175,19 @@ mod tests {
         let mut p = question_header(0x10, qid, 0xFFFF, 0);
         p.extend_from_slice(&target_form.to_le_bytes());
         opcode(IFR_REF_OP, false, &p)
+    }
+
+    /// IFR_REF3: header(11) + FormId + QuestionId + FormSetGuid (len 33).
+    fn ref3_op(qid: u16, target_form: u16, formset: &str) -> Vec<u8> {
+        let g = Guid::from_str(formset).unwrap();
+        let payload = [
+            question_header(0x10, qid, 0xFFFF, 0),
+            target_form.to_le_bytes().to_vec(),
+            0xFFFFu16.to_le_bytes().to_vec(),
+            g.to_bytes().to_vec(),
+        ]
+        .concat();
+        opcode(IFR_REF_OP, false, &payload)
     }
 
     fn package(ifr: &[u8]) -> Vec<u8> {
@@ -244,8 +268,57 @@ mod tests {
         let pkg = tree_pkg();
         assert_eq!(
             package_edges(&pkg),
-            vec![(10001, 10019), (10019, 10030)],
+            vec![(10001, 10019, None), (10019, 10030, None)],
             "дубль (10001,10019) схлопнулся, порядок первого появления"
+        );
+    }
+
+    #[test]
+    fn package_edges_marks_cross_formset_children() {
+        let pkg = package(
+            &[
+                form_set(),
+                form(10001),
+                ref_op(0x30, 10019),
+                ref3_op(0x31, 1, "EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9"),
+                end(),
+                end(),
+                end(),
+            ]
+            .concat(),
+        );
+        let edges = package_edges(&pkg);
+        assert_eq!(
+            edges,
+            vec![
+                (10001, 10019, None),
+                (
+                    10001,
+                    1,
+                    Some(Guid::from_str("EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9").unwrap())
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn collect_edges_carries_target_formset_guid() {
+        let pkg = package(
+            &[
+                form_set(),
+                form(10001),
+                ref3_op(0x31, 1, "EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9"),
+                end(),
+                end(),
+                end(),
+            ]
+            .concat(),
+        );
+        let edges = collect_edges(&mk_image(pkg));
+        assert_eq!(edges.len(), 1);
+        assert_eq!(
+            edges[0].target_formset_guid,
+            "EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9"
         );
     }
 
@@ -272,7 +345,7 @@ mod tests {
         );
         assert_eq!(
             package_edges(&pkg),
-            vec![(10001, 10019)],
+            vec![(10001, 10019, None)],
             "REF вне формы и REF с len<15 не дают рёбер"
         );
     }
@@ -287,6 +360,7 @@ mod tests {
                 formset_guid: FORMSET_GUID.to_string(),
                 parent_form_id: 10001,
                 form_id: 10019,
+                target_formset_guid: String::new(),
             }
         );
         assert_eq!(
@@ -295,6 +369,7 @@ mod tests {
                 formset_guid: FORMSET_GUID.to_string(),
                 parent_form_id: 10019,
                 form_id: 10030,
+                target_formset_guid: String::new(),
             }
         );
     }
@@ -319,6 +394,7 @@ mod tests {
                 formset_guid: FORMSET_GUID.to_string(),
                 parent_form_id: 10001,
                 form_id: 65535,
+                target_formset_guid: String::new(),
             }]
         );
     }

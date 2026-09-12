@@ -79,11 +79,17 @@ pub fn build_rows(forms: &[FormInfo], expanded: &HashSet<String>) -> Vec<FormsRo
 /// формы без входящих рёбер, затем непоказанные (циклы) в порядке
 /// появления; кратные родители — у каждого; висячие REF-цели —
 /// DanglingRef-строкой; циклы не зацикливают (множество на-пути).
+/// Кросс-формсетные рёбра (target_formset_guid) резолвятся по
+/// глобальной карте всех форм. Спека formset-unlock §3 U1c.
 pub fn build_tree_rows(
     forms: &[FormInfo],
     edges: &[FormEdge],
     expanded: &HashSet<String>,
 ) -> Vec<FormsRow> {
+    let global: HashMap<(&str, u32), &FormInfo> = forms
+        .iter()
+        .map(|f| ((f.formset_guid.as_str(), f.form_id_ifr), f))
+        .collect();
     let mut order: Vec<String> = Vec::new();
     let mut by_set: HashMap<String, Vec<&FormInfo>> = HashMap::new();
     for f in forms {
@@ -104,15 +110,16 @@ pub fn build_tree_rows(
         let Some(list) = by_set.get(guid) else {
             continue;
         };
-        let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+        let mut children: HashMap<u32, Vec<(u32, &str)>> = HashMap::new();
         let mut has_incoming: HashSet<u32> = HashSet::new();
         for e in edges {
             if e.formset_guid != *guid {
                 continue;
             }
+            let target = e.target_formset_guid.as_str();
             let kids = children.entry(e.parent_form_id).or_default();
-            if !kids.contains(&e.form_id) {
-                kids.push(e.form_id);
+            if !kids.contains(&(e.form_id, target)) {
+                kids.push((e.form_id, target));
             }
             has_incoming.insert(e.form_id);
         }
@@ -130,7 +137,7 @@ pub fn build_tree_rows(
                 continue;
             }
             if let Some(kids) = children.get(&cur) {
-                for child in kids {
+                for (child, _) in kids {
                     if by_id.contains_key(child) {
                         stack.push(*child);
                     }
@@ -152,6 +159,7 @@ pub fn build_tree_rows(
             emit_form(
                 &by_id,
                 &children,
+                &global,
                 root,
                 guid,
                 expanded,
@@ -166,7 +174,8 @@ pub fn build_tree_rows(
     #[allow(clippy::too_many_arguments)]
     fn emit_form(
         by_id: &HashMap<u32, &FormInfo>,
-        children: &HashMap<u32, Vec<u32>>,
+        children: &HashMap<u32, Vec<(u32, &str)>>,
+        global: &HashMap<(&str, u32), &FormInfo>,
         form_id: u32,
         guid: &str,
         expanded: &HashSet<String>,
@@ -199,11 +208,12 @@ pub fn build_tree_rows(
         emitted.insert(form_id);
         if !kids.is_empty() && is_expanded {
             on_path.insert(form_id);
-            for child in kids {
+            for (child, target) in kids {
                 if by_id.contains_key(&child) {
                     emit_form(
                         by_id,
                         children,
+                        global,
                         child,
                         guid,
                         expanded,
@@ -213,6 +223,23 @@ pub fn build_tree_rows(
                         emitted,
                         rows,
                     );
+                } else if !target.is_empty()
+                    && let Some(x) = global.get(&(target, child))
+                {
+                    rows.push(FormsRow::Form {
+                        key: FormKey {
+                            target: x.form_id.clone(),
+                            formset_guid: x.formset_guid.clone(),
+                            form_id_ifr: x.form_id_ifr,
+                            title: x.title.clone(),
+                        },
+                        visible: x.visible,
+                        depth: depth + 1,
+                        path: format!("{} → {}", path.join(" → "), x.title),
+                        has_children: false,
+                        expanded: expanded
+                            .contains(&format!("{}#{}", x.formset_guid, x.form_id_ifr)),
+                    });
                 } else {
                     rows.push(FormsRow::DanglingRef {
                         form_id: child,
@@ -360,11 +387,12 @@ mod tests {
         }
     }
 
-    fn edge(set: &str, parent: u32, child: u32) -> uefi_proto::FormEdge {
+    fn edge(set: &str, parent: u32, child: u32, target: &str) -> uefi_proto::FormEdge {
         uefi_proto::FormEdge {
             formset_guid: set.into(),
             parent_form_id: parent,
             form_id: child,
+            target_formset_guid: target.into(),
         }
     }
 
@@ -423,7 +451,11 @@ mod tests {
             fi("t1", "S", 2, "Advanced", true),
             fi("t1", "S", 3, "Serial", false),
         ];
-        let edges = vec![edge("S", 1, 2), edge("S", 2, 3), edge("S", 1, 99)];
+        let edges = vec![
+            edge("S", 1, 2, ""),
+            edge("S", 2, 3, ""),
+            edge("S", 1, 99, ""),
+        ];
         let ex = all_row_keys(&forms, &edges);
         let rows = build_tree_rows(&forms, &edges, &ex);
         assert_eq!(rows.len(), 5);
@@ -451,7 +483,7 @@ mod tests {
     #[test]
     fn tree_rows_cycle_does_not_loop_and_form_still_visible() {
         let forms = vec![fi("t1", "S", 1, "A", true), fi("t1", "S", 2, "B", true)];
-        let edges = vec![edge("S", 1, 2), edge("S", 2, 1)];
+        let edges = vec![edge("S", 1, 2, ""), edge("S", 2, 1, "")];
         let ex = all_row_keys(&forms, &edges);
         let rows = build_tree_rows(&forms, &edges, &ex);
         assert_eq!(
@@ -470,7 +502,7 @@ mod tests {
             fi("t1", "S", 2, "P2", true),
             fi("t1", "S", 3, "Kid", true),
         ];
-        let edges = vec![edge("S", 1, 3), edge("S", 2, 3)];
+        let edges = vec![edge("S", 1, 3, ""), edge("S", 2, 3, "")];
         let ex = all_row_keys(&forms, &edges);
         let rows = build_tree_rows(&forms, &edges, &ex);
         let kid_rows = rows
@@ -486,7 +518,7 @@ mod tests {
             fi("t1", "S", 1, "Main", true),
             fi("t1", "S", 2, "Adv", true),
         ];
-        let edges = vec![edge("S", 1, 2)];
+        let edges = vec![edge("S", 1, 2, "")];
         let mut ex = all_row_keys(&forms, &edges);
         ex.remove("S#1");
         let rows = build_tree_rows(&forms, &edges, &ex);
@@ -507,7 +539,7 @@ mod tests {
             fi("t1", "S", 1, "Main", true),
             fi("t2", "X", 9, "Other", true),
         ];
-        let edges = vec![edge("X", 9, 1)];
+        let edges = vec![edge("X", 9, 1, "")];
         let ex = all_row_keys(&forms, &edges);
         let rows = build_tree_rows(&forms, &edges, &ex);
         assert_eq!(rows.len(), 5);
@@ -528,13 +560,65 @@ mod tests {
     }
 
     #[test]
+    fn cross_edge_attaches_foreign_formset_form() {
+        let setup = "7B59104A-366D-4C6F-8147-633AA5D8E0D4";
+        let chipset = "EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9";
+        let forms = vec![
+            fi("t1", setup, 10001, "Main", true),
+            fi("t2", chipset, 1, "Chipset", true),
+        ];
+        let edges = vec![edge(setup, 10001, 1, chipset)];
+        let ex: HashSet<String> = [setup.to_string(), format!("{setup}#10001")].into();
+        let rows = build_tree_rows(&forms, &edges, &ex);
+        // EC87D643-форма-1 — ребёнок 10001 в дереве Setup (depth 2),
+        // корня в своём (свёрнутом) формсете нет — ровно одна строка
+        let cross: Vec<_> = rows
+            .iter()
+            .filter(|r| {
+                matches!(r, FormsRow::Form { key, .. }
+                    if key.formset_guid == chipset && key.form_id_ifr == 1)
+            })
+            .collect();
+        assert_eq!(cross.len(), 1, "ровно одна строка кросс-ребёнка");
+        assert!(matches!(
+            cross[0],
+            FormsRow::Form {
+                depth: 2,
+                path,
+                ..
+            } if path == "Main → Chipset"
+        ));
+    }
+
+    #[test]
+    fn cross_edge_unresolvable_target_is_dangling() {
+        let setup = "7B59104A-366D-4C6F-8147-633AA5D8E0D4";
+        let forms = vec![fi("t1", setup, 10001, "Main", true)];
+        let edges = vec![edge(
+            setup,
+            10001,
+            7,
+            "EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9",
+        )];
+        let ex: HashSet<String> = [setup.to_string(), format!("{setup}#10001")].into();
+        let rows = build_tree_rows(&forms, &edges, &ex);
+        assert!(matches!(
+            rows.last(),
+            Some(FormsRow::DanglingRef {
+                form_id: 7,
+                depth: 2
+            })
+        ));
+    }
+
+    #[test]
     fn all_row_keys_cover_formsets_and_parent_forms() {
         let forms = vec![
             fi("t1", "S", 1, "Main", true),
             fi("t1", "S", 2, "Adv", true),
             fi("t2", "X", 9, "Other", true),
         ];
-        let edges = vec![edge("S", 1, 2)];
+        let edges = vec![edge("S", 1, 2, "")];
         let keys = all_row_keys(&forms, &edges);
         assert!(keys.contains("S"));
         assert!(keys.contains("X"));
@@ -560,7 +644,7 @@ mod tests {
             fi("t1", "S", 1, "Main", true),
             fi("t1", "S", 2, "Serial", false),
         ];
-        let edges = vec![edge("S", 1, 2)];
+        let edges = vec![edge("S", 1, 2, "")];
         let ex = all_row_keys(&forms, &edges);
         let rows = build_tree_rows(&forms, &edges, &ex);
         let mut fd = FormsData {

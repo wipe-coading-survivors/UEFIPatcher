@@ -1904,6 +1904,7 @@ mod tests {
             formset_guid: "SET-A".into(),
             parent_form_id: 10001,
             form_id: 99,
+            target_formset_guid: String::new(),
         }];
         app.forms.expanded = crate::forms::all_row_keys(&app.forms.forms, &app.forms.edges);
         app.forms.cursor = 0;

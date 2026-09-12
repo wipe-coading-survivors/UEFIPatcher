@@ -851,6 +851,7 @@ mod tests {
             formset_guid: "S".into(),
             parent_form_id: 1,
             form_id: 2,
+            target_formset_guid: String::new(),
         }];
         app.forms.expanded = ["S".into(), "S#1".into()].into();
         app.forms.cursor = 2;

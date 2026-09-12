@@ -177,7 +177,8 @@ message HiiListFormsResponse { repeated FormInfo forms = 1; }
 message FormEdge {
   string formset_guid = 1;
   uint32 parent_form_id = 2;
-  uint32 form_id = 3;      // цель REF-вопроса
+  uint32 form_id = 3;             // цель REF-вопроса
+  string target_formset_guid = 4; // непусто = кросс-формсетный REF3/REF4
 }
 message HiiFormTreeRequest  { string image_id = 1; }
 message HiiFormTreeResponse { repeated FormEdge edges = 1; }
