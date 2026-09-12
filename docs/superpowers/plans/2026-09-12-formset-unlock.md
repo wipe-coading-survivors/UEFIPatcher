@@ -55,6 +55,7 @@ use crate::types::Guid;
 /// Dynamic: цель приходит из runtime-value вопроса, статически
 /// неразрешима — гейты/рёбра по нему не строятся.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub(crate) enum RefTarget {
     Form { form_id: u16 },
     FormQuestion { form_id: u16, question_id: u16 },
@@ -64,6 +65,7 @@ pub(crate) enum RefTarget {
 
 /// Парсит REF-стейтмент (opcode + length + тело). Принимает только
 /// канонические длины {13, 15, 17, 33, 35}; прочие — None.
+#[allow(dead_code)]
 pub(crate) fn parse_ref(op: u8, stmt: &[u8]) -> Option<RefTarget> {
     if op != r_efi::hii::IFR_REF_OP || stmt.len() < 2 {
         return None;
