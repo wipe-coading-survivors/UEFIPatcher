@@ -1855,9 +1855,16 @@ fn real_amibcp_450x_formset_unlock() {
 только `selected_records` (IFR-offset fixup): `ctrl_template` нужен исключительно
 `apply_spf_question` (путь add_question; np3 на HNX99TF подтверждает — REF не добавляет
 $SPF-записей, 393 = 389 + 4 вопроса). Фикс ДО теста: `SpfAppendPlan.ctrl_template:
-Option<usize>`, `plan_spf_append` не требует контролы, требование переносится в
-`apply_spf_question` (add_question на образе без контролов → честный NotFound) +
+Option<usize>`, `plan_spf_append` не требует контролы, требование — **upfront в
+`add_question`/`check_question_add` ДО первой мутации** (add_question на образе без
+контролов → честный NotFound; в `apply_spf_question` — только unreachable-expect) +
 юнит-тест план-без-контролов.
+
+**Ревью fix round 1 (правило 11, до правок кода):** релаксация затрагивает и `add_page` —
+на control-less $SPF план теперь строится (раньше NotFound), `add_page` использует из
+плана только `page_offset`/`page_slot` и **успешно регистрирует страницу** — это
+задокументированное поведение (юнит-тест add_page на control-less фикстуре), не побочный
+эффект.
 
 - [ ] **Step 3: Прогнать real-гейт**
 
