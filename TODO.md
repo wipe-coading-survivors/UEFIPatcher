@@ -2920,3 +2920,28 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   (движок корректно удаляет, но пользователь может ожидать «закрыть
   сессию, файл оставить»). Проверить help-текст CLI/TUI (2026-09-12,
   наблюдение при лечении 450x-артефактов).
+* [ ] **uefi-engine: extract/export и move форм/вопросов — лёгкая
+  переподвязка в другие корни** — сериализация существующей
+  формы/вопроса (IFR + строки + varstore-декларация) в JSON-схему
+  QuestionAddList, зеркальную add_question/add_ref/add_varstores:
+  сегодня поля вопроса читаются `hii question info`, а refs/questions
+  JSON пишется руками (как в live-гейте U4). Export должен собрать
+  готовый к вставке список из QuestionMap (kind/varstore/offset/width/
+  min/max/step/options/defaults — `hii/values.rs`), строк
+  (`string_pack`) и varstore-декларации (`values::varstore_map`).
+  Move = export + insert в целевой корень + удаление оригинала
+  (IFR-удаления сейчас нет — отдельная операция). Запрос владельца
+  (2026-09-12, при гейте дуги formset-unlock).
+* [ ] **uefi-engine: позиционная вставка REF/вопроса — IntelRCSetup
+  топ-уровнем бара Setup** — сегодня add_ref/add_question вставляют
+  стейтмент перед END формы (в конец), поэтому новый пункт в баре
+  корневого Setup (форма 1, 899407d7…) окажется ПОСЛЕ «Save & Exit».
+  Цель владельца: «IntelRCSetup» между «Advanced» и «Server Mgmt»
+  (Main|Advanced|IntelRCSetup|Server Mgmt|Security|Boot|Save&Exit).
+  Нужно: insert-at-offset в `splice_question_ops` (`hii/ifr.rs:311`)
+  перед GOTO целевого пункта — $SPF-сдвиг уже принимает произвольный
+  insert_at (`shift_resolving_records`, дуга U3b). REF3-механика и
+  строка prompt («IntelRCSetup» через string-pack) готовы; вариант
+  спеки §7 сейчас целится в Chipset 10008 (вложенный пункт), этот —
+  топ-уровневый. Запрос владельца (2026-09-12).
+
