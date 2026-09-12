@@ -375,6 +375,7 @@ mod tests {
                 size: 64,
                 name: "VStore".into(),
                 var_type: schema::VarStoreType::Buffer,
+                attributes: 7,
             }],
             default_stores: vec![],
             forms: vec![schema::FormSchema {

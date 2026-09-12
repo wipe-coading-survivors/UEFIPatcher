@@ -1424,6 +1424,7 @@ fn real_image_hii_form_add_into_setup_formset() {
             size: 64,
             name: "PatcherVar".into(),
             var_type: schema::VarStoreType::Buffer,
+            attributes: 7,
         }],
         default_stores: vec![],
         forms: vec![schema::FormSchema {

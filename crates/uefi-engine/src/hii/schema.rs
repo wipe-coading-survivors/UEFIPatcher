@@ -25,6 +25,15 @@ pub struct VarStoreSchema {
     pub name: String,
     #[serde(rename = "type")]
     pub var_type: VarStoreType,
+    /// Только для type=efi (IfrVarStoreEfi Attributes). Default 7 =
+    /// NV|BS|RT (EDK2-паттерн setup-переменных; сверяется с живыми
+    /// байтами 450x на гате — спека formset-unlock §3 U3).
+    #[serde(default = "default_varstore_attributes")]
+    pub attributes: u32,
+}
+
+fn default_varstore_attributes() -> u32 {
+    7
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -259,11 +268,29 @@ pub struct QuestionAddList {
     pub questions: Vec<QuestionAddSchema>,
     #[serde(default)]
     pub refs: Vec<QuestionAddRefSchema>,
+    #[serde(default)]
+    pub varstores: Vec<VarStoreSchema>,
 }
 
 pub fn parse_question_add_schema(json: &str) -> Result<QuestionAddList, HiiError> {
     let s: QuestionAddList =
         serde_json::from_str(json).map_err(|e| HiiError::InvalidSchema(e.to_string()))?;
+    let mut seen: Vec<u16> = Vec::new();
+    for vs in &s.varstores {
+        if seen.contains(&vs.id) {
+            return Err(HiiError::InvalidSchema(format!(
+                "duplicate varstore id {:#x}",
+                vs.id
+            )));
+        }
+        seen.push(vs.id);
+        if crate::types::Guid::try_parse(&vs.guid).is_err() {
+            return Err(HiiError::InvalidSchema(format!(
+                "varstore guid '{}' is not a GUID",
+                vs.guid
+            )));
+        }
+    }
     if s.questions.is_empty() && s.refs.is_empty() {
         return Err(HiiError::InvalidSchema(
             "questions and refs must not both be empty".to_string(),
@@ -522,6 +549,48 @@ mod tests {
         assert_eq!(s.questions.len(), 1);
         assert_eq!(s.questions[0].question_id, 512);
         assert!(s.refs.is_empty());
+    }
+
+    #[test]
+    fn parse_question_add_with_varstores() {
+        let s = parse_question_add_schema(
+            r#"{ "varstores": [ { "id": 32513, "guid": "EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9",
+                "size": 5744, "name": "IntelSetup", "type": "efi" } ],
+              "questions": [ { "form_id": 7, "prompt": "P", "help": "H",
+                "question_id": 32800, "var_store_id": 32513, "var_offset": 1329,
+                "size": 1, "options": [ { "text": "x4x4x4x4", "value": 0 } ] } ] }"#,
+        )
+        .unwrap();
+        assert_eq!(s.varstores.len(), 1);
+        assert_eq!(s.varstores[0].var_type, VarStoreType::Efi);
+        assert_eq!(s.varstores[0].attributes, 7);
+    }
+
+    #[test]
+    fn parse_question_add_rejects_duplicate_varstore_ids() {
+        let e = parse_question_add_schema(
+            r#"{ "varstores": [ { "id": 1, "guid": "A1B2C3D4-E5F6-7890-ABCD-EF1234567890",
+                "size": 16, "name": "A", "type": "efi" },
+              { "id": 1, "guid": "A1B2C3D4-E5F6-7890-ABCD-EF1234567890",
+                "size": 16, "name": "B", "type": "buffer" } ],
+              "questions": [] , "refs": [ { "form_id": 1, "prompt": "P", "help": "H", "question_id": 2 } ] }"#,
+        )
+        .unwrap_err();
+        assert!(matches!(e, HiiError::InvalidSchema(_)));
+    }
+
+    #[test]
+    fn parse_question_add_rejects_bad_varstore_guid() {
+        let e = parse_question_add_schema(
+            r#"{ "varstores": [ { "id": 1, "guid": "not-a-guid",
+                "size": 16, "name": "A", "type": "efi" } ],
+              "questions": [ { "form_id": 7, "prompt": "P", "help": "H",
+                "question_id": 2, "var_store_id": 1, "var_offset": 3, "size": 1,
+                "options": [ { "text": "A", "value": 0 } ] } ] }"#,
+        )
+        .unwrap_err();
+        assert!(matches!(e, HiiError::InvalidSchema(_)));
+        assert!(format!("{e:?}").contains("varstore guid 'not-a-guid' is not a GUID"));
     }
 
     #[test]

@@ -86,6 +86,29 @@ impl IfrBuilder {
         self.buf.push(0);
     }
 
+    /// IfrVarStoreEfi (EDK2): VarStoreId@2, Guid@4, Attributes@20,
+    /// Size@24, Name@26 UCS-2+NUL. Зеркально values::varstore_map.
+    pub fn emit_var_store_efi(
+        &mut self,
+        id: u16,
+        guid: &Guid,
+        size: u16,
+        name: &str,
+        attributes: u32,
+    ) {
+        let name_bytes: Vec<u8> = name
+            .encode_utf16()
+            .flat_map(|u| u.to_le_bytes())
+            .chain([0, 0])
+            .collect();
+        self.write_header(OP_VARSTORE_EFI, false, 24 + name_bytes.len());
+        self.buf.extend_from_slice(&id.to_le_bytes());
+        self.buf.extend_from_slice(&guid_to_bytes(guid));
+        self.buf.extend_from_slice(&attributes.to_le_bytes());
+        self.buf.extend_from_slice(&size.to_le_bytes());
+        self.buf.extend_from_slice(&name_bytes);
+    }
+
     pub fn emit_default_store(&mut self, name_id: u16, default_id: u16) {
         self.write_header(OP_DEFAULT_STORE, false, 4);
         self.buf.extend_from_slice(&name_id.to_le_bytes());
@@ -315,6 +338,26 @@ mod tests {
         b.emit_end();
         let buf = b.build();
         assert_eq!(buf, vec![OP_END, 0x02]);
+    }
+
+    #[test]
+    fn emit_var_store_efi_layout() {
+        let mut b = IfrBuilder::new();
+        let g = Guid::from_str("EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9").unwrap();
+        b.emit_var_store_efi(0x7F01, &g, 0x1670, "IntelSetup", 7);
+        let buf = b.build();
+        assert_eq!(buf[0], OP_VARSTORE_EFI);
+        // total = 2 header + id(2) + guid(16) + attr(4) + size(2) + имя
+        // UCS-2 (10 симв. × 2 + NUL 2) = 48
+        assert_eq!(buf[1] & 0x7F, 48);
+        assert_eq!(u16::from_le_bytes([buf[2], buf[3]]), 0x7F01);
+        assert_eq!(&buf[4..20], &g.to_bytes());
+        assert_eq!(u32::from_le_bytes([buf[20], buf[21], buf[22], buf[23]]), 7);
+        assert_eq!(u16::from_le_bytes([buf[24], buf[25]]), 0x1670);
+        assert_eq!(
+            &buf[26..48],
+            "I\0n\0t\0e\0l\0S\0e\0t\0u\0p\0\0\0".as_bytes()
+        );
     }
 
     #[test]
