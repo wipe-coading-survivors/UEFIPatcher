@@ -53,6 +53,7 @@ fn real_amibcp_450x_build_round_trip() {
         data.len(),
         "перекрывающиеся регионы не должны раздувать образ"
     );
+    assert_eq!(built, data, "round-trip должен быть байт-точным");
     let reparsed = parse_image(&built, ImageMode::Write, "t2", "s").unwrap();
     let after = count_files(&reparsed.root);
     assert_eq!(after, before, "round-trip не должен терять файлы");
