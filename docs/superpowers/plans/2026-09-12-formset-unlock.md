@@ -1873,7 +1873,7 @@ Expected: PASS; в выводе видно, какая ветка сработа
 
 - [ ] **Step 4: Зафиксировать факты в спеке**
 
-`docs/superpowers/specs/2026-09-12-formset-unlock-design.md` §6 — заполнить offsets 11 вопросов из Step 1, attributes IntelSetup (если отличается от default 7 — docs: fix к Task 6 + при необходимости правка default), §3 U2 — пометка, какая ветка фактическая на 450x.
+`docs/superpowers/specs/2026-09-12-formset-unlock-design.md` §6 — заполнить offsets 12 вопросов из Step 1, attributes IntelSetup (если отличается от default 7 — docs: fix к Task 6 + при необходимости правка default), §3 U2 — пометка, какая ветка фактическая на 450x.
 
 - [ ] **Step 5: Полный прогон real-серии + clippy**
 

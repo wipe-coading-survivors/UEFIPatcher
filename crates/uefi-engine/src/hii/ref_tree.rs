@@ -158,7 +158,8 @@ mod tests {
     }
 
     /// 11 байт question-header: prompt@0 help@2 qid@4 store@6 offset@8 flags@10
-    /// (абсолютно: +2..+13; REF FormId читается на +13 — gates.rs:201).
+    /// (абсолютно: +2..+13; REF FormId читается на +13 — ref_variant.rs:40
+    /// parse_ref, REF-ветка emit_gates gates.rs:217).
     fn question_header(prompt: u16, qid: u16, store: u16, off: u16) -> Vec<u8> {
         let mut p = Vec::new();
         p.extend_from_slice(&prompt.to_le_bytes());
