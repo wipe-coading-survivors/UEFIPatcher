@@ -4126,7 +4126,7 @@ fn np_assemble(with_page: bool) -> NpAssembly {
     let pe_path = module_pe32_node_path(&img3, NP_SETUP_MODULE_GUID);
     let pkg_pre_refs = module_form_package(&img3, &pe_path);
     let item_10101 = format!("{NP_SETUP_MODULE_GUID}:0x10:0#{NP_NEW_FORM_ID}");
-    let negative_smoke = check_question_add(&img3, &item_10101, &[np_smoke_schema()]);
+    let negative_smoke = check_question_add(&img3, &item_10101, &[np_smoke_schema()], &[]);
 
     let spf_pre_page = find_spf_leaf_body(&img3, NP_SETUPDATA_GUID);
     let (page, positive_smoke, spf_pre_refs) = if with_page {
@@ -4140,7 +4140,7 @@ fn np_assemble(with_page: bool) -> NpAssembly {
         )
         .expect("page add 10101");
         let spf_after = find_spf_leaf_body(&img3, NP_SETUPDATA_GUID);
-        let smoke = check_question_add(&img3, &item_10101, &[np_smoke_schema()]);
+        let smoke = check_question_add(&img3, &item_10101, &[np_smoke_schema()], &[]);
         (Some(res), Some(smoke), spf_after)
     } else {
         (None, None, spf_pre_page.clone())

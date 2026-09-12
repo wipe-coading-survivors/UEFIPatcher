@@ -1038,6 +1038,52 @@ fn splice_question_ops_into_resource(
     Ok(res)
 }
 
+fn splice_varstore_ops_into_resource(
+    pe: &mut Vec<u8>,
+    ops: &[u8],
+) -> Result<(usize, usize), HiiError> {
+    let (pkg_off, old_len) = form_add::resource_forms_package(pe).ok_or(HiiError::NotASetupItem)?;
+    let pkg = pe
+        .get(pkg_off..pkg_off + old_len)
+        .ok_or(HiiError::InvalidIfr)?;
+    ifr::locate_formset_prelude_end(pkg).ok_or(HiiError::NotFound)?;
+    let (_, blob_off, blob_len) = pe_resource::hii_entry_locations(pe)
+        .first()
+        .copied()
+        .ok_or(HiiError::InvalidIfr)?;
+    let blob_end = blob_off.checked_add(blob_len).ok_or(HiiError::InvalidIfr)?;
+    let blob = pe.get(blob_off..blob_end).ok_or(HiiError::InvalidIfr)?;
+    let list = package_list::parse_package_list(blob).ok_or(HiiError::InvalidIfr)?;
+    let sum: usize = list.packages.iter().map(|p| p.bytes.len()).sum();
+    let new_blob_len = blob_len
+        .checked_add(ops.len())
+        .ok_or(HiiError::PeGrowthUnsupported)?;
+    let new_total = 20u64 + sum as u64 + ops.len() as u64 + 4;
+    if new_total > u32::MAX as u64 || new_blob_len > u32::MAX as usize {
+        return Err(HiiError::PeGrowthUnsupported);
+    }
+    let plan =
+        pe_resource::plan_rsrc_blob_growth(pe, ops.len()).ok_or(HiiError::PeGrowthUnsupported)?;
+    if plan.grow > 0 && !pe_resource::can_grow_rsrc_tail(pe, plan.grow) {
+        return Err(HiiError::PeGrowthUnsupported);
+    }
+    let mut pkg = pe[pkg_off..pkg_off + old_len].to_vec();
+    let res = ifr::splice_varstore_ops(&mut pkg, ops)?;
+    if plan.grow > 0 && !pe_resource::try_grow_rsrc_tail(pe, plan.grow) {
+        return Err(HiiError::PeGrowthUnsupported);
+    }
+    pe.copy_within(pkg_off + old_len..blob_end, pkg_off + pkg.len());
+    pe[pkg_off..pkg_off + pkg.len()].copy_from_slice(&pkg);
+    pe_resource::write_length_chain(
+        pe,
+        plan.entry_off,
+        plan.blob_off,
+        new_blob_len as u32,
+        new_total as u32,
+    );
+    Ok(res)
+}
+
 struct SpfAppendPlan {
     page_slot: usize,
     page_offset: usize,
@@ -1283,6 +1329,7 @@ fn check_question_slots(
     schema: &schema::QuestionAddSchema,
     pkg: &[u8],
     pending: &[(u16, u16, u32, u32)],
+    extra_varstores: &[schema::VarStoreSchema],
 ) -> Result<(), HiiError> {
     let slots = values::scan_question_slots(pkg);
     if slots.iter().any(|s| s.question_id == schema.question_id) {
@@ -1321,20 +1368,26 @@ fn check_question_slots(
             )));
         }
     }
-    let varstores = values::varstore_map(pkg);
-    let vs = varstores
+    let declared_size = values::varstore_map(pkg)
         .iter()
         .find(|v| v.id == schema.var_store_id)
+        .map(|v| u32::from(v.size))
+        .or_else(|| {
+            extra_varstores
+                .iter()
+                .find(|v| v.id == schema.var_store_id)
+                .map(|v| u32::from(v.size))
+        })
         .ok_or_else(|| {
             HiiError::InvalidSchema(format!(
                 "var store {} is not declared in the formset",
                 schema.var_store_id
             ))
         })?;
-    if n_start + u32::from(schema.size) > u32::from(vs.size) {
+    if n_start + u32::from(schema.size) > declared_size {
         return Err(HiiError::InvalidSchema(format!(
             "var_offset {:#x} + size {} exceeds var store size {:#x}",
-            schema.var_offset, schema.size, vs.size
+            schema.var_offset, schema.size, declared_size
         )));
     }
     Ok(())
@@ -1369,7 +1422,7 @@ pub fn add_question(
             qt.form_id,
         )?
     };
-    check_question_slots(schema, &qt.pkg, &[])?;
+    check_question_slots(schema, &qt.pkg, &[], &[])?;
 
     let mut strings: Vec<String> = vec![schema.prompt.clone(), schema.help.clone()];
     strings.extend(schema.options.iter().map(|o| o.text.clone()));
@@ -1450,6 +1503,7 @@ pub fn check_question_add(
     image: &Image,
     item_id: &str,
     schemas: &[schema::QuestionAddSchema],
+    varstores: &[schema::VarStoreSchema],
 ) -> Result<(), HiiError> {
     if image.mode != ImageMode::Write {
         return Err(HiiError::NotWritable);
@@ -1461,6 +1515,23 @@ pub fn check_question_add(
                 "schema form_id {} does not match target form {}",
                 schema.form_id, qt.form_id
             )));
+        }
+    }
+    {
+        let node = crate::parser::target::find_item(&image.root, &qt.target)
+            .map_err(|_| HiiError::NotFound)?;
+        for vs in varstores {
+            for (start, len) in form_package_ranges(node) {
+                if values::varstore_map(&node.body[start..start + len])
+                    .iter()
+                    .any(|m| m.id == vs.id)
+                {
+                    return Err(HiiError::InvalidSchema(format!(
+                        "varstore id {:#x} already exists in the formset",
+                        vs.id
+                    )));
+                }
+            }
         }
     }
     resolve_writable_path(image, &qt.target)?;
@@ -1478,7 +1549,17 @@ pub fn check_question_add(
     let mut pending: Vec<(u16, u16, u32, u32)> = Vec::new();
     for schema in schemas {
         let (optimized, _) = validate_question_add(schema)?;
-        check_question_slots(schema, &qt.pkg, &pending)?;
+        let declared = varstores.iter().any(|v| v.id == schema.var_store_id)
+            || values::varstore_map(&qt.pkg)
+                .iter()
+                .any(|m| m.id == schema.var_store_id);
+        if schema.var_store_id != 0 && !declared {
+            return Err(HiiError::InvalidSchema(format!(
+                "var store id {:#x} is not declared (add it to schema varstores)",
+                schema.var_store_id
+            )));
+        }
+        check_question_slots(schema, &qt.pkg, &pending, varstores)?;
         let mut strings: Vec<String> = vec![schema.prompt.clone(), schema.help.clone()];
         strings.extend(schema.options.iter().map(|o| o.text.clone()));
         strings.dedup();
@@ -1498,6 +1579,95 @@ pub fn check_question_add(
         ));
     }
     Ok(())
+}
+
+/// Вставка varstore-деклараций в пролог формсета + сдвиг $SPF-записей.
+/// Спека formset-unlock §3 U3. Возвращает вставленные id; повторный вызов
+/// с уже существующим в формсете id → InvalidSchema.
+#[tracing::instrument(level = "debug", skip(image, varstores), fields(item_id = %item_id), err)]
+pub fn add_varstores(
+    image: &mut Image,
+    item_id: &str,
+    varstores: &[schema::VarStoreSchema],
+) -> Result<Vec<u16>, HiiError> {
+    if varstores.is_empty() {
+        return Ok(Vec::new());
+    }
+    if image.mode != ImageMode::Write {
+        return Err(HiiError::NotWritable);
+    }
+    let (target, _form_id, _qid) = parse_item_id(item_id)?;
+    let path = resolve_writable_path(image, &target)?;
+    let sd_path = ami_patcher::discover_pfs_payload_path(image)?;
+    let mut ops = Vec::new();
+    for vs in varstores {
+        let g = crate::types::Guid::try_parse(&vs.guid).map_err(|_| {
+            HiiError::InvalidSchema(format!("varstore guid '{}' is not a GUID", vs.guid))
+        })?;
+        let mut b = ifr_builder::IfrBuilder::new();
+        match vs.var_type {
+            schema::VarStoreType::Buffer => b.emit_var_store(vs.id, &g, vs.size, &vs.name),
+            schema::VarStoreType::Efi => {
+                b.emit_var_store_efi(vs.id, &g, vs.size, &vs.name, vs.attributes)
+            }
+        }
+        ops.extend(b.build());
+    }
+    let node =
+        crate::parser::target::find_item(&image.root, &target).map_err(|_| HiiError::NotFound)?;
+    if node.node_type != FfsType::Section {
+        return Err(HiiError::NotASetupItem);
+    }
+    for vs in varstores {
+        for (start, len) in form_package_ranges(node) {
+            if values::varstore_map(&node.body[start..start + len])
+                .iter()
+                .any(|m| m.id == vs.id)
+            {
+                return Err(HiiError::InvalidSchema(format!(
+                    "varstore id {:#x} already exists in the formset",
+                    vs.id
+                )));
+            }
+        }
+    }
+    let pkg_before = form_package_ranges(node)
+        .into_iter()
+        .next()
+        .map(|(s, l)| node.body[s..s + l].to_vec())
+        .ok_or(HiiError::NotASetupItem)?;
+    let (insert_at, delta) = {
+        let node = crate::parser::target::find_item_mut(&mut image.root, &target)
+            .map_err(|_| HiiError::NotFound)?;
+        if node.subtype == EFI_SECTION_RAW {
+            ifr::splice_varstore_ops(&mut node.body, &ops)?
+        } else {
+            splice_varstore_ops_into_resource(&mut node.body, &ops)?
+        }
+    };
+    ops::mark_rebuild_to_root_by_path(&mut image.root, &path);
+    {
+        let node = node_at_mut(&mut image.root, &sd_path);
+        shift_resolving_records(&mut node.body, &pkg_before, insert_at, delta);
+    }
+    ops::mark_rebuild_to_root_by_path(&mut image.root, &sd_path);
+    tracing::debug!(insert_at, delta, "add_varstores done");
+    Ok(varstores.iter().map(|vs| vs.id).collect())
+}
+
+/// Сдвиг $SPF-записей, резолвящихся в целевой пакет, после вставки в
+/// пролог (insert_at меньше offset'ов всех вопросов). Записи чужих
+/// пакетов не трогаются (spf_record_resolves по pre-insert снимку).
+fn shift_resolving_records(sd_body: &mut [u8], pkg_before: &[u8], insert_at: usize, delta: usize) {
+    let selected: Vec<usize> = spf::scan_question_records(sd_body)
+        .into_iter()
+        .filter(|r| {
+            r.ifr_offset >= insert_at as u32
+                && spf_record_resolves(pkg_before, r.question_id, r.ifr_offset)
+        })
+        .map(|r| r.offset)
+        .collect();
+    spf::fixup_selected_record_ifr_offsets(sd_body, &selected, insert_at as u32, delta as u32);
 }
 
 fn build_ref_ops(
@@ -3624,6 +3794,74 @@ mod tests {
             )
         }
 
+        fn first_resolving_record(img: &Image, module_target: &str) -> spf::SpfQuestionRecord {
+            let pkg = pkg_of(img, module_target);
+            spf::scan_question_records(spf_leaf_of(img))
+                .into_iter()
+                .find(|r| spf_record_resolves(&pkg, r.question_id, r.ifr_offset))
+                .expect("resolving $SPF record")
+        }
+
+        #[test]
+        fn add_varstores_declares_efi_varstore_and_shifts_spf_records() {
+            let (flash, pkg_before, spf_before) = question_add_flash_image();
+            let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+            let module = "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x10:0";
+            let pkg_len_before = pkg_of(&img, module).len();
+            let rec_before = first_resolving_record(&img, module);
+            let rec1_before = spf::scan_question_records(&spf_before)
+                .into_iter()
+                .find(|r| r.question_id == 0x55)
+                .unwrap();
+            let foreign_before = spf::scan_question_records(&spf_before)
+                .into_iter()
+                .find(|r| r.question_id == 0x66)
+                .unwrap();
+            let vs = schema::VarStoreSchema {
+                id: 0x7F01,
+                guid: "EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9".into(),
+                size: 0x1670,
+                name: "IntelSetup".into(),
+                var_type: schema::VarStoreType::Efi,
+                attributes: 7,
+            };
+            let ids = add_varstores(&mut img, ITEM_FORM, std::slice::from_ref(&vs)).unwrap();
+            assert_eq!(ids, vec![0x7F01]);
+            let pkg = pkg_of(&img, module);
+            let delta = 26 + 22; // 2 header + 24 fixed + «IntelSetup» UCS-2+NUL = 48
+            assert_eq!(pkg.len(), pkg_len_before + delta);
+            assert_eq!(pkg.len(), pkg_before.len() + delta);
+            let maps = values::varstore_map(&pkg);
+            assert!(
+                maps.iter()
+                    .any(|m| m.id == 0x7F01 && m.size == 0x1670 && m.name == "IntelSetup"),
+                "declared varstore readable via varstore_map: {maps:?}"
+            );
+            assert!(
+                ifr::locate_formset_prelude_end(&pkg).unwrap()
+                    < crate::hii::form_hijack::locate_questions(&pkg, 10019)[0].0,
+                "varstore op inserted before the first form's questions"
+            );
+            let rec_after = first_resolving_record(&img, module);
+            assert_eq!(
+                rec_after.ifr_offset,
+                rec_before.ifr_offset + delta as u32,
+                "resolving $SPF record shifts by the splice delta"
+            );
+            let recs_after = spf::scan_question_records(spf_leaf_of(&img));
+            let rec1_after = recs_after.iter().find(|r| r.question_id == 0x55).unwrap();
+            assert_eq!(rec1_after.ifr_offset, rec1_before.ifr_offset + delta as u32);
+            let foreign_after = recs_after.iter().find(|r| r.question_id == 0x66).unwrap();
+            assert_eq!(
+                foreign_after.ifr_offset, foreign_before.ifr_offset,
+                "foreign (non-resolving) record must not shift"
+            );
+            assert!(matches!(
+                add_varstores(&mut img, ITEM_FORM, &[vs]),
+                Err(HiiError::InvalidSchema(_))
+            ));
+        }
+
         #[test]
         fn add_question_inserts_one_of_into_live_form() {
             let (flash, pkg_before, spf_before) = question_add_flash_image();
@@ -4024,12 +4262,12 @@ mod tests {
                 question_add_schema(0x200, 0x80),
                 question_add_schema(0x201, 0x81),
             ];
-            assert!(check_question_add(&img, ITEM_FORM, &good).is_ok());
+            assert!(check_question_add(&img, ITEM_FORM, &good, &[]).is_ok());
             let mut dup_qid = good.clone();
             dup_qid[1].question_id = 0x200;
             assert!(
                 matches!(
-                    check_question_add(&img, ITEM_FORM, &dup_qid).unwrap_err(),
+                    check_question_add(&img, ITEM_FORM, &dup_qid, &[]).unwrap_err(),
                     HiiError::InvalidSchema(_)
                 ),
                 "intra-list duplicate question id must be rejected"
@@ -4038,7 +4276,7 @@ mod tests {
             overlap[1].var_offset = 0x80;
             assert!(
                 matches!(
-                    check_question_add(&img, ITEM_FORM, &overlap).unwrap_err(),
+                    check_question_add(&img, ITEM_FORM, &overlap, &[]).unwrap_err(),
                     HiiError::InvalidSchema(_)
                 ),
                 "intra-list var_offset overlap must be rejected"
@@ -4047,7 +4285,7 @@ mod tests {
             unknown_varstore[1].var_store_id = 9;
             assert!(
                 matches!(
-                    check_question_add(&img, ITEM_FORM, &unknown_varstore).unwrap_err(),
+                    check_question_add(&img, ITEM_FORM, &unknown_varstore, &[]).unwrap_err(),
                     HiiError::InvalidSchema(_)
                 ),
                 "second question varstore must be validated up front"
@@ -4056,7 +4294,7 @@ mod tests {
             base_dup[0].question_id = 0x3B;
             assert!(
                 matches!(
-                    check_question_add(&img, ITEM_FORM, &base_dup).unwrap_err(),
+                    check_question_add(&img, ITEM_FORM, &base_dup, &[]).unwrap_err(),
                     HiiError::InvalidSchema(_)
                 ),
                 "duplicate of an existing formset question id must be rejected"

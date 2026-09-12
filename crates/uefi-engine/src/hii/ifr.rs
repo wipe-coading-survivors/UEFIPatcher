@@ -3,6 +3,7 @@ use r_efi::hii::{
 };
 
 use super::HiiError;
+use super::values::walk_statements;
 use crate::types::Guid;
 
 #[derive(Debug, Clone)]
@@ -318,6 +319,41 @@ pub fn splice_question_ops(
         return Err(HiiError::InvalidSchema("empty ops".into()));
     }
     let Some(insert_at) = locate_form_end(package, formset_idx, form_id) else {
+        return Err(HiiError::NotFound);
+    };
+    package.splice(insert_at..insert_at, ops.iter().copied());
+    let plen = (package[0] as usize | (package[1] as usize) << 8 | (package[2] as usize) << 16)
+        + ops.len();
+    package[0] = (plen & 0xFF) as u8;
+    package[1] = ((plen >> 8) & 0xFF) as u8;
+    package[2] = ((plen >> 16) & 0xFF) as u8;
+    Ok((insert_at, ops.len()))
+}
+
+/// Конец пролога формсета = offset первого IFR_FORM_OP (точка вставки
+/// formset-уровневых деклараций: varstore/default-store). Спека
+/// formset-unlock §3 U3.
+pub(crate) fn locate_formset_prelude_end(package: &[u8]) -> Option<usize> {
+    if !is_form_package(package) {
+        return None;
+    }
+    let mut first: Option<usize> = None;
+    walk_statements(package, |op, off, _len, _| {
+        if op == IFR_FORM_OP && first.is_none() {
+            first = Some(off);
+        }
+    });
+    first
+}
+
+/// Вставка formset-уровневых ops в пролог (до первой формы) с обновлением
+/// u24-длины пакета. НЕ проверяет коллизии id — это уровень add_varstores.
+/// Спека formset-unlock §3 U3.
+pub fn splice_varstore_ops(package: &mut Vec<u8>, ops: &[u8]) -> Result<(usize, usize), HiiError> {
+    if ops.is_empty() {
+        return Err(HiiError::InvalidSchema("empty ops".into()));
+    }
+    let Some(insert_at) = locate_formset_prelude_end(package) else {
         return Err(HiiError::NotFound);
     };
     package.splice(insert_at..insert_at, ops.iter().copied());
@@ -1236,6 +1272,51 @@ mod tests {
             Err(HiiError::InvalidSchema(_))
         ));
         assert_eq!(pkg, before);
+    }
+
+    #[test]
+    fn splice_varstore_ops_inserts_before_first_form() {
+        let mut pkg = two_form_package(); // формы 100 и 200
+        let prelude_end = locate_formset_prelude_end(&pkg).unwrap();
+        let ops = opcode(
+            IFR_VARSTORE_EFI_OP,
+            false,
+            &[vec![0u8; 24], b"I\0n\0t\0e\0l\0".to_vec()].concat(),
+        );
+        let (at, delta) = splice_varstore_ops(&mut pkg, &ops).unwrap();
+        assert_eq!(at, prelude_end);
+        assert_eq!(delta, ops.len());
+        assert_eq!(&pkg[at..at + ops.len()], &ops[..]);
+        assert_eq!(
+            pkg[0] as usize | (pkg[1] as usize) << 8 | (pkg[2] as usize) << 16,
+            pkg.len()
+        );
+        assert!(pkg[prelude_end + ops.len()..].starts_with(&[IFR_FORM_OP]));
+    }
+
+    #[test]
+    fn splice_varstore_ops_rejects_empty_ops_and_formless_package() {
+        let mut pkg = two_form_package();
+        let before = pkg.clone();
+        assert!(matches!(
+            splice_varstore_ops(&mut pkg, &[]),
+            Err(HiiError::InvalidSchema(_))
+        ));
+        let mut formless = package(&form_set(&Guid::from_str(FORMSET_GUID).unwrap(), 7));
+        formless.extend(end());
+        let len = formless.len();
+        formless[0] = (len & 0xFF) as u8;
+        formless[1] = ((len >> 8) & 0xFF) as u8;
+        formless[2] = ((len >> 16) & 0xFF) as u8;
+        let formless_before = formless.clone();
+        let ops = opcode(IFR_VARSTORE_EFI_OP, false, &[0u8; 24]);
+        assert_eq!(pkg, before);
+        assert!(locate_formset_prelude_end(&formless).is_none());
+        assert!(matches!(
+            splice_varstore_ops(&mut formless, &ops),
+            Err(HiiError::NotFound)
+        ));
+        assert_eq!(formless, formless_before);
     }
 
     #[test]

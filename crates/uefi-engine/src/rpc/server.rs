@@ -1075,11 +1075,20 @@ impl EngineService for EngineServer {
             let img_slot = images
                 .get_mut(&r.image_id)
                 .ok_or_else(|| Status::not_found("image not found"))?;
-            crate::hii::check_question_add(img_slot, &r.target, &schema.questions)
-                .map_err(|e| hii_error_status_ctx(e, &r.target))?;
+            crate::hii::check_question_add(
+                img_slot,
+                &r.target,
+                &schema.questions,
+                &schema.varstores,
+            )
+            .map_err(|e| hii_error_status_ctx(e, &r.target))?;
             let question_qids: Vec<u16> = schema.questions.iter().map(|q| q.question_id).collect();
             crate::hii::check_ref_add(img_slot, &r.target, &schema.refs, &question_qids)
                 .map_err(|e| hii_error_status_ctx(e, &r.target))?;
+            if !schema.varstores.is_empty() {
+                crate::hii::add_varstores(img_slot, &r.target, &schema.varstores)
+                    .map_err(|e| hii_error_status_ctx(e, &r.target))?;
+            }
             for q in &schema.questions {
                 let result = crate::hii::add_question(img_slot, &r.target, q)
                     .map_err(|e| hii_error_status_ctx(e, &r.target))?;
@@ -2134,6 +2143,86 @@ mod tests {
         assert_eq!(
             resp.refs[0].spf_record_offset, 0,
             "a goto ref has no $SPF record"
+        );
+    }
+
+    #[tokio::test]
+    async fn hii_question_add_applies_varstores_before_questions() {
+        let (flash, _, _) = crate::hii::question_add_fixtures::question_add_bare_flash_image();
+        let img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+        let td = TempDir::new().unwrap();
+        let db = crate::storage::open_db(&td.path().join("db.sqlite")).unwrap();
+        let sm = Arc::new(SessionManager::new(
+            db,
+            td.path().to_path_buf(),
+            Duration::from_secs(864000),
+            Duration::from_secs(3600),
+            false,
+        ));
+        let images = Arc::new(Mutex::new(HashMap::from([("i".to_string(), img)])));
+        let server = EngineServer {
+            sm,
+            images: images.clone(),
+            data_dir: td.path().to_path_buf(),
+        };
+        const TARGET: &str = "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:0#10019";
+        const VARSTORE_LIST: &str = r#"{"varstores": [
+            {"id": 32513, "guid": "EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9",
+             "size": 5744, "name": "IntelSetup", "type": "efi", "attributes": 7}],
+            "questions": [
+            {"form_id": 10019, "prompt": "V", "help": "VH", "question_id": 777,
+             "var_store_id": 32513, "var_offset": 0, "size": 1,
+             "options": [{"text": "Off", "value": 0}, {"text": "On", "value": 1, "default": "optimized"}]}]}"#;
+        let resp = server
+            .hii_question_add(Request::new(HiiQuestionAddRequest {
+                image_id: "i".into(),
+                target: TARGET.into(),
+                schema_json: VARSTORE_LIST.into(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(resp.questions.len(), 1);
+        assert_eq!(resp.questions[0].question_id, 777);
+        let images = images.lock().await;
+        let img = images.get("i").unwrap();
+        let target =
+            crate::parser::target::parse_target("5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:0")
+                .unwrap();
+        let node = crate::parser::target::find_item(&img.root, &target).unwrap();
+        assert!(
+            crate::hii::values::varstore_map(&node.body)
+                .iter()
+                .any(|m| m.id == 0x7F01 && m.name == "IntelSetup"),
+            "declared varstore must land in the formset prelude"
+        );
+        assert!(
+            crate::hii::form_hijack::locate_questions(&node.body, 10019)
+                .iter()
+                .any(|&(_, qid)| qid == 777),
+            "question referencing the declared varstore must be added"
+        );
+    }
+
+    #[tokio::test]
+    async fn hii_question_add_rejects_undeclared_var_store() {
+        let (flash, _, _) = crate::hii::question_add_fixtures::question_add_bare_flash_image();
+        let img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+        let mut schema =
+            crate::hii::schema::parse_question_add_schema(QUESTION_ADD_SCHEMA_JSON).unwrap();
+        schema.questions[0].var_store_id = 0x7FFF;
+        let st = question_add_status(
+            img,
+            "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:0#10019",
+            &serde_json::to_string(&schema).unwrap(),
+        )
+        .await;
+        assert_eq!(st.code(), tonic::Code::InvalidArgument);
+        assert!(
+            st.message()
+                .contains("is not declared (add it to schema varstores)"),
+            "unexpected message: {}",
+            st.message()
         );
     }
 
