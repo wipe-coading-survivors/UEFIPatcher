@@ -20,7 +20,7 @@ use crate::storage::image::{
     atomic_write, read_image_file, read_snapshot_file, remove_image_file, store_image_file,
     store_snapshot_file,
 };
-use crate::types::{Guid, Image, ImageMode};
+use crate::types::{FfsNode, FfsType, Guid, Image, ImageMode};
 
 pub struct EngineServer {
     pub sm: Arc<SessionManager>,
@@ -80,6 +80,42 @@ fn artifact_output_path_is_relative(p: &str) -> bool {
     std::path::Path::new(p).is_relative()
 }
 
+fn volume_count(node: &FfsNode) -> usize {
+    let mut n = if node.node_type == FfsType::Volume {
+        1
+    } else {
+        0
+    };
+    for child in &node.children {
+        n += volume_count(child);
+    }
+    n
+}
+
+#[allow(clippy::result_large_err)]
+fn validate_flush_bytes(current: &Image, bytes: &[u8]) -> Result<Image, Status> {
+    let refreshed = parse_image(bytes, current.mode, &current.image_id, &current.session_id)
+        .map_err(|e| {
+            Status::failed_precondition(format!(
+                "build output does not re-parse ({e}); refusing write to prevent data loss"
+            ))
+        })?;
+    let before = crate::parser::image::count_live_files(&current.root);
+    let after = crate::parser::image::count_files(&refreshed.root);
+    if after < before {
+        return Err(Status::failed_precondition(format!(
+            "build output reparses with {after} files vs {before} live; \
+             refusing write to prevent data loss"
+        )));
+    }
+    if volume_count(&refreshed.root) == 0 && volume_count(&current.root) > 0 {
+        return Err(Status::failed_precondition(
+            "build output reparses with no volumes; refusing write to prevent data loss",
+        ));
+    }
+    Ok(refreshed)
+}
+
 impl EngineServer {
     async fn flush_image(&self, image_id: &str) -> Result<(), Status> {
         let (bytes, session_id) = {
@@ -107,19 +143,17 @@ impl EngineServer {
                 )));
             }
         }
+        let refreshed = {
+            let images = self.images.lock().await;
+            let img = images
+                .get(image_id)
+                .ok_or_else(|| Status::not_found("image not found"))?;
+            validate_flush_bytes(img, &bytes)?
+        };
         atomic_write(&path, &bytes).map_err(|e| Status::internal(e.to_string()))?;
         let mut images = self.images.lock().await;
         if let Some(img) = images.get_mut(image_id) {
-            let mode = img.mode;
-            let session_id = img.session_id.clone();
-            match parse_image(&bytes, mode, image_id, &session_id) {
-                Ok(refreshed) => *img = refreshed,
-                Err(e) => {
-                    images.remove(image_id);
-                    drop(images);
-                    return Err(Status::internal(e.to_string()));
-                }
-            }
+            *img = refreshed;
         }
         drop(images);
         self.sm
@@ -2285,6 +2319,26 @@ mod tests {
         assert!(img_path.exists(), "image bytes must be persisted on open");
         let saved = std::fs::read(&img_path).unwrap();
         assert_eq!(saved, fixture_volume());
+    }
+
+    fn parsed_fixture_image() -> Image {
+        let bytes = fixture_volume();
+        crate::parser::image::parse_image(&bytes, ImageMode::Write, "t", "s").unwrap()
+    }
+
+    #[test]
+    fn validate_flush_bytes_rejects_degenerate_and_accepts_roundtrip() {
+        let img = parsed_fixture_image();
+        let err = validate_flush_bytes(&img, b"garbage not an image".as_slice()).unwrap_err();
+        assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+        assert!(err.message().contains("refusing write"));
+
+        let ok_bytes = fixture_volume();
+        let refreshed = validate_flush_bytes(&img, &ok_bytes).unwrap();
+        assert!(
+            crate::parser::image::count_files(&refreshed.root)
+                >= crate::parser::image::count_live_files(&img.root)
+        );
     }
 
     fn amibcp_450x_path() -> std::path::PathBuf {
