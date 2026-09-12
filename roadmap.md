@@ -498,9 +498,14 @@ U2a unlock по донорским секциям (`cross_formset.rs`, GateInfo.
 450x нет, REF3-инжект в Chipset 10008, кросс-ребро переживает rebuild,
 рост 0 байт; NVRAM-карта — спека §6). Гейты чистые: workspace-тесты +
 47 ignored/real (вкл. `real_amibcp_450x_formset_unlock`). Владельческий
-гейт — pending: живой прогон TUI/CLI на 450x, сценарий — спека §7,
-вердикт-аддендум туда же. Отложенное дуги — TODO.md (мульти-донорская
-атомарность, TUI-скролл Forms View).
+гейт — **ПРОЙДЕН (2026-09-13, PASS)**: рабочая схема — REF3 qid 0 в
+Advanced 10002 корневого Setup → на живом BIOS пункт «Intel RC Setup»
+в Advanced, полный корень формсета с IIO Configuration (бифуркация)
+достижим; вкладкой бара (#10000) и скрытым Chipset (#10008,
+suppress_if TRUE) не сработали — разбор в спеке §7 (вердикт-аддендум).
+Слита в master (FF `286095f`) и запушена. Отложенное дуги — TODO.md
+(мульти-донорская атомарность, TUI-скролл Forms View, ConstantTrue,
+extract/move, валидация цели add_ref, позиционный insert для бара).
 
 ## Связи между циклами
 
