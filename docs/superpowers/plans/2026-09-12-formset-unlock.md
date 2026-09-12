@@ -92,7 +92,7 @@ pub(crate) fn parse_ref(op: u8, stmt: &[u8]) -> Option<RefTarget> {
             let question_id = u16_at(15)?;
             let guid: [u8; 16] = stmt.get(17..33)?.try_into().ok()?;
             Some(RefTarget::Formset {
-                formset_guid: Guid::from_bytes(&guid),
+                formset_guid: Guid::from_bytes(guid),
                 form_id,
                 question_id,
             })
