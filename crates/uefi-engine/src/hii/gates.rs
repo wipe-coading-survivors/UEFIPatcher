@@ -612,9 +612,10 @@ mod tests {
 
     #[test]
     fn find_gates_cross_target_ignores_plain_and_foreign_ref3() {
-        // plain REF на форму 1 не матчится кросс-таргетом (нет FormSetGuid)
         let mut mixed = cross_ifr();
+        mixed.extend(opcode(IFR_SUPPRESS_IF_OP, true, &[]));
         mixed.extend(ref_op(1, 0x003A));
+        mixed.extend(end());
         let pkg = package(&mixed);
         let gt = GateTarget {
             form_id: 1,
@@ -622,7 +623,6 @@ mod tests {
             formset_guid: Some(Guid::from_str(CROSS_SET).unwrap()),
         };
         assert_eq!(find_gates(&pkg, &gt).len(), 1);
-        // чужой формсет — не матч
         let foreign = GateTarget {
             formset_guid: Some(Guid::from_str(FORMSET_GUID).unwrap()),
             ..gt
@@ -632,8 +632,6 @@ mod tests {
 
     #[test]
     fn find_gates_ref3_no_longer_matches_as_plain_ref() {
-        // len 33 REF3 на форму 1: прежний код (length>=15 → «свой» REF)
-        // матчил; теперь — только при совпадении formset_guid
         let pkg = package(&cross_ifr());
         let plain_target = GateTarget {
             form_id: 1,
