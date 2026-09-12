@@ -1645,6 +1645,19 @@ pub fn add_varstores(
             splice_varstore_ops_into_resource(&mut node.body, &ops)?
         }
     };
+    {
+        let node = crate::parser::target::find_item(&image.root, &target)
+            .map_err(|_| HiiError::NotFound)?;
+        let (start, len) = form_package_ranges(node)
+            .into_iter()
+            .next()
+            .ok_or(HiiError::NotASetupItem)?;
+        let spliced = node
+            .body
+            .get(start..start + len)
+            .ok_or(HiiError::InvalidIfr)?;
+        verify_spliced_snapshot(spliced, &pkg_before, &ops, insert_at, delta)?;
+    }
     ops::mark_rebuild_to_root_by_path(&mut image.root, &path);
     {
         let node = node_at_mut(&mut image.root, &sd_path);
@@ -1653,6 +1666,40 @@ pub fn add_varstores(
     ops::mark_rebuild_to_root_by_path(&mut image.root, &sd_path);
     tracing::debug!(insert_at, delta, "add_varstores done");
     Ok(varstores.iter().map(|vs| vs.id).collect())
+}
+
+/// Пост-splice инвариант: spliced — это pkg_before с ops, вставленными
+/// на insert_at (длина тела и u24-заголовок выросли ровно на delta,
+/// вставка на insert_at, остальной префикс/суффикс на месте; байты 0..3 —
+/// u24-длина — единственное допустимое отличие вне вставки).
+/// Селекторы снимка (form_package_ranges) и вставки
+/// (resource_forms_package) — разные пути; их расхождение на
+/// multi-package PE должно падать громко, а не молча сдвигать чужие
+/// $SPF-записи. Ревью Task 7 fix round 1.
+fn verify_spliced_snapshot(
+    spliced: &[u8],
+    pkg_before: &[u8],
+    ops: &[u8],
+    insert_at: usize,
+    delta: usize,
+) -> Result<(), HiiError> {
+    let plen = |b: &[u8]| b[0] as usize | (b[1] as usize) << 8 | (b[2] as usize) << 16;
+    let ok = spliced.len() == pkg_before.len() + delta
+        && plen(spliced) == plen(pkg_before) + delta
+        && spliced.get(3..insert_at) == pkg_before.get(3..insert_at)
+        && spliced.get(insert_at..insert_at + delta) == Some(ops)
+        && spliced.get(insert_at + delta..) == pkg_before.get(insert_at..);
+    if !ok {
+        tracing::warn!(
+            spliced_len = spliced.len(),
+            before_len = pkg_before.len(),
+            insert_at,
+            delta,
+            "form package snapshot diverged from the splice target"
+        );
+        return Err(HiiError::InvalidIfr);
+    }
+    Ok(())
 }
 
 /// Сдвиг $SPF-записей, резолвящихся в целевой пакет, после вставки в
@@ -3800,6 +3847,42 @@ mod tests {
                 .into_iter()
                 .find(|r| spf_record_resolves(&pkg, r.question_id, r.ifr_offset))
                 .expect("resolving $SPF record")
+        }
+
+        #[test]
+        fn verify_spliced_snapshot_accepts_exact_splice_and_rejects_divergence() {
+            let (_, pkg_before, _) = question_add_flash_image();
+            let g = Guid::from_str("EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9").unwrap();
+            let mut b = crate::hii::ifr_builder::IfrBuilder::new();
+            b.emit_var_store_efi(0x7F01, &g, 0x1670, "IntelSetup", 7);
+            let ops = b.build();
+            let insert_at = ifr::locate_formset_prelude_end(&pkg_before).unwrap();
+            let delta = ops.len();
+            let mut spliced = pkg_before.clone();
+            assert_eq!(
+                ifr::splice_varstore_ops(&mut spliced, &ops).unwrap(),
+                (insert_at, delta)
+            );
+            assert!(verify_spliced_snapshot(&spliced, &pkg_before, &ops, insert_at, delta).is_ok());
+            let expect_invalid = |v: &[u8], name: &str| {
+                let err =
+                    verify_spliced_snapshot(v, &pkg_before, &ops, insert_at, delta).unwrap_err();
+                assert!(matches!(err, HiiError::InvalidIfr), "{name}: got {err:?}");
+            };
+            expect_invalid(
+                &pkg_before,
+                "selector picked a different (unchanged) package",
+            );
+            let mut tampered = spliced.clone();
+            tampered[insert_at] ^= 0xFF;
+            expect_invalid(&tampered, "inserted ops byte tampered");
+            let mut drifted = spliced.clone();
+            let last = drifted.len() - 1;
+            drifted[last] ^= 0xFF;
+            expect_invalid(&drifted, "suffix byte drifted");
+            let mut short = spliced.clone();
+            short.truncate(short.len() - 1);
+            expect_invalid(&short, "grew by less than delta");
         }
 
         #[test]
