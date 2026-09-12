@@ -2242,10 +2242,12 @@ fn real_image_hijack_v2_scenario_a_unlocks_victim_only() {
         GateTarget {
             form_id: 10029,
             question_id: None,
+            formset_guid: None,
         },
         GateTarget {
             form_id: 10029,
             question_id: Some(59),
+            formset_guid: None,
         },
     ] {
         let found = gates::find_gates(&pkg_after, &target);
@@ -2444,10 +2446,12 @@ fn real_image_hijack_v2_scenario_b_full_page_matches_e26_content() {
     let mut targets = vec![GateTarget {
         form_id: 10029,
         question_id: None,
+        formset_guid: None,
     }];
     targets.extend((54u16..=60).map(|qid| GateTarget {
         form_id: 10029,
         question_id: Some(qid),
+        formset_guid: None,
     }));
     for target in &targets {
         let found = gates::find_gates(&pkg_after, target);
@@ -2462,6 +2466,7 @@ fn real_image_hijack_v2_scenario_b_full_page_matches_e26_content() {
         &GateTarget {
             form_id: 10029,
             question_id: Some(61),
+            formset_guid: None,
         },
     );
     assert_eq!(

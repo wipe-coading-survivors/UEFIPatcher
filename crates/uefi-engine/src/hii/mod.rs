@@ -274,6 +274,11 @@ fn gate_info(pkg: &[u8], gate: &gates::Gate) -> uefi_proto::GateInfo {
             form_id,
             host_form_id,
         } => ("ref", form_id as u32, host_form_id as u32, 0),
+        gates::Wraps::CrossFormsetRef {
+            form_id,
+            host_form_id,
+            ..
+        } => ("cross_ref", form_id as u32, host_form_id as u32, 0),
         gates::Wraps::Question {
             form_id,
             question_id,
@@ -307,6 +312,7 @@ pub fn gates_list(image: &Image, item_id: &str) -> Result<Vec<uefi_proto::GateIn
     let gt = gates::GateTarget {
         form_id,
         question_id,
+        formset_guid: None,
     };
     let mut out = Vec::new();
     for (start, len) in form_package_ranges(node) {
@@ -331,6 +337,7 @@ pub fn unlock(image: &mut Image, item_id: &str) -> Result<UnlockOutcome, HiiErro
     let gt = gates::GateTarget {
         form_id,
         question_id,
+        formset_guid: None,
     };
     let mut infos = Vec::new();
     let mut applied = Vec::new();
@@ -2688,6 +2695,7 @@ mod tests {
                 &GateTarget {
                     form_id: 10029,
                     question_id: None,
+                    formset_guid: None,
                 },
             );
             assert_eq!(gates[0].expr, GateExpr::EqConst { a: 1, b: 2 });

@@ -142,10 +142,12 @@ pub fn hijack_form(
         let mut targets: Vec<gates::GateTarget> = vec![gates::GateTarget {
             form_id,
             question_id: None,
+            formset_guid: None,
         }];
         targets.extend(hijack.questions.iter().map(|q| gates::GateTarget {
             form_id,
             question_id: Some(q.question_id),
+            formset_guid: None,
         }));
         let mut merged: Vec<gates::PlannedFlip> = Vec::new();
         for gt in &targets {

@@ -1,4 +1,5 @@
 use super::ifr::package_bounds;
+use crate::types::Guid;
 use r_efi::hii::{
     IFR_ACTION_OP, IFR_CHECKBOX_OP, IFR_DATE_OP, IFR_DEFAULT_OP, IFR_END_OP, IFR_EQ_ID_VAL_OP,
     IFR_EQUAL_OP, IFR_FORM_OP, IFR_GRAY_OUT_IF_OP, IFR_NUMERIC_OP, IFR_NUMERIC_SIZE, IFR_ONE_OF_OP,
@@ -23,9 +24,22 @@ impl GateKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Wraps {
-    Form { form_id: u16 },
-    Ref { form_id: u16, host_form_id: u16 },
-    Question { form_id: u16, question_id: u16 },
+    Form {
+        form_id: u16,
+    },
+    Ref {
+        form_id: u16,
+        host_form_id: u16,
+    },
+    CrossFormsetRef {
+        form_id: u16,
+        host_form_id: u16,
+        formset_guid: Guid,
+    },
+    Question {
+        form_id: u16,
+        question_id: u16,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,6 +64,7 @@ pub struct Gate {
 pub struct GateTarget {
     pub form_id: u16,
     pub question_id: Option<u16>,
+    pub formset_guid: Option<Guid>,
 }
 
 pub fn decode_expr(region: &[u8]) -> GateExpr {
@@ -198,15 +213,29 @@ fn emit_gates(
         } else {
             None
         }
-    } else if op == IFR_REF_OP && length >= 15 && target.question_id.is_none() {
-        let fid = u16::from_le_bytes([body[stmt_offset + 13], body[stmt_offset + 14]]);
-        if fid == target.form_id {
-            Some(Wraps::Ref {
-                form_id: fid,
-                host_form_id: current_form.unwrap_or(0),
-            })
-        } else {
-            None
+    } else if op == IFR_REF_OP && target.question_id.is_none() {
+        match super::ref_variant::parse_ref(op, &body[stmt_offset..stmt_offset + length]) {
+            Some(super::ref_variant::RefTarget::Formset {
+                formset_guid,
+                form_id,
+                ..
+            }) if target.formset_guid == Some(formset_guid) && form_id == target.form_id => {
+                Some(Wraps::CrossFormsetRef {
+                    form_id,
+                    host_form_id: current_form.unwrap_or(0),
+                    formset_guid,
+                })
+            }
+            Some(super::ref_variant::RefTarget::Form { form_id })
+            | Some(super::ref_variant::RefTarget::FormQuestion { form_id, .. })
+                if target.formset_guid.is_none() && form_id == target.form_id =>
+            {
+                Some(Wraps::Ref {
+                    form_id,
+                    host_form_id: current_form.unwrap_or(0),
+                })
+            }
+            _ => None,
         }
     } else if is_question_op(op) && length >= 8 {
         let qid = u16::from_le_bytes([body[stmt_offset + 6], body[stmt_offset + 7]]);
@@ -494,10 +523,12 @@ mod tests {
     const FORM_GATE_TARGET: GateTarget = GateTarget {
         form_id: 10029,
         question_id: None,
+        formset_guid: None,
     };
     const QUESTION_GATE_TARGET: GateTarget = GateTarget {
         form_id: 10029,
         question_id: Some(0x003B),
+        formset_guid: None,
     };
 
     #[test]
@@ -520,6 +551,98 @@ mod tests {
         assert_eq!(
             &pkg[gates[0].expr_end..gates[0].expr_end + 2],
             &ref_op(10029, 0x003A)[..2]
+        );
+    }
+
+    const CROSS_SET: &str = "EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9";
+
+    /// REF3: header(11) + FormId + QuestionId(0xFFFF) + FormSetGuid → len 33.
+    fn ref3_op(form_id: u16, formset: &str) -> Vec<u8> {
+        let g = Guid::from_str(formset).unwrap();
+        let payload = [
+            vec![0u8; 11],
+            form_id.to_le_bytes().to_vec(),
+            0xFFFFu16.to_le_bytes().to_vec(),
+            g.to_bytes().to_vec(),
+        ]
+        .concat();
+        opcode(IFR_REF_OP, false, &payload)
+    }
+
+    fn cross_ifr() -> Vec<u8> {
+        let mut ifr = form_set(7);
+        ifr.extend(form(10002, 20));
+        ifr.extend(opcode(IFR_SUPPRESS_IF_OP, true, &[]));
+        ifr.extend(uint64(1));
+        ifr.extend(uint64(1));
+        ifr.extend(equal());
+        ifr.extend(ref3_op(1, CROSS_SET));
+        ifr.extend(end());
+        ifr.extend(end());
+        ifr.extend(end());
+        ifr.extend(end());
+        ifr
+    }
+
+    #[test]
+    fn find_gates_reports_cross_formset_ref_gate() {
+        let pkg = package(&cross_ifr());
+        let gates = find_gates(
+            &pkg,
+            &GateTarget {
+                form_id: 1,
+                question_id: None,
+                formset_guid: Some(Guid::from_str(CROSS_SET).unwrap()),
+            },
+        );
+        assert_eq!(gates.len(), 1);
+        assert_eq!(gates[0].kind, GateKind::Suppress);
+        assert_eq!(
+            gates[0].wraps,
+            Wraps::CrossFormsetRef {
+                form_id: 1,
+                host_form_id: 10002,
+                formset_guid: Guid::from_str(CROSS_SET).unwrap(),
+            }
+        );
+        assert_eq!(gates[0].expr, GateExpr::EqConst { a: 1, b: 1 });
+        let flips = plan_gates(&pkg, &gates).unwrap();
+        assert_eq!(flips.len(), 1, "кросс-гейт флипается той же механикой");
+    }
+
+    #[test]
+    fn find_gates_cross_target_ignores_plain_and_foreign_ref3() {
+        // plain REF на форму 1 не матчится кросс-таргетом (нет FormSetGuid)
+        let mut mixed = cross_ifr();
+        mixed.extend(ref_op(1, 0x003A));
+        let pkg = package(&mixed);
+        let gt = GateTarget {
+            form_id: 1,
+            question_id: None,
+            formset_guid: Some(Guid::from_str(CROSS_SET).unwrap()),
+        };
+        assert_eq!(find_gates(&pkg, &gt).len(), 1);
+        // чужой формсет — не матч
+        let foreign = GateTarget {
+            formset_guid: Some(Guid::from_str(FORMSET_GUID).unwrap()),
+            ..gt
+        };
+        assert!(find_gates(&pkg, &foreign).is_empty());
+    }
+
+    #[test]
+    fn find_gates_ref3_no_longer_matches_as_plain_ref() {
+        // len 33 REF3 на форму 1: прежний код (length>=15 → «свой» REF)
+        // матчил; теперь — только при совпадении formset_guid
+        let pkg = package(&cross_ifr());
+        let plain_target = GateTarget {
+            form_id: 1,
+            question_id: None,
+            formset_guid: None,
+        };
+        assert!(
+            find_gates(&pkg, &plain_target).is_empty(),
+            "REF3 без formset-таргета не считается intra-formset REF"
         );
     }
 
@@ -640,6 +763,7 @@ mod tests {
             &GateTarget {
                 form_id: 901,
                 question_id: None,
+                formset_guid: None,
             },
         );
         assert_eq!(gates.len(), 1);
@@ -689,6 +813,7 @@ mod tests {
             &GateTarget {
                 form_id: 10028,
                 question_id: Some(0x003B),
+                formset_guid: None,
             },
         );
         assert!(wrong_form.is_empty());
@@ -703,6 +828,7 @@ mod tests {
                 &GateTarget {
                     form_id: 4242,
                     question_id: None,
+                    formset_guid: None,
                 }
             )
             .is_empty()
@@ -713,6 +839,7 @@ mod tests {
                 &GateTarget {
                     form_id: 4242,
                     question_id: Some(9),
+                    formset_guid: None,
                 }
             )
             .is_empty()
@@ -767,6 +894,7 @@ mod tests {
             &GateTarget {
                 form_id: 901,
                 question_id: None,
+                formset_guid: None,
             },
         );
         assert!(plan_gates(&pkg, &gates).is_err());
@@ -1073,6 +1201,7 @@ mod tests {
             &GateTarget {
                 form_id: 10029,
                 question_id: Some(0x003B),
+                formset_guid: None,
             },
         );
         let flips = plan_gates_skip_unlocked(&pkg, &gates).unwrap();
