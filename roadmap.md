@@ -477,6 +477,26 @@ V1 просмотр → V2 правки на месте → V3 schema-опера
 `HiiListQuestions` (B/V1), `ImageUpload` (A7). HII-мутационная база — дуги
 hijack/setup-new-page.
 
+## Дуга formset-unlock (U1–U4) — кросс-формсетные гейты и перенос IIO-бифуркации (2026-09-12)
+
+Спека `docs/superpowers/specs/2026-09-12-formset-unlock-design.md` +
+план `docs/superpowers/plans/2026-09-12-formset-unlock.md` (9 задач,
+TDD). Источник — live-сессия 450x (TODO.md, раздел 2026-09-12):
+формсет IntelRCSetup (EC87D643) скрыт suppress-гейтом вокруг
+кросс-формсетного GOTO (REF3/REF4) в корневом Setup (899407d7), который
+unlock не сканировал («0 gates»). Ключевой факт-фикс: REF-варианты —
+один опкод 0x0F, различаются length (REF=15/REF2=17/REF3=33/REF4=35/
+REF5=13-динамический). Ступени: U1 парсер `ref_variant` + кросс-гейты
+`Wraps::CrossFormsetRef` + кросс-рёбра `FormEdge.target_formset_guid`;
+U2a unlock по донорским секциям (`cross_formset.rs`, GateInfo.source_target)
+и U2b emit REF3 (fallback-инжект GOTO из видимой формы); U3
+`QuestionAddList.varstores` — декларация IntelSetup (IfrVarStoreEfi) в
+чужом Setup-пакете при question add + сдвиг $SPF-записей; U4 live-гейт
+`real_amibcp_450x_formset_unlock` + карта NVRAM-эффекта (спека §6).
+Статус: спланировано (2026-09-12), к исполнению после engine-p0-hotfix
+(закрыт PR #15). Гейт владельца — живой прогон TUI/CLI на 450x,
+вердикт-аддендум в спеке §7.
+
 ## Связи между циклами
 
 ```
