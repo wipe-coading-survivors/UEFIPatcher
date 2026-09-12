@@ -4841,6 +4841,42 @@ mod tests {
                 );
             }
 
+            /// 450x (fix round 1): add_page на control-less $SPF обязан
+            /// УСПЕШНО регистрировать страницу — план требует только
+            /// page_offset/page_slot, string-control шаблон не нужен.
+            #[test]
+            fn add_page_succeeds_on_controlless_spf() {
+                let (flash, _, spf_before) = question_add_controlless_spf_flash_image();
+                assert!(spf::scan_string_controls(&spf_before).is_empty());
+                let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+                let res = add_page(&mut img, ITEM_FORM, &page_add_schema(10021))
+                    .expect("add_page не требует string-control шаблон (450x)");
+                assert_eq!(res.form_id, 10021);
+                assert_eq!(res.slot, 1, "seq = page count read before the bump");
+                let spf_after = spf_leaf_of(&img).to_vec();
+                let base = spf::container_start(&spf_after).unwrap();
+                assert_eq!(
+                    rec_u32(&spf_after, base, spf::SPF_PAGE_COUNT_OFFSET),
+                    rec_u32(&spf_before, base, spf::SPF_PAGE_COUNT_OFFSET) + 1,
+                    "page count must grow by exactly one"
+                );
+                assert_eq!(
+                    rec_u32(&spf_after, base, spf::SPF_PAGE_TABLE_OFFSET + 4 * res.slot) as usize,
+                    res.page_offset,
+                    "the new slot must contain the skeleton offset"
+                );
+                assert_eq!(res.page_offset, spf_before.len() - base);
+                let page = base + res.page_offset;
+                assert_eq!(
+                    rec_u16(&spf_after, page, spf::SPF_PAGE_FORM_ID_OFFSET),
+                    10021
+                );
+                assert_eq!(
+                    rec_u16(&spf_after, page, spf::SPF_PAGE_TITLE_ID_OFFSET),
+                    res.title_string_id
+                );
+            }
+
             #[test]
             fn add_page_survives_rebuild_and_duplicate_is_rejected() {
                 let (flash, _, _) = question_add_flash_image();

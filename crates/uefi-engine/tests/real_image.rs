@@ -71,6 +71,7 @@ const RC_FORMSET_GUID: &str = "EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9";
 fn real_amibcp_450x_formset_unlock() {
     let data = std::fs::read(amibcp_path()).unwrap();
     let mut image = parse_image(&data, ImageMode::Write, "t", "s").unwrap();
+    let files_before = count_files(&image.root);
     let item = format!("{RC_SETUP_FFS}:0x10:0#1");
     let gates = uefi_engine::hii::gates_list(&image, &item).unwrap();
     let has_cross = gates.iter().any(|g| !g.source_target.is_empty());
@@ -96,8 +97,8 @@ fn real_amibcp_450x_formset_unlock() {
         let re = parse_image(&rebuilt, ImageMode::Read, "t2", "s").unwrap();
         assert_eq!(
             count_files(&re.root),
-            count_files(&image.root),
-            "unlock не должен терять файлы"
+            files_before,
+            "unlock не должен терять файлы (сравнение с исходным образом)"
         );
     } else {
         eprintln!(
@@ -131,9 +132,8 @@ fn real_amibcp_450x_formset_unlock() {
         let re = parse_image(&rebuilt, ImageMode::Read, "t2", "s").unwrap();
         let files = count_files(&re.root);
         assert_eq!(
-            files,
-            count_files(&image.root),
-            "инжект не должен терять файлы"
+            files, files_before,
+            "инжект не должен терять файлы (сравнение с исходным образом)"
         );
         let re_edges = uefi_engine::hii::ref_tree::collect_edges(&re);
         assert!(
@@ -142,6 +142,39 @@ fn real_amibcp_450x_formset_unlock() {
                 && e.target_formset_guid.contains(RC_FORMSET_GUID)),
             "кросс-ребро не пережило rebuild: {} рёбер",
             re_edges.len()
+        );
+        let re_pkg = module_form_package(&re, &module_pe32_node_path(&re, ROOT_SETUP_FFS));
+        let span = uefi_engine::hii::form_hijack::locate_form(&re_pkg, 10008)
+            .expect("форма 10008 в rebuilt");
+        let mut i = span.form_op;
+        let mut injected = None;
+        while i + 2 <= span.next_form_op {
+            let len = (re_pkg[i + 1] & 0x7F) as usize;
+            if len < 2 {
+                break;
+            }
+            if re_pkg[i] == r_efi::hii::IFR_REF_OP && len == 33 {
+                injected = Some(i);
+            }
+            i += len;
+        }
+        let r = injected.expect("REF3 (len 33) в форме 10008 после rebuild");
+        assert_eq!(
+            u16::from_le_bytes([re_pkg[r + 6], re_pkg[r + 7]]),
+            32800,
+            "qid 0x8020 @+6"
+        );
+        assert_eq!(
+            u16::from_le_bytes([re_pkg[r + 13], re_pkg[r + 14]]),
+            1,
+            "FormId@13 → IntelRCSetup#1"
+        );
+        let mut g = [0u8; 16];
+        g.copy_from_slice(&re_pkg[r + 17..r + 33]);
+        assert_eq!(
+            uefi_engine::guid_to_upper_string(&uefi_engine::types::Guid::from_bytes(g)),
+            RC_FORMSET_GUID,
+            "FormSetGuid@17 → EC87D643…"
         );
         eprintln!(
             "450x formset-unlock: ветка b ok — REF3 qid 32800 в форме 10008, рост образа {} байт ({} → {})",
