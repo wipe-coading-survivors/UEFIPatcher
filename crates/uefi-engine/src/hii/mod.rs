@@ -1,4 +1,5 @@
 pub mod ami_patcher;
+mod cross_formset;
 pub mod ffs_assembler;
 pub mod form_add;
 pub mod form_hijack;
@@ -208,7 +209,7 @@ fn resolve_writable_path(
     Ok(path)
 }
 
-fn form_package_ranges(node: &FfsNode) -> Vec<(usize, usize)> {
+pub(crate) fn form_package_ranges(node: &FfsNode) -> Vec<(usize, usize)> {
     if node.subtype == EFI_SECTION_RAW || ifr::is_form_package(&node.body) {
         if ifr::is_form_package(&node.body) {
             vec![(0, node.body.len())]
@@ -299,6 +300,7 @@ fn gate_info(pkg: &[u8], gate: &gates::Gate) -> uefi_proto::GateInfo {
         flippable: flip.is_some(),
         flip: flip.as_ref().map(flip_text).unwrap_or_default(),
         scope_offset: gate.scope_offset as u32,
+        source_target: String::new(),
     }
 }
 
@@ -319,6 +321,23 @@ pub fn gates_list(image: &Image, item_id: &str) -> Result<Vec<uefi_proto::GateIn
         let pkg = &node.body[start..start + len];
         for gate in gates::find_gates(pkg, &gt) {
             out.push(gate_info(pkg, &gate));
+        }
+    }
+    if let Some(own_formset) = own_formset_guid(node)
+        && let Some(skip_path) = crate::parser::target::find_item_path(&image.root, &target)
+    {
+        let gt_cross = gates::GateTarget {
+            formset_guid: Some(own_formset),
+            ..gt
+        };
+        for site in cross_formset::find_cross_gates(image, &skip_path, &gt_cross) {
+            let pkg = &node_at(&image.root, &site.path).body
+                [site.pkg_start..site.pkg_start + site.pkg_len];
+            for gate in &site.gates {
+                let mut gi = gate_info(pkg, gate);
+                gi.source_target = site.source_ffs.clone();
+                out.push(gi);
+            }
         }
     }
     Ok(out)
@@ -381,20 +400,20 @@ pub fn unlock(image: &mut Image, item_id: &str) -> Result<UnlockOutcome, HiiErro
         }
         if absolute_flips.is_empty() {
             node.body = body;
-            return Ok(UnlockOutcome {
-                gates: infos,
-                applied,
-            });
-        }
-        let body_len = body.len();
-        if let Err(e) = gates::apply_flips(&mut body, &absolute_flips) {
+            false
+        } else {
+            let body_len = body.len();
+            if let Err(e) = gates::apply_flips(&mut body, &absolute_flips) {
+                node.body = body;
+                return Err(HiiError::GateExpressionUnsupported(e));
+            }
+            assert_eq!(body.len(), body_len, "unlock is length-preserving");
             node.body = body;
-            return Err(HiiError::GateExpressionUnsupported(e));
+            true
         }
-        assert_eq!(body.len(), body_len, "unlock is length-preserving");
-        node.body = body;
-        true
     };
+    let cross_applied = apply_cross_formset_gates(image, &target, gt, &mut infos, &mut applied)?;
+    let mutated = mutated || cross_applied;
     if mutated {
         ops::mark_rebuild_to_root_by_path(&mut image.root, &path);
     }
@@ -403,6 +422,74 @@ pub fn unlock(image: &mut Image, item_id: &str) -> Result<UnlockOutcome, HiiErro
         gates: infos,
         applied,
     })
+}
+
+fn own_formset_guid(node: &FfsNode) -> Option<Guid> {
+    for (start, len) in form_package_ranges(node) {
+        if let Some(fs) = ifr::parse_form_package(&node.body[start..start + len]) {
+            return Some(fs.guid);
+        }
+    }
+    None
+}
+
+/// Кросс-формсетная фаза unlock (спека §3 U2a): гейты в чужих секциях,
+/// мутация донора по path. Возвращает true, если хоть один флип применён.
+fn apply_cross_formset_gates(
+    image: &mut Image,
+    target: &crate::types::Target,
+    gt: gates::GateTarget,
+    infos: &mut Vec<uefi_proto::GateInfo>,
+    applied: &mut Vec<String>,
+) -> Result<bool, HiiError> {
+    let (skip_path, own_formset) = {
+        let node = crate::parser::target::find_item(&image.root, target)
+            .map_err(|_| HiiError::NotFound)?;
+        let Some(own_formset) = own_formset_guid(node) else {
+            return Ok(false);
+        };
+        let skip_path =
+            crate::parser::target::find_item_path(&image.root, target).ok_or(HiiError::NotFound)?;
+        (skip_path, own_formset)
+    };
+    let gt_cross = gates::GateTarget {
+        formset_guid: Some(own_formset),
+        ..gt
+    };
+    let sites = cross_formset::find_cross_gates(image, &skip_path, &gt_cross);
+    let mut any = false;
+    for site in sites {
+        resolve_writable_path(image, &crate::types::Target::Path(site.path.clone()))?;
+        let pkg = {
+            let node = node_at(&image.root, &site.path);
+            node.body[site.pkg_start..site.pkg_start + site.pkg_len].to_vec()
+        };
+        let flips = gates::plan_gates_skip_unlocked(&pkg, &site.gates)
+            .map_err(HiiError::GateExpressionUnsupported)?;
+        for gate in &site.gates {
+            let mut gi = gate_info(&pkg, gate);
+            gi.source_target = site.source_ffs.clone();
+            infos.push(gi);
+        }
+        if flips.is_empty() {
+            continue;
+        }
+        applied.extend(flips.iter().map(flip_text));
+        let absolute: Vec<gates::PlannedFlip> = flips
+            .into_iter()
+            .map(|f| gates::PlannedFlip {
+                offset: site.pkg_start + f.offset,
+                from: f.from,
+                to: f.to,
+            })
+            .collect();
+        let node = node_at_mut(&mut image.root, &site.path);
+        gates::apply_flips(&mut node.body, &absolute)
+            .map_err(HiiError::GateExpressionUnsupported)?;
+        ops::mark_rebuild_to_root_by_path(&mut image.root, &site.path);
+        any = true;
+    }
+    Ok(any)
 }
 
 fn question_kind_str(kind: values::QuestionKind) -> &'static str {
@@ -671,7 +758,7 @@ fn collect_std_defaults_hits(
     Ok(())
 }
 
-fn node_at<'a>(root: &'a FfsNode, path: &[usize]) -> &'a FfsNode {
+pub(crate) fn node_at<'a>(root: &'a FfsNode, path: &[usize]) -> &'a FfsNode {
     let mut node = root;
     for &i in path {
         node = &node.children[i];
@@ -679,7 +766,7 @@ fn node_at<'a>(root: &'a FfsNode, path: &[usize]) -> &'a FfsNode {
     node
 }
 
-fn node_at_mut<'a>(root: &'a mut FfsNode, path: &[usize]) -> &'a mut FfsNode {
+pub(crate) fn node_at_mut<'a>(root: &'a mut FfsNode, path: &[usize]) -> &'a mut FfsNode {
     let mut node = root;
     for &i in path {
         node = &mut node.children[i];
@@ -2879,6 +2966,77 @@ mod tests {
             image.root.children[0].children[0].children[0].body, pkg,
             "байты пакета не тронуты"
         );
+    }
+
+    #[test]
+    fn unlock_flips_cross_formset_gate_in_donor_section() {
+        let mut image = cross_formset::cross_fixtures::two_file_image();
+        let item = "ABBCE13D-E25A-4D9F-A1F9-2F7710786892:0x19:0#1";
+        let before = cross_formset::cross_fixtures::donor_section_body(&image).to_vec();
+        let outcome = unlock(&mut image, item).unwrap();
+        assert!(!outcome.applied.is_empty(), "кросс-гейт донора флипнут");
+        assert!(
+            outcome.gates.iter().any(|g| g.wraps == "cross_ref"
+                && g.source_target == "899407D7-99FE-43D8-9A21-79EC328CAC21")
+        );
+        let after = cross_formset::cross_fixtures::donor_section_body(&image).to_vec();
+        assert_ne!(after, before, "донорская секция мутировала in-place");
+        assert_eq!(after.len(), before.len(), "unlock is length-preserving");
+        let diff: Vec<(usize, u8, u8)> = before
+            .iter()
+            .zip(after.iter())
+            .enumerate()
+            .filter(|(_, (a, b))| a != b)
+            .map(|(i, (a, b))| (i, *a, *b))
+            .collect();
+        assert_eq!(diff.len(), 1, "ровно один флип-байт в донорской секции");
+        assert_eq!((diff[0].1, diff[0].2), (1, 2));
+        let cross = outcome
+            .gates
+            .iter()
+            .find(|g| g.wraps == "cross_ref")
+            .unwrap();
+        assert_eq!(cross.flip, format!("pkg+{:#x}: 01 -> 02", diff[0].0));
+        assert_eq!(
+            image.root.children[0].children[0].children[0].action,
+            Action::Rebuild,
+            "донорская секция помечена на rebuild"
+        );
+    }
+
+    #[test]
+    fn gates_lists_cross_formset_gates_with_source_target() {
+        let mut image = cross_formset::cross_fixtures::two_file_image();
+        image.mode = ImageMode::Read;
+        let gates = gates_list(&image, "ABBCE13D-E25A-4D9F-A1F9-2F7710786892:0x19:0#1").unwrap();
+        assert_eq!(gates.len(), 1);
+        assert_eq!(gates[0].wraps, "cross_ref");
+        assert_eq!(
+            gates[0].source_target,
+            "899407D7-99FE-43D8-9A21-79EC328CAC21"
+        );
+    }
+
+    #[test]
+    fn unlock_without_cross_gates_leaves_donor_untouched() {
+        let mut image = cross_formset::cross_fixtures::two_file_image();
+        let before = cross_formset::cross_fixtures::donor_section_body(&image).to_vec();
+        let outcome = unlock(&mut image, "ABBCE13D-E25A-4D9F-A1F9-2F7710786892:0x19:0#42").unwrap();
+        assert!(outcome.applied.is_empty());
+        assert!(
+            outcome.gates.is_empty(),
+            "нет ни своих, ни кросс-гейтов на форму 42"
+        );
+        assert_eq!(
+            cross_formset::cross_fixtures::donor_section_body(&image),
+            &before[..],
+            "тело донора не тронуто (P0: ноль флипов — ноль мутаций)"
+        );
+        assert_eq!(
+            image.root.children[0].children[0].children[0].action,
+            Action::NoAction
+        );
+        assert_eq!(image.root.action, Action::NoAction);
     }
 
     const NVAR_FV0_GUID_STR: &str = "10000000-0000-4000-8000-000000000001";

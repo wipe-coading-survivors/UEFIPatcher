@@ -208,11 +208,11 @@ pub fn print_gates(item_id: &str, gates: &[GateInfo], format: OutputFormat) {
         }
         OutputFormat::Tsv => {
             println!(
-                "gate_kind\twraps\tform_id\thost_form_id\tquestion_id\texpression\tflippable\tflip\tscope_offset"
+                "gate_kind\twraps\tform_id\thost_form_id\tquestion_id\texpression\tflippable\tflip\tscope_offset\tsource_target"
             );
             for g in gates {
                 println!(
-                    "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                    "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                     g.gate_kind,
                     g.wraps,
                     g.form_id,
@@ -221,7 +221,8 @@ pub fn print_gates(item_id: &str, gates: &[GateInfo], format: OutputFormat) {
                     g.expression,
                     g.flippable,
                     g.flip,
-                    g.scope_offset
+                    g.scope_offset,
+                    g.source_target
                 );
             }
         }
@@ -230,8 +231,13 @@ pub fn print_gates(item_id: &str, gates: &[GateInfo], format: OutputFormat) {
                 println!("no gates for {item_id}");
             }
             for g in gates {
+                let src = if g.source_target.is_empty() {
+                    String::new()
+                } else {
+                    format!(" @{}", g.source_target)
+                };
                 println!(
-                    "{:<8} {:<8} form {} host {} qid {} expr '{}' flip '{}' @pkg+{:#x}",
+                    "{:<8} {:<8} form {} host {} qid {} expr '{}' flip '{}' @pkg+{:#x}{}",
                     g.gate_kind,
                     g.wraps,
                     g.form_id,
@@ -239,7 +245,8 @@ pub fn print_gates(item_id: &str, gates: &[GateInfo], format: OutputFormat) {
                     g.question_id,
                     g.expression,
                     if g.flippable { g.flip.as_str() } else { "-" },
-                    g.scope_offset
+                    g.scope_offset,
+                    src
                 );
             }
         }

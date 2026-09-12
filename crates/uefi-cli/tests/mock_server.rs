@@ -277,6 +277,7 @@ impl EngineService for MockEngine {
                 flippable: true,
                 flip: "pkg+0x67a: 01 -> 02".into(),
                 scope_offset: 0x66C,
+                source_target: String::new(),
             }],
         }))
     }
@@ -296,6 +297,7 @@ impl EngineService for MockEngine {
                 flippable: true,
                 flip: "pkg+0xdd1: 01 00 -> ff ff".into(),
                 scope_offset: 0xDCB,
+                source_target: String::new(),
             }],
             applied_flips: vec!["pkg+0xdd1: 01 00 -> ff ff".into()],
         }))

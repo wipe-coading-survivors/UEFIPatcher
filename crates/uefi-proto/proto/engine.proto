@@ -256,6 +256,7 @@ message GateInfo {
   bool   flippable = 7;
   string flip = 8;
   uint32 scope_offset = 9;
+  string source_target = 10;   // upper-GUID FFS донора (кросс-формсетные гейты)
 }
 
 message HiiGatesListRequest  { string image_id = 1; string item_id = 2; }

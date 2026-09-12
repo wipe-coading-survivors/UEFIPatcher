@@ -325,9 +325,14 @@ pub fn form_details_text(forms: &FormsData, rows: &[FormsRow], cursor: usize) ->
             s.push_str(&format!("\nGates ({}):\n", forms.gates.len()));
             for g in &forms.gates {
                 let flip = if g.flippable { "flippable" } else { "-" };
+                let src = if g.source_target.is_empty() {
+                    String::new()
+                } else {
+                    format!(" @{}", g.source_target)
+                };
                 s.push_str(&format!(
-                    "  {:<8} {:<24} {}\n",
-                    g.gate_kind, g.expression, flip
+                    "  {:<8} {:<24} {}{}\n",
+                    g.gate_kind, g.expression, flip, src
                 ));
             }
         }

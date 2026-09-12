@@ -168,7 +168,7 @@ pub fn hijack_form(
 
     let sd_path = ami_patcher::pfs_payload_path(image, setupdata_guid)?;
     let spf_records = {
-        let node = node_at(&image.root, &sd_path);
+        let node = super::node_at(&image.root, &sd_path);
         node.body.clone()
     };
     let record_edits: Vec<(u16, usize, u16)> = {
@@ -269,7 +269,7 @@ pub fn hijack_form(
     ops::mark_rebuild_to_root_by_path(&mut image.root, &path);
 
     let (help_controls, help_records): (Vec<HelpControlEdit>, Vec<HelpRecordEdit>) = {
-        let node = node_at_mut(&mut image.root, &sd_path);
+        let node = super::node_at_mut(&mut image.root, &sd_path);
         let mut ctrls = Vec::new();
         let mut recs = Vec::new();
         for (&(qid, off, old), &(_, rec_off, rec_old)) in
@@ -358,22 +358,6 @@ fn apply_hijack_ifr(
         rewrite_question_strings(pkg, q_off, prompt_id, help_id);
     }
     Ok(())
-}
-
-fn node_at<'a>(root: &'a FfsNode, path: &[usize]) -> &'a FfsNode {
-    let mut node = root;
-    for &i in path {
-        node = &node.children[i];
-    }
-    node
-}
-
-fn node_at_mut<'a>(root: &'a mut FfsNode, path: &[usize]) -> &'a mut FfsNode {
-    let mut node = root;
-    for &i in path {
-        node = &mut node.children[i];
-    }
-    node
 }
 
 #[cfg(test)]
