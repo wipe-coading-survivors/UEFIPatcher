@@ -2823,33 +2823,42 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   до дуги (не регрессия, найдено финальным ревью 2026-09-12).
   Контекст: `crates/uefi-engine/src/rpc/server.rs` (flush_image).
   Кандидат-фикс: per-image сериализация RPC.
-* [ ] **uefi-engine: REF5 (кросс-формсетный GOTO) не поддержан нигде** —
-  r-efi экспортирует только `IFR_REF_OP=0x0F` (REF2–REF5 в крейте нет,
-  придётся определить константы по UEFI spec); `ref_tree.rs`
-  (package_edges), `gates.rs` (Wraps::Ref-ветка), `ifr_builder.rs`
-  (emit_ref) знают только plain REF — GOTO в пределах своего формсета.
-  Следствие: формсет-уровневая видимость вне модели gates — у AMI
-  пункт корневого меню (строка 64 «Intel RC Setup Configuration» есть
-  в string-таблице) ссылается REF5 на EC87D643…:0x10:0#1 и подавлен
-  suppress-if, но REF5 живёт в СЕКЦИИ корневого Setup
-  (899407d7…:0x10:0), а unlock сканирует только пакеты секции самой
-  цели → честный «0 gates». Фундамент дуги formset-unlock (см.
-  следующий пункт): парсинг REF2–REF5, кросс-формсетные рёбра в
-  ref_tree, REF-parent gates по всей секции-источнику, emit REF5.
-  Контекст: `hii/ref_tree.rs:15`, `hii/gates.rs:201`,
-  `hii/ifr_builder.rs:190`, r-efi 7.0.0 `src/hii.rs:275`.
-* [ ] **Кандидат-дуга «formset-unlock / перенос IIO-бифуркации»**
-  (живые данные 450x, 2026-09-12) — U1: REF5-грамматика (парсинг+
-  emit+gates по чужой секции); U2: операция formset-unlock — флип
-  suppress-гейта REF5-родителя в корневом Setup ИЛИ emit своего REF5
-  из видимой формы (Chipset 10008) в EC87D643#1; U3: перенос
-  бифуркации hijack'ом — вопросы лежат в формах IIO 0–3
-  (abbce13d…#118:0x243 «IOU0 (IIO PCIe Port 2)», …#119:0x257,
-  …#422:0x26b, …#423:0x27f), one_of x4x4x4x4/x4x4x8/x8x4x4/x8x8/x16/
-  Auto(0xFF), varstore IntelSetup (EC87D643…, id 1, size 0x1670),
-  offset 0x531 у #118:0x243 — для вопроса в чужом формсете нужна
-  схема с per-question varstore (объявить IntelSetup IfrVarStoreEfi
-  в Setup-пакете); U4: карта NVRAM-эффекта (какие offset'ы меняются).
+* [ ] **uefi-engine: кросс-формсетные REF (REF3/REF4) не поддержаны** —
+  факт-фикс 2026-09-12 (при планировании дуги, сверка с UEFI 2.10
+  §33.3.8.3.59 + EDK2 `UefiInternalFormRepresentation.h`): отдельный
+  опкод у REF-вариантов НЕ существует — все используют opcode
+  0x0F и различаются length-байтом: REF=15 (FormId@13), REF2=17
+  (+QuestionId@15), REF3=33 (+FormSetGuid@17), REF4=35
+  (+DevicePath@33); REF5=13 — цель ДИНАМИЧЕСКАЯ (из runtime-value
+  вопроса, статически неразрешима). Констант-значений «по спеке»
+  определять не нужно (прежняя формулировка записи была неверной);
+  структуры IfrRef2..IfrRef5 в r-efi 7.0 есть (`src/hii.rs:954-987`),
+  но опкод-константа одна — `IFR_REF_OP=0x0F`. Текущий код читает
+  FormId@13 при `length >= 15` — т.е. REF2/3/4 уже парсятся
+  корректно на уровне form_id; реальные пробелы: (1) FormSetGuid@17
+  не читается — кросс-формсетная цель не распознаётся (REF3/4 с
+  чужим формсетом может ложно матчиться как «свой» REF), (2) unlock
+  сканирует только секцию самой цели — suppress-гейт вокруг REF3 в
+  корневом Setup (899407d7…:0x10:0), прячущий пункт меню «Intel RC
+  Setup Configuration» (string 64), вне поиска → честный «0 gates»,
+  (3) emit — только plain REF (len 15). Контекст:
+  `hii/ref_tree.rs:15`, `hii/gates.rs:201`, `hii/ifr_builder.rs:190`.
+  Спланировано дугой formset-unlock (спека
+  `2026-09-12-formset-unlock-design.md` §2, план
+  `2026-09-12-formset-unlock.md` Task 1–2).
+* [ ] **Дуга «formset-unlock / перенос IIO-бифуркации» U1–U4**
+  (живые данные 450x, 2026-09-12; спланирована — см. выше) — U1:
+  REF-грамматика по length-дискриминации + кросс-формсетные гейты и
+  рёбра; U2: formset-unlock двумя механизмами — (a) флип
+  suppress-гейта вокруг REF3/REF4-родителя в секции-доноре (корневой
+  Setup), (b) fallback — emit своего REF3 из видимой формы (Chipset
+  10008) в EC87D643#1; U3: перенос бифуркации — вопрос в чужой
+  формсет требует декларации varstore (IfrVarStoreEfi IntelSetup
+  EC87D643…, id 1, size 0x1670 в Setup-пакете 7B59104A); вопросы
+  лежат в формах IIO 0–3 (abbce13d…#118:0x242–0x244 «IOU…», …#119:
+  0x257–0x259, …#422:0x26b–0x26d, …#423:0x27f–0x281), one_of
+  x4x4x4x4/x4x4x8/x8x4x4/x8x8/x16/Auto(0xFF), offset 0x531 у
+  #118:0x243; U4: карта NVRAM-эффекта + live-гейт на 450x.
   Внутри самого IntelRCSetup гейты уже флипаются: форма 118 закрыта
   `suppress ref host 5 expr '0x215 == 0'` (flip pkg+0x5614
   00 00 → ff ff). Контекст: `hii/gates.rs`, `hii/schema.rs`
