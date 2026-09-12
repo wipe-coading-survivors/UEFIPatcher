@@ -1787,20 +1787,21 @@ cd /tmp/uefipatcher-test/agent-cli
 UEFIPATCHER_SOCK=$UEFIPATCHER_SOCK <workspace>/target/debug/uefi-cli session init --name u14-recon
 UEFIPATCHER_SOCK=$UEFIPATCHER_SOCK <workspace>/target/debug/uefi-cli image open \
   '/var/home/dsevosty/git/IMPLEMENTATION/refs/amibcp/450x — копия.bin' --mode write --name 450x-u4
-# кросс-гейты формсета:
-UEFIPATCHER_SOCK=$UEFIPATCHER_SOCK <workspace>/target/debug/uefi-cli hii gates list \
+# кросс-гейты формсета (CLI-глаголы фактические: `hii form gates`, НЕ `hii gates list`;
+# item-синтаксис вопросa — `#form:qid` через двоеточие, НЕ `#form@qid`):
+UEFIPATCHER_SOCK=$UEFIPATCHER_SOCK <workspace>/target/debug/uefi-cli hii form gates \
   'abbce13d-e25a-4d9f-a1f9-2f7710786892:0x10:0#1'
 # offsets бифуркации (12 вопросов) — таблица для спеки §6:
 for q in '118:0x242' '118:0x243' '118:0x244' '119:0x257' '119:0x258' '119:0x259' \
          '422:0x26b' '422:0x26c' '422:0x26d' '423:0x27f' '423:0x280' '423:0x281'; do
   form=${q%%:*}; qid=${q##*:}
   UEFIPATCHER_SOCK=$UEFIPATCHER_SOCK <workspace>/target/debug/uefi-cli hii question info \
-    "abbce13d-e25a-4d9f-a1f9-2f7710786892:0x10:0#${form}@${qid}"
+    "abbce13d-e25a-4d9f-a1f9-2f7710786892:0x10:0#${form}:${qid}"
 done
 pkill -x engine
 ```
 
-Зафиксировать вывод (source_target/host/expression кросс-гейтов; var_offset каждого вопроса; varstore-строки). Если `hii question info` не принимает синтаксис `#form@qid` — сверить формат с CLI-хелпом (`hii question info --help`) и правилом 11 зафиксировать расхождение в плане.
+Зафиксировать вывод (source_target/host/expression кросс-гейтов; var_offset каждого вопроса; varstore-строки).
 
 - [ ] **Step 2: Написать real-тест (детерминированный для 450x: ветка a при наличии кросс-гейтов, иначе b)**
 
@@ -1819,7 +1820,7 @@ fn real_amibcp_450x_formset_unlock() {
             !outcome.applied.is_empty(),
             "кросс-гейт найден, но флип не применён: {gates:?}"
         );
-        let rebuilt = uefi_engine::builder::build_image(&image.root).unwrap();
+        let rebuilt = uefi_engine::builder::build_image(&image).unwrap();
         assert_eq!(rebuilt.len(), data.len(), "unlock length-preserving на 450x");
     } else {
         // ветка b: инжект REF3 в видимую форму Chipset 10008 корневого Setup
@@ -1839,13 +1840,24 @@ fn real_amibcp_450x_formset_unlock() {
                 && e.target_formset_guid.contains("EC87D643")),
             "кросс-ребро 10008 → IntelRCSetup#1 не появилось"
         );
-        let rebuilt = uefi_engine::builder::build_image(&image.root).unwrap();
-        assert_eq!(rebuilt.len(), data.len() + growth, "growth = reloc-aware сдвиг .rsrc");
+        let rebuilt = uefi_engine::builder::build_image(&image).unwrap();
+        assert!(rebuilt.len() >= data.len(), "growth = reloc-aware сдвиг .rsrc");
     }
 }
 ```
 
-Точность сигнатур: сверить `parse_amibcp_image_write`/`add_ref`/`hii::gates_list`-видимость (pub) с реальными (`real_amibcp_450x_build_round_trip` — как строит Image; `hii::add_ref(image, item_id, schema)` — сигнатура `mod.rs:1442`). `growth` — не фиксированная константа: заменить на `assert!(rebuilt.len() >= data.len())` + re-parse `parse_image(&rebuilt)` не пуст (валидация живого движка). Любое расхождение сигнатур — docs: fix (правило 11) ДО подгонки кода.
+Точность сигнатур: сверить `parse_amibcp_image_write`/`add_ref`/`hii::gates_list`-видимость (pub) с реальными (`real_amibcp_450x_build_round_trip` — как строит Image: `parse_image(&data, ImageMode::Write, "t", "s")`; `hii::add_ref(image, item_id, schema)` — сигнатура `mod.rs:1773`). `growth` — не фиксированная константа: заменить на `assert!(rebuilt.len() >= data.len())` + re-parse `parse_image(&rebuilt)` не пуст (валидация живого движка). Любое расхождение сигнатур — docs: fix (правило 11) ДО подгонки кода.
+
+**Дефект ветки b, обнаружен живым прогоном 2026-09-12 (правило 11):** `add_ref` на 450x
+падает `NotFound` в `plan_spf_append` — `spf::scan_string_controls` (эвристика HNX99TF
+«u16 5 @p, 0 @p+4, 78 @p+0xA») находит 0 контрол-блоков в $SPF 450x (поколение HuaNian;
+ближайшие сигнатуры — size-поле 504–508, не 5). При этом `add_ref` из плана использует
+только `selected_records` (IFR-offset fixup): `ctrl_template` нужен исключительно
+`apply_spf_question` (путь add_question; np3 на HNX99TF подтверждает — REF не добавляет
+$SPF-записей, 393 = 389 + 4 вопроса). Фикс ДО теста: `SpfAppendPlan.ctrl_template:
+Option<usize>`, `plan_spf_append` не требует контролы, требование переносится в
+`apply_spf_question` (add_question на образе без контролов → честный NotFound) +
+юнит-тест план-без-контролов.
 
 - [ ] **Step 3: Прогнать real-гейт**
 
