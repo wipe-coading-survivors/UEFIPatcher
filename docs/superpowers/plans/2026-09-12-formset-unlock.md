@@ -1408,7 +1408,8 @@ git commit -m "feat(engine): QuestionAddList.varstores + emit_var_store_efi (for
     fn splice_varstore_ops_inserts_before_first_form() {
         let mut pkg = two_form_package(); // формы 100 и 200 (существующая фикстура)
         let prelude_end = locate_formset_prelude_end(&pkg).unwrap();
-        let ops = opcode(0x2E, false, &[vec![0u8; 24], b"I\0n\0t\0e\0l\0".to_vec()].concat());
+        // IFR_VARSTORE_EFI_OP = 0x26 (r-efi; тестовый ifr.rs-модуль уже импортирует константу)
+        let ops = opcode(IFR_VARSTORE_EFI_OP, false, &[vec![0u8; 24], b"I\0n\0t\0e\0l\0".to_vec()].concat());
         let (at, delta) = splice_varstore_ops(&mut pkg, &ops).unwrap();
         assert_eq!(at, prelude_end);
         assert_eq!(delta, ops.len());
@@ -1461,19 +1462,19 @@ pub fn splice_varstore_ops(
 }
 ```
 
-(walk_statements уже импортирован в ifr.rs; IFR_FORM_OP — добавить импорт r_efi::hii, если нет.)
+(Примечание скетча было инвертировано: walk_statements живёт в values.rs (pub(crate)) и в ifr.rs НЕ импортирован — добавить `use super::values::walk_statements;`; IFR_FORM_OP уже импортирован в ifr.rs.)
 
 - [ ] **Step 3: Падающий mod-тест (рядом с question-add тестами; фикстуры `question_add_flash_image` и `sd_file_*` — `mod.rs` tests:1814+)**
 
 ```rust
     #[test]
     fn add_varstores_declares_efi_varstore_and_shifts_spf_records() {
-        let (mut flash, spf_body, _) = question_add_flash_image();
-        let _ = spf_body;
-        let mut img = image_from_flash(flash.clone(), ImageMode::Write); // существующий хелпер этого tests mod
-        let target = "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:0#100";
-        let pkg_len_before = pkg_of(&img, "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:0").len();
-        let rec_before = first_resolving_record(&img, target); // хелпер: scan_question_records + spf_record_resolves, существующие паттерны тестов 3459+
+        let (flash, _, spf_before) = question_add_flash_image(); // ресурсный канал: PE32 @ :0x10, формы 10019/10020
+        let mut img = crate::parser::image::parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+        let target = "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x10:0#10019";
+        let module = "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x10:0";
+        let pkg_len_before = pkg_of(&img, module).len();
+        let rec_before = first_resolving_record(&img, module); // хелпер: spf_leaf_of + scan_question_records + spf_record_resolves
         let vs = schema::VarStoreSchema {
             id: 0x7F01,
             guid: "EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9".into(),
@@ -1482,28 +1483,37 @@ pub fn splice_varstore_ops(
             var_type: schema::VarStoreType::Efi,
             attributes: 7,
         };
-        let ids = add_varstores(&mut img, target, &[vs]).unwrap();
+        let ids = add_varstores(&mut img, target, &[vs.clone()]).unwrap();
         assert_eq!(ids, vec![0x7F01]);
-        let pkg = pkg_of(&img, "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:0");
-        let delta = 26 + 10 * 2; // header+фикс-поля + «IntelSetup» UCS-2+NUL
+        let pkg = pkg_of(&img, module);
+        let delta = 26 + 22; // 2 header + 24 фикс-поля + «IntelSetup» UCS-2+NUL (10×2+2) = 48
         assert_eq!(pkg.len(), pkg_len_before + delta);
         // varstore объявлен до первой формы и читается varstore_map
         let maps = values::varstore_map(&pkg);
         assert!(maps.iter().any(|m| m.id == 0x7F01 && m.size == 0x1670
             && m.name == "IntelSetup"));
-        // $SPF-записи, резолвящиеся в пакет, сдвинулись на delta
-        let rec_after = first_resolving_record(&img, target);
+        // $SPF-записи, резолвящиеся в пакет, сдвинулись на delta (0x3B/0x55);
+        // чужая (0x66) не сдвинулась
+        let rec_after = first_resolving_record(&img, module);
         assert_eq!(rec_after.ifr_offset, rec_before.ifr_offset + delta as u32);
+        let recs = spf::scan_question_records(spf_leaf_of(&img));
+        let rec1_after = recs.iter().find(|r| r.question_id == 0x55).unwrap();
+        let rec1_before = spf::scan_question_records(&spf_before)
+            .into_iter().find(|r| r.question_id == 0x55).unwrap();
+        assert_eq!(rec1_after.ifr_offset, rec1_before.ifr_offset + delta as u32);
+        let foreign_after = recs.iter().find(|r| r.question_id == 0x66).unwrap();
+        let foreign_before = spf::scan_question_records(&spf_before)
+            .into_iter().find(|r| r.question_id == 0x66).unwrap();
+        assert_eq!(foreign_after.ifr_offset, foreign_before.ifr_offset);
         // коллизия: тот же id повторно — InvalidSchema
         assert!(matches!(
-            add_varstores(&mut img, target, &[vs.clone()]),
+            add_varstores(&mut img, target, &[vs]),
             Err(HiiError::InvalidSchema(_))
         ));
-        let _ = &mut flash;
     }
 ```
 
-(Хелперы `pkg_of`/`first_resolving_record`/`image_from_flash` — по образцу существующих тестов mod.rs (3459-3567 используют `pkg_of` и `scan_question_records`; если `pkg_of` приватен в другом tests-модуле — поднять в общий tests-scope. Если фикстура не имеет $SPF-записей, резолвящихся в целевой пакет, — расширить `question_add_spf_body_for` одной записью с ifr_offset ≥ prelude; это уточнение фиксируется коммитом docs: fix при необходимости — правило 11.)
+(Дефекты исходного скетча, вскрытые сверкой с кодом: фикстура `question_add_flash_image` — РЕСУРСНЫЙ канал (PE32 @ `:0x10:0`), а не RAW `:0x19:0`, и формы в ней 10019/10020, а не 100 — таргет и `pkg_of` исправлены на `:0x10:0#10019`/`:0x10:0`; хелпера `image_from_flash` нет — фактический хелпер `crate::parser::image::parse_image`; `delta = 26 + 10*2` = 46 забывал NUL-юнит UCS-2 — верно 26+22 = 48 (сверено с тестом emit_var_store_efi_layout Task 6: total 48, name slice 26..48). Хелпер `first_resolving_record` определяется рядом с тестом; `pkg_of`/`spf_leaf_of` уже есть в question_add_tests (mod.rs:3603/3592). Фикстура УЖЕ имеет $SPF-записи, резолвящиеся в целевой пакет (0x3B→q10019, 0x55→q10020) и чужую 0x66 — расширения `question_add_spf_body_for` не нужно.)
 
 - [ ] **Step 4: FAIL → реализация (mod.rs)**
 
@@ -1589,38 +1599,63 @@ fn shift_resolving_records(
     insert_at: usize,
     delta: usize,
 ) {
-    let selected: Vec<_> = spf::scan_question_records(sd_body)
+    // fixup_selected_record_ifr_offsets принимает &[usize] — ОФФСЕТЫ записей
+    // в sd_body (не SpfQuestionRecord): .map(|r| r.offset), паттерн
+    // select_resolving_records (mod.rs:1065)
+    let selected: Vec<usize> = spf::scan_question_records(sd_body)
         .into_iter()
         .filter(|r| {
             r.ifr_offset >= insert_at as u32
-                && crate::hii::spf_record_resolves(pkg_before, r.question_id, r.ifr_offset)
+                && spf_record_resolves(pkg_before, r.question_id, r.ifr_offset)
         })
+        .map(|r| r.offset)
         .collect();
     spf::fixup_selected_record_ifr_offsets(sd_body, &selected, insert_at as u32, delta as u32);
 }
 ```
 
-`splice_varstore_ops_into_resource` — зеркало `splice_question_ops_into_resource` (`mod.rs:910-937`), отличия: локация пакета через `form_add::resource_forms_package(pe)` (не по форме), вставка `ifr::splice_varstore_ops`:
+`splice_varstore_ops_into_resource` — зеркало `splice_question_ops_into_resource` (`mod.rs:1012-1039`), отличия: локация пакета через `form_add::resource_forms_package(pe)` (не по форме), вставка `ifr::splice_varstore_ops`. ВНИМАНИЕ: у `RsrcBlobGrowthPlan` НЕТ полей `blob_end`/`new_blob_len`/`new_total` (только `entry_off`/`blob_off`/`blob_len`/`grow`) — эти величины считаются pre-check'ом по образцу `check_rsrc_question_splice` (`mod.rs:973-1010`) через `package_list::parse_package_list`:
 
 ```rust
 fn splice_varstore_ops_into_resource(pe: &mut Vec<u8>, ops: &[u8]) -> Result<(usize, usize), HiiError> {
     let (pkg_off, old_len) =
         form_add::resource_forms_package(pe).ok_or(HiiError::NotASetupItem)?;
+    let pkg = pe.get(pkg_off..pkg_off + old_len).ok_or(HiiError::InvalidIfr)?;
+    ifr::locate_formset_prelude_end(pkg).ok_or(HiiError::NotFound)?;
+    let (_, blob_off, blob_len) = pe_resource::hii_entry_locations(pe)
+        .first()
+        .copied()
+        .ok_or(HiiError::InvalidIfr)?;
+    let blob_end = blob_off.checked_add(blob_len).ok_or(HiiError::InvalidIfr)?;
+    let blob = pe.get(blob_off..blob_end).ok_or(HiiError::InvalidIfr)?;
+    let list = package_list::parse_package_list(blob).ok_or(HiiError::InvalidIfr)?;
+    let sum: usize = list.packages.iter().map(|p| p.bytes.len()).sum();
+    let new_blob_len = blob_len
+        .checked_add(ops.len())
+        .ok_or(HiiError::PeGrowthUnsupported)?;
+    let new_total = 20u64 + sum as u64 + ops.len() as u64 + 4;
+    if new_total > u32::MAX as u64 || new_blob_len > u32::MAX as usize {
+        return Err(HiiError::PeGrowthUnsupported);
+    }
+    let plan =
+        pe_resource::plan_rsrc_blob_growth(pe, ops.len()).ok_or(HiiError::PeGrowthUnsupported)?;
+    if plan.grow > 0 && !pe_resource::can_grow_rsrc_tail(pe, plan.grow) {
+        return Err(HiiError::PeGrowthUnsupported);
+    }
     let mut pkg = pe[pkg_off..pkg_off + old_len].to_vec();
     let res = ifr::splice_varstore_ops(&mut pkg, ops)?;
     let delta = pkg.len() - old_len;
-    let plan = pe_resource::plan_rsrc_blob_growth(pe, delta).ok_or(HiiError::PeGrowthUnsupported)?;
     if plan.grow > 0 && !pe_resource::try_grow_rsrc_tail(pe, plan.grow) {
         return Err(HiiError::PeGrowthUnsupported);
     }
-    pe.copy_within(pkg_off + old_len..plan.blob_end.min(pe.len()), pkg_off + pkg.len());
+    pe.copy_within(pkg_off + old_len..blob_end, pkg_off + pkg.len());
     pe[pkg_off..pkg_off + pkg.len()].copy_from_slice(&pkg);
     pe_resource::write_length_chain(
         pe,
         plan.entry_off,
         plan.blob_off,
-        plan.new_blob_len,
-        plan.new_total,
+        new_blob_len as u32,
+        new_total as u32,
     );
     Ok(res)
 }
@@ -1630,11 +1665,11 @@ fn splice_varstore_ops_into_resource(pe: &mut Vec<u8>, ops: &[u8]) -> Result<(us
 
 - [ ] **Step 5: Валидация деклараций в check_question_add + wiring сервера**
 
-`check_question_add` — новый параметр `varstores: &[schema::VarStoreSchema]`; в начале:
+`check_question_add` — новый параметр `varstores: &[schema::VarStoreSchema]`; после `resolve_question_target` (коллизия по всем form-пакетам ноды, `form_package_ranges(node)`):
 
 ```rust
     for vs in varstores {
-        for (start, len) in form_package_ranges(node_of_target) {
+        for (start, len) in form_package_ranges(node) {
             if values::varstore_map(&node.body[start..start + len])
                 .iter()
                 .any(|m| m.id == vs.id)
@@ -1648,11 +1683,11 @@ fn splice_varstore_ops_into_resource(pe: &mut Vec<u8>, ops: &[u8]) -> Result<(us
     }
 ```
 
-и в цикле схем — var_store_id вопросов должен быть объявлен:
+и в цикле схем (до `check_question_slots`) — var_store_id вопросов должен быть объявлен:
 
 ```rust
         let declared = varstores.iter().any(|v| v.id == schema.var_store_id)
-            || varstore_map_of_target.iter().any(|m| m.id == schema.var_store_id);
+            || values::varstore_map(&qt.pkg).iter().any(|m| m.id == schema.var_store_id);
         if schema.var_store_id != 0 && !declared {
             return Err(HiiError::InvalidSchema(format!(
                 "var store id {:#x} is not declared (add it to schema varstores)",
@@ -1661,7 +1696,9 @@ fn splice_varstore_ops_into_resource(pe: &mut Vec<u8>, ops: &[u8]) -> Result<(us
         }
 ```
 
-`server.rs` `hii_question_add`: после parse — `crate::hii::check_question_add(img_slot, &r.target, &schema.questions, &schema.varstores)`; после check, до цикла вопросов: `if !schema.varstores.is_empty() { crate::hii::add_varstores(img_slot, &r.target, &schema.varstores)?; }`.
+ВНИМАНИЕ (rule-11 фикс): `check_question_slots` (mod.rs:1282) УЖЕ валидирует var_store_id вопросов — «var store {} is not declared in the formset» + size-границы `var_offset+size > vs.size` по `values::varstore_map(pkg)`. Без знания о schema-декларациях вопрос по id из schema varstores ложно падает на этом чеке. Поэтому `check_question_slots` получает параметр `extra_varstores: &[schema::VarStoreSchema]`: lookup id в пакете ИЛИ в extra, size-границы — по найденному (у schema — `vs.size`). Вызов из `add_question` (mod.rs:1372) — `&[]` (после `add_varstores` декларация уже в пакете). Смена сигнатуры `check_question_add` также трогает внешние вызовы: `rpc/server.rs:1078` (wiring ниже) и `tests/real_image.rs:4129/4143/4587` (механически `&[]`).
+
+`server.rs` `hii_question_add`: после parse — `crate::hii::check_question_add(img_slot, &r.target, &schema.questions, &schema.varstores)`; после check_ref_add, до цикла вопросов: `if !schema.varstores.is_empty() { crate::hii::add_varstores(img_slot, &r.target, &schema.varstores)?; }`. Тест сервера: положительный прогон по bare-фикстуре `question_add_bare_flash_image` (schema с varstores + вопрос по декларированному id → Ok; в пакете ноды появляется varstore 0x7F01) + отрицательный — вопрос по недекларированному id → InvalidArgument.
 
 - [ ] **Step 6: Прогнать крейт + clippy**
 
