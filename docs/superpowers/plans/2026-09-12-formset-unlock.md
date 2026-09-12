@@ -752,14 +752,22 @@ Expected: PASS (2).
 
 Плюс тест no-op паритета: `unlock` на образе без кросс-гейтов (target_pkg без донора) → `applied.is_empty()`, тело донора не тронуто (P0-семантика).
 
+Fix round 1 (review finding, Important): skip-own сделать наблюдаемо покрытым — в `cross_fixtures` добавить `own_cross_pkg()` (пакет целевого формсета RC_SET, форма 10001 с suppressed REF3 → RC_SET#1 — «собственный» матчащий кросс-гейт) и конструктор `two_file_image_with(donor, target)` (донор и таргет с параметризуемыми телами). Ассерты: `find_cross_gates` на образе, где ОБЕ секции несут матчащий гейт, возвращает ровно 1 сайт (донор), `sites[0].path != skip_path`; `gates_list` на том же образе не дублирует гейт собственной секции (`len == 1`, `source_target` — донорский GUID).
+
 - [ ] **Step 7: Реализация — wiring в unlock/gates_list (hii/mod.rs)**
 
 В `unlock`, после существующего own-node блока (после закрывающей `}` привязки `mutated`), до `if mutated`:
 
 ```rust
-    let cross_applied = apply_cross_formset_gates(image, &target, gt, &mut infos, &mut applied)?;
+    let cross_applied = if gt.question_id.is_none() {
+        apply_cross_formset_gates(image, &target, gt, &mut infos, &mut applied)?
+    } else {
+        false
+    };
     let mutated = mutated || cross_applied;
 ```
+
+Fix round 1 (review finding, Important): кросс-фаза — только для form-таргетов (`gt.question_id.is_none()`). Причина: Question-рука `find_gates` матчится по голой паре (form_id, question_id) без привязки к формсету — question-таргетный unlock мог бы флипать гейты в неродственных донорах по совпадающей (form, qid) паре; кросс-фаза дуги формсет-скоуплена по спеке §3 U2a (form-only таргеты). Эквивалентный guard — первой строкой `apply_cross_formset_gates` (`if gt.question_id.is_some() { return Ok(false); }`) и в условии кросс-фазы `gates_list`. Негатив-тест: question-таргет на образе, где донор несёт гейт на совпадающую (form, qid) пару, → донор не тронут (byte-identity, нет rebuild-меток), кросс-инфосов нет.
 
 Дефект-фикс: в текущем own-node блоке ветка `absolute_flips.is_empty()` делает ранний `return Ok(UnlockOutcome { .. })` — с таким ранним выходом кросс-фаза никогда не выполняется для таргета без собственных флипов (основной кросс-случай: target-форма без гейтов, донор с REF3-гейтом). Ветку заменить на fall-through: `node.body = body; false` (без `return`), чтобы поток дошёл до кросс-фазы. P0-семантика сохраняется: при нулевых флипах суммарно `mutated == false` → `mark_rebuild_to_root_by_path` не вызывается, тело не тронуто.
 
@@ -775,6 +783,9 @@ fn apply_cross_formset_gates(
     infos: &mut Vec<uefi_proto::GateInfo>,
     applied: &mut Vec<String>,
 ) -> Result<bool, HiiError> {
+    if gt.question_id.is_some() {
+        return Ok(false);
+    }
     let (skip_path, own_formset) = {
         let node = crate::parser::target::find_item(&image.root, target)
             .map_err(|_| HiiError::NotFound)?;
@@ -833,7 +844,7 @@ fn apply_cross_formset_gates(
 }
 ```
 
-В `gates_list` — та же кросс-фаза read-only (после существующего цикла): сформировать `gt_cross`, `find_cross_gates`, `infos.push` с `source_target`.
+В `gates_list` — та же кросс-фаза read-only (после существующего цикла): сформировать `gt_cross`, `find_cross_gates`, `infos.push` с `source_target` — только при `gt.question_id.is_none()` (guard fix round 1: Question-рука `find_gates` не формсет-скоуплена, спека §3 U2a).
 
 Замечания: `resolve_writable_path` уже проверяет `ImageMode::Write` и барьеры — вызов ДО планирования даёт честный `NotWritable`/`MutationBehindCompression` без частичной мутации. `node_at`/`node_at_mut` уже существуют как приватные в hii/mod.rs (используются set_value/add_question) и продублированы приватными копиями в form_hijack.rs — «перенос» сводится к удалению копий из form_hijack.rs и переключению его двух call-site'ов на `super::node_at`/`super::node_at_mut` (в mod.rs сделать их `pub(crate)`); тесты form_hijack — регрессия.
 
@@ -1790,3 +1801,4 @@ git commit -m "docs(todo,roadmap,spec): дуга formset-unlock исполнен
 - Formset-декларация при form-add (varstores в FormSchema) — при живом прецеденте.
 - TUI-скролл Forms View, lost-update flush_image, completion-меню, `--ffs`-порядок — свои записи TODO.
 - Gateway/WebUI-поверхность новых полей (source_target/target_formset_guid) — цикл WebUI rework.
+- Мульти-донорская атомарность кросс-фазы unlock (двухпроходный plan-all-then-apply-all) — отложено в TODO.md (fix round 1, review finding): ранний донор может быть флипнут и помечен rebuild до того, как поздний провалит планирование (`GateExpressionUnsupported`) → частичная кросс-мутация сохранится при save после неудачного unlock. Окно: образы с несколькими донорами (у 450x донор один). Спека §3 U2a; код — Task 3 `apply_cross_formset_gates` (hii/mod.rs).
