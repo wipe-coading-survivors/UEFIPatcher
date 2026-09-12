@@ -12,6 +12,7 @@ pub mod package_list;
 pub mod pe_resource;
 pub mod questions;
 pub mod ref_tree;
+mod ref_variant;
 pub mod schema;
 pub mod spf;
 pub mod string_pack;
