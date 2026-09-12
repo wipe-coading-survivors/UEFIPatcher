@@ -635,7 +635,7 @@ pub fn find_cross_gates(
 ) -> Vec<CrossGateSite> {
     let mut out = Vec::new();
     let mut path: Vec<usize> = Vec::new();
-    walk_files(&image.root, &mut path, None, skip_path, gt, &mut out);
+    walk_files(&image.root, &mut path, skip_path, gt, &mut out);
     out
 }
 
@@ -761,6 +761,8 @@ Expected: PASS (2).
     let mutated = mutated || cross_applied;
 ```
 
+Дефект-фикс: в текущем own-node блоке ветка `absolute_flips.is_empty()` делает ранний `return Ok(UnlockOutcome { .. })` — с таким ранним выходом кросс-фаза никогда не выполняется для таргета без собственных флипов (основной кросс-случай: target-форма без гейтов, донор с REF3-гейтом). Ветку заменить на fall-through: `node.body = body; false` (без `return`), чтобы поток дошёл до кросс-фазы. P0-семантика сохраняется: при нулевых флипах суммарно `mutated == false` → `mark_rebuild_to_root_by_path` не вызывается, тело не тронуто.
+
 Новая функция в mod.rs (использует helpers `node_at`/`node_at_mut` уже существующие):
 
 ```rust
@@ -833,7 +835,7 @@ fn apply_cross_formset_gates(
 
 В `gates_list` — та же кросс-фаза read-only (после существующего цикла): сформировать `gt_cross`, `find_cross_gates`, `infos.push` с `source_target`.
 
-Замечания: `resolve_writable_path` уже проверяет `ImageMode::Write` и барьеры — вызов ДО планирования даёт честный `NotWritable`/`MutationBehindCompression` без частичной мутации. `node_at`/`node_at_mut` определены в form_hijack.rs как приватные — либо вынести в mod.rs, либо продублировать; план: перенести `node_at`/`node_at_mut` из form_hijack.rs в hii/mod.rs (pub(crate)), form_hijack переключить на них (чистое перемещение, тесты form_hijack — регрессия).
+Замечания: `resolve_writable_path` уже проверяет `ImageMode::Write` и барьеры — вызов ДО планирования даёт честный `NotWritable`/`MutationBehindCompression` без частичной мутации. `node_at`/`node_at_mut` уже существуют как приватные в hii/mod.rs (используются set_value/add_question) и продублированы приватными копиями в form_hijack.rs — «перенос» сводится к удалению копий из form_hijack.rs и переключению его двух call-site'ов на `super::node_at`/`super::node_at_mut` (в mod.rs сделать их `pub(crate)`); тесты form_hijack — регрессия.
 
 - [ ] **Step 8: CLI-печать source_target**
 
