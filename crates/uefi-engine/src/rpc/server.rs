@@ -960,7 +960,9 @@ impl EngineService for EngineServer {
             crate::hii::unlock(img_slot, &r.item_id)
                 .map_err(|e| hii_error_status_ctx(e, &r.item_id))?
         };
-        self.flush_image(&r.image_id).await?;
+        if !outcome.applied.is_empty() {
+            self.flush_image(&r.image_id).await?;
+        }
         let _ = self.sm.touch(&img.session_id);
         tracing::info!(image_id = %r.image_id, item_id = %r.item_id, flips = outcome.applied.len(), "hii unlock");
         Ok(Response::new(HiiUnlockResponse {
@@ -2283,6 +2285,63 @@ mod tests {
         assert!(img_path.exists(), "image bytes must be persisted on open");
         let saved = std::fs::read(&img_path).unwrap();
         assert_eq!(saved, fixture_volume());
+    }
+
+    fn amibcp_450x_path() -> std::path::PathBuf {
+        if let Ok(p) = std::env::var("UEFIPATCHER_TEST_AMIBCP") {
+            return std::path::PathBuf::from(p);
+        }
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../refs/amibcp/450x — копия.bin")
+    }
+
+    #[tokio::test]
+    #[ignore = "requires real AMI image under refs/amibcp/ (gitignored)"]
+    async fn hii_unlock_noop_keeps_artifact_untouched() {
+        let (td, mut client) = setup().await;
+        let orig = amibcp_450x_path();
+        let orig_bytes = std::fs::read(&orig).unwrap();
+        let session = create_session(&mut client).await;
+        let opened = client
+            .image_open(ImageOpenRequest {
+                session_id: session.clone(),
+                path: orig.to_string_lossy().to_string(),
+                mode: ImageMode::Write as i32,
+                name: "450x".into(),
+            })
+            .await
+            .unwrap()
+            .into_inner();
+        let resp = client
+            .hii_unlock(HiiUnlockRequest {
+                image_id: opened.image_id.clone(),
+                item_id: "abbce13d-e25a-4d9f-a1f9-2f7710786892:0x10:0#1".into(),
+            })
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(
+            resp.applied_flips.is_empty(),
+            "форма #1 без гейтов: flips нет"
+        );
+        let img_path = td
+            .path()
+            .join("sessions")
+            .join(&session)
+            .join("images")
+            .join(format!("{}.bin", opened.image_id));
+        let stored = std::fs::read(&img_path).unwrap();
+        assert_eq!(
+            stored.len(),
+            orig_bytes.len(),
+            "no-op unlock не должен переписывать артефакт"
+        );
+        assert_eq!(stored, orig_bytes);
+        let _ = client
+            .session_destroy(SessionDestroyRequest {
+                session_id: session,
+            })
+            .await;
     }
 
     async fn create_session(client: &mut EngineServiceClient<Channel>) -> String {
