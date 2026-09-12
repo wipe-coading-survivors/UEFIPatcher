@@ -131,13 +131,30 @@ pub(crate) fn parse_firmware_volume(buf: &[u8], off: usize) -> Option<FfsNode> {
     Some(vol)
 }
 
-fn count_files(node: &FfsNode) -> usize {
+pub(crate) fn count_files(node: &FfsNode) -> usize {
     let mut n = match node.node_type {
         FfsType::File => 1,
         _ => 0,
     };
     for child in &node.children {
         n += count_files(child);
+    }
+    n
+}
+
+/// Число File-нод вне поддеревьев с `Action::Remove` — ожидаемое число
+/// файлов в билд-выводе (билдер пропускает Remove-поддеревья целиком).
+pub(crate) fn count_live_files(node: &FfsNode) -> usize {
+    if node.action == Action::Remove {
+        return 0;
+    }
+    let mut n = if node.node_type == FfsType::File {
+        1
+    } else {
+        0
+    };
+    for child in &node.children {
+        n += count_live_files(child);
     }
     n
 }
@@ -564,6 +581,72 @@ mod tests {
             alignment_bytes: vec![],
         };
         assert_eq!(node_name(&file), "");
+    }
+
+    #[test]
+    fn count_live_files_skips_remove_subtrees() {
+        let file_c = FfsNode {
+            guid: None,
+            node_type: FfsType::File,
+            subtype: 0x01,
+            offset: 88,
+            header: vec![0; 24],
+            body: vec![],
+            tail: vec![],
+            children: vec![],
+            action: Action::NoAction,
+            parsing_data: ParsingData::None,
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        };
+        let file_a = FfsNode {
+            guid: None,
+            node_type: FfsType::File,
+            subtype: 0x01,
+            offset: 56,
+            header: vec![0; 24],
+            body: vec![],
+            tail: vec![],
+            children: vec![file_c],
+            action: Action::NoAction,
+            parsing_data: ParsingData::None,
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        };
+        let file_b = FfsNode {
+            guid: None,
+            node_type: FfsType::File,
+            subtype: 0x01,
+            offset: 120,
+            header: vec![0; 24],
+            body: vec![],
+            tail: vec![],
+            children: vec![],
+            action: Action::Remove,
+            parsing_data: ParsingData::None,
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        };
+        let volume = FfsNode {
+            guid: None,
+            node_type: FfsType::Volume,
+            subtype: 0,
+            offset: 0,
+            header: vec![0; 56],
+            body: vec![],
+            tail: vec![],
+            children: vec![file_a, file_b],
+            action: Action::NoAction,
+            parsing_data: ParsingData::None,
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        };
+        assert_eq!(count_live_files(&volume), 2);
+        assert_eq!(count_files(&volume), 3);
     }
 
     fn encode_utf16le_null(s: &str) -> Vec<u8> {

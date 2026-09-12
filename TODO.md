@@ -2773,7 +2773,7 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
 > Forms + после рестарта TUI Image View «только ME region». Независимое
 > воспроизведение через CLI на живом движке + чтение кода — ниже.
 
-* [ ] **uefi-engine [P0]: no-op `hii_unlock` уничтожает артефакт** —
+* [x] **uefi-engine [P0]: no-op `hii_unlock` уничтожает артефакт** —
   `hii::unlock` при 0 gates корректно не мутирует (early return,
   mutated=false, `hii/mod.rs:374`), но RPC-хендлер вызывает
   `flush_image` безусловно (`rpc/server.rs:963`): build → перезапись
@@ -2783,13 +2783,20 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   Воспроизведено CLI на свежеоткрытой копии (2026-09-12): `hii form
   unlock abbce13d…:0x10:0#1` → «nothing to unlock», артефакт 28 MB,
   `hii form list` = 0 строк. Guard «output smaller than stored»
-  (`server.rs:101`) рост не ловит. Фикс: не flush'ить при
+  (`server.rs:101`) рост не ловит — закрыто validate-before-persist
+  (Task 3 дуги, коммит `1ba63e9`). Фикс: не flush'ить при
   `outcome.applied.is_empty()` (или вернуть `mutated` из unlock);
   серия «no-op RPC не должен писать на диск» — прогнать по всем
   HII-хендлерам (set-value/visibility при отсутствии изменений).
   Контекст: `crates/uefi-engine/src/rpc/server.rs` (hii_unlock,
   flush_image), `crates/uefi-engine/src/hii/mod.rs` (unlock).
-* [ ] **uefi-engine [P0]: build_image round-trip ломает образ 450x** —
+  Закрыто дугой engine-p0-hotfix (2026-09-12): условный flush — no-op
+  (0 gates) больше не пишет на диск (`85d4b61`); validate-before-persist
+  как вторая линия защиты (`1ba63e9`). Аудит серии «no-op RPC не должен
+  писать на диск» (по ходу дуги): `hii_set_form_visibility` при
+  отсутствии изменений возвращает `Err(NoSuppressScope)` до flush;
+  `hii_set_value` при Ok всегда мутирует — flush оправдан.
+* [x] **uefi-engine [P0]: build_image round-trip ломает образ 450x** —
   даже без единой мутации build(parse(450x)) ≠ входу: 16777216 →
   28409856 байт, re-parse: volumes 13 → 6, files 311 → 0 (WARN «ME
   region has no $FPT», тома без файлов). Значит ЛЮБАЯ write-мутация
@@ -2803,6 +2810,19 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   открыть 450x (mode write) → любой unlock/set-value → stat артефакта.
   Контекст: `crates/uefi-engine/src/builder/mod.rs` (build_image/
   build_node/build_volume), `parser::region` WARN'и в engine.log.
+  Закрыто дугой engine-p0-hotfix (2026-09-12): root cause — верхний
+  уровень собирался последовательно, а у 450x тома/регионы
+  перекрываются; placement по offset'ам детей (коммит `1104fcf`);
+  real-тест `real_amibcp_450x_build_round_trip` (byte-точный round-trip
+  на живом образе).
+* [ ] **uefi-engine [minor]: lost-update окно в flush_image (3 lock-а)** —
+  build/validate/swap в отдельных lock-окнах: конкурентная мутация того
+  же образа между build и swap молча перезаписывается stale-деревом;
+  между build и validate — stale-байты проходят live-baseline. Диск
+  остаётся валидным (потеря правки, не порча); окно идентично коду
+  до дуги (не регрессия, найдено финальным ревью 2026-09-12).
+  Контекст: `crates/uefi-engine/src/rpc/server.rs` (flush_image).
+  Кандидат-фикс: per-image сериализация RPC.
 * [ ] **uefi-engine: REF5 (кросс-формсетный GOTO) не поддержан нигде** —
   r-efi экспортирует только `IFR_REF_OP=0x0F` (REF2–REF5 в крейте нет,
   придётся определить константы по UEFI spec); `ref_tree.rs`

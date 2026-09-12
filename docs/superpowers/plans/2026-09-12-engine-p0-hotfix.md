@@ -239,8 +239,10 @@ git commit -m "fix(engine): no-op hii_unlock больше не flush'ит арт
 
 - [ ] **Step 2: Прогнать, убедиться в падении**
 
-Run: `cargo test -p uefi-engine build_image_places build_image_fills`
+Run: `cargo test -p uefi-engine build_image_`
 Expected: FAIL — текущая конкатенация даёт 16 байт без fill (первый тест) и 8 байт (второй).
+
+(правка 2026-09-12: исходная команда содержала два позиционных фильтра — `cargo test` принимает только один; фактический прогон: один фильтр `build_image_` — матчится 3 теста, оба новых падают)
 
 - [ ] **Step 3: Реализация — placement вместо конкатенации**
 
@@ -267,6 +269,8 @@ Expected: FAIL — текущая конкатенация даёт 16 байт 
 Остальные ветки (Volume/File/Section/Padding/FreeSpace/Region) не трогать. Если `debug_assert!` падает в каком-то тесте (вложенный Image с непустым out) — заменить на `out.clear()` перед циклом и зафиксировать в коммите плана (правило 11).
 
 - [ ] **Step 4: Обновить offset'ы в существующих фикстурах builder-тестов**
+
+(правка 2026-09-12, по факту выполнения: шаг оказался no-op — правки фикстур не потребовались. Верифицировано ревью диффа: все hand-built Image-фикстуры крейта — hii/mod.rs:3495, form_add.rs:509, formset_add.rs:598, ami_patcher.rs:439, rpc/server.rs:2056, builder/mod.rs `removed_section_image` — имеют ровно одного прямого ребёнка на `offset: 0`, где placement вырождается в старую конкатенацию; деревья, построенные через `parse_image`, несут реальные offset'ы. Ниже — исходная формулировка шага, сохранена для истории.)
 
 Прогнать `cargo test -p uefi-engine` — упасть должны тесты, чьи фикстуры ставят всем детям `offset: 0` (сайты: `builder/mod.rs` ~289, 304, 319, 340, 417, 452, 539, 616, 631, 655 — актуализировать по коду). Правило: ребёнку выставляется накопительный offset = сумма `header+body+tail` (плюс выравнивания, если тест их ожидает) всех предыдущих детей. Пример диффа для фикстуры с Volume(256) + Padding(128):
 
@@ -354,9 +358,23 @@ git commit -m "fix(engine): build_image кладёт верхний уровен
 - Consumes: `parse_image(&bytes, mode, image_id, session_id)` (уже вызывается в `flush_image` после записи — переиспользуем до записи), `crate::parser::image::count_files`.
 - Produces: `fn validate_flush_bytes(current: &Image, bytes: &[u8]) -> Result<Image, Status>` (private, server.rs) — возвращает перепарсенный образ; отказ `FailedPrecondition` если байт не парсится или файлов стало меньше.
 
-- [ ] **Step 1: Написать падающий юнит-тест валидатора**
+- [ ] **Step 1: Написать падающие тесты валидатора**
 
-В tests mod `server.rs` (fixture_volume уже есть, server.rs:2246-2255):
+(правка 2026-09-12, правило 11, по факту первой попытки: два дефекта исходного шага — (а) `parse_image` безошибочна: нераспознанные байты оборачиваются в Padding (см. тест `parse_image_all_padding_buffer_yields_single_padding_node`), ветка «не парсится» недостижима, `unwrap_err()` на garbage паникует на `Ok`; (б) baseline `count_files(current)` некорректен: мутации ставят `Action::Remove` на узлы in-memory, билдер их пропускает — валидатор отказывал в корректных write-through flush'ах (4 падения: remove_rpc_leaves_clean_tree и др.). Решение: baseline = `count_live_files` (файлы вне Remove-поддеревьев), reject-ветка теста = дегенерация (0 томов при ≥1 в текущем).)
+
+`parser/image.rs` tests mod — юнит-тест live-подсчёта (дерево руками: Volume → File A, File B с `action: Action::Remove`; File A имеет ребёнка-File C — проверить пропуск поддерева):
+
+```rust
+    #[test]
+    fn count_live_files_skips_remove_subtrees() {
+        // tree: Volume[File A[File C], File B(Remove)] → live = A + C = 2
+        ...
+        assert_eq!(count_live_files(&volume), 2);
+        assert_eq!(count_files(&volume), 3);
+    }
+```
+
+В tests mod `server.rs` (fixture_volume уже есть, server.rs:2248):
 
 ```rust
     fn parsed_fixture_image() -> Image {
@@ -365,53 +383,85 @@ git commit -m "fix(engine): build_image кладёт верхний уровен
     }
 
     #[test]
-    fn validate_flush_bytes_rejects_unparseable_and_collapsed() {
+    fn validate_flush_bytes_rejects_degenerate_and_accepts_roundtrip() {
         let img = parsed_fixture_image();
         let err = validate_flush_bytes(&img, b"garbage not an image".as_slice()).unwrap_err();
         assert_eq!(err.code(), tonic::Code::FailedPrecondition);
         assert!(err.message().contains("refusing write"));
 
         let ok_bytes = fixture_volume();
-        let before = crate::parser::image::count_files(&img.root);
         let refreshed = validate_flush_bytes(&img, &ok_bytes).unwrap();
-        assert!(crate::parser::image::count_files(&refreshed.root) >= before);
+        assert!(crate::parser::image::count_files(&refreshed.root)
+            >= crate::parser::image::count_live_files(&img.root));
     }
 ```
 
-Если `fixture_volume()` парсится с 0 файлов (пустой FV без файлов) — коллапс-ветку проверить на «0 → 0 не отказывает» (валидатор отказывает только при `after < before`), что уже покрыто вызовом с `ok_bytes`.
+(точная конструкция дерева в parser-тесте — по образцу соседних тестов мода, строчки выше — эскиз с инвариантом: `count_live_files == 2`, `count_files == 3`.)
 
 - [ ] **Step 2: Прогнать, убедиться в падении**
 
-Run: `cargo test -p uefi-engine validate_flush_bytes`
-Expected: FAIL — `validate_flush_bytes` не определена.
+Run: `cargo test -p uefi-engine validate_flush_bytes count_live_files`
+Expected: FAIL — `validate_flush_bytes`/`count_live_files` не определены (E0425).
+
+(правка 2026-09-12: cargo принимает один позиционный фильтр — запускать по отдельности: `validate_flush_bytes` затем `count_live_files`.)
 
 - [ ] **Step 3: Реализация валидатора и проводка в flush_image**
 
-`parser/image.rs:134`: `fn count_files(` → `pub(crate) fn count_files(`.
-
-В `server.rs` (над `flush_image`) добавить:
+`parser/image.rs:134`: `fn count_files(` → `pub(crate) fn count_files(`; рядом добавить:
 
 ```rust
-    fn validate_flush_bytes(current: &Image, bytes: &[u8]) -> Result<Image, Status> {
-        let refreshed =
-            parse_image(bytes, current.mode, &current.image_id, &current.session_id).map_err(
-                |e| {
-                    Status::failed_precondition(format!(
-                        "build output does not re-parse ({e}); refusing write to prevent data loss"
-                    ))
-                },
-            )?;
-        let before = crate::parser::image::count_files(&current.root);
-        let after = crate::parser::image::count_files(&refreshed.root);
-        if after < before {
-            return Err(Status::failed_precondition(format!(
-                "build output reparses with {after} files vs {before} stored; \
-                 refusing write to prevent data loss"
-            )));
-        }
-        Ok(refreshed)
+/// Число File-нод вне поддеревьев с `Action::Remove` — ожидаемое число
+/// файлов в билд-выводе (билдер пропускает Remove-поддеревья целиком).
+pub(crate) fn count_live_files(node: &FfsNode) -> usize {
+    if node.action == Action::Remove {
+        return 0;
     }
+    let mut n = if node.node_type == FfsType::File { 1 } else { 0 };
+    for child in &node.children {
+        n += count_live_files(child);
+    }
+    n
+}
 ```
+
+В `server.rs` (над `flush_image`) добавить (свободные функции уровня модуля — тест зовёт без квалификации):
+
+```rust
+fn volume_count(node: &FfsNode) -> usize {
+    let mut n = if node.node_type == FfsType::Volume { 1 } else { 0 };
+    for child in &node.children {
+        n += volume_count(child);
+    }
+    n
+}
+
+fn validate_flush_bytes(current: &Image, bytes: &[u8]) -> Result<Image, Status> {
+    let refreshed =
+        parse_image(bytes, current.mode, &current.image_id, &current.session_id).map_err(
+            |e| {
+                Status::failed_precondition(format!(
+                    "build output does not re-parse ({e}); refusing write to prevent data loss"
+                ))
+            },
+        )?;
+    let before = crate::parser::image::count_live_files(&current.root);
+    let after = crate::parser::image::count_files(&refreshed.root);
+    if after < before {
+        return Err(Status::failed_precondition(format!(
+            "build output reparses with {after} files vs {before} live; \
+             refusing write to prevent data loss"
+        )));
+    }
+    if volume_count(&refreshed.root) == 0 && volume_count(&current.root) > 0 {
+        return Err(Status::failed_precondition(
+            "build output reparses with no volumes; refusing write to prevent data loss",
+        ));
+    }
+    Ok(refreshed)
+}
+```
+
+(правка 2026-09-12 после реализации: `.into()` на строке без томов не компилируется — E0283 неоднозначность; на `validate_flush_bytes` нужен `#[allow(clippy::result_large_err)]`, прецедент `rpc/auth.rs:3`.)
 
 В `flush_image` (server.rs:84-132) переставить порядок: валидация ДО `atomic_write`, замена in-memory — после. Тело после size-guard (строки 99-109, guard оставить как есть):
 
@@ -434,8 +484,8 @@ Expected: FAIL — `validate_flush_bytes` не определена.
 
 - [ ] **Step 4: Прогнать, убедиться в прохождении**
 
-Run: `cargo test -p uefi-engine validate_flush_bytes && cargo test -p uefi-engine`
-Expected: PASS (весь крейт; успешные flush-сценарии в тестах проходят валидацию — их фикстуры смежные и round-trip'ятся).
+Run: `cargo test -p uefi-engine validate_flush_bytes && cargo test -p uefi-engine count_live_files && cargo test -p uefi-engine`
+Expected: PASS (весь крейт; write-through flush-сценарии с Remove-метками — `remove_rpc_leaves_clean_tree`, `second_flush_does_not_resurrect_removed_file`, `descriptor_image_bios_mutation_keeps_regions`, `snapshot_restore_rolls_tree_back` — проходят: live-baseline исключает Remove-поддеревья).
 
 - [ ] **Step 5: Lint**
 
@@ -486,4 +536,4 @@ git commit -m "docs(todo): закрыть P0-записи live-сессии 450x
 
 1. **Spec coverage:** TODO P0-1 → Task 1; TODO P0-2 → Task 2 (+ real-тест); P1-защита/guard-заметка → Task 3; audit-заметка «прогнать по всем HII-хендлерам» — проверено при планировании: `hii_set_form_visibility` при отсутствии изменений возвращает `Err(NoSuppressScope)` ДО flush (hii/mod.rs:126-129), т.е. не виновник; `hii_set_value` при Ok всегда мутирует (значение+флипы) — flush оправдан. Открытыми остаются REF5/дуга/скролл — вне скоупа, чекбоксы не трогаем.
 2. **Placeholder-сканирование:** код во всех шагах конкретный; два места с «посмотреть по образцу соседних» (auth в тесте Task 1, вариант `ParsingData` в Task 2) — явные развилки с инструкцией и правилом 11, не TBD.
-3. **Консистентность типов:** `validate_flush_bytes(&Image, &[u8]) -> Result<Image, Status>` определена в Task 3 и там же использована; `count_files` поднимается до `pub(crate)` в Task 3 (integration-тест Task 2 использует собственный локальный хелпер — намеренно, без расширения public API).
+3. **Консистентность типов:** `validate_flush_bytes(&Image, &[u8]) -> Result<Image, Status>` определена в Task 3 и там же использована; `count_files` и `count_live_files` поднимаются до `pub(crate)` в Task 3 (integration-тест Task 2 использует собственный локальный хелпер — намеренно, без расширения public API); `volume_count` — приватный хелпер server.rs (правка 2026-09-12: live-baseline вместо полного подсчёта — write-through при Remove-метках; degenerate-ветка 0-томов вместо недостижимой «не парсится»).
