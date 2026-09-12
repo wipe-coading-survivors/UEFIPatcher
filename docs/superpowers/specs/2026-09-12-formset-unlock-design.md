@@ -108,7 +108,8 @@ Formset{formset_guid, form_id, question_id} | Dynamic`. Точные длины
 QuestionId 0xFFFF@15, FormSetGuid@17. Валидация GUID — `try_parse`,
 ошибка → `InvalidSchema`. Применяется, если в корневом Setup нет
 флипабельного скрытого GOTO (живой гейт Task 8 определяет, что реально
-на 450x).
+на 450x). **Гейт 2026-09-12: фактическая ветка на 450x — b** (кросс-гейтов
+нет, см. §7).
 
 ### U1c. Кросс-рёбра (`hii/ref_tree.rs`, proto `FormEdge`)
 
@@ -180,20 +181,50 @@ form_id_ifr: child }`; ненайденное — DanglingRef-строка (па
    прогон `cargo test -p uefi-engine -- --ignored`.
 4. Владельческий live-прогон TUI/CLI на 450x (вердикт-аддендум в §7).
 
-## 6. Карта NVRAM-эффекта бифуркации (450x, живые данные)
+## 6. Карта NVRAM-эффекта бифуркации (450x, живые данные 2026-09-12, question-info loop)
 
-| Вопрос | Форма | varstore | offset | Опции |
-|--------|-------|----------|--------|-------|
-| 0x243 | 118 (IIO 0) | IntelSetup (EC87D643…, id 1, 0x1670) | 0x531 | 0=x4x4x4x4 … 4=x16, 0xFF=Auto |
-| 0x242/0x244 | 118 | IntelSetup id 1 | заполняется на гейте U4 | — |
-| 0x257–0x259 | 119 (IIO 1) | IntelSetup id 1 | заполняется | — |
-| 0x26b–0x26d | 422 (IIO 2) | IntelSetup id 1 | заполняется | — |
-| 0x27f–0x281 | 423 (IIO 3) | IntelSetup id 1 | заполняется | — |
+Все 12 вопросов — `one_of`, width 1, varstore **IntelSetup**
+(`EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9`, id 1, size 0x1670; декларация —
+опкод 0x24, раскладка движка Guid@2/Id@18/Size@20/Name@22 ASCII, поля
+attributes нет — default 7 из U3 непротиворечив: сверка неприменима к этой
+форме декларации; второй varstore пакета — id 2 AmiSetupSupportedFeatures,
+size 4).
+
+| Вопрос | Форма (IIO) | offset | Опции |
+|--------|-------------|--------|-------|
+| 0x242 | 118 (IIO 0) | 0x539 | 0=x4x4, 1=x8, 0xFF=Auto |
+| 0x243 | 118 (IIO 0) | 0x531 | 0=x4x4x4x4, 1=x4x4x8, 2=x8x4x4, 3=x8x8, 4=x16, 0xFF=Auto |
+| 0x244 | 118 (IIO 0) | 0x535 | 0=x4x4x4x4 … 4=x16, 0xFF=Auto |
+| 0x257 | 119 (IIO 1) | 0x53a | 0=x4x4, 1=x8, 0xFF=Auto |
+| 0x258 | 119 (IIO 1) | 0x532 | 0=x4x4x4x4 … 4=x16, 0xFF=Auto |
+| 0x259 | 119 (IIO 1) | 0x536 | 0=x4x4x4x4 … 4=x16, 0xFF=Auto |
+| 0x26b | 422 (IIO 2) | 0x53b | 0=x4x4, 1=x8, 0xFF=Auto |
+| 0x26c | 422 (IIO 2) | 0x533 | 0=x4x4x4x4 … 4=x16, 0xFF=Auto |
+| 0x26d | 422 (IIO 2) | 0x537 | 0=x4x4x4x4 … 4=x16, 0xFF=Auto |
+| 0x27f | 423 (IIO 3) | 0x53c | 0=x4x4, 1=x8, 0xFF=Auto |
+| 0x280 | 423 (IIO 3) | 0x534 | 0=x4x4x4x4 … 4=x16, 0xFF=Auto |
+| 0x281 | 423 (IIO 3) | 0x538 | 0=x4x4x4x4 … 4=x16, 0xFF=Auto |
+
+Раскладка на IIO x (x = 0..3): порт-бифуркация (x4x4/x8) @ `0x539+x`
+(qid 0x242/0x257/0x26b/0x27f), полная бифуркация @ `0x531+x`
+(0x243/0x258/0x26c/0x280) и @ `0x535+x` (0x244/0x259/0x26d/0x281).
 
 Гейт формы 118 внутри IntelRCSetup: `suppress ref host 5 qid 0 expr
 '0x0215 == 0x0000'`, flip `pkg+0x5614: 00 00 → ff ff` (флипается
-существующей механикой).
+существующей механикой; подтверждён живым `hii form gates` на гейте U4).
 
 ## 7. Вердикт владельца
 
-(заполняется после live-гейта)
+(заполняется после владельческого live-гейта; сценарий — Task 9 Step 2)
+
+Факт-фиксация движкового live-гейта U4 (2026-09-12,
+`real_amibcp_450x_formset_unlock`, PASS): **фактическая ветка — b**
+(инжект REF3). Кросс-гейтов для `ABBCE13D-…:0x10:0#1` нет — suppressed
+GOTO в корневом Setup байтами не существует (гипотеза строки 64
+опровергнута); формсет скрыт отсутствием GOTO. Инжект REF3 (qid 32800,
+formset EC87D643…, форма 1) в видимую форму Chipset 10008 корневого Setup
+(`899407D7-…`), кросс-ребро 10008 → IntelRCSetup#1 подтверждено до и после
+rebuild; рост образа 0 байт (16 MiB сохранён, .rsrc-рост поглощён слотом
+FV). Попутный фикс: `plan_spf_append` более не требует string-control
+шаблон для путей без $SPF-аппендов (450x-поколение $SPF без контролов;
+`ctrl_template: Option`, требование — upfront в add_question).

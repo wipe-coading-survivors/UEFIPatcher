@@ -59,6 +59,99 @@ fn real_amibcp_450x_build_round_trip() {
     assert_eq!(after, before, "round-trip не должен терять файлы");
 }
 
+const RC_SETUP_FFS: &str = "ABBCE13D-E25A-4D9F-A1F9-2F7710786892";
+const ROOT_SETUP_FFS: &str = "899407D7-99FE-43D8-9A21-79EC328CAC21";
+const RC_FORMSET_GUID: &str = "EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9";
+
+/// Живой гейт формсет-unlock на 450x (спека formset-unlock §3 U4): ветка
+/// детерминирована фактическими данными образа — кросс-гейты есть → флип
+/// (a), нет → инжект REF3 в видимую форму Chipset 10008 корневого Setup (b).
+#[test]
+#[ignore = "requires external real AMI image under refs/amibcp/ (gitignored)"]
+fn real_amibcp_450x_formset_unlock() {
+    let data = std::fs::read(amibcp_path()).unwrap();
+    let mut image = parse_image(&data, ImageMode::Write, "t", "s").unwrap();
+    let item = format!("{RC_SETUP_FFS}:0x10:0#1");
+    let gates = uefi_engine::hii::gates_list(&image, &item).unwrap();
+    let has_cross = gates.iter().any(|g| !g.source_target.is_empty());
+    if has_cross {
+        eprintln!(
+            "450x formset-unlock: ветка a (кросс-гейт в доноре), gates: {:?}",
+            gates
+                .iter()
+                .map(|g| (&g.source_target, &g.expression, g.flippable))
+                .collect::<Vec<_>>()
+        );
+        let outcome = uefi_engine::hii::unlock(&mut image, &item).unwrap();
+        assert!(
+            !outcome.applied.is_empty(),
+            "кросс-гейт найден, но флип не применён: {gates:?}"
+        );
+        let rebuilt = uefi_engine::builder::build_image(&image).unwrap();
+        assert_eq!(
+            rebuilt.len(),
+            data.len(),
+            "unlock length-preserving на 450x"
+        );
+        let re = parse_image(&rebuilt, ImageMode::Read, "t2", "s").unwrap();
+        assert_eq!(
+            count_files(&re.root),
+            count_files(&image.root),
+            "unlock не должен терять файлы"
+        );
+    } else {
+        eprintln!(
+            "450x formset-unlock: ветка b (кросс-гейтов нет — скрытого GOTO в байтах нет), own gates: {gates:?}"
+        );
+        let schema_json = r#"{
+            "refs": [ { "form_id": 1, "prompt": "Intel RC Setup",
+                        "help": "Intel RC Setup Configuration",
+                        "question_id": 32800,
+                        "formset_guid": "EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9" } ]
+        }"#;
+        let list = uefi_engine::hii::schema::parse_question_add_schema(schema_json).unwrap();
+        let chipset_item = format!("{ROOT_SETUP_FFS}:0x10:0#10008");
+        uefi_engine::hii::add_ref(&mut image, &chipset_item, &list.refs[0])
+            .expect("инжект REF3 в форму Chipset 10008 корневого Setup");
+        let edges = uefi_engine::hii::ref_tree::collect_edges(&image);
+        let cross = edges.iter().find(|e| {
+            e.parent_form_id == 10008 && e.form_id == 1 && !e.target_formset_guid.is_empty()
+        });
+        assert!(
+            cross.is_some_and(|e| e.target_formset_guid.contains(RC_FORMSET_GUID)),
+            "кросс-ребро 10008 → IntelRCSetup#1 не появилось: {edges:?}"
+        );
+        let rebuilt = uefi_engine::builder::build_image(&image).unwrap();
+        assert!(
+            rebuilt.len() >= data.len(),
+            "reloc-aware рост .rsrc не должен уменьшать образ: {} < {}",
+            rebuilt.len(),
+            data.len()
+        );
+        let re = parse_image(&rebuilt, ImageMode::Read, "t2", "s").unwrap();
+        let files = count_files(&re.root);
+        assert_eq!(
+            files,
+            count_files(&image.root),
+            "инжект не должен терять файлы"
+        );
+        let re_edges = uefi_engine::hii::ref_tree::collect_edges(&re);
+        assert!(
+            re_edges.iter().any(|e| e.parent_form_id == 10008
+                && e.form_id == 1
+                && e.target_formset_guid.contains(RC_FORMSET_GUID)),
+            "кросс-ребро не пережило rebuild: {} рёбер",
+            re_edges.len()
+        );
+        eprintln!(
+            "450x formset-unlock: ветка b ok — REF3 qid 32800 в форме 10008, рост образа {} байт ({} → {})",
+            rebuilt.len() - data.len(),
+            data.len(),
+            rebuilt.len()
+        );
+    }
+}
+
 const FHV_SIG: [u8; 4] = *b"_FVH";
 
 fn find_sig_offsets(data: &[u8]) -> Vec<usize> {
