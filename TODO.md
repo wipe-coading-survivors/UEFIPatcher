@@ -2815,6 +2815,14 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   перекрываются; placement по offset'ам детей (коммит `1104fcf`);
   real-тест `real_amibcp_450x_build_round_trip` (byte-точный round-trip
   на живом образе).
+* [ ] **uefi-engine [minor]: lost-update окно в flush_image (3 lock-а)** —
+  build/validate/swap в отдельных lock-окнах: конкурентная мутация того
+  же образа между build и swap молча перезаписывается stale-деревом;
+  между build и validate — stale-байты проходят live-baseline. Диск
+  остаётся валидным (потеря правки, не порча); окно идентично коду
+  до дуги (не регрессия, найдено финальным ревью 2026-09-12).
+  Контекст: `crates/uefi-engine/src/rpc/server.rs` (flush_image).
+  Кандидат-фикс: per-image сериализация RPC.
 * [ ] **uefi-engine: REF5 (кросс-формсетный GOTO) не поддержан нигде** —
   r-efi экспортирует только `IFR_REF_OP=0x0F` (REF2–REF5 в крейте нет,
   придётся определить константы по UEFI spec); `ref_tree.rs`
