@@ -2764,3 +2764,90 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   (registry-панель TUI, список образов WebUI). Контекст:
   `crates/uefi-tui/src/ui/registry.rs`, `crates/uefi-tui/src/commands.rs`
   (`:open`/`:image`), proto — `ImageOpen`/`ImageMode` (uefi-proto).
+
+## Находки live-сессии 450x: unlock формсета, порча артефакта (2026-09-12)
+
+> Владелец пытался «разлочить» формсет IntelRCSetup (EC87D643-EBA4,
+> FFS abbce13d…:0x10:0, форма #1) на `refs/amibcp/450x — копия.bin`.
+> Симптом: `unlock …#1: no flippable gates (0 gates)` + мёртвая панель
+> Forms + после рестарта TUI Image View «только ME region». Независимое
+> воспроизведение через CLI на живом движке + чтение кода — ниже.
+
+* [ ] **uefi-engine [P0]: no-op `hii_unlock` уничтожает артефакт** —
+  `hii::unlock` при 0 gates корректно не мутирует (early return,
+  mutated=false, `hii/mod.rs:374`), но RPC-хендлер вызывает
+  `flush_image` безусловно (`rpc/server.rs:963`): build → перезапись
+  файла на диске → re-parse → замена in-memory образа. На 450x билд
+  ломается (см. следующий пункт) → артефакт 16777216 → 28409856,
+  re-parse files=0 → Forms View пустеет, Image View псевдо-«ME region».
+  Воспроизведено CLI на свежеоткрытой копии (2026-09-12): `hii form
+  unlock abbce13d…:0x10:0#1` → «nothing to unlock», артефакт 28 MB,
+  `hii form list` = 0 строк. Guard «output smaller than stored»
+  (`server.rs:101`) рост не ловит. Фикс: не flush'ить при
+  `outcome.applied.is_empty()` (или вернуть `mutated` из unlock);
+  серия «no-op RPC не должен писать на диск» — прогнать по всем
+  HII-хендлерам (set-value/visibility при отсутствии изменений).
+  Контекст: `crates/uefi-engine/src/rpc/server.rs` (hii_unlock,
+  flush_image), `crates/uefi-engine/src/hii/mod.rs` (unlock).
+* [ ] **uefi-engine [P0]: build_image round-trip ломает образ 450x** —
+  даже без единой мутации build(parse(450x)) ≠ входу: 16777216 →
+  28409856 байт, re-parse: volumes 13 → 6, files 311 → 0 (WARN «ME
+  region has no $FPT», тома без файлов). Значит ЛЮБАЯ write-мутация
+  (успешный unlock, set-value, form add) на этом классе AMI-образов
+  портит артефакт на диске. HNX99TF (kot) round-trip проходит
+  (real_image-тесты) — дефект специфичен раскладке 450x (13 томов,
+  WARN «decompress failed: unsupported algorithm» при парсе, регионы
+  EC/Dev Expansion/IE outside image). Root-cause не найден: что
+  раздувает вывод и почему re-parse теряет файлы — FV-выравнивание?
+  распакованные дети без рекомпрессии? потеря region-гэпов? Репро:
+  открыть 450x (mode write) → любой unlock/set-value → stat артефакта.
+  Контекст: `crates/uefi-engine/src/builder/mod.rs` (build_image/
+  build_node/build_volume), `parser::region` WARN'и в engine.log.
+* [ ] **uefi-engine: REF5 (кросс-формсетный GOTO) не поддержан нигде** —
+  r-efi экспортирует только `IFR_REF_OP=0x0F` (REF2–REF5 в крейте нет,
+  придётся определить константы по UEFI spec); `ref_tree.rs`
+  (package_edges), `gates.rs` (Wraps::Ref-ветка), `ifr_builder.rs`
+  (emit_ref) знают только plain REF — GOTO в пределах своего формсета.
+  Следствие: формсет-уровневая видимость вне модели gates — у AMI
+  пункт корневого меню (строка 64 «Intel RC Setup Configuration» есть
+  в string-таблице) ссылается REF5 на EC87D643…:0x10:0#1 и подавлен
+  suppress-if, но REF5 живёт в СЕКЦИИ корневого Setup
+  (899407d7…:0x10:0), а unlock сканирует только пакеты секции самой
+  цели → честный «0 gates». Фундамент дуги formset-unlock (см.
+  следующий пункт): парсинг REF2–REF5, кросс-формсетные рёбра в
+  ref_tree, REF-parent gates по всей секции-источнику, emit REF5.
+  Контекст: `hii/ref_tree.rs:15`, `hii/gates.rs:201`,
+  `hii/ifr_builder.rs:190`, r-efi 7.0.0 `src/hii.rs:275`.
+* [ ] **Кандидат-дуга «formset-unlock / перенос IIO-бифуркации»**
+  (живые данные 450x, 2026-09-12) — U1: REF5-грамматика (парсинг+
+  emit+gates по чужой секции); U2: операция formset-unlock — флип
+  suppress-гейта REF5-родителя в корневом Setup ИЛИ emit своего REF5
+  из видимой формы (Chipset 10008) в EC87D643#1; U3: перенос
+  бифуркации hijack'ом — вопросы лежат в формах IIO 0–3
+  (abbce13d…#118:0x243 «IOU0 (IIO PCIe Port 2)», …#119:0x257,
+  …#422:0x26b, …#423:0x27f), one_of x4x4x4x4/x4x4x8/x8x4x4/x8x8/x16/
+  Auto(0xFF), varstore IntelSetup (EC87D643…, id 1, size 0x1670),
+  offset 0x531 у #118:0x243 — для вопроса в чужом формсете нужна
+  схема с per-question varstore (объявить IntelSetup IfrVarStoreEfi
+  в Setup-пакете); U4: карта NVRAM-эффекта (какие offset'ы меняются).
+  Внутри самого IntelRCSetup гейты уже флипаются: форма 118 закрыта
+  `suppress ref host 5 expr '0x215 == 0'` (flip pkg+0x5614
+  00 00 → ff ff). Контекст: `hii/gates.rs`, `hii/schema.rs`
+  (HijackSchema без varstore-поля), `hii/mod.rs` (add_question).
+* [ ] **uefi-tui: Forms View скролл — курсор «едет» только вниз** —
+  `ui/forms.rs:69` создаёт свежий `ListState` на каждый рендер и
+  только `select()`: offset'ом управляет ratatui — при движении вниз
+  курсор доходит до последней видимой строки и начинается скролл
+  (ок), при движении вверх курсор остаётся прижат к нижней кромке и
+  скроллит страница вместо строки (владелец, 2026-09-12: «такой
+  недостаток был в Image View, ты его зафиксил»). Image View уже
+  использует `compute_scrolled_offset` с pad (`tree.rs:53-77`).
+  Фикс: хранить offset в `app.forms` и применять тот же хелпер
+  (и для strings-листа `render_strings`, `ui/forms.rs:109`).
+  Контекст: `crates/uefi-tui/src/ui/forms.rs`, `tree.rs`
+  (compute_scrolled_offset), `app.rs` (FormsState).
+* Заметка-семантика: **`image close` = discard** — evict из памяти +
+  удаление артефакта и строки БД; «восстановить» = переоткрыть файл
+  (движок корректно удаляет, но пользователь может ожидать «закрыть
+  сессию, файл оставить»). Проверить help-текст CLI/TUI (2026-09-12,
+  наблюдение при лечении 450x-артефактов).
