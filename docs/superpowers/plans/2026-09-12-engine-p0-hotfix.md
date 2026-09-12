@@ -454,12 +454,14 @@ fn validate_flush_bytes(current: &Image, bytes: &[u8]) -> Result<Image, Status> 
     }
     if volume_count(&refreshed.root) == 0 && volume_count(&current.root) > 0 {
         return Err(Status::failed_precondition(
-            "build output reparses with no volumes; refusing write to prevent data loss".into(),
+            "build output reparses with no volumes; refusing write to prevent data loss",
         ));
     }
     Ok(refreshed)
 }
 ```
+
+(правка 2026-09-12 после реализации: `.into()` на строке без томов не компилируется — E0283 неоднозначность; на `validate_flush_bytes` нужен `#[allow(clippy::result_large_err)]`, прецедент `rpc/auth.rs:3`.)
 
 В `flush_image` (server.rs:84-132) переставить порядок: валидация ДО `atomic_write`, замена in-memory — после. Тело после size-guard (строки 99-109, guard оставить как есть):
 
