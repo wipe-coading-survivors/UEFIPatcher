@@ -33,8 +33,18 @@ pub fn build_image(image: &Image) -> Result<Vec<u8>, BuilderError> {
 fn build_node(node: &FfsNode, out: &mut Vec<u8>) -> Result<(), BuilderError> {
     match node.node_type {
         FfsType::Image | FfsType::Capsule | FfsType::Root => {
+            debug_assert!(out.is_empty());
+            let mut placed: Vec<(usize, Vec<u8>)> = Vec::new();
+            let mut total = 0usize;
             for child in &node.children {
-                build_node(child, out)?;
+                let mut buf = Vec::new();
+                build_node(child, &mut buf)?;
+                total = total.max(child.offset as usize + buf.len());
+                placed.push((child.offset as usize, buf));
+            }
+            out.resize(total, 0xFF);
+            for (off, buf) in &placed {
+                out[*off..*off + buf.len()].copy_from_slice(buf);
             }
         }
         FfsType::Volume => build_volume(node, out)?,
@@ -255,7 +265,8 @@ mod tests {
     use crate::ffs::{EFI_FVH_SIGNATURE, EFI_SECTION_RAW};
     use crate::parser::image::parse_image;
     use crate::types::{
-        Action, FfsNode, FfsType, Image, ImageMode, ParsingData, VolumeParsingData,
+        Action, FfsNode, FfsType, FlashRegionKind, Image, ImageMode, ParsingData,
+        RegionParsingData, VolumeParsingData,
     };
 
     fn make_image_with_volume() -> Vec<u8> {
@@ -274,6 +285,78 @@ mod tests {
         let img = parse_image(&orig, ImageMode::Read, "img1", "s1").unwrap();
         let rebuilt = build_image(&img).unwrap();
         assert_eq!(rebuilt, orig);
+    }
+
+    fn region_node(offset: u32, body: Vec<u8>) -> FfsNode {
+        FfsNode {
+            guid: None,
+            node_type: FfsType::Region,
+            subtype: 0,
+            offset,
+            header: vec![],
+            body,
+            tail: vec![],
+            children: vec![],
+            action: Action::NoAction,
+            parsing_data: ParsingData::Region(RegionParsingData {
+                kind: FlashRegionKind::Me,
+            }),
+            fixed: true,
+            compressed: false,
+            alignment_bytes: vec![],
+        }
+    }
+
+    fn image_with_children(children: Vec<FfsNode>) -> Image {
+        Image {
+            image_id: "t".into(),
+            session_id: "s".into(),
+            root: FfsNode {
+                guid: None,
+                node_type: FfsType::Image,
+                subtype: 0,
+                offset: 0,
+                header: vec![],
+                body: vec![],
+                tail: vec![],
+                children,
+                action: Action::NoAction,
+                parsing_data: ParsingData::None,
+                fixed: false,
+                compressed: false,
+                alignment_bytes: vec![],
+            },
+            mode: ImageMode::Write,
+        }
+    }
+
+    #[test]
+    fn build_image_places_top_level_children_by_offset() {
+        let img = image_with_children(vec![
+            region_node(0, vec![0x11; 8]),
+            region_node(4, vec![0x22; 8]),
+        ]);
+        let out = build_image(&img).unwrap();
+        assert_eq!(
+            out,
+            vec![
+                0x11, 0x11, 0x11, 0x11, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22
+            ],
+            "перекрытие: поздний ребёнок перезаписывает раннего, размер = max(offset+len)"
+        );
+    }
+
+    #[test]
+    fn build_image_fills_gaps_with_ff() {
+        let img = image_with_children(vec![
+            region_node(0, vec![0x11; 4]),
+            region_node(8, vec![0x22; 4]),
+        ]);
+        let out = build_image(&img).unwrap();
+        assert_eq!(out.len(), 12);
+        assert_eq!(&out[4..8], &[0xFF; 4]);
+        assert_eq!(&out[0..4], &[0x11; 4]);
+        assert_eq!(&out[8..12], &[0x22; 4]);
     }
 
     fn removed_section_image(remove: bool) -> Image {

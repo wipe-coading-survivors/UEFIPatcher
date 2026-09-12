@@ -21,6 +21,43 @@ fn load_fw() -> Vec<u8> {
     std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
 }
 
+fn amibcp_path() -> PathBuf {
+    if let Ok(p) = std::env::var("UEFIPATCHER_TEST_AMIBCP") {
+        return PathBuf::from(p);
+    }
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../refs/amibcp/450x — копия.bin")
+}
+
+fn count_files(node: &FfsNode) -> usize {
+    let mut n = if node.node_type == FfsType::File {
+        1
+    } else {
+        0
+    };
+    for child in &node.children {
+        n += count_files(child);
+    }
+    n
+}
+
+#[test]
+#[ignore = "requires external real AMI image under refs/amibcp/ (gitignored)"]
+fn real_amibcp_450x_build_round_trip() {
+    let data = std::fs::read(amibcp_path()).unwrap();
+    let img = parse_image(&data, ImageMode::Write, "t", "s").unwrap();
+    let before = count_files(&img.root);
+    assert_eq!(before, 311);
+    let built = uefi_engine::builder::build_image(&img).unwrap();
+    assert_eq!(
+        built.len(),
+        data.len(),
+        "перекрывающиеся регионы не должны раздувать образ"
+    );
+    let reparsed = parse_image(&built, ImageMode::Write, "t2", "s").unwrap();
+    let after = count_files(&reparsed.root);
+    assert_eq!(after, before, "round-trip не должен терять файлы");
+}
+
 const FHV_SIG: [u8; 4] = *b"_FVH";
 
 fn find_sig_offsets(data: &[u8]) -> Vec<usize> {
