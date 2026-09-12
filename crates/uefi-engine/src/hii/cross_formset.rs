@@ -100,8 +100,8 @@ fn scan_section(
 pub(crate) mod cross_fixtures {
     use crate::types::{Action, FfsNode, FfsType, Guid, Image, ImageMode, ParsingData};
     use r_efi::hii::{
-        IFR_END_OP, IFR_EQUAL_OP, IFR_FORM_OP, IFR_FORM_SET_OP, IFR_SUPPRESS_IF_OP, IFR_UINT64_OP,
-        PACKAGE_FORMS,
+        IFR_END_OP, IFR_EQ_ID_VAL_OP, IFR_EQUAL_OP, IFR_FORM_OP, IFR_FORM_SET_OP,
+        IFR_GRAY_OUT_IF_OP, IFR_ONE_OF_OP, IFR_SUPPRESS_IF_OP, IFR_UINT64_OP, PACKAGE_FORMS,
     };
     use std::str::FromStr;
 
@@ -136,16 +136,34 @@ pub(crate) mod cross_fixtures {
             .collect()
     }
 
-    /// Пакет корневого Setup: форма 10001 c suppressed REF3 → RC_SET#1.
-    pub(crate) fn donor_pkg() -> Vec<u8> {
+    /// REF3-стейтмент: header(11) + FormId + QuestionId(0xFFFF) + FormSetGuid(RC_SET).
+    fn ref3(form_id: u16) -> Vec<u8> {
         let g = Guid::from_str(RC_SET).unwrap();
-        let ref3 = [
+        let payload = [
             vec![0u8; 11],
-            1u16.to_le_bytes().to_vec(),
+            form_id.to_le_bytes().to_vec(),
             0xFFFFu16.to_le_bytes().to_vec(),
             g.to_bytes().to_vec(),
         ]
         .concat();
+        opcode(r_efi::hii::IFR_REF_OP, false, &payload)
+    }
+
+    fn eq_id_val(question_id: u16, value: u16) -> Vec<u8> {
+        let mut b = vec![IFR_EQ_ID_VAL_OP, 0x06];
+        b.extend_from_slice(&question_id.to_le_bytes());
+        b.extend_from_slice(&value.to_le_bytes());
+        b
+    }
+
+    fn one_of_op(question_id: u16) -> Vec<u8> {
+        let mut p = vec![0u8; 10];
+        p[4..6].copy_from_slice(&question_id.to_le_bytes());
+        opcode(IFR_ONE_OF_OP, true, &p)
+    }
+
+    /// Пакет корневого Setup: форма 10001 c suppressed REF3 → RC_SET#1.
+    pub(crate) fn donor_pkg() -> Vec<u8> {
         let mut ifr = opcode(IFR_FORM_SET_OP, true, &[0u8; 21]);
         ifr.extend(opcode(
             IFR_FORM_OP,
@@ -156,7 +174,60 @@ pub(crate) mod cross_fixtures {
         ifr.extend(uint64(1));
         ifr.extend(uint64(1));
         ifr.extend(vec![IFR_EQUAL_OP, 0x02]);
-        ifr.extend(opcode(r_efi::hii::IFR_REF_OP, false, &ref3));
+        ifr.extend(ref3(1));
+        ifr.extend(vec![IFR_END_OP, 0x02]);
+        ifr.extend(vec![IFR_END_OP, 0x02]);
+        ifr.extend(vec![IFR_END_OP, 0x02]);
+        ifr.extend(vec![IFR_END_OP, 0x02]);
+        package(&ifr)
+    }
+
+    /// Пакет целевого формсета (RC_SET), форма 10001 которого сама несёт
+    /// suppressed REF3 → RC_SET#1 — «собственный» матчащий кросс-гейт:
+    /// кросс-фаза обязана пропускать собственную секцию (skip-own).
+    pub(crate) fn own_cross_pkg() -> Vec<u8> {
+        let g = Guid::from_str(RC_SET).unwrap();
+        let mut p = g.to_bytes().to_vec();
+        p.extend_from_slice(&7u16.to_le_bytes());
+        p.extend_from_slice(&0u16.to_le_bytes());
+        p.push(0);
+        let mut ifr = opcode(IFR_FORM_SET_OP, true, &p);
+        ifr.extend(opcode(
+            IFR_FORM_OP,
+            true,
+            &[10001u16.to_le_bytes(), 20u16.to_le_bytes()].concat(),
+        ));
+        ifr.extend(opcode(IFR_SUPPRESS_IF_OP, true, &[]));
+        ifr.extend(uint64(1));
+        ifr.extend(uint64(1));
+        ifr.extend(vec![IFR_EQUAL_OP, 0x02]);
+        ifr.extend(ref3(1));
+        ifr.extend(vec![IFR_END_OP, 0x02]);
+        ifr.extend(vec![IFR_END_OP, 0x02]);
+        ifr.extend(opcode(
+            IFR_FORM_OP,
+            true,
+            &[1u16.to_le_bytes(), 21u16.to_le_bytes()].concat(),
+        ));
+        ifr.extend(vec![IFR_END_OP, 0x02]);
+        ifr.extend(vec![IFR_END_OP, 0x02]);
+        package(&ifr)
+    }
+
+    /// Пакет донора, где форма 1 несёт grayout-гейт на вопрос 0x55 —
+    /// совпадающая (form 1, qid 0x55) пара с question-таргетом: Question-рука
+    /// find_gates не связана с формсетом, поэтому кросс-фаза для
+    /// question-целей отключена (спека §3 U2a — form-only таргеты).
+    pub(crate) fn donor_coincident_question_pkg() -> Vec<u8> {
+        let mut ifr = opcode(IFR_FORM_SET_OP, true, &[0u8; 21]);
+        ifr.extend(opcode(
+            IFR_FORM_OP,
+            true,
+            &[1u16.to_le_bytes(), 21u16.to_le_bytes()].concat(),
+        ));
+        ifr.extend(opcode(IFR_GRAY_OUT_IF_OP, true, &[]));
+        ifr.extend(eq_id_val(0x009A, 1));
+        ifr.extend(one_of_op(0x55));
         ifr.extend(vec![IFR_END_OP, 0x02]);
         ifr.extend(vec![IFR_END_OP, 0x02]);
         ifr.extend(vec![IFR_END_OP, 0x02]);
@@ -207,7 +278,14 @@ pub(crate) mod cross_fixtures {
     }
 
     pub(crate) fn two_file_image() -> Image {
-        let donor_sec = mk_node(None, FfsType::Section, 0x19, donor_pkg(), vec![]);
+        two_file_image_with(donor_pkg(), target_pkg())
+    }
+
+    /// Образ с двумя файлами и параметризуемыми телами секций: донор
+    /// (SETUP_FILE) и таргет (TARGET_FILE) — для квадрантов skip-own и
+    /// question-таргета.
+    pub(crate) fn two_file_image_with(donor: Vec<u8>, target: Vec<u8>) -> Image {
+        let donor_sec = mk_node(None, FfsType::Section, 0x19, donor, vec![]);
         let donor_file = mk_node(
             Some(Guid::from_str(SETUP_FILE).unwrap()),
             FfsType::File,
@@ -215,7 +293,7 @@ pub(crate) mod cross_fixtures {
             vec![],
             vec![donor_sec],
         );
-        let target_sec = mk_node(None, FfsType::Section, 0x19, target_pkg(), vec![]);
+        let target_sec = mk_node(None, FfsType::Section, 0x19, target, vec![]);
         let target_file = mk_node(
             Some(Guid::from_str(TARGET_FILE).unwrap()),
             FfsType::File,
@@ -302,5 +380,24 @@ mod tests {
             formset_guid: Some(Guid::from_str(RC_SET).unwrap()),
         };
         assert!(find_cross_gates(&image, &skip_path_of_target(&image), &gt).is_empty());
+    }
+
+    #[test]
+    fn find_cross_gates_excludes_matching_own_section() {
+        let image = two_file_image_with(donor_pkg(), own_cross_pkg());
+        let gt = GateTarget {
+            form_id: 1,
+            question_id: None,
+            formset_guid: Some(Guid::from_str(RC_SET).unwrap()),
+        };
+        let skip = skip_path_of_target(&image);
+        let sites = find_cross_gates(&image, &skip, &gt);
+        assert_eq!(
+            sites.len(),
+            1,
+            "собственная секция с матчащим кросс-гейтом не попадает в сайты"
+        );
+        assert_ne!(sites[0].path, skip);
+        assert_eq!(sites[0].source_ffs, "899407D7-99FE-43D8-9A21-79EC328CAC21");
     }
 }

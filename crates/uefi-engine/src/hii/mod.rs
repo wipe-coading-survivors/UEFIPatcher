@@ -323,7 +323,8 @@ pub fn gates_list(image: &Image, item_id: &str) -> Result<Vec<uefi_proto::GateIn
             out.push(gate_info(pkg, &gate));
         }
     }
-    if let Some(own_formset) = own_formset_guid(node)
+    if gt.question_id.is_none()
+        && let Some(own_formset) = own_formset_guid(node)
         && let Some(skip_path) = crate::parser::target::find_item_path(&image.root, &target)
     {
         let gt_cross = gates::GateTarget {
@@ -435,6 +436,9 @@ fn own_formset_guid(node: &FfsNode) -> Option<Guid> {
 
 /// Кросс-формсетная фаза unlock (спека §3 U2a): гейты в чужих секциях,
 /// мутация донора по path. Возвращает true, если хоть один флип применён.
+/// Только для form-таргетов (question_id == None): Question-рука find_gates
+/// матчится по голой (form_id, question_id) паре без привязки к формсету —
+/// question-таргетный кросс флипал бы чужих доноров по совпадающей паре.
 fn apply_cross_formset_gates(
     image: &mut Image,
     target: &crate::types::Target,
@@ -442,6 +446,9 @@ fn apply_cross_formset_gates(
     infos: &mut Vec<uefi_proto::GateInfo>,
     applied: &mut Vec<String>,
 ) -> Result<bool, HiiError> {
+    if gt.question_id.is_some() {
+        return Ok(false);
+    }
     let (skip_path, own_formset) = {
         let node = crate::parser::target::find_item(&image.root, target)
             .map_err(|_| HiiError::NotFound)?;
@@ -3037,6 +3044,60 @@ mod tests {
             Action::NoAction
         );
         assert_eq!(image.root.action, Action::NoAction);
+    }
+
+    #[test]
+    fn unlock_question_target_skips_cross_phase_and_donor() {
+        let mut image = cross_formset::cross_fixtures::two_file_image_with(
+            cross_formset::cross_fixtures::donor_coincident_question_pkg(),
+            cross_formset::cross_fixtures::target_pkg(),
+        );
+        let before = cross_formset::cross_fixtures::donor_section_body(&image).to_vec();
+        let outcome = unlock(
+            &mut image,
+            "ABBCE13D-E25A-4D9F-A1F9-2F7710786892:0x19:0#1:0x55",
+        )
+        .unwrap();
+        assert!(outcome.applied.is_empty());
+        assert!(
+            outcome.gates.is_empty(),
+            "кросс-инфосов нет: кросс-фаза только для form-таргетов (спека §3 U2a)"
+        );
+        assert_eq!(
+            cross_formset::cross_fixtures::donor_section_body(&image),
+            &before[..],
+            "донор с совпадающей (form, qid) парой не тронут"
+        );
+        assert_eq!(
+            image.root.children[0].children[0].children[0].action,
+            Action::NoAction
+        );
+        assert_eq!(image.root.action, Action::NoAction);
+        let listed =
+            gates_list(&image, "ABBCE13D-E25A-4D9F-A1F9-2F7710786892:0x19:0#1:0x55").unwrap();
+        assert!(
+            listed.is_empty(),
+            "gates_list-кросс-фаза тоже отключена для question-таргетов"
+        );
+    }
+
+    #[test]
+    fn gates_list_no_double_listing_when_own_section_matches_too() {
+        let mut image = cross_formset::cross_fixtures::two_file_image_with(
+            cross_formset::cross_fixtures::donor_pkg(),
+            cross_formset::cross_fixtures::own_cross_pkg(),
+        );
+        image.mode = ImageMode::Read;
+        let gates = gates_list(&image, "ABBCE13D-E25A-4D9F-A1F9-2F7710786892:0x19:0#1").unwrap();
+        assert_eq!(
+            gates.len(),
+            1,
+            "гейт собственной секции не дублируется через кросс-фазу"
+        );
+        assert_eq!(
+            gates[0].source_target,
+            "899407D7-99FE-43D8-9A21-79EC328CAC21"
+        );
     }
 
     const NVAR_FV0_GUID_STR: &str = "10000000-0000-4000-8000-000000000001";
