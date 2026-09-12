@@ -1142,7 +1142,7 @@ fn push_edges(pkg: &[u8], formset: &crate::types::Guid, out: &mut Vec<uefi_proto
             formset_guid: guid.clone(),
             parent_form_id: u32::from(parent),
             form_id: u32::from(child),
-            target_formset_guid: cross.map(guid_to_upper_string).unwrap_or_default(),
+            target_formset_guid: cross.as_ref().map(guid_to_upper_string).unwrap_or_default(),
         };
         if !out.contains(&e) {
             out.push(e);
@@ -1158,28 +1158,51 @@ fn push_edges(pkg: &[u8], formset: &crate::types::Guid, out: &mut Vec<uefi_proto
 В `build_tree_rows`: перед циклом по формсетам построить глобальную карту `(formset_guid, form_id) -> &FormInfo`; при наполнении `children` для ребра с непустым `target_formset_guid` целое ребро попадает в children родителя как обычно, но:
 - резолв ребёнка при рендере — сначала по локальному `by_id`, затем по глобальной карте `(target_formset_guid, form_id)`;
 - найденный кросс-ребёнок рендерится строкой `FormsRow::Form { key: FormKey { target: f.form_id-таргет, formset_guid: target_formset_guid, form_id_ifr, title } }` (существующая структура);
-- нерезолвленный — `FormsRow::DanglingRef` с фактическим formset-суффиксом в тексте не нужен (текст DanglingRef уже несёт form_id; глубина +2).
+- нерезолвленный — `FormsRow::DanglingRef` с фактическим formset-суффиксом в тексте не нужен (текст DanglingRef уже несёт form_id; глубина = глубина родителя + 1 — паттерн существующих висячих REF).
 
-Тест (forms.rs tests, по образцу существующих tree-тестов):
+Тест (forms.rs tests, по образцу существующих tree-тестов; развёрнут ТОЛЬКО родительский формсет — при `expanded_all()` форма-цель даёт корневую строку depth 1 в своём формсете и без кросс-резолва, ассерт `depth == 1` был бы ложноположительным; кросс-ребёнок корня depth 1 рендерится на depth 2):
 
 ```rust
     #[test]
     fn cross_edge_attaches_foreign_formset_form() {
+        let setup = "7B59104A-366D-4C6F-8147-633AA5D8E0D4";
+        let chipset = "EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9";
         let forms = vec![
-            form_info("7B59104A-…", 10001),   // хелпер по образцу существующих
-            form_info("EC87D643-…", 1),
+            fi("t1", setup, 10001, "Main", true),
+            fi("t2", chipset, 1, "Chipset", true),
         ];
-        let edges = vec![
-            edge_cross("7B59104A-…", 10001, 1, "EC87D643-…"),
-        ];
-        let rows = build_tree_rows(&forms, &edges, &expanded_all());
-        // EC87D643-форма-1 — ребёнок 10001 в дереве Setup, без корня в своём формсете
-        assert!(rows.iter().any(|r| matches!(r, FormsRow::Form { key, depth, .. }
-            if key.formset_guid == "EC87D643-…" && key.form_id_ifr == 1 && *depth == 1)));
+        let edges = vec![edge(setup, 10001, 1, chipset)];
+        let ex: HashSet<String> = [setup.to_string(), format!("{setup}#10001")].into();
+        let rows = build_tree_rows(&forms, &edges, &ex);
+        // EC87D643-форма-1 — ребёнок 10001 в дереве Setup (depth 2),
+        // корня в своём (свёрнутом) формсете нет — ровно одна строка
+        let cross: Vec<_> = rows
+            .iter()
+            .filter(|r| matches!(r, FormsRow::Form { key, .. }
+                if key.formset_guid == chipset && key.form_id_ifr == 1))
+            .collect();
+        assert_eq!(cross.len(), 1, "ровно одна строка кросс-ребёнка");
+        assert!(matches!(
+            cross[0],
+            FormsRow::Form { depth: 2, path, .. } if path == "Main → Chipset"
+        ));
+    }
+
+    #[test]
+    fn cross_edge_unresolvable_target_is_dangling() {
+        let setup = "7B59104A-366D-4C6F-8147-633AA5D8E0D4";
+        let forms = vec![fi("t1", setup, 10001, "Main", true)];
+        let edges = vec![edge(setup, 10001, 7, "EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9")];
+        let ex: HashSet<String> = [setup.to_string(), format!("{setup}#10001")].into();
+        let rows = build_tree_rows(&forms, &edges, &ex);
+        assert!(matches!(
+            rows.last(),
+            Some(FormsRow::DanglingRef { form_id: 7, depth: 2 })
+        ));
     }
 ```
 
-(Хелперы `form_info`/`edge_cross` — по образцу фикстур этого tests mod; `edge()` уже расширён параметром в Step 1.)
+(Хелперы — существующие фикстуры tests mod: `fi` и `edge`, расширенная параметром `target` в Step 1; отдельный `edge_cross` не нужен.)
 
 - [ ] **Step 6: Полный прогон + clippy**
 
