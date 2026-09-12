@@ -228,3 +228,28 @@ rebuild; рост образа 0 байт (16 MiB сохранён, .rsrc-рос
 FV). Попутный фикс: `plan_spf_append` более не требует string-control
 шаблон для путей без $SPF-аппендов (450x-поколение $SPF без контролов;
 `ctrl_template: Option`, требование — upfront в add_question).
+Следствие релаксации (план Task 8, ревью fix round 1): `add_page` на
+control-less $SPF тоже успешен — план строится без контролов (раньше
+NotFound), а `add_page` берёт из него только `page_offset`/`page_slot`
+и регистрирует страницу; задокументированное поведение (юнит-тест
+add_page на control-less фикстуре, коммит `c629cea`), не побочный эффект.
+
+### Сценарий владельческого live-гейта (подготовлен Task 9; не исполнен от имени владельца — гейт за ним)
+
+1. Открыть копию `refs/amibcp/450x — копия.bin` в write-режиме, Forms
+   View, курсор на форму IntelRCSetup (`ABBCE13D-…:0x10:0#1`).
+2. `u` (unlock):
+   - ветка a (образы с кросс-гейтом в доноре): статус «unlock …:
+     pkg+0x…: 00 00 -> ff ff» (applied flips), пункт «Intel RC Setup
+     Configuration» появляется в корневом меню Setup;
+   - ветка b (факт 450x — см. выше, кросс-гейтов в байтах нет): `u`
+     честно отвечает «no flippable gates (0 gates)»; GOTO добавляется
+     `:hii question add 899407D7-…:0x10:0#10008 <refs-schema.json>`
+     (refs-запись с `formset_guid` EC87D643-…, qid 32800 — как в
+     live-гейте U4) — форма Chipset 10008 корневого Setup получает
+     REF3-пункт, кросс-ребро 10008 → IntelRCSetup#1 видно в T-дереве
+     Forms View.
+3. `:image save` + переоткрыть образ: артефакт цел (16 MiB), пункт /
+   GOTO и кросс-ребро переживают рестарт сессии.
+
+Вердикт: pending (владелец).

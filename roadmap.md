@@ -493,9 +493,14 @@ U2a unlock по донорским секциям (`cross_formset.rs`, GateInfo.
 `QuestionAddList.varstores` — декларация IntelSetup (IfrVarStoreEfi) в
 чужом Setup-пакете при question add + сдвиг $SPF-записей; U4 live-гейт
 `real_amibcp_450x_formset_unlock` + карта NVRAM-эффекта (спека §6).
-Статус: спланировано (2026-09-12), к исполнению после engine-p0-hotfix
-(закрыт PR #15). Гейт владельца — живой прогон TUI/CLI на 450x,
-вердикт-аддендум в спеке §7.
+Статус: исполнена (2026-09-12, 9/9 задач, ветка formset-unlock;
+реализация `7ec8fac…c629cea`, live-гейт U4 — ветка b: кросс-гейтов на
+450x нет, REF3-инжект в Chipset 10008, кросс-ребро переживает rebuild,
+рост 0 байт; NVRAM-карта — спека §6). Гейты чистые: workspace-тесты +
+47 ignored/real (вкл. `real_amibcp_450x_formset_unlock`). Владельческий
+гейт — pending: живой прогон TUI/CLI на 450x, сценарий — спека §7,
+вердикт-аддендум туда же. Отложенное дуги — TODO.md (мульти-донорская
+атомарность, TUI-скролл Forms View).
 
 ## Связи между циклами
 

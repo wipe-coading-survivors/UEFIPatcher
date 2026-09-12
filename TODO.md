@@ -2836,7 +2836,12 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   `hii::apply_cross_formset_gates` (`crates/uefi-engine/src/hii/mod.rs`).
   Занесено ревью Task 3 дуги formset-unlock (fix round 1, 2026-09-12);
   отложено решением владельца (см. план дуги, «Отложенное»).
-* [ ] **uefi-engine: кросс-формсетные REF (REF3/REF4) не поддержаны** —
+  Актуализация Task 9 дуги (2026-09-12): подтверждено открытым по
+  завершении дуги — `apply_cross_formset_gates` план/apply по сайту
+  не менялся после fix round 1; на 450x донор один, окно не
+  реализовалось на live-гейте. Сама дуга закрыта — см. запись
+  «Дуга "formset-unlock / перенос IIO-бифуркации" U1–U4» ниже.
+* [x] **uefi-engine: кросс-формсетные REF (REF3/REF4) не поддержаны** —
   факт-фикс 2026-09-12 (при планировании дуги, сверка с UEFI 2.10
   §33.3.8.3.59 + EDK2 `UefiInternalFormRepresentation.h`): отдельный
   опкод у REF-вариантов НЕ существует — все используют opcode
@@ -2859,7 +2864,16 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   Спланировано дугой formset-unlock (спека
   `2026-09-12-formset-unlock-design.md` §2, план
   `2026-09-12-formset-unlock.md` Task 1–2).
-* [ ] **Дуга «formset-unlock / перенос IIO-бифуркации» U1–U4**
+  Закрыто дугой formset-unlock (2026-09-12, ветка formset-unlock,
+  по факту мерджа): (1) FormSetGuid@17 читается — `hii/ref_variant.rs`
+  length-дискриминация REF2–REF5 (`7ec8fac`), кросс-цель различается;
+  (2) unlock/gates_list сканируют донорские секции всего образа —
+  `hii/cross_formset.rs` + `GateInfo.source_target` (`92017dc`,
+  fix `3d34b35` — кросс-фаза только form-таргеты); (3) emit REF3 —
+  `QuestionAddRefSchema.formset_guid` → кросс-формсетный GOTO-инжект
+  (`82169a5`). REF5 (динамическая цель) — вне скоупа навсегда (спека
+  §4).
+* [x] **Дуга «formset-unlock / перенос IIO-бифуркации» U1–U4**
   (живые данные 450x, 2026-09-12; спланирована — см. выше) — U1:
   REF-грамматика по length-дискриминации + кросс-формсетные гейты и
   рёбра; U2: formset-unlock двумя механизмами — (a) флип
@@ -2876,6 +2890,19 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   `suppress ref host 5 expr '0x215 == 0'` (flip pkg+0x5614
   00 00 → ff ff). Контекст: `hii/gates.rs`, `hii/schema.rs`
   (HijackSchema без varstore-поля), `hii/mod.rs` (add_question).
+  Закрыто: дуга исполнена 2026-09-12 (ветка formset-unlock, 9/9 задач;
+  реализация `7ec8fac…c629cea`: U1 `7ec8fac`+`7f87f7f`+`5805d9d`,
+  U2a `92017dc`+`3d34b35`, U2b `82169a5`, U3 `0924878`+`bbf6818`+
+  `fb8aed3`, U4a `ae39f0b`+`762f459`+`c629cea`). Факт 450x (live-гейт
+  `real_amibcp_450x_formset_unlock`, PASS): ветка b — кросс-гейтов нет
+  (гипотеза скрытого GOTO по строке 64 опровергнута побайтно), REF3
+  qid 32800 инжектится в Chipset 10008 корневого Setup, кросс-ребро
+  10008 → IntelRCSetup#1 переживает rebuild, рост образа 0 байт;
+  NVRAM-карта 12 бифуркационных вопросов — спека §6. Владельческий
+  live-гейт — pending (сценарий — спека §7); перенос бифуркации на
+  живом железе не валидировался (NVRAM-эффект — через default'ы при
+  загрузке/сбросе). Остались открытыми: мульти-донорская атомарность
+  (запись выше), TUI-скролл Forms View (ниже).
 * [ ] **uefi-tui: Forms View скролл — курсор «едет» только вниз** —
   `ui/forms.rs:69` создаёт свежий `ListState` на каждый рендер и
   только `select()`: offset'ом управляет ratatui — при движении вниз
