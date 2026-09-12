@@ -248,6 +248,8 @@ pub struct QuestionAddRefSchema {
     pub prompt: String,
     pub help: String,
     pub question_id: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub formset_guid: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -483,6 +485,20 @@ mod tests {
         )
         .unwrap_err();
         assert!(format!("{e:?}").contains("unknown field"));
+    }
+
+    #[test]
+    fn parse_ref_schema_with_formset_guid() {
+        let s = parse_question_add_schema(
+            r#"{ "refs": [ { "form_id": 1, "prompt": "P", "help": "H",
+                "question_id": 32800,
+                "formset_guid": "EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9" } ] }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            s.refs[0].formset_guid.as_deref(),
+            Some("EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9")
+        );
     }
 
     #[test]

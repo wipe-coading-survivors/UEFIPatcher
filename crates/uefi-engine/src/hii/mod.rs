@@ -1500,17 +1500,29 @@ pub fn check_question_add(
     Ok(())
 }
 
-fn build_ref_ops(schema: &schema::QuestionAddRefSchema, prompt_id: u16, help_id: u16) -> Vec<u8> {
+fn build_ref_ops(
+    schema: &schema::QuestionAddRefSchema,
+    prompt_id: u16,
+    help_id: u16,
+) -> Result<Vec<u8>, HiiError> {
     let mut b = ifr_builder::IfrBuilder::new();
-    b.emit_ref(
-        prompt_id,
-        help_id,
-        schema.question_id,
-        0,
-        0xFFFF,
-        schema.form_id,
-    );
-    b.build()
+    match &schema.formset_guid {
+        None => b.emit_ref(
+            prompt_id,
+            help_id,
+            schema.question_id,
+            0,
+            0xFFFF,
+            schema.form_id,
+        ),
+        Some(gs) => {
+            let g = crate::types::Guid::try_parse(gs).map_err(|_| {
+                HiiError::InvalidSchema(format!("formset_guid '{gs}' is not a GUID"))
+            })?;
+            b.emit_ref3(prompt_id, help_id, schema.question_id, schema.form_id, &g);
+        }
+    }
+    Ok(b.build())
 }
 
 fn check_ref_slots(
@@ -1571,7 +1583,7 @@ pub fn add_ref(
         &qt.target,
         qt.bare_channel,
         qt.form_id,
-        build_ref_ops(schema, 0, 0).len(),
+        build_ref_ops(schema, 0, 0)?.len(),
         &strings,
     )?;
     let string_ids = if qt.bare_channel {
@@ -1593,7 +1605,7 @@ pub fn add_ref(
 
     let prompt_id = *string_ids.get(&schema.prompt).ok_or(HiiError::InvalidIfr)?;
     let help_id = *string_ids.get(&schema.help).ok_or(HiiError::InvalidIfr)?;
-    let ops = build_ref_ops(schema, prompt_id, help_id);
+    let ops = build_ref_ops(schema, prompt_id, help_id)?;
     let (insert_at, delta) = {
         let node = crate::parser::target::find_item_mut(&mut image.root, &qt.target)
             .map_err(|_| HiiError::NotFound)?;
@@ -1649,7 +1661,7 @@ pub fn check_ref_add(
             &qt.target,
             qt.bare_channel,
             qt.form_id,
-            build_ref_ops(schema, 0, 0).len(),
+            build_ref_ops(schema, 0, 0)?.len(),
             &strings,
         )?;
         pending.push(schema.question_id);
@@ -4066,6 +4078,7 @@ mod tests {
                     prompt: "Goto Page".into(),
                     help: "Goto Page help".into(),
                     question_id: qid,
+                    formset_guid: None,
                 }
             }
 
@@ -4264,6 +4277,63 @@ mod tests {
                 assert!(
                     crate::hii::form_hijack::locate_form(&pkg_after, 10099).is_none(),
                     "fixture must not contain the dangling destination"
+                );
+            }
+
+            const CROSS_FORMSET_GUID: &str = "EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9";
+
+            #[test]
+            fn add_ref_with_formset_guid_emits_ref3_roundtrip() {
+                let (flash, pkg_before, _) = question_add_flash_image();
+                let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+                let mut s = ref_add_schema(0x300, 10020);
+                s.formset_guid = Some(CROSS_FORMSET_GUID.into());
+                add_ref(&mut img, ITEM_FORM, &s).expect("add ref3");
+
+                let pkg_after = pkg_of(&img, "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x10:0");
+                assert_eq!(pkg_after.len() - pkg_before.len(), 33);
+                assert_eq!(
+                    crate::hii::ifr::scope_balance(&pkg_after),
+                    crate::hii::ifr::scope_balance(&pkg_before),
+                    "REF3 is not a scope op: the splice must not change the IFR scope balance"
+                );
+                let r = find_ref_op(&pkg_after, 10019).expect("REF op in form 10019");
+                assert_eq!(pkg_after[r + 1] & 0x7F, 33, "REF3 op total length is 33");
+                let stmt = &pkg_after[r..r + 33];
+                let g = Guid::from_str(CROSS_FORMSET_GUID).unwrap();
+                assert_eq!(
+                    ref_variant::parse_ref(stmt[0], stmt),
+                    Some(ref_variant::RefTarget::Formset {
+                        formset_guid: g,
+                        form_id: 10020,
+                        question_id: 0xFFFF,
+                    }),
+                    "emitted REF3 must re-parse to a cross-formset target"
+                );
+            }
+
+            #[test]
+            fn add_ref_rejects_unparsable_formset_guid() {
+                let (flash, _, _) = question_add_flash_image();
+                let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+                let before = build_image(&img).unwrap();
+                let mut s = ref_add_schema(0x300, 10020);
+                s.formset_guid = Some("not-a-guid".into());
+                let err = add_ref(&mut img, ITEM_FORM, &s).unwrap_err();
+                assert!(matches!(err, HiiError::InvalidSchema(_)), "got {err:?}");
+                let mut batch = vec![s];
+                batch[0].question_id = 0x301;
+                assert!(
+                    matches!(
+                        check_ref_add(&img, ITEM_FORM, &batch, &[]).unwrap_err(),
+                        HiiError::InvalidSchema(_)
+                    ),
+                    "check path must reject unparsable formset_guid too"
+                );
+                assert_eq!(
+                    build_image(&img).unwrap(),
+                    before,
+                    "rejections must not mutate the image"
                 );
             }
         }

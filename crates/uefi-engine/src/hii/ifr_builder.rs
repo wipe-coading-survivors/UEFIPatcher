@@ -206,6 +206,28 @@ impl IfrBuilder {
         self.buf.extend_from_slice(&form_id.to_le_bytes());
     }
 
+    /// REF3 (спека formset-unlock §2): кросс-формсетный GOTO, total 33.
+    /// QuestionId — 0xFFFF (EFI_QUESTION_ID_INVALID, паттерн EDK2 CIfrRef3).
+    pub fn emit_ref3(
+        &mut self,
+        prompt_id: u16,
+        help_id: u16,
+        qid: u16,
+        form_id: u16,
+        formset: &Guid,
+    ) {
+        self.write_header(OP_REF, false, 31);
+        self.buf.extend_from_slice(&prompt_id.to_le_bytes());
+        self.buf.extend_from_slice(&help_id.to_le_bytes());
+        self.buf.extend_from_slice(&qid.to_le_bytes());
+        self.buf.extend_from_slice(&0xFFFFu16.to_le_bytes());
+        self.buf.extend_from_slice(&0xFFFFu16.to_le_bytes());
+        self.buf.push(0);
+        self.buf.extend_from_slice(&form_id.to_le_bytes());
+        self.buf.extend_from_slice(&0xFFFFu16.to_le_bytes());
+        self.buf.extend_from_slice(&guid_to_bytes(formset));
+    }
+
     pub fn emit_text(&mut self, prompt_id: u16, help_id: u16, text_two_id: u16) {
         self.write_header(OP_TEXT, false, 6);
         self.buf.extend_from_slice(&prompt_id.to_le_bytes());
@@ -316,6 +338,19 @@ mod tests {
         assert_eq!(buf[0], OP_ONE_OF_OPTION);
         assert_eq!(u16::from_le_bytes([buf[2], buf[3]]), 5);
         assert_eq!(buf[6], 2);
+    }
+
+    #[test]
+    fn emit_ref3_layout() {
+        let mut b = IfrBuilder::new();
+        let g = Guid::from_str("EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9").unwrap();
+        b.emit_ref3(0x40, 0x41, 0x7F10, 1, &g);
+        let buf = b.build();
+        assert_eq!(buf[0], OP_REF);
+        assert_eq!(buf[1] & 0x7F, 33);
+        assert_eq!(u16::from_le_bytes([buf[13], buf[14]]), 1);
+        assert_eq!(u16::from_le_bytes([buf[15], buf[16]]), 0xFFFF);
+        assert_eq!(&buf[17..33], &g.to_bytes());
     }
 
     #[test]
