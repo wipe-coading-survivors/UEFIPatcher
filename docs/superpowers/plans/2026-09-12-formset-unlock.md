@@ -1581,6 +1581,24 @@ pub fn add_varstores(
             splice_varstore_ops_into_resource(&mut node.body, &ops)?
         }
     };
+    // fix round 1: селектор снимка (form_package_ranges) и селектор вставки
+    // (resource_forms_package) — разные пути; на multi-package PE их
+    // расхождение должно падать ГРОМКО, а не молча сдвигать чужие
+    // $SPF-записи. Проверяем: пакет, снятый в pkg_before, вырос ровно на
+    // delta и ops лежат на insert_at (префикс/суффикс на месте).
+    {
+        let node = crate::parser::target::find_item(&image.root, &target)
+            .map_err(|_| HiiError::NotFound)?;
+        let (start, len) = form_package_ranges(node)
+            .into_iter()
+            .next()
+            .ok_or(HiiError::NotASetupItem)?;
+        let spliced = node
+            .body
+            .get(start..start + len)
+            .ok_or(HiiError::InvalidIfr)?;
+        verify_spliced_snapshot(spliced, &pkg_before, &ops, insert_at, delta)?;
+    }
     ops::mark_rebuild_to_root_by_path(&mut image.root, &path);
     {
         let node = node_at_mut(&mut image.root, &sd_path);
@@ -1588,6 +1606,39 @@ pub fn add_varstores(
     }
     ops::mark_rebuild_to_root_by_path(&mut image.root, &sd_path);
     Ok(varstores.iter().map(|vs| vs.id).collect())
+}
+
+/// Пост-splice инвариант: spliced — это pkg_before с ops, вставленными
+/// на insert_at (длина тела и u24-заголовок выросли ровно на delta,
+/// вставка на insert_at, остальной префикс/суффикс на месте; байты 0..3 —
+/// u24-длина — единственное допустимое отличие вне вставки).
+/// Мismatch → InvalidIfr (unit-вариант без payload — конвенция «структура
+/// пакета не такая, как ожидается», как в check_rsrc_question_splice;
+/// числовые детали — в tracing::warn). Ревью Task 7 fix r1.
+fn verify_spliced_snapshot(
+    spliced: &[u8],
+    pkg_before: &[u8],
+    ops: &[u8],
+    insert_at: usize,
+    delta: usize,
+) -> Result<(), HiiError> {
+    let plen = |b: &[u8]| b[0] as usize | (b[1] as usize) << 8 | (b[2] as usize) << 16;
+    let ok = spliced.len() == pkg_before.len() + delta
+        && plen(spliced) == plen(pkg_before) + delta
+        && spliced.get(3..insert_at) == pkg_before.get(3..insert_at)
+        && spliced.get(insert_at..insert_at + delta) == Some(ops)
+        && spliced.get(insert_at + delta..) == pkg_before.get(insert_at..);
+    if !ok {
+        tracing::warn!(
+            spliced_len = spliced.len(),
+            before_len = pkg_before.len(),
+            insert_at,
+            delta,
+            "form package snapshot diverged from the splice target"
+        );
+        return Err(HiiError::InvalidIfr);
+    }
+    Ok(())
 }
 
 /// Сдвиг $SPF-записей, резолвящихся в целевой пакет, после вставки в
