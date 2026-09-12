@@ -376,3 +376,50 @@ async fn flush_image_rejects_truncated_output() {
   build output).
 - `crates/uefi-engine/tests/real_image.rs:422-464` — существующий
   `real_image_builder_round_trip` (FV-slice only, не ловил баг).
+
+## Аддендум (2026-09-12): перекрывающиеся регионы, no-op flush, validate-before-persist
+
+Источник: live-сессия 2026-09-12 на образе `refs/amibcp/450x — копия.bin`
+(16,777,216 байт, вендорский AMI/450x). Попытка no-op `hii_unlock` формы #1
+IntelRCSetup (0 гейтов) уничтожила артефакт: 16777216 → 28409856 байт,
+re-parse: volumes 13→6, files 311→0. План фикса:
+`docs/superpowers/plans/2026-09-12-engine-p0-hotfix.md`. Три правки к целям
+этой спеки:
+
+1. **Goal 2 (byte-identical round-trip) выполнялся только на смежных
+   регионах.** IFD-парсинг (Known limitation #3) был реализован позже как
+   Region-узлы, но `build_node` для Image/Root **конкатенирует** детей —
+   это тождественно оригиналу только если регионы смежные (HNX99TF/kot:
+   Descriptor 0..4096, ME 4096..8388608, тома до 16777216). Дескриптор 450x
+   кривой: Dev Expansion 2 (off 0, size 4349952) перекрывает начало образа,
+   IE (off 1146880, size 7282688) перекрывает ME и заходит в BIOS-область —
+   конкатенация дублирует ~11.6MB. **Правка:** placement по offset'ам —
+   каждый ребёнок верхнего уровня собирается в отдельный буфер и пишется по
+   `FfsNode.offset` (парсер заполняет всегда), дыры — 0xFF, размер выхода =
+   `max(offset + len)`, при перекрытии поздний ребёнок перезаписывает
+   раннего (перекрывающиеся тела — срезы одних и тех же байтов оригинала,
+   порядок не меняет результат). На смежных образах placement тождественен
+   конкатенации — существующие round-trip тесты не меняют ожиданий.
+   Референс: `ffsbuilder.cpp:153-247` (`buildIntelImage` placement).
+
+2. **Goal 4 (safety-guard) усилен с size-only до validate-before-persist.**
+   Текущий guard сравнивает только длины и срабатывает уже ПОСЛЕ записи
+   (re-parse в строках после `atomic_write`): билд, который раздувает образ
+   (28MB > 16MB), guard'ом проходил, а диск уже испорчен. **Правка:** до
+   `atomic_write` — `parse_image(bytes)` + сравнение `count_files` с
+   хранимым деревом; отказ `FailedPrecondition` («refusing write to prevent
+   data loss») если байт не парсится или файлов стало меньше. Закрывает
+   весь класс «билд сломан» независимо от root-cause.
+
+3. **Триггер происшествия — вне скоупа спеки, но в скоупе аддендума:**
+   RPC `hii_unlock` вызывал `flush_image` безусловно, даже когда
+   `hii::unlock` не мутировал дерево (0 гейтов, early return). Спека
+   unlock-op (`2026-09-03-hii-unlock-op-design.md`) регламентирует флипы,
+   но не условность flush. **Правка:** flush только при непустом
+   `outcome.applied`. Аудит остальных HII-хендлеров при планировании:
+   `hii_set_form_visibility` при отсутствии изменений возвращает
+   `Err(NoSuppressScope)` до flush — не виновник; `hii_set_value` при Ok
+   всегда мутирует — flush оправдан.
+
+Секция «Builder: без изменений» этой спеки — по-прежнему верна для Volume и
+ниже; правка касается только верхнего уровня (Image/Capsule/Root).

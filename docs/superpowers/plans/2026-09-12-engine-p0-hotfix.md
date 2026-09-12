@@ -8,7 +8,7 @@
 
 **Tech Stack:** Rust workspace, uefi-engine (binrw/r-efi уже в зависимостях), tonic RPC, tmp существующие тест-харнессы `spawn_engine_on` (server.rs tests) и `real_image.rs`.
 
-**Spec:** `TODO.md`, раздел «Находки live-сессии 450x: unlock формсета, порча артефакта (2026-09-12)» — записи `no-op hii_unlock уничтожает артефакт` [P0] и `build_image round-trip ломает образ 450x` [P0]. Дополнительно (закрывается попутно, не отдельной задачей): guard-заметка «рост не ловит» — закрывается Task 3.
+**Spec:** аддендум (2026-09-12) к `docs/superpowers/specs/2026-08-13-full-flash-round-trip-design.md` (Goals 2/4 + no-op flush триггер, кросс-ссылка на `2026-09-03-hii-unlock-op-design.md`). Первоисточник находок: `TODO.md`, раздел «Находки live-сессии 450x: unlock формсета, порча артефакта (2026-09-12)» — записи `no-op hii_unlock уничтожает артефакт` [P0] и `build_image round-trip ломает образ 450x` [P0]. Дополнительно (закрывается попутно, не отдельной задачей): guard-заметка «рост не ловит» — закрывается Task 3.
 
 ## Диагноз (первоисточник, воспроизведено 2026-09-12)
 
