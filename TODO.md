@@ -2823,6 +2823,19 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   до дуги (не регрессия, найдено финальным ревью 2026-09-12).
   Контекст: `crates/uefi-engine/src/rpc/server.rs` (flush_image).
   Кандидат-фикс: per-image сериализация RPC.
+* [ ] **uefi-engine [minor]: кросс-фаза unlock между донорами не
+  атомарна** — ранний донор может быть флипнут и помечен rebuild
+  (`mark_rebuild_to_root_by_path`), пока поздний провалит планирование
+  (`GateExpressionUnsupported`) → unlock вернёт Err, но частичная
+  кросс-мутация уже в дереве и сохранится на диск, если пользователь
+  сделает save после неудачного unlock. Фикс: двухпроходный
+  plan-all-then-apply-all — сначала спланировать флипы всех донорских
+  сайтов, потом применять (сегодня план и apply чередуются по сайту).
+  Окно: только мульти-донорские образы (у 450x донор один).
+  Контекст: спека formset-unlock §3 U2a; код Task 3 дуги —
+  `hii::apply_cross_formset_gates` (`crates/uefi-engine/src/hii/mod.rs`).
+  Занесено ревью Task 3 дуги formset-unlock (fix round 1, 2026-09-12);
+  отложено решением владельца (см. план дуги, «Отложенное»).
 * [ ] **uefi-engine: кросс-формсетные REF (REF3/REF4) не поддержаны** —
   факт-фикс 2026-09-12 (при планировании дуги, сверка с UEFI 2.10
   §33.3.8.3.59 + EDK2 `UefiInternalFormRepresentation.h`): отдельный
