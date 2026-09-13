@@ -2085,6 +2085,24 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   писалось x16). v2 (на плате, работает, но без серийки и с
   даунгрейдом ME) и v3 (не финализирован) устарели — вернуться
   на v4.
+  **v5 (2026-09-13, серийка+дебаг в посев):** свип промптов родной
+  базы нашёл полный набор серийной обвязки: «Console Redirection»
+  (корневой Setup #10035:0x3a, varstore Setup@0x41), «Serial Debug
+  Message Level» (IntelRCSetup #9:0x1b@0x2d6, 0=Disable..3=Maximum;
+  в шаблоне был 1=Minimum — потому старая прошивка «сыпала»),
+  «Trace Messages» (#9:0x1c@0x2d9, 4=Enabled), «QPI Debug Print
+  Level» (#33:0x1b5@0x100c — дефолт уже All), «DEBUG INTERFACE»
+  (#2:0xbf5@0x76, DCI — не трогали), «Serial Mux» (ServerMgmt
+  #2049:0xa, ServerSetup+0x13 — не трогали, зависит от rig'а
+  владельца: физический порт vs SOL). Форма «BGF override» (#43,
+  память владельца «BFG») — пустая, вопросов нет. v5 = v4 +
+  Console Redirection=1 + Serial Debug=3 + Trace=4:
+  `refs/amibcp/450x-native-full-v5.bin`, sha256 `599aa3a7c32f35f8
+  9fdcbbecf731664dc11c75eacaef79e1d3f42d85ea730867` (FV0-дифф
+  7 байт: 0x8000c9 ConsoleRedir, 0x8004a3 DbgLevel, 0x8004a6
+  Trace, 0x8006fe-0x800701 бифуркация ×4). Если серийка у
+  владельца — SOL и после v5 молчит: Serial Mux → Enabled в UI
+  (или v5b с посевом).
 * [x] **скриншот AMIBCP на C275 (23:02:28): безымянный корень +
   корреляция формсетов со StdDefaults-переменными** — безымянный
   корень = следствие бездескрипторного образа (нет региона/имени
