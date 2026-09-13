@@ -2011,6 +2011,21 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   PCIe-порт-конфиг PEI). Признак «одноразово и криво» у владельца
   больше похож на SDP-vs-StdDefaults рассинхрон (правится одно,
   сеется другое), чем на «жёсткий гарда».
+* [ ] **live-подтверждение на 450x после formset-unlock (2026-09-13)** —
+  ручка применима в UI (IOU0/IIO0 = Port 2 → x4x4x4x4), но на железе не
+  применяется: Port 2A LNKCAP Max Width x16 (скрины Setup), вторая NVMe
+  на бифуркационном рейзере не видна; контроль — Huanan (там применяется).
+  Переменной IntelSetup@EC87D643 в efivars НЕТ. Скан образа: 9 PEI-модулей
+  RC ссылаются на IntelSetup (UncoreInitPeim, PlatformInfo,
+  PlatformEarlyInit, OcInit, CpuPeiDummy, JWPei, MePolicyInitPei,
+  AmtPolicyInitPei, MeUma; NVRAMPei — единственный со StdDefaults) —
+  потребитель есть, «PEI-гард» не подтверждён. Вывод: UI-значение не
+  доживает до посева; рабочий путь — E14-флип в NVAR-записи IntelSetup
+  (FV0: заголовок 0x8001fe, данные 0x800214; зона 0x531–0x53c; фабрика:
+  0x531–0x538 = 8×0xff/Auto, 0x539 = 0x00) в обеих копиях стора: FV0 raw
+  + FV2 LZMA (файл 9221315B). Цель: 0x531 (IIO0/Port 2, полная
+  бифуркация) → 0x00 = x4x4x4x4; какой из full-bif qid (0x243@0x531 /
+  0x244@0x535) отвечает Port 2 — сверить question-info при сборке.
 * [x] **скриншот AMIBCP на C275 (23:02:28): безымянный корень +
   корреляция формсетов со StdDefaults-переменными** — безымянный
   корень = следствие бездескрипторного образа (нет региона/имени
