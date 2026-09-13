@@ -2026,6 +2026,21 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   + FV2 LZMA (файл 9221315B). Цель: 0x531 (IIO0/Port 2, полная
   бифуркация) → 0x00 = x4x4x4x4; какой из full-bif qid (0x243@0x531 /
   0x244@0x535) отвечает Port 2 — сверить question-info при сборке.
+* [ ] **Resolution 2026-09-13 (движок, CLI):** qid подтверждён живым
+  `hii question info`: **0x248 «IOU0 (IIO PCIe Port 2)» @ 0x531**,
+  форма 118 «IIO 0» — та, что в меню владельца (её GOTO → Socket-0
+  подстраницы 83–93; три копии страницы: 0x25d@0x532 / 0x271@0x533 /
+  0x285@0x534). Спека §6 qid-карта исправлена (было 0x242…0x281).
+  Артефакт собран полностью движком: `refs/amibcp/
+  450x-unlock-bif-port2-4x4x4x4.bin`, sha256 `b0ca5cfe6e85569626e9
+  8bf0ffdca53470ed764feff9e44fce9c46c9278f59f1`. Состав: REF3-unlock
+  Advanced 10002 (qid 0, как в вердикт-аддендуме; схема —
+  `refs/amibcp/probes/refs-intelrc-advanced-10002.json`) + `set-value
+  …#118:0x248 0` → обе копии стора (CEF5B9A3 raw store+0x6e5 ff→00;
+  9221315B LZMA→RAW), 16 MiB сохранён; дифф FV0 = ровно 1 байт
+  (0x800745: ff→00 = IntelSetup data+0x531). Осталось: прошивка +
+  чеклист первого бута (IOU0 сам [x4x4x4x4] → lspci: root-port
+  функции 2A/2B+, обе NVMe на Port 2).
 * [x] **скриншот AMIBCP на C275 (23:02:28): безымянный корень +
   корреляция формсетов со StdDefaults-переменными** — безымянный
   корень = следствие бездескрипторного образа (нет региона/имени
