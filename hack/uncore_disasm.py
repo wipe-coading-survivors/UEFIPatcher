@@ -152,8 +152,11 @@ def cmd_dis(img, va, length):
 
 def cmd_mmio(img, lo, hi):
     md = img.disassembler()
+    md.skipdata = True
     for roff, end in img.code_ranges():
         for insn in md.disasm(img.data[roff:end], img.file_off_to_va(roff) or img.image_base):
+            if insn.id == 0:
+                continue
             hit = None
             for op in insn.operands:
                 if op.type == 3 and lo <= op.mem.disp <= hi:  # X86_OP_MEM, absolute/RIP-rel disp
