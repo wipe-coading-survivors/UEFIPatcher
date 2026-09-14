@@ -89,18 +89,18 @@ EpaGetStage (
 }
 
 STATIC
-VOID
+EFI_STATUS
 EpaSetStage (
   IN UINT32  Stage
   )
 {
-  gRT->SetVariable (
-         EPA_VAR_NAME,
-         &mEpaVarGuid,
-         EFI_VARIABLE_NON_VOLATILE | EFI_VARIABLE_BOOTSERVICE_ACCESS,
-         sizeof (Stage),
-         &Stage
-         );
+  return gRT->SetVariable (
+                EPA_VAR_NAME,
+                &mEpaVarGuid,
+                EFI_VARIABLE_NON_VOLATILE | EFI_VARIABLE_BOOTSERVICE_ACCESS,
+                sizeof (Stage),
+                &Stage
+                );
 }
 
 STATIC
@@ -179,7 +179,10 @@ BifEpaProbeEntry (
     return EFI_SUCCESS;
   }
 
-  EpaSetStage (EPA_STAGE_WRITTEN);
+  if (EFI_ERROR (EpaSetStage (EPA_STAGE_WRITTEN))) {
+    ProbPrint ("BIF-EPA: stage marker failed - NO reset\n");
+    return EFI_SUCCESS;
+  }
   ProbPrint ("BIF-EPA: readback OK - %a reset in %u ms\n",
              EPA_RESET_COLD ? "cold" : "warm", (UINT32)EPA_PAUSE_MS);
   gBS->Stall (EPA_PAUSE_MS * 1000);

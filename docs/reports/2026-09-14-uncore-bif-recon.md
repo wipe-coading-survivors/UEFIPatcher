@@ -375,12 +375,24 @@ MMR-JSON через `hack/gen_mmr_table.py`, затем контейнер
 валидатор `hack/edk2_bif_check.py` (GUID/тип/checksum/PE32-инварианты,
 двухсборочное сравнение с маскированием COFF TimeDateStamp).
 
-Read-режим (EPA_MODE_WRITE=0), таблица R2b (1 запись):
+Read-режим (EPA_MODE_WRITE=0), таблица R2b (1 запись), fix-round 1
+(коммит d207e30 план; EpaSetStage → EFI_STATUS, статус-гейт маркера
+WRITTEN перед ресетом — провал SetVariable = NO reset, защита от
+ресет-лупа при полном NVRAM-сторе; IDLE-пути остаются без гейта —
+безопасно: стадия остаётся WRITTEN, пост-ресет отчёт повторится без
+записи):
 
 - артефакт `/tmp/bif/epa-build-1/BifEpaProbe.ffs` (Task 7 копирует в
   репозиторий): sha256
   `1e4e2c5b4c2781bafa09fe59315931c6a0fa3f140af0cf9db0d6aef5cd3a3710`,
-  32868 байт, FILE_GUID `B7E4A2C1-58D6-4E3F-B9A2-7C1D0E6F5A84`;
+  32868 байт, FILE_GUID `B7E4A2C1-58D6-4E3F-B9A2-7C1D0E6F5A84`.
+  После статус-гейта sha256/размер НЕ изменились: в read-режиме вся
+  write-ветка (лестница, маркер, ресет, новый гейт) — мёртвый код при
+  константе `EPA_MODE_WRITE==0`, RELEASE вы dead-strips её (в PE32
+  только 4 read-строки телеметрии). Гейт живёт в write-режиме:
+  контрольная write-сборка (только как evidence, не артефакт EPA-2)
+  содержит строку гейта, sha256
+  `974a570da90b5f543cc75283f618e54025b73fab3d79006162f2eb5ea354459f`;
 - `EPA_ENTRY_COUNT 1` (IOU0-Port2-bifurcation, 0xE0010190,
   and 0xFFFFFFF8, or 0x00000008);
 - воспроизводимость: две независимые сборки `/tmp/bif/epa-build-1`,
