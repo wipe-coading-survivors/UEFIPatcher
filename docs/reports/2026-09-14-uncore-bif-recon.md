@@ -48,7 +48,42 @@
    Task 5 упрощён.
 
 ## R1. Калибровка дизасм-стенда
-(заполняет Task 2)
+
+Стенд: `hack/disasm.sh` (podman-remote → `uefipatcher-edk2-builder:latest`
+c `python3-capstone`, capstone 5.0.6) → `/hack/uncore_disasm.py`
+(PE32/TE-парс, `info`/`strings`/`xref`/`dis`/`mmio`); пути контейнерные
+(`/refs/…`). Калибровка на розетте `refs/fw/IIO-pei32.bin` (≡ натив, R0):
+
+```
+$ hack/disasm.sh info /refs/fw/IIO-pei32.bin
+/refs/fw/IIO-pei32.bin: PE32 machine=I386 subsystem=11 entry=0xffe90ae8 base=0xffe64b08
+  .text    va=0xffe64d28   vsize=0xbfa48 raw=0x220+0xbfa60
+  .reloc   va=0xfff24788   vsize=0x3404 raw=0xbfc80+0x3420
+
+$ hack/disasm.sh strings /refs/fw/IIO-pei32.bin 8 | grep -Ei 'IOU|bif|uncore|iio'
+0xffe7c51d busUncore: 0x%02X 0x%02X 0x%02X 0x%02X
+0xffe7c549 busIio: 0x%02X 0x%02X 0x%02X 0x%02X
+0xffe90a7c ERROR: Invalid IOUx Bifurcation =%x
+
+$ hack/disasm.sh xref /refs/fw/IIO-pei32.bin 'Invalid IOUx Bifurcation'
+; target 'Invalid IOUx Bifurcation' va=0xffe90a83
+hit  file=0x32fdf site~0xffe97ae7 width=4 ref=0xffe90a7c -7
+```
+
+Строки несут префиксы, код ссылается на начало полной строки («ERROR: »
+— сдвиг -7; busUncore/busIio — префикс «\n», сдвиг -1: hit file=0x7439d
+site~0xffed8ea5 и file=0x74371 site~0xffed8e79), поэтому `xref` сканит
+окно `va-8..va`. База подтверждена 5947 HIGHLOW-фиксапами .reloc (все
+значения 0xFFxxxxxx). Калибровка = локализация сразу в нативе.
+
+Три PEIM'а Task 1 — все PE32 (magic 0x10B), machine=I386, subsystem=11,
+секции .text/.reloc, SectionAlignment==FileAlignment==0x220:
+
+| Билд | base | entry | .text va / vsize / raw | .reloc va / raw |
+|---|---|---|---|---|
+| натив | 0xffe64b08 | 0xffe90ae8 | 0xffe64d28 / 0xbfa48 / 0x220+0xbfa60 | 0xfff24788 / 0xbfc80+0x3420 |
+| HNX99TF | 0xffdcff40 | 0xffde9510 | 0xffdd0160 / 0x92788 / 0x220+0x927a0 | 0xffe62900 / 0x929c0+0x15e0 |
+| 超微450 | 0xfff3de10 | 0xfff57520 | 0xfff3e030 / 0x97ca8 / 0x220+0x97cc0 | 0xfffd5cf0 / 0x97ee0+0x1720 |
 
 ## R2. Purley-карта / дифф native↔HNX / таблица MMR
 (заполняют Tasks 3, 5)
