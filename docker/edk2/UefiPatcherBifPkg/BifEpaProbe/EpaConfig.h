@@ -6,7 +6,7 @@
 #define EPA_MODE_WRITE 0
 #define EPA_RESET_COLD 0
 #define EPA_PAUSE_MS 3000
-#define EPA_ENTRY_COUNT 0
+#define EPA_ENTRY_COUNT 1
 
 typedef struct {
   CONST CHAR8  *Tag;
@@ -17,6 +17,7 @@ typedef struct {
 } MMR_ENTRY;
 
 STATIC CONST MMR_ENTRY  mMmrEntries[EPA_ENTRY_COUNT] = {
+  { "IOU0-Port2-bifurcation", 0, 0xE0010190, 0xFFFFFFF8, 0x00000008 },
 };
 
 #endif

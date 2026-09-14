@@ -367,7 +367,37 @@ R0-заголовков/ServerSetup-дефолтов Grantley); статичес
 bus IIO сокета 0 = 0, UART COM1 = 0x3F8.
 
 ## B1. Пробник и сборка
-(заполняет Task 6)
+
+Пакет `docker/edk2/UefiPatcherBifPkg` (DSC/FDF/INF/C) + двухрежимный
+сборщик `docker/edk2/build_bif_epa.sh` (хост: печёт `EpaConfig.h` из
+MMR-JSON через `hack/gen_mmr_table.py`, затем контейнер
+`uefipatcher-edk2-builder:latest` собирает edk2 RELEASE/X64/GCC) +
+валидатор `hack/edk2_bif_check.py` (GUID/тип/checksum/PE32-инварианты,
+двухсборочное сравнение с маскированием COFF TimeDateStamp).
+
+Read-режим (EPA_MODE_WRITE=0), таблица R2b (1 запись):
+
+- артефакт `/tmp/bif/epa-build-1/BifEpaProbe.ffs` (Task 7 копирует в
+  репозиторий): sha256
+  `1e4e2c5b4c2781bafa09fe59315931c6a0fa3f140af0cf9db0d6aef5cd3a3710`,
+  32868 байт, FILE_GUID `B7E4A2C1-58D6-4E3F-B9A2-7C1D0E6F5A84`;
+- `EPA_ENTRY_COUNT 1` (IOU0-Port2-bifurcation, 0xE0010190,
+  and 0xFFFFFFF8, or 0x00000008);
+- воспроизводимость: две независимые сборки `/tmp/bif/epa-build-1`,
+  `/tmp/bif/epa-build-2` — побайтово идентичны (совпадающий sha256),
+  `python3 hack/edk2_bif_check.py /tmp/bif/epa-build-1 /tmp/bif/epa-build-2`
+  → `ok: 1 artifact(s), reproducible`.
+
+Отклонения от брифа Task 6 (5 дефектов брифа, исправлены минимально;
+подробности — `.superpowers/sdd/2026-09-14-bif-recon/task-6-report.md`):
+контейнерная ветка `build_bif_epa.sh` читала `${1:?}` после
+arg-парсинг-цикла (shift съел позиционный аргумент); DSC ссылался на
+несуществующий `DxeMemoryAllocationLib`; DSC не хватало `PciLib`/
+`PciCf8Lib` (требуются `BaseSerialPortLib16550`→`BasePciLibCf8`); всё
+семейство `PcdSerial*` в DSC было под `gEfiMdePkgTokenSpaceGuid`
+(правильно `gEfiMdeModulePkgTokenSpaceGuid`, как в рабочем
+`UefiPatcherSerial.dsc`), и `SerialPortWrite` вызывался с
+`CONST UINT8*` (прототип — `UINT8*`, -Werror).
 
 ## B2. EPA-1 (read-only) — вердикт владельца
 (заполняет Task 8)
