@@ -1,0 +1,982 @@
+[?2004hipmitool> power status
+[?2004lChassis Power is off
+[?2004hipmitool> power on
+[?2004lChassis Power Control: Up/On
+[?2004hipmitool> sol activate
+[?2004l[SOL Session operational.  Use ~? for help]
+Running on hardware
+Revision: 0
+BIOSSIM: InitHeap() 
+BIOSSIM: InitUSBDebug() 
+
+HSX (1HA) processor detected
+
+ Warning: Newer CPU Stepping  2
+ Found
+CCMRC Version: 00500000 
+
+MRC Sync Number: 244071 
+
+RC Version: 04000000 
+host = FE191F84  (pointer to sysHost structure)
+Legacy Serial Debug Enabled
+
+QPI Init starting...
+
+
+******* QPI Setup Structure *******
+PPINrOptIn: 0
+Bus   Ratio: 1 1 1 1
+IO    Ratio: 1 1 1 1
+MMIOL Ratio: 1 1 1 1
+LegacyVgaSoc: 0
+MmioP2pDis: 0
+IsocAzaliaVc1En: 0
+DebugPrintLevel: 15
+ClusterOnDieEn: 0
+IBPECIEn: 1
+E2EParityEn: 0
+EarlySnoopEn: 1
+HomeDirWOSBEn: 0
+DegradePrecedence: 0
+QpiLinkSpeedMode: 1 (FAST)
+QpiLinkSpeed: 6
+QpiLinkL0pEn: 1
+QpiLinkL1En: 1
+QpiLinkL0rEn: 1
+QpiLbEn: 0
+IioUniphyDisable (per socket):   0  0  0  0
+QpiLinkCreditReduce: 2
+QpiConfigTxWci: 11
+QpiCrcMode: 0
+QpiCpuSktHotPlugEn: 0
+QpiCpuSktHotPlugTopology: 0
+QpiSkuMismatchCheck: 1
+QpiPortDisable (per port):  S0:0 0   S1:0 0   S2:0 0   S3:0 0 
+QpiLinkCreditReduce (per port):  S0:0 0   S1:0 0   S2:0 0   S3:0 0 
+QpiLinkSpeed (per port):  S0:6 6   S1:6 6   S2:6 6   S3:6 6 
+QpiProbeType (per port):  S0:0 0   S1:0 0   S2:0 0   S3:0 0 
+QpiConfigTxWci (per port):  S0:11 11   S1:11 11   S2:11 11   S3:11 11 
+Rsvd (per port):  S0:0 0   S1:0 0   S2:0 0   S3:0 0 
+
+
+******* Common Setup Structure *******
+mmCfgBase: 0x80000000 
+mmCfgSize: 0x10000000
+mmiolBase: 0x90000000 
+mmiolSize: 0x6C000000 
+mmiohBase: 0x00003800-00000000
+mmiohSize: 256 GB 
+numaEn: 1 
+isocEn: 0 
+mesegEn: 0 
+dcaEn: 1 
+
+
+******* Common Var Structure *******
+resetRequired: 0 
+state: 0 
+numCpus: 0 
+socketPresentBitMap: 0x01 
+busIio: 0x00 0x00 0x00 0x00
+busUncore: 0x3F 0x00 0x00 0x00 
+mmCfgBase: 0x80000000 
+
+
+;******* Collecting Early System Information - START *******
+    SocketId: 0    Physical Chop: 0
+    SocketId: 0    CAPID5: 0x40000077
+    SocketId: 0    CAPID4: 0x24038503
+    SocketId: 0    CAPID3: 0x00000000
+    SocketId: 0    CAPID2: 0x76000000
+    SocketId: 0    CAPID1: 0x10000283
+    SocketId: 0    CAPID0: 0x00188104
+;  SBSP Socket: 0   SKU: 0x02   SubSKU: 0x00   Stepping: 0x02   CAPID4[sbsp]: 0x24038503
+;  Total Cbos: 06   Cbo List: 0x77   Total HA: 01   Total R3Qpi: 01   Total QpiAgent: 02
+
+;  TotCpus: 4  CpuList: 0x0F 
+;  busIio:    0x00 0x40 0x80 0xC0 
+;  busUncore: 0x3F 0x7F 0xBF 0xFF 
+;  Reset Type: Cold Reset   Link Speed: Slow Speed
+;******* Collecting Early System Information - END   *******
+
+
+;******* Setting up Minimum Path - START *******
+
+; Constructing SBSP minimum path Topology Tree 
+; -------------------------------------------- 
+
+; Adding SBSP (CPU0) to the tree
+   CPU0 Link Exchange
+   UseQpiPcSts = 1
+
+
+;SBSP Minimum Path Tree
+;----------------------
+;Index  Socket  ParentPort  Hop  ParentIndex
+; 00     CPU0    --         0     --
+;******* Setting up Minimum Path - END   *******
+
+
+;******* Initialize MCTP - START *******
+;******* Initialize MCTP - END   *******
+
+
+;******* Check for QPI Topology Degradation - START *******
+
+
+;Link Exchange Parameter
+;-----------------------
+;CPU0 
+;  Already Reduced to Supported Topology
+
+;  System will be treated 1S Configuration
+
+
+;******* Check for QPI Topology Degradation - END *******
+
+
+;******* Checking QPIRC Input Structure - START *******
+
+;    Sys configuration Type = 12
+;******* Checking QPIRC Input Structure - END   *******
+
+
+;******* Allocate RTIDs - START *******
+;    WB - 02   Ubox - 00   Isoc - 00   Local RTID PerCbo - 16   Extra - 30
+;    Local Base - 01   Reallocation Base - 65
+
+;    Cbo 03 RTID straddles into xRTID space
+;      RTIDs split into three pools of size 8, 7 and 1
+;        Sufficient extra RTIDs are available to move the Second Pool into xRTID space. No loss of RTIDs for the CBo.
+
+; RTID Allocation Table
+; ---------------------
+
+;          Local
+;          -----
+;  WB        0    1 
+;  UBOX      0    0 
+;  ISOC      1    0 
+;  CBO00     1    8 
+;  CBO00     9    8 
+;  CBO01    17    8 
+;  CBO01    25    8 
+;  CBO02    33    8 
+;  CBO02    41    8 
+;  CBO03    49    8 
+;  CBO03    65    8 
+;  CBO04    73    8 
+;  CBO04    81    8 
+;  CBO05    89    8 
+;  CBO05    97    8 
+;  EXTRA     0   23 
+
+
+
+
+;******* Allocate RTIDs - END *******
+
+
+;******* Cacluate Resource Allocation - START *******
+
+;CPU Resource Allocation
+;-----------------------
+;CPU0   Bus: 0x00 - 0xFF  IO: 0x0000 - 0xFFFF  IOAPIC: 0xFEC00000 - 0xFEC3FFFF  MMIOL: 0x90000000 - 0xFBFFFFFF  MMIOH: 0x00003800 00000000 - 0x0000383F FFFFFFFF
+
+;******* Cacluate Resource Allocation - END   *******
+
+
+;******* Programming RTIDs and other Credits - START *******
+;******* Programming RTIDs and other Credits - END   *******
+
+
+;******* Sync Up PBSPs - START *******
+
+;    Setting Ubox Sticky SR07 to 0x00000000 
+
+;    Setting Ubox Sticky SR03 to 0x20000007 
+
+;    Setting Ubox Sticky SR02 to 0x00000001 
+;    Verifying if the remote socket(s) checked-in. 
+;******* Sync Up PBSPs - END   *******
+
+
+;******* Programming MSR for w/a - START *******
+;******* Programming MSR for w/a - END   *******
+
+
+;******* Programming BGF Overrides - START *******
+;  Wait for mailbox ready
+;  Send Data portion of command.  Socket = 0 Data sent == 0x0
+;  Send Pcode mailbox command. Socket = 0 Command sent == 0x7D
+;  Wait for mailbox ready
+;  Wait for mailbox ready
+;  Send Data portion of command.  Socket = 0 Data sent == 0x11
+;  Send Pcode mailbox command. Socket = 0 Command sent == 0x17D
+;  Wait for mailbox ready
+;  Wait for mailbox ready
+;  Send Data portion of command.  Socket = 0 Data sent == 0x0
+;  Send Pcode mailbox command. Socket = 0 Command sent == 0x27D
+;  Wait for mailbox ready
+;  Wait for mailbox ready
+;  Send Data portion of command.  Socket = 0 Data sent == 0x0
+;  Send Pcode mailbox command. Socket = 0 Command sent == 0x37D
+;  Wait for mailbox ready
+;  Wait for mailbox ready
+;  Send Data portion of command.  Socket = 0 Data sent == 0x0
+;  Send Pcode mailbox command. Socket = 0 Command sent == 0x47D
+;  Wait for mailbox ready
+;******* Programming BGF Overrides - END *******
+
+
+;******* Full Speed Transition - START *******
+;  Wait for mailbox ready
+;  Send Data portion of command.  Socket = 0 Data sent == 0x8
+;  Send Pcode mailbox command. Socket = 0 Command sent == 0x88
+;  Wait for mailbox ready
+;  Wait for mailbox ready
+;  Send Data portion of command.  Socket = 0 Data sent == 0x8
+;  Send Pcode mailbox command. Socket = 0 Command sent == 0x288
+;  Wait for mailbox ready
+;  1 CPU detected but no Over-clocking (PLL Ratio=0x00).  Pcode Link Freq ratio set to 0x08
+;  ;Single Socket, no QPI Links to transition
+;  Force unused links to disabled/low power state.
+;  Clr PhyInitBegin on Socket 0 Link 0 : QPIREUT_PH_CTR write 0x4002000
+  Set force_l1 on Socket 0 Link 0 : QPIPHYPWRCTRL write 0x1
+;  Clr PhyInitBegin on Socket 0 Link 1 : QPIREUT_PH_CTR write 0x4002000
+  Set force_l1 on Socket 0 Link 1 : QPIPHYPWRCTRL write 0x1
+;******* Full Speed Transition - END *******
+
+
+;******* Cod Activate - START *******
+;******* Cod Activate - END *******
+
+
+******* QPI Output Structure *******
+OutLegacyVgaSoc: 0
+OutIsocEn: 0
+OutMesegEn: 0
+OutIsocAzaliaVc1En: 0
+OutClusterOnDieEn: 0
+OutIBPECIEn: 1
+OutE2EParityEn: 0
+OutEarlySnoopEn: 1
+OutHomeDirWOSBEn: 0
+QpiCurrentLinkSpeedMode: 0 (SLOW)
+OutQpiLinkSpeed: 6
+OutQpiLinkL0pEn: 1
+OutQpiLinkL1En: 1
+OutQpiLinkL0rEn: 1
+OutIioUniphyDisable: 0, 0, 0, 0
+OutQpiCrcMode: 0
+OutClusterOnDieReduction: 0
+OutPointerSeperationHA: 0
+
+QpiInternalGlobal->BtModeEn: 0
+QpiInternalGlobal->BtMode: 0
+QpiInternalGlobal->BtMode2Alt: 0
+QpiInternalGlobal->Sys4SClusterOnDieEn: 0
+QpiInternalGlobal->SnoopFanoutEn: 0
+QpiInternalGlobal->SysSnoopMode: 0
+QpiInternalGlobal->IodcEn: 0
+;******* QPIRC Exit  *******
+
+QPI Init completed! Reset Requested: 2
+Pipe Init starting...Pipe Init completed! Reset Requested: 2
+CPU Feature Early Config starting...CPU Feature Early Config completed! Reset Requested: 2
+START_MRC_RUN
+forceColdBoot bit set
+Get socket PPIN
+N0: PPIN Hi = 0x6D142F2, PPIN Lo = 0xBCEB4885
+setupChanged: 1
+Clearing the MRC NVRAM structure.
+bootMode = NormalBoot
+subBootMode = ColdBoot
+Dispatch Slaves -- Started
+Dispatch Slaves - 0ms
+Promote Warning Exception List -- Started
+Promote Warning Exception List - 0ms
+Initialize Throttling Early -- Started
+Initialize Throttling Early - 0ms
+Detect DIMM Configuration -- Started
+Detect DIMM Configuration - 642ms
+Get Slave Data -- Started
+Get Slave Data - 0ms
+Check POR Compatibility -- Started
+UDIMM population
+Check POR Compatibility - 1ms
+Initialize DDR Clocks -- Started
+GetPORDDRFreq returns ddrfreq = 8
+Reset requested: non-MRC
+MRC reset request!
+ Current DCLK: 12
+ Desired DCLK: 14, req_type = 0
+Initialize DDR Clocks - 11ms
+Send Status -- Started
+Send Status -- EXIT, status = 2h
+Total MRC time = 695ms
+Setting Last Boot Date = 9744 days
+STOP_MRC_RUN
+Reset Requested: 2
+Pipe Exit starting...Pipe Exit completed! Reset Requested: 2
+Checking for Reset Requests ...  Issue WARM RESET!
+
+
+
+BIOS done set
+Running on hardware
+Revision: 0
+BIOSSIM: InitHeap() 
+BIOSSIM: InitUSBDebug() 
+
+HSX (1HA) processor detected
+
+ Warning: Newer CPU Stepping  2
+ Found
+CCMRC Version: 00500000 
+
+MRC Sync Number: 244071 
+
+RC Version: 04000000 
+host = FE191F84  (pointer to sysHost structure)
+Legacy Serial Debug Enabled
+
+QPI Init starting...
+
+
+******* QPI Setup Structure *******
+PPINrOptIn: 0
+Bus   Ratio: 1 1 1 1
+IO    Ratio: 1 1 1 1
+MMIOL Ratio: 1 1 1 1
+LegacyVgaSoc: 0
+MmioP2pDis: 0
+IsocAzaliaVc1En: 0
+DebugPrintLevel: 15
+ClusterOnDieEn: 0
+IBPECIEn: 1
+E2EParityEn: 0
+EarlySnoopEn: 1
+HomeDirWOSBEn: 0
+DegradePrecedence: 0
+QpiLinkSpeedMode: 1 (FAST)
+QpiLinkSpeed: 6
+QpiLinkL0pEn: 1
+QpiLinkL1En: 1
+QpiLinkL0rEn: 1
+QpiLbEn: 0
+IioUniphyDisable (per socket):   0  0  0  0
+QpiLinkCreditReduce: 2
+QpiConfigTxWci: 11
+QpiCrcMode: 0
+QpiCpuSktHotPlugEn: 0
+QpiCpuSktHotPlugTopology: 0
+QpiSkuMismatchCheck: 1
+QpiPortDisable (per port):  S0:0 0   S1:0 0   S2:0 0   S3:0 0 
+QpiLinkCreditReduce (per port):  S0:0 0   S1:0 0   S2:0 0   S3:0 0 
+QpiLinkSpeed (per port):  S0:6 6   S1:6 6   S2:6 6   S3:6 6 
+QpiProbeType (per port):  S0:0 0   S1:0 0   S2:0 0   S3:0 0 
+QpiConfigTxWci (per port):  S0:11 11   S1:11 11   S2:11 11   S3:11 11 
+Rsvd (per port):  S0:0 0   S1:0 0   S2:0 0   S3:0 0 
+
+
+******* Common Setup Structure *******
+mmCfgBase: 0x80000000 
+mmCfgSize: 0x10000000
+mmiolBase: 0x90000000 
+mmiolSize: 0x6C000000 
+mmiohBase: 0x00003800-00000000
+mmiohSize: 256 GB 
+numaEn: 1 
+isocEn: 0 
+mesegEn: 0 
+dcaEn: 1 
+
+
+******* Common Var Structure *******
+resetRequired: 0 
+state: 0 
+numCpus: 0 
+socketPresentBitMap: 0x01 
+busIio: 0x00 0x00 0x00 0x00
+busUncore: 0xFF 0x00 0x00 0x00 
+mmCfgBase: 0x80000000 
+
+
+;******* Collecting Early System Information - START *******
+    SocketId: 0    Physical Chop: 0
+    SocketId: 0    CAPID5: 0x40000077
+    SocketId: 0    CAPID4: 0x24038503
+    SocketId: 0    CAPID3: 0x00000000
+    SocketId: 0    CAPID2: 0x76000000
+    SocketId: 0    CAPID1: 0x10000283
+    SocketId: 0    CAPID0: 0x00188104
+;  SBSP Socket: 0   SKU: 0x02   SubSKU: 0x00   Stepping: 0x02   CAPID4[sbsp]: 0x24038503
+;  Total Cbos: 06   Cbo List: 0x77   Total HA: 01   Total R3Qpi: 01   Total QpiAgent: 02
+
+;  TotCpus: 1  CpuList: 0x01 
+;  busIio:    0x00 
+;  busUncore: 0xFF 
+;  Reset Type: Warm Reset   Link Speed: Slow Speed
+;******* Collecting Early System Information - END   *******
+
+
+;******* Setting up Minimum Path - START *******
+
+; Constructing SBSP minimum path Topology Tree 
+; -------------------------------------------- 
+
+; Adding SBSP (CPU0) to the tree
+   CPU0 Link Exchange
+   UseQpiPcSts = 1
+
+
+;SBSP Minimum Path Tree
+;----------------------
+;Index  Socket  ParentPort  Hop  ParentIndex
+; 00     CPU0    --         0     --
+;******* Setting up Minimum Path - END   *******
+
+
+;******* Initialize MCTP - START *******
+;******* Initialize MCTP - END   *******
+
+
+;******* Check for QPI Topology Degradation - START *******
+
+
+;Link Exchange Parameter
+;-----------------------
+;CPU0 
+;  Already Reduced to Supported Topology
+
+;  System will be treated 1S Configuration
+
+
+;******* Check for QPI Topology Degradation - END *******
+
+
+;******* Checking QPIRC Input Structure - START *******
+
+;    Sys configuration Type = 12
+;******* Checking QPIRC Input Structure - END   *******
+
+
+;******* Allocate RTIDs - START *******
+;    WB - 02   Ubox - 00   Isoc - 00   Local RTID PerCbo - 16   Extra - 30
+;    Local Base - 01   Reallocation Base - 65
+
+;    Cbo 03 RTID straddles into xRTID space
+;      RTIDs split into three pools of size 8, 7 and 1
+;        Sufficient extra RTIDs are available to move the Second Pool into xRTID space. No loss of RTIDs for the CBo.
+
+; RTID Allocation Table
+; ---------------------
+
+;          Local
+;          -----
+;  WB        0    1 
+;  UBOX      0    0 
+;  ISOC      1    0 
+;  CBO00     1    8 
+;  CBO00     9    8 
+;  CBO01    17    8 
+;  CBO01    25    8 
+;  CBO02    33    8 
+;  CBO02    41    8 
+;  CBO03    49    8 
+;  CBO03    65    8 
+;  CBO04    73    8 
+;  CBO04    81    8 
+;  CBO05    89    8 
+;  CBO05    97    8 
+;  EXTRA     0   23 
+
+
+
+
+;******* Allocate RTIDs - END *******
+
+
+;******* Cacluate Resource Allocation - START *******
+
+;CPU Resource Allocation
+;-----------------------
+;CPU0   Bus: 0x00 - 0xFF  IO: 0x0000 - 0xFFFF  IOAPIC: 0xFEC00000 - 0xFEC3FFFF  MMIOL: 0x90000000 - 0xFBFFFFFF  MMIOH: 0x00003800 00000000 - 0x0000383F FFFFFFFF
+
+;******* Cacluate Resource Allocation - END   *******
+
+
+;******* Check for QPI Topology change across reset - START *******
+
+
+;******* Check for QPI Topology change across reset - END *******
+
+
+;******* Phy/Link Updates On Warm Reset - START *******
+;  Force unused links to disabled/low power state.
+;  Clr PhyInitBegin on Socket 0 Link 0 : QPIREUT_PH_CTR write 0x4002001
+  Set force_l1 on Socket 0 Link 0 : QPIPHYPWRCTRL write 0x1
+;  Clr PhyInitBegin on Socket 0 Link 1 : QPIREUT_PH_CTR write 0x4002001
+  Set force_l1 on Socket 0 Link 1 : QPIPHYPWRCTRL write 0x1
+;******* Phy/Link Updates On Warm Reset - END *******
+
+
+;******* Sync Up PBSPs - START *******
+;    Verifying if the remote socket(s) checked-in. 
+;******* Sync Up PBSPs - END   *******
+;  Applying L1 W/A to Socket 0 QPI Link 0.
+;  Applying L1 W/A to Socket 0 QPI Link 1.
+;  Wait for mailbox ready
+;  Send Data portion of command.  Socket = 0 Data sent == 0x3
+;  Send Pcode mailbox command. Socket = 0 Command sent == 0x91
+;  Wait for mailbox ready
+
+
+;******* Topology Dicovery and Optimum Route Calculation - START *******
+
+;  Locating the Rings Present in the Topology
+
+;  No Rings Found
+
+;  Constructing Topology Tree
+
+; Adjacency Table
+; ----------------
+
+; Checking for Deadlock...
+
+;CPU0 Topology Tree
+;-------------------
+;Index  Socket  ParentSocket  ParentPort  ParentIndex  Hop
+; 00     CPU0       --            --          --        0
+;
+; Calculating Route for CPU0 
+
+
+;CPU 0 Routing Table
+;-------------------
+;DestSocket  Port
+
+
+;******* Topology Dicovery and Optimum Route Calculation - END   *******
+
+
+;******* Program Optimum Route Table Settings - START *******
+;******* Program Optimum Route Table Settings - END   *******
+
+
+;******* Program Final IO SAD Setting - START *******
+;******* Program Final IO SAD Setting - END   *******
+
+
+;******* Program Misc. QPI Parameters - START *******
+    Lock QPI DFX.
+;******* Program Misc. QPI Parameters - END   *******
+
+
+;******* Program Home Agent Credits - START *******
+;******* Program Home Agent Credits - END   *******
+
+
+;******* Program Home tracker and Route Back Table - START *******
+;******* Program Home tracker and Route Back Table - END   *******
+
+
+;******* Program System Coherency Registers - START *******
+;******* Program System Coherency Registers - END   *******
+
+
+;******* Check for S3 Resume - START *******
+;******* Check for S3 Resume - END   *******
+
+
+;******* Collect Previous Boot Error - START *******
+;******* Collect Previous Boot Error - END   *******
+
+
+******* QPI Output Structure *******
+OutLegacyVgaSoc: 0
+OutIsocEn: 0
+OutMesegEn: 0
+OutIsocAzaliaVc1En: 0
+OutClusterOnDieEn: 0
+OutIBPECIEn: 1
+OutE2EParityEn: 0
+OutEarlySnoopEn: 1
+OutHomeDirWOSBEn: 0
+QpiCurrentLinkSpeedMode: 0 (SLOW)
+OutQpiLinkSpeed: 6
+OutQpiLinkL0pEn: 1
+OutQpiLinkL1En: 1
+OutQpiLinkL0rEn: 1
+OutIioUniphyDisable: 0, 0, 0, 0
+OutQpiCrcMode: 0
+OutClusterOnDieReduction: 0
+OutPointerSeperationHA: 0
+
+QpiInternalGlobal->BtModeEn: 0
+QpiInternalGlobal->BtMode: 0
+QpiInternalGlobal->BtMode2Alt: 0
+QpiInternalGlobal->Sys4SClusterOnDieEn: 0
+QpiInternalGlobal->SnoopFanoutEn: 0
+QpiInternalGlobal->SysSnoopMode: 0
+QpiInternalGlobal->IodcEn: 0
+;******* QPIRC Exit  *******
+
+QPI Init completed! Reset Requested: 0
+Pipe Init starting...Pipe Init completed! Reset Requested: 0
+CPU Feature Early Config starting...CPU Feature Early Config completed! Reset Requested: 0
+PrevBootErrors - CBO mcbank: 20 - not present; skipping...
+PrevBootErrors - Valid MCA UC entries: 0
+START_MRC_RUN
+forceColdBoot bit set
+Get socket PPIN
+N0: PPIN Hi = 0x6D142F2, PPIN Lo = 0xBCEB4885
+setupChanged: 1
+Clearing the MRC NVRAM structure.
+bootMode = NormalBoot
+subBootMode = ColdBoot
+Dispatch Slaves -- Started
+Dispatch Slaves - 0ms
+Promote Warning Exception List -- Started
+Promote Warning Exception List - 0ms
+Initialize Throttling Early -- Started
+Initialize Throttling Early - 0ms
+Detect DIMM Configuration -- Started
+Detect DIMM Configuration - 642ms
+Get Slave Data -- Started
+Get Slave Data - 0ms
+Check POR Compatibility -- Started
+UDIMM population
+Check POR Compatibility - 1ms
+Initialize DDR Clocks -- Started
+GetPORDDRFreq returns ddrfreq = 8
+Memory behind processor 0 running at DDR-1867
+Initialize DDR Clocks - 7ms
+Send Status -- Started
+Send Status - 0ms
+Set Vdd -- Started
+Set Vdd - 0ms
+Check DIMM Ranks -- Started
+Check DIMM Ranks - 0ms
+Send Data -- Started
+Send Data - 0ms
+Initialize Memory -- Started
+Initialize Memory - 0ms
+Gather SPD Data -- Started
+Gather SPD Data - 8ms
+Configure XMP -- Started
+Configure XMP - 35ms
+Early Configuration -- Started
+Early Configuration - 1ms
+DDRIO Initialization -- Started
+N0.C0: Number of DIMMS in channel: 1
+DDRIO Initialization - 53ms
+Pre-Training Initialization -- Started
+Pre-Training Initialization - 0ms
+Early CTL/CLK -- Started
+Early CTL/CLK - 36ms
+Early CMD/CLK -- Started
+Early CMD/CLK - 319ms
+Lrdimm BS Phase RX -- Started
+Lrdimm BS Phase RX - 0ms
+Lrdimm BS Cycle RX -- Started
+Lrdimm BS Cycle RX - 0ms
+Lrdimm BS Delay RX -- Started
+Lrdimm BS Delay RX - 0ms
+Receive Enable -- Started
+Receive Enable - 6ms
+Rx Dq/Dqs Basic -- Started
+Rx Dq/Dqs Basic - 2ms
+Dq Swizzle Discovery -- Started
+Skipping Swizzle Discovery.
+Dq Swizzle Discovery - 2ms
+Lrdimm BS Fine WL -- Started
+Lrdimm BS Fine WL - 0ms
+Lrdimm BS Coarse WL -- Started
+Lrdimm BS Coarse WL - 0ms
+Lrdimm BS Delay TX -- Started
+Lrdimm BS Delay TX - 0ms
+Write Leveling -- Started
+Write Leveling - 7ms
+Write Fly By -- Started
+Write Fly By - 2ms
+Tx Dq Basic -- Started
+Tx Dq Basic - 5ms
+PPR Flow -- Started
+PPR Flow - 0ms
+Wr Early Vref Centering -- Started
+Wr Early Vref Centering - 18ms
+Rd Early Vref Centering -- Started
+Rd Early Vref Centering - 20ms
+CMD Vref Centering -- Started
+CMD Vref Centering - 0ms
+Late Cmd/Clk -- Started
+Late Cmd/Clk - 38ms
+Tx Eq -- Started
+Tx Eq - 221ms
+Imode -- Started
+Imode - 0ms
+CTLE -- Started
+CTLE - 0ms
+Tx Per Bit Deskew -- Started
+Tx Per Bit Deskew - 0ms
+Rx Per Bit Deskew -- Started
+Rx Per Bit Deskew - 0ms
+Wr Vref Centering (LRDIMM) -- Started
+Wr Vref Centering (LRDIMM) - 0ms
+Rd Vref Centering (LRDIMM) -- Started
+Rd Vref Centering (LRDIMM) - 0ms
+Wr Dq Centering (LRDIMM) -- Started
+Wr Dq Centering (LRDIMM) - 0ms
+Rd Dq Centering (LRDIMM) -- Started
+Rd Dq Centering (LRDIMM) - 0ms
+Wr Vref Centering -- Started
+Wr Vref Centering - 45ms
+Rd Vref Centering -- Started
+Rd Vref Centering - 63ms
+Tx Dq Adv -- Started
+Tx Dq Adv - 205ms
+Rx Dq/Dqs Adv -- Started
+Rx Dq/Dqs Adv - 143ms
+Round Trip Optimization -- Started
+Round Trip Optimization - 0ms
+Display Training Results -- Started
+Display Training Results - 2ms
+Post-Training Initialization -- Started
+N0.C0: t_rrdr = 1, t_rrdd = 1
+Post-Training Initialization - 3ms
+Rank Margin Tool -- Started
+Rank Margin Tool - 0ms
+Fill BDAT Structure -- Started
+Fill BDAT Structure - 0ms
+BIOS SSA Initialization -- Started
+BIOS SSA Initialization - 0ms
+Late Configuration -- Started
+Late Configuration - 0ms
+Initialize Throttling -- Started
+Initialize Throttling - 0ms
+Advanced MemTest -- Started
+Advanced MemTest - 0ms
+MemTest -- Started
+MemTest - 1592ms
+MemInit -- Started
+MemInit - 0ms
+Check Ras Support After MemInit -- Started
+Check Ras Support After MemInit - 0ms
+Switch to Normal Mode -- Started
+Switch to Normal Mode - 0ms
+Initialize ADR -- Started
+Initialize ADR - 0ms
+Get NVRAM Data -- Started
+Get NVRAM Data - 0ms
+Initialize Memory Map -- Started
+Initialize Memory Map - 0ms
+Set RAS Configuration -- Started
+Set RAS Config
+Set RAS Configuration - 1ms
+Memory Late -- Started
+Memory Late - 0ms
+DIMM Information -- Started
+START_DIMMINFO_TABLE
+======================================================================================
+START_SOCKET_0_TABLE
+HSX C0 - EP
+======================================================================================
+S|     Channel 0      |     Channel 1      |     Channel 2      |     Channel 3      |
+======================================================================================
+0|   DIMM: 8000       |   Not installed    |   Not installed    |   Not installed    |
+ |   DRAM: Micron     |                    |                    |                    |
+ |                    |                    |                    |                    |
+ |   8GB(4Gbx8 1H DR) |                    |                    |                    |
+ | DDR4 UDIMM  R/C-B  |                    |                    |                    |
+ |   2400 13-13-13    |                    |                    |                    |
+ |     ww45 2019      |                    |                    |                    |
+ |8ATF1G64AZ-2G6H1    |                    |                    |                    |
+ |0x0000000000000000  |                    |                    |                    |
+ |                    |                    |                    |                    |
+--------------------------------------------------------------------------------------
+1|   Not installed    |   Not installed    |   Not installed    |   Not installed    |
+--------------------------------------------------------------------------------------
+STOP_SOCKET_0_TABLE
+======================================================================================
+======================================================================================
+                    |  Socket 0  |  Socket 1  |  Socket 2  |  Socket 3  |   System   |
+======================================================================================
+Active Memory       |      8GB   |     N/A    |     N/A    |     N/A    |      8GB   |
+DDR Freq            |            |            |            |            |  DDR4-1867 |
+Ch0 CL-RCD-RP-CMD   |13-13-13-1n |            |            |            |            |
+DDR Vdd             |            |            |            |            |    1.20V   |
+ECC Checking        |            |            |            |            |     Off    |
+CAP Checking        |            |            |            |            |     On     |
+Patrol/Demand Scrub |            |            |            |            |  Off/Off   |
+RAS Mode            |            |            |            |            |   Indep    |
+Xover Mode          |            |            |            |            |     1:1    |
+Paging Policy       |            |            |            |            | Adapt Open |
+Data Scrambling     |            |            |            |            |     On     |
+CCMRC Revision      |            |            |            |            |  00.50.00  |
+RC Revision         |            |            |            |            |  04.00.00  |
+======================================================================================
+
+STOP_DIMMINFO_TABLE
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+		Platform DIMM Configuration
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Socket  : 0
+	Channel   : 0  ddr4Size  : 128  volSize : 0  perSize : 0  blkSize : 0
+	Channel   : 1  ddr4Size  : 0  volSize : 0  perSize : 0  blkSize : 0
+	Channel   : 2  ddr4Size  : 0  volSize : 0  perSize : 0  blkSize : 0
+	Channel   : 3  ddr4Size  : 0  volSize : 0  perSize : 0  blkSize : 0
+DIMM Information - 315ms
+Total MRC time = 4126ms
+Setting Last Boot Date = 9744 days
+STOP_MRC_RUN
+nvram[0].ppin.hi: 0x6D142F2, var[0].ppin.hi: 0x6D142F2 
+nvram[0].ppin.lo: 0xBCEB4885, var[0].ppin.lo: 0xBCEB4885 
+Reset Requested: 0
+Pipe Exit starting...Pipe Exit completed! Reset Requested: 0
+Checking for Reset Requests ...  None 
+Continue with system BIOS POST ...
+
+PrevBootErrLog - Num Valid Entries: 0
+ PeimMemoryQpiInit END 
+ERROR: Class:3000000; Subclass:50000; Operation: E
+~. [terminated ipmitool]
+[?2004hipmitool> 
+[?2004l[?2004hipmitool> power reset
+[?2004lChassis Power Control: Reset
+[?2004hipmitool> sol activate
+[?2004l[?2004hipmitool> sol activate
+[?2004l[SOL Session operational.  Use ~? for help]
+arted
+CTLE - 0ms
+Tx Per Bit Deskew -- Started
+Tx Per Bit Deskew - 0ms
+Rx Per Bit Deskew -- Started
+Rx Per Bit Deskew - 0ms
+Wr Vref Centering (LRDIMM) -- Started
+Wr Vref Centering (LRDIMM) - 0ms
+Rd Vref Centering (LRDIMM) -- Started
+Rd Vref Centering (LRDIMM) - 0ms
+Wr Dq Centering (LRDIMM) -- Started
+Wr Dq Centering (LRDIMM) - 0ms
+Rd Dq Centering (LRDIMM) -- Started
+Rd Dq Centering (LRDIMM) - 0ms
+Wr Vref Centering -- Started
+Wr Vref Centering - 45ms
+Rd Vref Centering -- Started
+Rd Vref Centering - 61ms
+Tx Dq Adv -- Started
+Tx Dq Adv - 202ms
+Rx Dq/Dqs Adv -- Started
+Rx Dq/Dqs Adv - 138ms
+Round Trip Optimization -- Started
+Round Trip Optimization - 0ms
+Display Training Results -- Started
+Display Training Results - 2ms
+Post-Training Initialization -- Started
+N0.C0: t_rrdr = 1, t_rrdd = 1
+Post-Training Initialization - 3ms
+Rank Margin Tool -- Started
+Rank Margin Tool - 0ms
+Fill BDAT Structure -- Started
+Fill BDAT Structure - 0ms
+BIOS SSA Initialization -- Started
+BIOS SSA Initialization - 0ms
+Late Configuration -- Started
+Late Configuration - 0ms
+Initialize Throttling -- Started
+Initialize Throttling - 0ms
+Advanced MemTest -- Started
+Advanced MemTest - 0ms
+MemTest -- Started
+MemTest - 1592ms
+MemInit -- Started
+MemInit - 0ms
+Check Ras Support After MemInit -- Started
+Check Ras Support After MemInit - 0ms
+Switch to Normal Mode -- Started
+Switch to Normal Mode - 0ms
+Initialize ADR -- Started
+Initialize ADR - 0ms
+Get NVRAM Data -- Started
+Get NVRAM Data - 0ms
+Initialize Memory Map -- Started
+Initialize Memory Map - 0ms
+Set RAS Configuration -- Started
+Set RAS Config
+Set RAS Configuration - 1ms
+Memory Late -- Started
+Memory Late - 0ms
+DIMM Information -- Started
+START_DIMMINFO_TABLE
+======================================================================================
+START_SOCKET_0_TABLE
+HSX C0 - EP
+======================================================================================
+S|     Channel 0      |     Channel 1      |     Channel 2      |     Channel 3      |
+======================================================================================
+0|   DIMM: 8000       |   Not installed    |   Not installed    |   Not installed    |
+ |   DRAM: Micron     |                    |                    |                    |
+ |                    |                    |                    |                    |
+ |   8GB(4Gbx8 1H DR) |                    |                    |                    |
+ | DDR4 UDIMM  R/C-B  |                    |                    |                    |
+ |   2400 13-13-13    |                    |                    |                    |
+ |     ww45 2019      |                    |                    |                    |
+ |8ATF1G64AZ-2G6H1    |                    |                    |                    |
+ |0x0000000000000000  |                    |                    |                    |
+ |                    |                    |                    |                    |
+--------------------------------------------------------------------------------------
+1|   Not installed    |   Not installed    |   Not installed    |   Not installed    |
+--------------------------------------------------------------------------------------
+STOP_SOCKET_0_TABLE
+======================================================================================
+======================================================================================
+                    |  Socket 0  |  Socket 1  |  Socket 2  |  Socket 3  |   System   |
+======================================================================================
+Active Memory       |      8GB   |     N/A    |     N/A    |     N/A    |      8GB   |
+DDR Freq            |            |            |            |            |  DDR4-1867 |
+Ch0 CL-RCD-RP-CMD   |13-13-13-1n |            |            |            |            |
+DDR Vdd             |            |            |            |            |    1.20V   |
+ECC Checking        |            |            |            |            |     Off    |
+CAP Checking        |            |            |            |            |     On     |
+Patrol/Demand Scrub |            |            |            |            |  Off/Off   |
+RAS Mode            |            |            |            |            |   Indep    |
+Xover Mode          |            |            |            |            |     1:1    |
+Paging Policy       |            |            |            |            | Adapt Open |
+Data Scrambling     |            |            |            |            |     On     |
+CCMRC Revision      |            |            |            |            |  00.50.00  |
+RC Revision         |            |            |            |            |  04.00.00  |
+======================================================================================
+
+STOP_DIMMINFO_TABLE
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+		Platform DIMM Configuration
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Socket  : 0
+	Channel   : 0  ddr4Size  : 128  volSize : 0  perSize : 0  blkSize : 0
+	Channel   : 1  ddr4Size  : 0  volSize : 0  perSize : 0  blkSize : 0
+	Channel   : 2  ddr4Size  : 0  volSize : 0  perSize : 0  blkSize : 0
+	Channel   : 3  ddr4Size  : 0  volSize : 0  perSize : 0  blkSize : 0
+DIMM Information - 315ms
+Total MRC time = 4110ms
+Setting Last Boot Date = 9744 days
+STOP_MRC_RUN
+nvram[0].ppin.hi: 0x6D142F2, var[0].ppin.hi: 0x6D142F2 
+nvram[0].ppin.lo: 0xBCEB4885, var[0].ppin.lo: 0xBCEB4885 
+Reset Requested: 0
+Pipe Exit starting...Pipe Exit completed! Reset Requested: 0
+Checking for Reset Requests ...  None 
+Continue with system BIOS POST ...
+
+PrevBootErrLog - Num Valid Entries: 0
+ PeimMemoryQpiInit END 
+ERROR: Class:3000000; Subclass:50000; Operation: E
+~. [terminated ipmitool]
+[?2004hipmitool> 
+[?2004l[?2004hipmitool> power off
+[?2004lChassis Power Control: Down/Off
+[?2004hipmitool> exit
+[?2004l
