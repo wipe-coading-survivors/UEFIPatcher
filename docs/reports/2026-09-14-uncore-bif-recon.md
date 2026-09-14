@@ -86,7 +86,162 @@ site~0xffed8ea5 и file=0x74371 site~0xffed8e79), поэтому `xref` скан
 | 超微450 | 0xfff3de10 | 0xfff57520 | 0xfff3e030 / 0x97ca8 / 0x220+0x97cc0 | 0xfffd5cf0 / 0x97ee0+0x1720 |
 
 ## R2. Purley-карта / дифф native↔HNX / таблица MMR
-(заполняют Tasks 3, 5)
+
+### R2a. Purley-референс (edk2-platforms) — карта чтения для дизасма Task 5
+
+Клон: `refs/edk2-platforms`, shallow. Отклонение от брифа: **master
+больше не содержит Purley** — платформа удалена 2026-03-03 (коммит
+`6e821d5` «Platform/Intel/PurleyOpenBoardPkg: Remove Purley Platform»),
+в т.ч. нет и `PurleySiliconBinPkg`; клон переключён на
+tag `202603-before-platform-removals` (`09608a9`) — последнее состояние
+до удалений. Все цитаты ниже — с этого тега (fallback с raw-URL не
+понадобился).
+
+Архитектурная граница открытого/закрытого подтверждена: открытый код
+(`Platform/Intel/PurleyOpenBoardPkg` + `Silicon/Intel/PurleyRefreshSiliconPkg`)
+готовит **политику** (`IIO_GLOBALS.SetupData`), программирование железа —
+закрытые FV из `PurleySiliconBinPkg`, которого в дереве нет — он лишь
+подключён DSC-ом: `refs/edk2-platforms/Platform/Intel/PurleyOpenBoardPkg/BoardMtOlympus/OpenBoardPkg.dsc:18`
+(`DEFINE PLATFORM_SI_BIN_PACKAGE = PurleySiliconBinPkg`) и FV-инклюды
+`OpenBoardPkg.dsc:148-150` (FvTempMemorySilicon / FvPreMemorySilicon /
+FvPostMemorySilicon). Grantley-аналог нашего PEIM'а `D71C8BA4-…` живёт
+именно в такой закрытой части.
+
+**(a) Структура бифуркации.** Единица таблицы уровня платы:
+
+```c
+typedef struct {            // refs/edk2-platforms/Platform/Intel/PurleyOpenBoardPkg/Include/IioBifurcationSlotTable.h:20
+  UINT8 Socket;
+  UINT8 IouNumber;
+  UINT8 Bifurcation;
+} IIO_BIFURCATION_ENTRY;    // :24
+```
+
+Кодировка значений (`Bifurcation` / `ConfigIOUx`):
+
+```c
+#define IIO_BIFURCATE_AUTO      0xFF  // refs/edk2-platforms/Silicon/Intel/PurleyRefreshSiliconPkg/Library/BaseMemoryCoreLib/Chip/Skx/Include/Iio/IioRegs.h:89
+// Ports 1D-1A, 2D-2A, 3D-3A                                    // :91
+#define IIO_BIFURCATE_x4x4x4x4  0    // :93
+#define IIO_BIFURCATE_x4x4xxx8  1    // :94
+#define IIO_BIFURCATE_xxx8x4x4  2    // :95
+#define IIO_BIFURCATE_xxx8xxx8  3    // :96
+#define IIO_BIFURCATE_xxxxxx16  4    // :97
+#define IIO_BIFURCATE_xxxxxxxx  0xF  // :98 — все порты IOU выключены
+```
+
+Хранилище в политике — per-IOU скаляры на сокет, setup-переменная
+`L"SocketIioConfig"` (`Silicon/Intel/PurleyRefreshSiliconPkg/Include/Guid/SocketIioVariable.h:15`):
+
+```c
+UINT8 ConfigIOU0[MAX_SOCKET]; // 00-x4x4x4x4, …, 04-x16 (P5p6p7p8)  // SocketIioVariable.h:46
+UINT8 ConfigIOU1[MAX_SOCKET]; // (P9p10p11p12)                     // :47
+UINT8 ConfigIOU2[MAX_SOCKET]; // (P1p2p3p4)                        // :48
+UINT8 ConfigMCP0[MAX_SOCKET]; // 04-x16 (p13)                      // :49
+UINT8 ConfigMCP1[MAX_SOCKET]; // 04-x16 (p14)                      // :50
+```
+
+Таблица платы (MtOlympus; TiogaPass —
+`BoardTiogaPass/Library/BoardInitLib/IioBifur.c:35-47`, тот же формат):
+
+```c
+IIO_BIFURCATION_ENTRY   mIioBifurcationTable[] =   // refs/edk2-platforms/Platform/Intel/PurleyOpenBoardPkg/BoardMtOlympus/Library/BoardInitLib/IioBifur.c:34
+{
+  { Iio_Socket0, Iio_Iou0, IIO_BIFURCATE_xxxxxx16 },  //Slot3: skt0/Iou0 Port1A x16     // :36
+  { Iio_Socket0, Iio_Iou1, IIO_BIFURCATE_xxxxxx16 },  //PCH uplink x16                 // :37
+  { Iio_Socket0, Iio_Iou2, IIO_BIFURCATE_x4x4x4x4 },  //Slot1/Slot2 (x8 slots)         // :38
+  { Iio_Socket0, Iio_Mcp0, IIO_BIFURCATE_xxxxxx16 },  //MCP x16                        // :39
+  { Iio_Socket0, Iio_Mcp1, IIO_BIFURCATE_xxxxxx16 },  //MCP x16                        // :40
+  { Iio_Socket1, Iio_Iou0, IIO_BIFURCATE_xxx8xxx8 },  //Slot4 x16 Port1A/1B, 1C/1D     // :41
+  { Iio_Socket1, Iio_Iou1, IIO_BIFURCATE_xxx8x4x4 },  //OCulink x8 + M.2 x4x4          // :42
+  { Iio_Socket1, Iio_Iou2, IIO_BIFURCATE_xxxxxx16 },  //Slot5 x16                      // :43
+  { Iio_Socket1, Iio_Mcp0, IIO_BIFURCATE_xxxxxx16 },  //MCP                             // :44
+  { Iio_Socket1, Iio_Mcp1, IIO_BIFURCATE_xxxxxx16 },  //MCP                             // :45
+};                                                                                      // :46
+```
+
+Лейн-мап/индексация портов: `IioRegs.h:100-137` — `PORT_1A_INDEX=1 …
+PORT_5D_INDEX=20`, `SOCKET_x_INDEX` кратен 21 (порт 0 = DMI), per-port
+PCI dev/func = 0x00/0x01/0x02/0x03 внутри IOU (`IioRegs.h:139-149`).
+
+**(b) Порядок инициализации IIO по открытым файлам.**
+
+PEI pre-mem, сторона платы (`BoardMtOlympus/Library/BoardInitLib/PeiMtOlympusInitPreMemLib.c`):
+
+1. загрузка setup-дефолтов из PCD, в т.ч. `PcdSocketIioConfigData` →
+   `SOCKET_IIO_CONFIGURATION` (`:455`);
+2. **GPIO раньше бифуркации** — `PlatformInitGpios()` (`:478`), детект
+   райзеров/слотов;
+3. публикация борд-таблиц через PCD — `IioPortBifurcationConfig()`
+   (`:382-397`, вызов `:482`): после GPIO, до `EarlyPlatformPchInit`
+   (`:488`);
+4. (закрытый FvPreMemorySilicon) силиконный uncore-PEIM зовёт колбэк
+   `SystemIioPortBifurcationInit` из SystemBoardPpi и сам программирует
+   железо.
+
+Колбэк политики (`Policy/SystemBoard/SystemBoardPei.c:111-141`),
+декларированный порядок в комментарии `:123-126` (defaults → overrides →
+hide), фактический:
+
+1. `SystemIioPortBifurcationInitCommon` (`:128`) — обнуление
+   `PEXPHIDE`/`HidePEXPMenu` всех портов (`:83-86`), извлечение
+   PCD-таблиц (`:94-97`) — **порт-енаблы (сброс)**;
+2. `SetBifurcations` (`:130` → `SystemBoardCommon.c:17-62`) — **бифуркация**:
+   борд-значение пишется в `ConfigIOUx[Socket]` ТОЛЬКО если setup-значение
+   == `IIO_BIFURCATE_AUTO`, т.е. приоритет **setup > борд-таблица**;
+3. `ConfigSlots` (`:131` → `SystemBoardCommon.c:107`) — слот-капабилитис,
+   `PEXPHIDE`/`HidePEXPMenu` из таблицы слотов (per-port enables);
+4. `OverrideConfigSlots` (`:132` → `SystemBoardCommon.c:246`) —
+   динамические оверрайды (GPIO/райзеры);
+5. `SystemHideIioPortsCommon` (`:136-140` → `SystemBoardCommon.c:613-625`)
+   — **lane-мап → hide**: для каждого `SocketPresent[]`
+   (`IioPlatformData.h:199`) по IOU0→IOU1→IOU2→MCP0→MCP1 (`:619-623`)
+   `CalculatePEXPHideFromIouBif` (`:341-469`) выводит `PEXPHIDE` портов
+   A-D из значения бифуркации (полный switch по 6 значениям, `:380-441`);
+   `IIO_BIFURCATE_xxxxxxxx` нормализуется в `x4x4x4x4` с комментарием —
+   единственное упоминание имени целевого регистра в открытом коде:
+   «Bifurcation_Control[2:0] in IOU Bifurcation Control (PCIE_IOU_BIF_CTRL)
+   register should be 000b ~ 100b» (`:443-447`).
+
+Результат — `IIO_GLOBALS` (`Chip/Skx/Include/Iio/IioPlatformData.h:291-294`,
+`IIO_CONFIG SetupData` + `IIO_VAR IioVar`; лейн-мапы портов
+`CurrentPXPMap/MaxPXPMap/LinkedPXPMap/…` и флаг `resetRequired` — в
+`IIO_OUT_DATA`, `:266-283`). Дальше — закрытая часть: программирование
+PCIE_IOU_BIF_CTRL/MMR, тренинг линков, ресет по `resetRequired`; в DXE
+`IioUdsDataDxe.c:46-62` переносит `IIO_UDS` из GUID-HOB в протокол
+`gEfiIioUdsProtocolGuid`.
+
+**(c) Вердикт: что переносится на Grantley (E5 v3), что нет.**
+Purley (Skylake-SP) — другое поколение: это карта для чтения дизасма,
+НЕ блюпринт.
+
+Переносится (концепты-гипотезы для проверки в Task 5):
+
+- скалярная per-IOU кодировка бифуркации малым енумом (0..4 + 0xFF=AUTO);
+  строка-якорь натива «Invalid IOUx Bifurcation =%x» (R1) указывает, что в
+  Grantley-PEIM'е есть та же валидация значения — искать в дизасме
+  сравнение диапазона и обработчик невалидного кода;
+- приоритет setup > борд-таблица (семантика AUTO=«не задано»);
+- порты, «съеденные» бифуркацией, прячутся (`PEXPHIDE` выводится из
+  `ConfigIOUx`), а не выключаются независимо;
+- паттерн «политика на плате / программирование в силикон-коде»: наш
+  UncoreInitPeim — закрытая Grantley-часть; ожидаемая структура входа —
+  setup-подобная конфигурация + борд-таблица;
+- IOU-группировка и port-index arithmetic (база = сокет × портов/сокет).
+
+НЕ переносится:
+
+- **регистровые АДРЕСА** — Purley/Skylake-SP MMR и `PCIE_IOU_BIF_CTRL`
+  адреса не имеют отношения к Grantley/Haswell-EP uncore; даже имя
+  регистра взято из комментария, адреса в открытом коде Purley вообще
+  отсутствуют. Адреса даст ТОЛЬКО дизасм Task 5;
+- состав/нумерация IOU и MCP (Purley: IOU0/1/2 + MCP0/1, 21 порт/сокет;
+  у Grantley другой расклад — проверять по дизасму, не переносить);
+- bus-раскладка, DMI/uplink-топология, «порт 0 = DMI»;
+- VMD/NTB/VPP/райзер-механика — фичи поколения Purley.
+
+### R2b. Дифф native↔HNX / таблица MMR
+(заполняет Task 5)
 
 ## B1. Пробник и сборка
 (заполняет Task 6)
