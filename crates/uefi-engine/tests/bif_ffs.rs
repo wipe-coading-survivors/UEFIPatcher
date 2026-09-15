@@ -3,10 +3,10 @@ use uefi_engine::ffs::{calculate_checksum8, uint24_to_u32};
 use uefi_engine::parser::file::guid_from_bytes;
 
 const FFS_TYPE_DRIVER: u8 = 0x07;
-const SECTION_PE32: u8 = 0x10;
-const SECTION_UI: u8 = 0x15;
-const PE_MACHINE_AMD64: u16 = 0x8664;
-const PE_SUBSYSTEM_BOOT_DRIVER: u16 = 11;
+const SECTION_GUIDED: u8 = 0x02;
+const LZMA_CUSTOM_DECOMPRESS_GUID: &[u8] = &[
+    0x98, 0x58, 0x4E, 0xEE, 0x14, 0x39, 0x59, 0x42, 0x9D, 0x6E, 0xDC, 0x7B, 0xD7, 0x94, 0x03, 0xCF,
+];
 
 #[test]
 fn bif_epa_probe_artifact_invariants() {
@@ -32,42 +32,29 @@ fn bif_epa_probe_artifact_invariants() {
     assert_eq!(size24, bytes.len(), "FFS size24 == file size");
 
     let mut off = 24usize;
-    let mut pe32: Option<&[u8]> = None;
-    let mut ui_name = String::new();
+    let mut guided: Option<(usize, usize)> = None;
     while off + 4 <= bytes.len() {
         let sec_size = uint24_to_u32([bytes[off], bytes[off + 1], bytes[off + 2]]) as usize;
         if sec_size < 4 {
             break;
         }
-        match bytes[off + 3] {
-            SECTION_PE32 => pe32 = Some(&bytes[off + 4..off + sec_size]),
-            SECTION_UI => {
-                let raw = &bytes[off + 4..off + sec_size];
-                let units: Vec<u16> = raw
-                    .chunks_exact(2)
-                    .map(|c| u16::from_le_bytes([c[0], c[1]]))
-                    .collect();
-                ui_name = String::from_utf16_lossy(&units)
-                    .trim_end_matches('\0')
-                    .to_string();
-            }
-            _ => {}
+        if bytes[off + 3] == SECTION_GUIDED {
+            guided = Some((off, sec_size));
         }
         off += (sec_size + 3) & !3;
     }
 
-    let pe = pe32.expect("no PE32 section");
-    assert_eq!(&pe[..2], b"MZ");
-    let lfanew = u32::from_le_bytes(pe[0x3C..0x40].try_into().unwrap()) as usize;
-    assert_eq!(&pe[lfanew..lfanew + 4], b"PE\x00\x00");
-    let pe_machine = u16::from_le_bytes(pe[lfanew + 4..lfanew + 6].try_into().unwrap());
-    let pe_subsystem = u16::from_le_bytes(pe[lfanew + 92..lfanew + 94].try_into().unwrap());
-    assert_eq!(pe_machine, PE_MACHINE_AMD64);
-    assert_eq!(pe_subsystem, PE_SUBSYSTEM_BOOT_DRIVER);
-    assert_eq!(ui_name, "BifEpaProbe");
-    let marker = b"BIF-EPA:".as_slice();
+    let (goff, gsize) = guided.expect("no GUIDED section");
+    assert_eq!(&bytes[goff + 4..goff + 20], LZMA_CUSTOM_DECOMPRESS_GUID);
+    let data_offset = u16::from_le_bytes([bytes[goff + 20], bytes[goff + 21]]) as usize;
+    assert_eq!(data_offset, 0x18);
+    let attrs = u16::from_le_bytes([bytes[goff + 22], bytes[goff + 23]]);
+    assert_eq!(attrs, 0x0001, "PROCESSING_REQUIRED");
+    let blob = &bytes[goff + data_offset..goff + gsize];
+    assert_eq!(blob[0], 0x5D, "LZMA props lc=3/lp=0/pb=2");
+    let declared = u64::from_le_bytes(blob[5..13].try_into().unwrap()) as usize;
     assert!(
-        pe.windows(marker.len()).any(|w| w == marker),
-        "probe markers missing in PE32"
+        (15000..30000).contains(&declared),
+        "LZMA declared size {declared} implausible for probe payload"
     );
 }

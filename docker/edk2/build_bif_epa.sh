@@ -71,4 +71,36 @@ while off + 4 <= len(d):
     off += (sz + 3) & ~3
 open(p, 'wb').write(bytes(d))
 PY
+python3 - "$OUT_DIR/BifEpaProbe.ffs" <<'PY'
+# нативная раскладка: 0 из 207 родных драйвер-файлов не имеют сырой PE32 — все
+# внутри GUIDED EE4E5898 (LZMA_CUSTOM_DECOMPRESS, DataOffset 0x18, Attr 1);
+# вердикты EPA-1/1b/1c: сырая PE32-секция = воспроизводимое зависание стыка PEI→DXE
+import lzma, struct, sys
+p = sys.argv[1]
+d = open(p, 'rb').read()
+secs, off = [], 24
+while off + 4 <= len(d):
+    sz = d[off] | d[off+1] << 8 | d[off+2] << 16
+    if sz < 4:
+        break
+    secs.append((d[off+3], d[off:(off + (sz + 3) & ~3)]))
+    off += (sz + 3) & ~3
+depex = next(b for t, b in secs if t == 0x13)
+inner = b''.join(b for t, b in secs if t in (0x10, 0x15))
+filters = [{'id': lzma.FILTER_LZMA1, 'preset': 9, 'dict_size': 1 << 24}]
+blob = bytearray(lzma.compress(inner, format=lzma.FORMAT_ALONE, filters=filters))
+struct.pack_into('<Q', blob, 5, len(inner))
+guided = bytearray(0x18 + len(blob))
+struct.pack_into('<I', guided, 0, 0x18 + len(blob))
+guided[3] = 0x02
+guided[4:20] = bytes.fromhex('98584eee143959429d6edc7bd79403cf')
+struct.pack_into('<HH', guided, 20, 0x18, 0x0001)
+guided[0x18:] = blob
+body = depex + bytes(guided)
+hdr = bytearray(d[:16]) + bytearray([0, 0xAA, 0x07, 0x00]) + bytearray(struct.pack('<I', 24 + len(body))[:3]) + bytearray([0x07])
+t = bytearray(hdr)
+t[16] = t[17] = t[23] = 0
+hdr[16] = (0x100 - (sum(t) & 0xFF)) & 0xFF
+open(p, 'wb').write(bytes(hdr) + body)
+PY
 ls -la "$OUT_DIR"
