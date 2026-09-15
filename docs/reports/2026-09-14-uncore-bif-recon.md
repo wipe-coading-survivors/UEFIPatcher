@@ -1378,3 +1378,26 @@ port 2 → x4x4 нужна только если оба Optane должны си
    0/DMI, 1A, 2A, 3A) — добраться менюшно нельзя; потребуются либо
    v15 (ан-suppress GOTO/force Port Enable), либо патч
    порт-енум-пути в RC/DXE.
+
+### K6. v15 собран: формы Port 2B/2C/2D раскрыты (движок, form-unlock)
+
+Двигковая машина formset-unlock (валидирована на этом же железе,
+REF3) применена к скрытым пер-портовым формам: GOTO на формы 87-89
+(2B/2C/2D) в форме 118 давились suppress-ref'ами на безымянных
+чекбоксах «порт присутствует» (var 0xc51/0xc52/0xc53, фабрично =01
+→ подавлены). `hii form unlock` ×3: expr `qid==0x0001` → `qid==0xFFFF`
+(pkg+0x5dcb/0x5de4/0x5dfd, 01 00→ff ff), LZMA-респек секции Setup
+(85189 байт диффа образа, контент-дифф = 6 байт). Артефакт
+`refs/amibcp/450x-native-v15-unhide-2bcd.bin` = v14 + 3 флипа,
+sha256 `5ac03eeca72d3c6ca4478032b190bebdf049b35894899faf290665762
+86214cb`. Вердикн повторно: gates '==0xFFFF' (flip '-'), формы
+87/88/89 visible=true; патчи v14 (NOP) и v13 (imm) на месте.
+
+План после прошивки v15 (TMM, владелец): пересев → вернуть IOU0=
+x4x4x4x4 + Debug=Normal (SOL) → в IIO0 Configuration появятся
+«Socket 0 PcieD02F1 - Port 2B» / 2C / 2D → на 2B (и при желании
+2C/2D) «PCI-E Port»=Enable (var 0x735/0x736/0x737, опции
+Auto/Enable/Disable; меню-сейв персистентен) → Save (ESC+0) →
+вердикт: lspci 00:02.1+ и две NVMe на порту 2. Semantика «PCI-E
+Port»: per-port enable-массив var+0x731+i — кандидат на то, что
+заставляет DXE публиковать sub-порты после сплита.
