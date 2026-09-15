@@ -1520,3 +1520,28 @@ Defaults** применён (диалог Yes), случайный ESC-выхо�
 (2) Глубокий статик-RE DEVHIDE-писца по всему образу. Машина в
 рабочем состоянии: обе NVMe в OS (PM983 на 2A за 00:02.0, SM2263 на
 3A), ОС грузится.
+
+### L6. v17 = «запечённые дефолты» (запрос владельца: F9 поднимает всё)
+
+Идея владельца: не пересеивать руками после каждого флеша — испечь
+рабочие значения в NVAR StdDefaults, чтобы F9 (или пост-флешовый
+пересев) поднимал всё сразу. `set-value` по обоим сторам (файлы
+CEF5B9A3 raw + 9221315B sec 0x19):
+
+| вопрос | офсет | было→стало |
+|---|---|---|
+| IOU0 (IIO PCIe Port 2), form 118 qid 0x243 | IntelSetup+0x531 | 00 (уже 0 — фабрика) |
+| Attempt Fast Boot / Fast Cold Boot, form 4 qid 0xb57/0xb58 | +0x10a8/9 | 00 / 02→00 |
+| Serial Debug Message Level, form 9 qid 0x1b | +0x2d6 | 01→02 (Normal) |
+| Port 2B «PCI-E Port», form 87 qid 0x393 | +0x735 | 00→01 (Enable) |
+| Launch PXE OpROM, form 10063 qid 0x8b | Setup+0x79 | 02→00 (Do not launch) |
+| Onboard NIC1/NIC2 ROM, qid 0x8c/0x8d | Setup+0x7a/7b | 01→00 ×2 |
+
+«Quick Boot» в этом BIOS = «Attempt Fast Boot» (RC formset, form 4).
+IOU0=0=x4x4x4x4 и Fast Boot=0 уже стояли в сторах — печка только
+дожала остальное. Артефакт `refs/amibcp/450x-native-v17-baked-defaults
+.bin`, sha256 `ffda1c9339729b3d7c0a0b479017c9299a8a51b336084ea20e4
+0e295d1baa6a3`, дифф 904 байта (LZMA-репак), NOP-ы v14 и флипы v15
+на месте. После TMM-флеша — один F9 → SOL без PXE-ромов («Press
+Ctrl+S» уходит), Debug=Normal с первого POST, сплит+Enable в дефолте.
+Дальше по плану §L5: BDW-EP свап-тест или глубокий RE DEVHIDE.
