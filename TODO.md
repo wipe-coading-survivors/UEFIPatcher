@@ -2305,26 +2305,40 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   работают (ESC[xx~ съедается как ESC), F1=ESCOP, сейв — вкладка
   Save & Exit; выход из SOL-навигации — сверять SGR-подсветку
   (1;37;40 = фокус) перед Enter.
-  **АНКЕР-РЕЗЮМЕ (2026-09-15 ночь, точка компактификации):** сага
-  дошла до финального выстрела. ГВАРД = presence-детект портов в
-  UncoreInitPeim (натив): таблица присутствия живьём (Debug=Normal)
-  клеймит Port 2 «Not Present» → скип записи 0x190 → регистр в
-  дефолте 0004=x16 (детали/адреса — отчёт uncore-bif-recon §финал,
-  коммит dc31109). **ЖДЁТ ПРОШИВКИ: v13 =
-  `refs/amibcp/450x-native-v13-present-bif0.bin`**, sha256
-  `76c81c054e71b9487d41aa0de1ff01164d884e41406767c42a934a94dec0c
-  ced` (v12 + 3 байта: PE 0x7f985 imm 0xffffff00→0 — запрос
-  присутствия не может ответить «отсутствует»). После прошивки
-  (владелец, TMM; при деградации BMC — `ipmitool mc reset warm`):
-  (1) ребут через SOL-риг (fifo /tmp/solin.fifo, F1=ESCOP-спам,
-  функции >F4 не работают); (2) в меню вернуть Serial Debug
-  Message Level=Normal (Intel RC Setup → Miscellaneous Config;
-  пост-флеш пересеивает в Minimum); (3) вердикт-бут: таблица
-  присутствия (ожид all Present), принты «IIO=%d, IOU0=%d»,
-  `setpci -s 00:02.0 0x190.w` — 0008=сага закрыта; зависание =
-  TMM-рекавери на v12. Доступы: IPMI `source ../IPMI-rd450x.txt`,
-  ssh root@172.16.15.155, движок `./target/debug/engine` +
-  `uefi-cli` (image open позиционный).
+  **АНКЕР-РЕЗЮМЕ (2026-09-15, обновление после v13-вердикта):**
+  v13 НЕ сработал (регистр 0004, принты v12≡v13, и на Debug=
+  Maximum цепь молчит) — и это вскрыло ДВЕ ошибки прошлой сессии:
+  (а) «таблица присутствия портов» = на самом деле DIMM/SPD-скан
+  (колонки Socket|Channel|DIMM|SMBUS Address) — «Port 2 Not
+  Present» был misread; (б) 0x7f8cf = SMBus-обёртка, патч v13 менял
+  код ошибки WRITE-операций. **НАСТОЯЩИЙ ЗАМОК (§I отчёта
+  uncore-bif-recon): OEM-гейт Lenovo PE 0xbc4a4** — ранняя
+  IIO-тренировка (единственный путь записи LCTRL 0x190 в этом
+  билде) включена ⇔ var[0x160b]≠0 («IIO PCIe Link on phase» =
+  «Before memory chipset init»; вопрос form#5 qid 0x20c, дефолт
+  «Post»=00) И CPUID-поколение ≠ Haswell-EP (0x306F→0; Broadwell
+  0x406F/0x5066→2). Наш E5-2620 v3 = Haswell-EP → замок закрыт
+  намертво; в 超微-PE этого гейта НЕТ. **ЖДЁТ ПРОШИВКИ: v14 =
+  `refs/amibcp/450x-native-v14-earlytrain-bif0.bin`**, sha256
+  `58b74498af9b4b937317540bec17305a1203f08ac2436c21ad819d61f8ad
+  8452` (v13 + 4 байта NOP: PE 0xbc4ab `74 12`→`90 90`, PE
+  0xbc4b4 `74 09`→`90 90`; image 0xf20fb3/0xf20fbc) — флаг
+  cfg+0x2273b безусловно 1. Альтернатива владельца (без патча):
+  Broadwell-EP CPU + меню «IIO PCIe Link on phase»→«Before memory
+  chipset init» (+ IOU0=x4x4x4x4 уже сохранён; SOL-меню путь:
+  Intel RC Setup → IIO Configuration, вопрос на форме ниже первого
+  экрана). После прошивки v14 (TMM; при деградации BMC —
+  `ipmitool mc reset warm`): (1) ребут через SOL-риг (fifo
+  /tmp/solin.fifo, F1=ESCOP-спам, функции >F4 не работают); (2)
+  вернуть Serial Debug Message Level=Normal (Miscellaneous Config;
+  пересев сбросит) и IOU0=x4x4x4x4 (IIO0 Configuration); (3)
+  вердикт-бут: первые в жизни «IIO Early Link Training
+  Starting...», «Socket[0] is socketValid=1», «IIO=%d, IOUx=%d»
+  (ждём IOU0=0), `setpci -s 00:02.0 0x190.w` — 0008=сага закрыта;
+  зависание = TMM-рекавери на v13. Доступы: IPMI `source
+  ../IPMI-rd450x.txt`, ssh root@172.16.15.155, движок
+  `UEFIPATCHER_SOCK=/tmp/uefipatcher.sock ./target/debug/engine`
+  + `uefi-cli`.
 * [x] **скриншот AMIBCP на C275 (23:02:28): безымянный корень +
   корреляция формсетов со StdDefaults-переменными** — безымянный
   корень = следствие бездескрипторного образа (нет региона/имени
