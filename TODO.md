@@ -3581,3 +3581,31 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   спеки §7 сейчас целится в Chipset 10008 (вложенный пункт), этот —
   топ-уровневый. Запрос владельца (2026-09-12).
 
+
+## §O8-анкер (2026-09-16, вечер): v21-трилока на прошивку
+
+- Состояние: риг на v20c (стабилен). v21 ГОТОВ: `refs/amibcp/
+  450x-native-v21-trilock.bin` sha256 e840efd6b0e3df5c92b44bc734db
+  ee9ff219942ac051610393c51a9bb73df119, дельта от v20c = 3 байта
+  ({0xe91d7c, 0xe94c6c, 0xe96460}: imm cmp $2→$ff — скип-гейт
+  cfg[0x448+port]==2 мёртв). hack/uncore_trilock_patch.py (--check).
+  v20c уже содержит v17+v18+v19 — лейндж полный.
+- Открытия дня: DXE/SMM исчерпаны (только IioInit трогает IIO ECAM);
+  UBOX+0x80=0x00 живьём не влияет (clr_hdrmfd-декорация, даташит
+  E5v4 §6.6.17: Bit0=Dev1/Bit1=Dev2/Bit2=Dev3); шина 0xFF =
+  CPUBUSNO(1) живая рантайм (dev11=R3QPI 6F36/6F37/6F81, дамп
+  /tmp/busff.json на риге /tmp/busff.json тоже), dev8-10 (QPI-агенты)
+  скрыты сами — там живёт DEVHIDE (офсет NDA, только QPIMISCSTAT
+  публичен); даташеты E5v4/E7v4/D1500 Vol.2 в /tmp/e5v4.txt, e7v4.txt,
+  d1500vol2.txt (+pdf); таблицы 6-2..6-4: при x4x4x4x4 активны фн 0-3
+  (железо создаёт, прячет RC). NVRAM-магазин @0x800000 (NVAR,
+  CEF5B9A3), IntelSetup-переменной НЕТ → политика вычисляется при
+  буте из AMI-Setup (мост LoadHob 12/16 + NVRAMPei 12/45, GUID
+  EC87D643; PPI 2AB86EF5). cfg+0x448: RC-дефолт все 00 (VA
+  0xffe70ec0+0x448), значение 2 = «порт выключен политикой».
+- После TMM v21: BMC power cycle → SOL (solrig.py, спам ESC+1 раз в
+  0.3с) → F9 (ESC+9+Enter) → F10 (ESC+0+Enter) → ОС → ssh
+  root@172.16.15.155: lspci|grep 00:02 + сырой ECAM 1B/2B/2C/2D +
+  UBOX+0x80 + NVMe. Развилки: 2B есть → охота закрыта (минимизировать
+  патч); нет → писец DEVHIDE в pre-mem MRC-части nat-uncore (искать
+  вычисляемые записи в QPI-пространство, донор-дифф sm по.writer'ам).
