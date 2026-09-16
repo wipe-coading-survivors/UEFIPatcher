@@ -2602,6 +2602,27 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   + python). Вердикт-развилки: 2B нет → декод-гейт вне IioInit → (e)
   PciBus DXE (скан /tmp/dxe-scan на 0x28080/ECAM) + SMM; multifunction
   врёт → clr_hdrmfd (§L5); появился+NVMe — охота закрыта.
+  **§O6 (2026-09-16, ночь): v20 и v20b — оба DXE-вис, v20c ГОДЕН.**
+  v20 (NOP je): срезал путь width-масок e201 и у TRAINED-портов (2A/3A)
+  → 0x8cb=1 у живых → becf-инициализация портов не выполнилась → вис.
+  v20b (кейв): пещера легла в slack ЗА VirtualSize .text (vsize 0x17748,
+  кейв @0x179C8 = 0x280+0x17748 — первый байт за границей) — DXE грузит
+  по vsize → jmp в нули → вис. УРОК: пещеры только внутри vsize или с
+  раздувом vsize. **v20c** = v19 + кейв + VirtualSize .text 0x17748→
+  0x17760 (=raw, стык в vaddr следующей секции, SizeOfImage не тронут),
+  29 байт PE, `hack/iioinit_dlactive_cave_patch.py`, sha256 046b50779ee
+  c4f388c724a3ea634cd9fd00f9361cb80fef7762aa7a7ddd65e01. **§O7: v20c в
+  железе — POST до конца, ОС стабильна** (рабочий образ; сантехника
+  скрытым портам доставлена), но после F9: lspci 00:02 = только .0,
+  сырой ECAM 1B/2B/2C/2D = ffff → **декод-гейт НЕ в IioInit, IioInit
+  исчерпан**. SOL-процедура F9 отработана: вход в Setup = СПАМ ESC+1
+  (F1) каждые 0.3с через хвост POST до «Aptio Setup Utility» (DEL и
+  одиночный Ctrl+S не сработали; Ctrl+S в окно NIC-промпта открывает
+  меню сетевухи — выход ESC), далее ESC+9→Enter→ESC+0→Enter. SOL-риг =
+  `hack/solrig.py` (pty-мост; ipmitool требует TTY); зомби-payload →
+  `sol deactivate`, «closed by BMC» → тоже сперва deactivate; упорные →
+  `mc reset warm`. След. фронт: (e) PciBus DXE + SMM + потребители
+  cfg[0x112]/cfg[0x964].**
 * [x] **скриншот AMIBCP на C275 (23:02:28): безымянный корень +
   корреляция формсетов со StdDefaults-переменными** — безымянный
   корень = следствие бездескрипторного образа (нет региона/имени
