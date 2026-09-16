@@ -104,6 +104,16 @@ cd webui && npm run check           # svelte-check (цикл 5+7)
 - **После каждого коммита** — `cargo test -p <crate>` и `cargo clippy -p <crate> -- -D warnings`.
 - **Не пиши весь крейт за один присест** — задача за задачей, коммит за коммитом.
 
+## Работа с IPMI/SOL (риг rd450x)
+
+- Креды НЕ в репо: `source ../IPMI-rd450x.txt` → переменные `IP` (BMC), `L` (login), `P` (password). Не печатать значения.
+- SOL-мост: `hack/solrig.py <fifo> <log>` (fifo→pty→`ipmitool sol activate`→лог; прямые редиректы падают на tcgetattr). Клавиши: `echo -ne '\x1bN' > <fifo>`.
+- **F-клавиши через SOL эмулируются как ESC+<N>**: F1=`\x1b1`, F9=`\x1b9`, F10=`\x1b0`; Enter=`\r`; Ctrl+S=`\x13`.
+- **Ориентир входа в Setup — промпт `Press <F1> ...`** (F1 = вход в Setup). Промпт `Press Ctrl+S` — это OptROM сетевух, после F9 он исчезает, по нему не ориентироваться.
+- F9 (Optimal Defaults) после флеша обязателен: пересева печёных дефолтов самим флешем не наблюдается.
+- power cycle рвёт SOL — перезапустить мост; зомби-payload («already active on another session») лечится `sol deactivate`, упорные — `mc reset warm` (BMC ~1 мин, хост не трогается).
+- Хост рига: `ssh root@172.16.15.155`. ECAM-пробы из ОС — поштучные dword (python mmap /dev/mem r+b, `iomem=relaxed` уже в ostree-конфиге).
+
 ## Старт
 
 Начни с Цикла 1, Task 1: открой `docs/superpowers/plans/2026-07-22-uefi-engine.md`, найди `### Task 1`, выполняй по шагам до коммита. Затем Task 2, и так далее.
