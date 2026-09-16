@@ -2573,6 +2573,35 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   читает FF). SOL: вход Setup = **Ctrl+S (0x13)** по экранному промпту,
   F9=ESC+9, F10=ESC+0, диалоги Enter; риг = fifo+ipmitool (креды в
   IPMI-rd450x.txt, не печатать). Машина в строю, ОС грузится.
+  **§O5 (2026-09-16, вечер): v20 собран и ждёт TMM.** (b) резак найден:
+  0x121c8 = IsDlActive, для скрытого порта LNKSTA@0xA2 читает FFFF →
+  (>>13)&1=1 → ложный «линк активен» → writer @0xdff4 срезает 0x8cb=1
+  (je @PE+0xe1ba) → d2d0-скип (зеркало PEI VID-зонда §O); 0x1624c =
+  класс-предикат 06:80:00, скрытых не режет. (c) ветка 0xbecf (функция
+  0xbd10, циклы ширин r15b∈{1,2,4}) = ОСНОВНОЙ init-путь бифурцированных
+  RP (0x8cb==0 && lanes≠0) — УЖЕ выполняется для 2B после v19+F9, все
+  записи в ECAM самого скрытого порта (RP+0x94/0xB4/COMMAND/LNKSTA→
+  cfg+0xebb/0xee7…). (d) аудит всех ECAM-записей (хелперы 0x914c/0x918c/
+  0x91d0): publish RP+0xA0.6 в DXE НЕ пишется (три писателя 0xA0 = бит
+  0x20 retrain). Донор-дифф: iioinit-{x10drh,sm450}.pe извлечены
+  (refs/amibcp/, экстрактор = FFS-GUID→GUIDed-LZMA→PE32), writer
+  семантически идентичен (0x8cb/0x448/0xDA3/0xDA4 те же, presence 0xF97/
+  bus 0xE7C/0xAC4 — сдвиг версии) → IioInit НЕ OEM-кастом. **v20** = v19
+  + NOP je @IioInit-PE+0xE1BA (`74 45`→`90 90`, 2 байта) — writer
+  игнорирует ложный DL_Active, скрытые получают 0x8cb/0x964=1 → полный
+  d2d0-прумблинг (семантика донора для пустых портов). Сборка ДВИЖКОМ:
+  `node replace 8/17/1/0 --artifact <PE> --body-only` + `image save` —
+  **write-режим (репак GUIDed-LZMA) уже реализован** (builder::
+  build_recompressed_guided + compress_lzma_fit), догадка анкера №4
+  устарела; python-дубль `hack/iioinit_plumbing_patch.py` (важно:
+  alone-заголовок — python пишет usize=-1, EDK2 требует точный; пэд
+  нулями до исходного размера секции). `refs/amibcp/
+  450x-native-v20-iioinit-plumbing.bin`, sha256 84bad780550b99dd0c0ea7c
+  849c4c7ae6a946829588c25942d48401e6303d678, дельта 36006 байт строго в
+  payload секции, PE-дельта vs native = ровно 2 байта (проверено lzma-rs
+  + python). Вердикт-развилки: 2B нет → декод-гейт вне IioInit → (e)
+  PciBus DXE (скан /tmp/dxe-scan на 0x28080/ECAM) + SMM; multifunction
+  врёт → clr_hdrmfd (§L5); появился+NVMe — охота закрыта.
 * [x] **скриншот AMIBCP на C275 (23:02:28): безымянный корень +
   корреляция формсетов со StdDefaults-переменными** — безымянный
   корень = следствие бездескрипторного образа (нет региона/имени
