@@ -3673,3 +3673,25 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   2B+0xFC:=0 / QPILL0+0xFC:=0 — no-op (decode-off). Дальше: PECI-путь
   через AST2400 BMC (RdPCIConfig/WrPCIConfig к скрытым, IPMI OEM raw)
   — читать DEVHIDE и писать анхайд мимо ECAM.
+- [2026-09-17 §U-анкер] Datasheet E5v4 Vol.2 расколол механизм: DEVHIDE
+  (§1.2.1.5) — «BIOS must hide unused RPs via DEVHIDE in Intel QPI
+  Configuration Register space»; pcie_iou_bif_ctrl=+0x190 подтверждён
+  (x4x4x4x4 ⇒ все 4 фн АКТИВНЫ ⇒ 2B/2C/2D именно спрятаны, не
+  отключены). Кандидат R3QPI0 (FF:0B.0, 6F81) +0xC0/+0xD0=0x11111164
+  ЗАКРЫТ живым обратимым флип-тестом: регистр RW, но при обеих копиях=0
+  (1.5 с) все скрытые остались FF; восстановлено, инварианты целы.
+  Дифтест раскладкой (3A x16→x8x4x4) значение не изменил. Трейс/корпус:
+  обращений к 0B-0D+0xC0/0xD0 нет, литерала 0x11111164 нет. UBOX 05.0:
+  +0x90=mmcfg_base (0x80000000 ✓), +0x180-0x1B0 = VT-d (не хайд);
+  00:00.0/05.1/05.2 сдамплены — масок нет. Определение DEVHIDE —
+  только в E5 v2 #329188 (PDF недоступен: Akamai-гео/wayback-429) или
+  NDA EDS. PECI-разведка: BMC жив, CPU1 Temp=42°C через PECI (петля
+  работает); wire = RdPCIConfigLocal 0xE1 / WrPCIConfigLocal 0xE5
+  (bus/dev/fn/reg отдельными полями, «even before BIOS enumeration»);
+  OEM-пасстру на TSM 2.36 не найден (0x3a 0x31 = C1; 0x32 0x91 =
+  Nuvoton-PWM; MIB-гайд пуст). Дальше: (1) TSM-бандл ds102390 —
+  скачать браузером (API 403), статику грепать на PECI-пасстру;
+  (2) зеркало E5 v2 #329188 → точный offset DEVHIDE; (3) при ожившем
+  PECI-чтении — дифф 2A/2B конфига → бит хайда в скрытом пространстве
+  → писать его же через PECI. /dev/mem-уроки: только os.pread/pwrite
+  (mmap-слайс: приоритет-баг и EINVAL-при-прошившей-записи).
