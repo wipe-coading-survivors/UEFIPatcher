@@ -3714,3 +3714,49 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   форумах); (в) если движок бит — перепрошить BMC на 2.21/3.24
   (Yafuflash linux64 с хоста, management-plane only, решение за
   хозяином). Дистро-7z без rar/cramfs — брать статический 7zz.
+
+## ШПАРГАЛКА: BMC RD450x (TSM, AMI-стек) — команды и факты (2026-09-18)
+
+Креды: `source ../IPMI-rd450x.txt` → IP/L/P (не печатать). Все
+ipmitool — через `-I lanplus -H $IP -U $L -P $P`.
+
+### AMI OEM netfn 0x32 (живые на TSM 2.36)
+- `raw 0x32 0xBF …` — **PECI-пасстру** (AMIPECIWriteRead, ADMIN):
+  - Data[0]=селектор 0-9; Data[1]=instance (/dev/peci0);
+  - sel1 ping: `raw 0x32 0xBF 0x01 0x00 0x30 0x00 0x00` (работает);
+  - sel0 generic (ровно 24 байта):
+    `[00, inst=00, target=0x30, awfcs=00, domain=00, wlen, rdlen,
+    frame…]` — frame = PECI write-frame (cmd + params);
+  - примеры (пока все = CC 0xCC, движок не отвечает):
+    GetTemp: `… 00 00 30 00 00 01 02 01 (+нулевой пад до 24)`;
+    GetDIB: `… 00 00 30 00 00 01 08 F7`;
+    RdPCIConfigLocal (2A reg0, CF8=0x80001000, rdlen=4):
+    `… 00 00 30 00 00 06 04 00 00 00 10 00 80 (+пад до 24)`
+    (cmd 0xE1 новый/0x14 legacy; для 2B CF8=0x80001100);
+  - CC-коды: 0xC1=нет/фича выкл, 0xC7=длина (sel0 ровно 24!),
+    0xCC=селектор мусор/движок -1.
+- `raw 0x32 0xA1 0x00/0x01` — ControlDebugMsg (ADMIN), 0xA2 — статус
+  (живой, вернул 00); 0xC4/0xC5 — Get/SetADConf; 0x9E — что-то живое.
+- Внутри прошивки (rootfs-v221) таблица: cmd→{priv,fnptr}; sel-мапа:
+  0=generic, 1=ping, 2=read_temp, 3=get_dib, 4/5=rd/wr pkgconfig,
+  6/7=rd/wr iamsr, 8/9=rd/wr pciconfig(local/endpoint по Data[5])
+  — 6-9 в билде битые (NULL out-ptr), использовать sel0.
+
+### BMC SSH-CLI (проверено, тот же логин/пароль)
+`ssh $L@$IP` → SMASH CLP: cd/show/set/load/dump/reset/start/stop/
+version/eventtrap/ad/ldap. Raw-IPMI и PECI-команд НЕТ (OEM-цели
+только ad/ldap/eventtrap).
+
+### Версии/прошивка BMC
+- На риге: **TSM 2.36** (mc info; aux 15.13) — НОВЕЕ всего архива:
+  Tencent 2.17/2.21 = 2016-12-15, Baidu V3.24.1145 = 2016-12-19
+  (V3.x — отдельная OEM-ветка Baidu-ску, не «новее» пофиксов, но
+  **peci.ko/peci_hw.ko в V3.24 ДРУГИЕ** — свой билд драйверов).
+- Прошивка = DOWNGRADE/кросс-ветка: Yafuflash (linux64) с хоста:
+  `./Yafuflash -d 0x00 -cd -non-interactive -full R2_21_1095.ima`;
+  Readme: после прошивки обязателен **AC-cycle** (питание), web-кэш
+  чистить. SOL умрёт на время прошивки; конфиг BMC может слететь
+  (IP/юзеры) — иметь под рукой IPMI-доступ и LOM MAC.
+- Образы: refs/fw/bmc/{R2_17_1086,R2_21_1095,R3_24_1145}.ima +
+  rootfs-v221 (полная cramfs). Windows-вариант прошивки требует
+  сначала `raw 0x32 0xcb 0x4 0x1; raw 0x32 0xcb 0xa 0x1` (VM-enable).
