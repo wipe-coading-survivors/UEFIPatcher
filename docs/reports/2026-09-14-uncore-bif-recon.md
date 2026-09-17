@@ -2693,3 +2693,67 @@ fsck.cramfs валится на mknod без рута).
   tl-v22.txt, дампы шины-0.
 - Дистрибутивный 7z (Fedora) БЕЗ rar-кодека → «Cannot open as
   archive»; лечится статическим 7zz c 7-zip.org.
+
+### W. Фронт прошивки BMC: три механизма отвалились, PECI-движок ждёт AC-cycle (2026-09-18, ~02:00)
+
+#### W.1. PDF E5 v2 #329188 (хозяин добыл, refs/docs/e5v2-vol2.*)
+
+§1.2.1.5 Device Hiding — официальные формулировки:
+- «Devices that are hidden from host configuration space via the
+  DEVHIDE register are **not hidden from the configuration space
+  as seen from the JTAG/SMBus port of an IIO**. All PCI devices
+  are always visible via JTAG/SMBus»;
+- «turned off» устройства скрыты и от PECI/JTAG навсегда — а
+  наши 2B/2C/2D именно «hidden, not turned off» (линк-трейнинг
+  прошёл) ⇒ **PECI-видимость гарантирована архитектурно**;
+- «The only change DEVHIDE register makes is to abort Type0
+  configuration accesses» — чистый гейт видимости.
+Определения регистра (device/offset/биты) в публичном E5 v2
+тоже НЕТ (только проза; R3QPI на E5 v2 = Device 19 Function 4,
+глава 5 — но без hide-регистра). DEVTOMAP в тексте отсутствует.
+Вывод: стейт-оф-арт подтверждён, офсет остаётся NDA/эмпирика.
+
+#### W.2. Попытки прошивки BMC (хозяин: «шьем, но не перегружаем пока»)
+
+Цель — V3.24.1145 (Baidu-ветка, peci.ko/peci_hw.ko пересобраны =
+тест гипотезы «движок бит на стороне драйвера 2.36»).
+1. **KCS** (`Yafuflash -kcs -non-interactive -full
+   [-preserve-config] …`): тул 3.32.1 (AMI, 2013) **сегфолтится**
+   ~20с после старта на ядре рига (6.x), успевая отправить
+   BMC «enter Firmware Update Mode» → повторные запуски RC=209
+   «already in Update Mode». Флаг дважды снимался `mc reset cold`
+   (BMC возвращается ~70с, прошивка 2.36 цела).
+2. **Network medium** (`-nw -ip …`): «Creating IPMI session …
+   Failed» — RMCP+-стек 2013 года не поднимает сессию к TSM 2.36
+   (ipmitool lanplus при этом работает).
+3. **WebUI**: порты 80/443 BMC закрыты ОТОВСЮДУ (и с рабочей
+   станции, и с самого рига) — веб-сервис в этой прошивке
+   выключен. **SSH-CLP**: бэкенд мёртв («Server is not running»)
+   — стрипнутый hyperscale-билд.
+Прочее: strace на риге нет (ostree), дамповки у Yafuflash нет
+(откат = шить V2.21); TSM 5.38 Inno-бандл (2020) не распакован
+(innoextract недоступен; в строках linux-флешера не видно).
+
+#### W.3. Состояние после ночи (важно)
+
+- BMC по IPMI полностью жив: 2.36, sdr/temps, 0x32/0xA2 → 00,
+  sel0-гейт (пустой 24Б) → CC 00.
+- **PECI-движок деградировал**: sel1 ping в начале ночи
+  возвращал CC 00 (5-байтовый запрос!), после update-mode-
+  тудлов+ресетов — 3Б-запрос проходит гейт, но HAL -1 (CC 0xCC),
+  5Б теперь = 0xC7 (таблица длин словно сменилась — возможно,
+  dual-image reselect). Т.е. тракт «инстанс→движок» теперь
+  падает и на ping. Восстановление — **AC-cycle** (он же обязателен
+  после любой прошивки) — отложен хозяином до окна.
+- Хост ни разу не трогали (только management-plane).
+
+#### W.4. План
+
+1. (хозяин) окно на AC-cycle → проверка sel1 ping до/после.
+2. YAFU-реплеер на python поверх ipmitool lanplus: в Yafuflash
+   832 именованных функции (не стрипнут) — снять enter-update/
+   chunk-upload/activate последовательность (netfn 0x32) и
+   прошить V3_24_1145.ima без сегфолтящего тула. Затем AC-cycle,
+   mc info → 3.24, тест PECI sel0 (GetTemp → RdPCIConfigLocal
+   2B CF8=0x80001100).
+3. Если V3.24 не оживит движок — V2_21 тем же реплеером.
