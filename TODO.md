@@ -3695,3 +3695,22 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   PECI-чтении — дифф 2A/2B конфига → бит хайда в скрытом пространстве
   → писать его же через PECI. /dev/mem-уроки: только os.pread/pwrite
   (mmap-слайс: приоритет-баг и EINVAL-при-прошившей-записи).
+- [2026-09-18 §V-анкер] BMC.zip (пароль overclockers) расколот: три
+  образа RD450X (Tencent 2.17/2.21, Baidu 3.24), cramfs@0x150040,
+  полный rootfs в refs/fw/bmc/. Найден и ЖИВ на риге AMI OEM
+  PECI-пасстру: **ipmitool raw 0x32 0xBF** (AMIPECIWriteRead, ADMIN;
+  соседи 0xA1/A2/C4/C5 тоже живы). Запрос: Data[0]=селектор 0-9,
+  Data[1]=instance(/dev/peci0), sel0=generic ровно 24Б:
+  [00 inst target=0x30 awfcs domain wlen rdlen frame…] — весь стек
+  расколот статику (oem-lib→HAL→libpeci msg 0x4B→peci.ko ioctl#1→
+  ast_peci_send_cmd HW {rdlen<<16|wlen<<8|target}; селекторы 6-9
+  битые out-ptr'ом — мёртвый код). Живьём: ping (sel1) = успех;
+  пустой generic = успех; ЛЮБОЙ ненулевой кадр (GetTemp F1/01,
+  GetDIB F7/00, RdPCICfgLocal E1/14) = мгновенный -1 (CC 0xCC,
+  0.14с — не 1с-таймаут драйвера). Формат подтверждён peciapp-ом
+  (дизасм). userland-PECI идентичен во 2.17/2.21/3.24. Гипотезы:
+  (а) флаги awfcs/retry Data[3]; (б) PECI-движок TSM 2.36 не говорит
+  с CPU (сиптом-матч: RD450x «отрицательная CPU-температура» на
+  форумах); (в) если движок бит — перепрошить BMC на 2.21/3.24
+  (Yafuflash linux64 с хоста, management-plane only, решение за
+  хозяином). Дистро-7z без rar/cramfs — брать статический 7zz.

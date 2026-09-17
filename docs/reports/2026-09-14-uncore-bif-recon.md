@@ -2600,3 +2600,96 @@ E5 v2 #329188 (нужно зеркало PDF). Если PECI-чтение 2B о�
 дифф 2A/2B даёт бит хайда прямо в скрытом пространстве, и его же
 писать через PECI. Флеш-патч («жечь») — резервный путь после
 того, как станет ясно, КТО и ЧТО пишет в DEVHIDE.
+
+### V. Фронт PECI-пасстру: AMI OEM 0x32/0xBF найден, жив, расколот до провода (2026-09-18 ночь)
+
+#### V.1. Источник прошивок (хозяин)
+
+`refs/fw/overclokers/BMC.zip` (пароль **overclockers**): три
+полных BMC-образа RD450X — Tencent V2.17/V2.21, Baidu V3.24
+(SVT-дропы) + гайд + ipmitool. `tsm_v538-434_enduser.exe` —
+Inno Setup (не распакован, не нужен). Каждый rar: `*.ima` (32MB
+сырой флеш AST2400) + Yafuflash (linux64!) + flash.sh. Образ:
+[ARM bootblock w/ DEADBEEF]…[cramfs @0x150040 «Compressed
+ROMFS», ~16MB rootfs]. Извлечено в `refs/fw/bmc/{R2_17,R2_21,
+R3_24}.ima + rootfs-v221/` (cramfs распакована через свежий
+статический 7zz — дистрибутивный 7z без rar/cramfs-кодеков;
+fsck.cramfs валится на mknod без рута).
+
+#### V.2. Стек PECI в прошивке (статика, всё ARM EABI5 stripped)
+
+- `usr/local/lib/libipmiamioempeci.so.1.1.0` — AMI IPMI-OEM
+  «**PECI over IPMI**» (фича CONFIG_SPX_FEATURE_GLOBAL_PECI_OVER_
+  IPMI): экспорт `g_PECI_CmdHndlr` (.rodata 32B) + `AMIPECIWriteRead`.
+- Таблица команд: записи по 16 байт `{u8 Cmd; u8 Priv; u16 rsvd;
+  fnptr; u32 mask1=0xaaaa00XX; u32 0x0000ffff}` + zero-терминатор;
+  netfn НЕ хранится (общий AMI OEM): **0x32/0xBF = AMIPECIWriteRead
+  (ADMIN)**; соседи: 0x32/0xA1 ControlDebugMsg(ADMIN),
+  0x32/0xA2 GetDebugMsgStatus(USER), 0x32/0xC4/C5 Get/SetADConf.
+- Запрос: `Data[0]=селектор 0-9`; таблица длин
+  {18,3,5,5,a,e,a,e,c,10}б; `Data[1]` = /dev/peci%instance И
+  arg0(=msg[1]=instance); затем open("/dev/peci%d", O_RDWR).
+- Селекторы → слоты g_HALPECIHandle (.bss 52B = 13 fnptr,
+  заполняется dlsym-ами ПО ПОРЯДКУ ИМЁН из дескриптора
+  g_HALPECIInit): 0=generic_cmd, 2=read_temp, 3=get_dib,
+  4/5=rd/wrpkgconfig, 6/7=rdi/wriamsr, 8/9=rd/wrPCIConfig
+  (переключатель local/endpoint в Data[5]), 1=ping(+0x28).
+  Селекторы 6/7/8/9 в этом билде огрызком: out-ptr в 8-м аргументе
+  передаётся нулём → обёртки всегда -1 (CC 0xCC) — мёртвый код.
+- `libpeci.so.1.12.0` (идентичен во всех трёх версиях, как и
+  oem-lib): msg-структура 0x4B: `[0]=target(0x30), [1]=instance,
+  [2]=domain, [3]=wlen(≤0x11), [4..]=write-frame{cmd,params},
+  [0x24]=rdlen(≤0x14), [0x25..]=ответ, [0x45/0x46]=awfcs/retry,
+  [0x47-0x4A]=FCS-статусы`. Сабмит: snprintf(/dev/peci%d,
+  msg[1]) → open → ioctl(fd,1,msg) → copy_to_user.
+- `peci.ko` («Pilot-II SOC PECI Common Driver», AMI): ioctl#1
+  единственный; валидация wlen≤0x11, rdlen≤0x14; вызов hw-ops.
+- `peci_hw.ko`/`ast_peci_send_cmd`: HW-регистр команды =
+  {rdlen<<16|wlen<<8|msg[0]}, write-frame msg[4..] → FIFO,
+  ответ FIFO → msg[0x25..], FCS-статусы → msg[0x47..0x4A];
+  wait_event 1000мс.
+- `peciapp` (usr/local/bin) — тестовый клиент, usage
+  «-d dev -t target(48) -m domain -g temp -C/-w addr -l local»;
+  его вызовы подтверждают ABI generic=(dev,target,domain,flag,
+  awfcs,txbuf,txlen,rxbuf,rxlen).
+
+#### V.3. Живые пробы на риге (TSM FW 2.36, lanplus)
+
+- **`raw 0x32 0xBF` ЖИВ**: пустой → CC 0xCC (валидация селектора,
+  буква-в-букву как в дизасме V2.21); 0x32 0xA1→0xC7,
+  **0xA2→00 (успех, вернул 00)**, 0xC4→0x80, 0x9E→0xC7 —
+  AMI-OEM netfn 0x32 активен, фича PECI-over-IPMI включена
+  (иначе было бы C1).
+- **sel1 ping (01 00 30 00 00) → CC 00** — тривиальная
+  транзакция проходит: /dev/peci0, ioctl, стек — ок.
+- **sel0 generic, ровно 24 байта** `[00, inst=0, target=0x30,
+  awfcs=0, domain=0, wlen, rdlen, frame…]`: пустой кадр (wlen=0,
+  rdlen=0) → CC 00 (0 байт). НЕНУЛЕВЫЕ кадры (GetTemp F1/01,
+  GetDIB F7/00, RdPCIConfigLocal E1/14 с CF8=0x80001000, все
+  варианты порядка байт и wlen 1/2/5/6/7) → **мгновенный CC 0xCC**
+  (HAL -1; 0.14с — НЕ 1с-таймаут драйвера). peciapp-дизасм
+  подтверждает: формат мой верен один-в-один.
+- Версионный дифф: libipmiamioempeci.so и libpeci.so
+  байт-идентичны в 2.17/2.21/3.24 (отличаются только .ko) ⇒
+  2.36 почти наверняка тот же ABI.
+
+#### V.4. Гипотезы остаточного -1 (в порядке проверки)
+
+1. Флаги awfcs/retry (Data[3] / r3) — попробовать ненулевые.
+2. **PECI-движок TSM 2.36 не общается с CPU**: сиптом-матч —
+   RD450x с «отрицательной температурой CPU» (Reddit, BMC не
+   читает PECI → фан 100%); CPU1 Temp=42°C может идти не с PECI.
+3. Если движок бит → **перепрошить BMC на V2.21/V3.24 из этого
+   же пакета** (Yafuflash linux64 работает с хоста через
+   /dev/ipmi*, хост не трогается; SOL на время прошивке умрёт —
+   это management-plane only). Решение за хозяином.
+
+#### V.5. Артефакты
+
+- `refs/fw/bmc/`: три .ima + rootfs-v221 (полная cramfs).
+- `refs/docs/`: e5v4-vol2.{pdf,txt}, e7v4.txt, d1500vol2.txt,
+  lenovo_grantley_mib.{pdf,txt}, pg-peci.c, peci-hndlr.asm,
+  halinit.asm; `refs/docs/probes/`: busff.json, census-v22.txt,
+  tl-v22.txt, дампы шины-0.
+- Дистрибутивный 7z (Fedora) БЕЗ rar-кодека → «Cannot open as
+  archive»; лечится статическим 7zz c 7-zip.org.
