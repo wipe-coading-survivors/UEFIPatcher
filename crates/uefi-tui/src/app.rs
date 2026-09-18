@@ -117,6 +117,71 @@ pub struct MenuItem {
     pub apply: String,
 }
 
+pub const MENU_ROWS: usize = 8;
+
+#[derive(Debug, Clone, Default)]
+pub struct MenuState {
+    pub open: bool,
+    pub items: Vec<MenuItem>,
+    pub selected: usize,
+    pub offset: usize,
+}
+
+impl MenuState {
+    pub fn close(&mut self) {
+        self.open = false;
+        self.items.clear();
+        self.selected = 0;
+        self.offset = 0;
+    }
+
+    pub fn open_with(&mut self, items: Vec<MenuItem>) {
+        self.items = items;
+        self.open = true;
+        self.selected = 0;
+        self.offset = 0;
+    }
+
+    pub fn refresh(&mut self, items: Vec<MenuItem>) {
+        if items.is_empty() {
+            self.close();
+        } else {
+            self.items = items;
+            self.open = true;
+            self.selected = 0;
+            self.offset = 0;
+        }
+    }
+
+    pub fn down(&mut self) {
+        if self.items.is_empty() {
+            return;
+        }
+        self.selected = (self.selected + 1) % self.items.len();
+        self.scroll();
+    }
+
+    pub fn up(&mut self) {
+        if self.items.is_empty() {
+            return;
+        }
+        self.selected = if self.selected == 0 { self.items.len() - 1 } else { self.selected - 1 };
+        self.scroll();
+    }
+
+    fn scroll(&mut self) {
+        if self.selected < self.offset {
+            self.offset = self.selected;
+        } else if self.selected >= self.offset + MENU_ROWS {
+            self.offset = self.selected + 1 - MENU_ROWS;
+        }
+    }
+
+    pub fn selected_apply(&self) -> Option<&str> {
+        self.items.get(self.selected).map(|i| i.apply.as_str())
+    }
+}
+
 pub struct App {
     pub mode: Mode,
     pub tree: Vec<TreeNode>,
@@ -984,5 +1049,48 @@ mod tests {
         assert_eq!(app.selected_form_visible(), Some(false));
         app.forms.cursor = 0;
         assert_eq!(app.selected_form_visible(), None, "FormSet-строка не форма");
+    }
+
+    #[test]
+    fn menu_navigation_wraps_and_scrolls() {
+        let mut m = MenuState::default();
+        let items: Vec<MenuItem> = (0..10)
+            .map(|i| MenuItem { display: format!("i{i}"), apply: format!("a{i}") })
+            .collect();
+        m.open_with(items);
+        assert_eq!(m.selected, 0);
+        m.up();
+        assert_eq!(m.selected, 9);
+        assert_eq!(m.offset, 2);
+        m.down();
+        assert_eq!(m.selected, 0);
+        assert_eq!(m.offset, 0);
+        for _ in 0..5 {
+            m.down();
+        }
+        assert_eq!(m.selected, 5);
+        assert_eq!(m.offset, 0);
+        m.down();
+        m.down();
+        m.down();
+        assert_eq!(m.selected, 8);
+        assert_eq!(m.offset, 1);
+    }
+
+    #[test]
+    fn menu_refresh_resets_and_closes_on_empty() {
+        let mut m = MenuState::default();
+        m.open_with(vec![MenuItem { display: "a".into(), apply: "x a".into() }]);
+        m.down();
+        m.refresh(vec![]);
+        assert!(!m.open);
+        let items = vec![
+            MenuItem { display: "b".into(), apply: "x b".into() },
+            MenuItem { display: "c".into(), apply: "x c".into() },
+        ];
+        m.refresh(items);
+        assert!(m.open);
+        assert_eq!(m.selected, 0);
+        assert_eq!(m.selected_apply(), Some("x b"));
     }
 }
