@@ -73,14 +73,23 @@ impl History {
         let _ = std::fs::write(path, out);
     }
 
+    fn effective_prefix<'a>(&'a self, current: &'a str) -> &'a str {
+        if self.recall.is_some() && self.saved.is_some() {
+            self.saved.as_deref().unwrap()
+        } else {
+            current
+        }
+    }
+
     pub fn prev(&mut self, prefix: &str) -> Option<String> {
         if self.recall.is_none() {
             self.saved = Some(prefix.to_string());
         }
+        let p = self.effective_prefix(prefix).to_string();
         let mut i = self.recall.unwrap_or(self.entries.len());
         while i > 0 {
             i -= 1;
-            if self.entries[i].starts_with(prefix) {
+            if self.entries[i].starts_with(&p) {
                 self.recall = Some(i);
                 return Some(self.entries[i].clone());
             }
@@ -89,9 +98,10 @@ impl History {
     }
 
     pub fn next(&mut self, prefix: &str) -> Option<String> {
+        let p = self.effective_prefix(prefix).to_string();
         let mut i = self.recall? + 1;
         while i < self.entries.len() {
-            if self.entries[i].starts_with(prefix) {
+            if self.entries[i].starts_with(&p) {
                 self.recall = Some(i);
                 return Some(self.entries[i].clone());
             }
@@ -169,8 +179,25 @@ mod tests {
         assert_eq!(h.prev("open").unwrap(), "open three");
         assert_eq!(h.prev("open").unwrap(), "open one");
         assert_eq!(h.next("open").unwrap(), "open three");
-        assert_eq!(h.prev("zzz"), None);
-        assert_eq!(h.next("open").unwrap(), "open");
+        assert_eq!(h.prev("open three").unwrap(), "open one");
+        assert_eq!(h.next("open one").unwrap(), "open three");
+        assert_eq!(h.next("open three").unwrap(), "open");
+    }
+
+    #[test]
+    fn recall_session_prefix_latched() {
+        let mut h = History::empty();
+        h.submit("ls");
+        h.submit("open a");
+        h.submit("open b");
+        assert_eq!(h.prev("").unwrap(), "open b");
+        assert_eq!(h.prev("open b").unwrap(), "open a");
+        assert_eq!(h.prev("open a").unwrap(), "ls");
+        assert_eq!(h.next("ls").unwrap(), "open a");
+        assert_eq!(h.next("open a").unwrap(), "open b");
+        assert_eq!(h.next("open b").unwrap(), "");
+        let mut h2 = History::empty();
+        assert_eq!(h2.prev("zzz"), None);
     }
 
     #[test]

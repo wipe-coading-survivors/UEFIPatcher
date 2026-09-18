@@ -1299,6 +1299,24 @@ mod tests {
     }
 
     #[test]
+    fn cmd_key_repeated_up_walks_history() {
+        let mut app = App::new();
+        app.history = crate::history::History::empty();
+        app.mode = Mode::Command;
+        for cmd in ["ls", "open a", "open b"] {
+            app.history.submit(cmd);
+        }
+        app.cmd_key(&AppEvent::Up);
+        assert_eq!(app.cmdline.as_str(), "open b");
+        app.cmd_key(&AppEvent::Up);
+        assert_eq!(app.cmdline.as_str(), "open a");
+        app.cmd_key(&AppEvent::Up);
+        assert_eq!(app.cmdline.as_str(), "ls");
+        app.cmd_key(&AppEvent::Down);
+        assert_eq!(app.cmdline.as_str(), "open a");
+    }
+
+    #[test]
     fn cmd_key_tab_opens_menu_and_right_accepts() {
         let mut app = App::new();
         app.history = crate::history::History::empty();
