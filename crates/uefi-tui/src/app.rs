@@ -291,11 +291,11 @@ impl App {
         if n == 0 {
             return;
         }
-        self.cursor = self.cursor.saturating_add(self.page_size()).min(n - 1);
+        self.cursor = crate::ui::scroll::page_down(self.cursor, n, self.page_size());
     }
 
     pub fn cursor_page_up(&mut self) {
-        self.cursor = self.cursor.saturating_sub(self.page_size());
+        self.cursor = crate::ui::scroll::page_up(self.cursor, self.page_size());
     }
 
     pub fn toggle_expand_selected(&mut self) {
