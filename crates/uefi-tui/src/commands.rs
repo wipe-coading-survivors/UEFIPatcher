@@ -151,6 +151,18 @@ fn absolutize_path(raw: &str) -> String {
     }
 }
 
+/// PATH для :export — absolutize либо cwd/<artifact_id> (паритет CLI,
+/// resolve_output_path uefi-cli). Спека R5: чинит дефолт-каталог.
+fn export_output_path(arg: Option<&str>, artifact_id: &str) -> String {
+    match arg {
+        Some(p) => absolutize_path(p),
+        None => match std::env::current_dir() {
+            Ok(cwd) => cwd.join(artifact_id).display().to_string(),
+            Err(_) => artifact_id.to_string(),
+        },
+    }
+}
+
 /// Читает schema-файл в TUI-процессе (клиент): в RPC уходит содержимое
 /// строкой, путь до движка не доходит (не :save — там пишет engine).
 fn read_schema(file: &str) -> Result<String, String> {
@@ -321,12 +333,7 @@ pub async fn execute_command(
         }
         "export" => {
             let artifact_id = parts.get(1).ok_or("usage: :export ARTIFACT_ID [PATH]")?;
-            let path = parts.get(2).map(|s| s.to_string()).unwrap_or_else(|| {
-                std::env::current_dir()
-                    .ok()
-                    .map(|d| d.display().to_string())
-                    .unwrap_or_default()
-            });
+            let path = export_output_path(parts.get(2).copied(), artifact_id);
             let req = ArtifactExportRequest {
                 artifact_id: artifact_id.to_string(),
                 output_path: path.clone(),
@@ -1927,6 +1934,21 @@ mod tests {
         let rel = absolutize_path("out.bin");
         let cwd = std::env::current_dir().unwrap();
         assert_eq!(rel, cwd.join("out.bin").display().to_string());
+    }
+
+    #[test]
+    fn export_output_path_absolute_or_cwd_default() {
+        let abs = export_output_path(Some("/tmp/out.bin"), "art-1");
+        assert_eq!(abs, "/tmp/out.bin");
+        let rel = export_output_path(Some("out.bin"), "art-1");
+        let cwd = std::env::current_dir().unwrap();
+        assert_eq!(rel, cwd.join("out.bin").display().to_string());
+        let def = export_output_path(None, "art-1");
+        assert_eq!(
+            def,
+            cwd.join("art-1").display().to_string(),
+            "дефолт — файл, не каталог"
+        );
     }
 
     #[test]
