@@ -41,7 +41,7 @@ completion после `image ` не предлагает субкоманд во
 
 | # | Задача | Суть |
 |---|--------|------|
-| R0 | Грамматика: образовые глаголы наверх | `switch`/`close` top-level, существительное `image` умирает (чистый разрыв, без алиасов) |
+| R0 | Грамматика: образовые глаголы наверх | `switch`/`close` top-level; `:image` остаётся только view-переключателем (паритет `:forms`); чистый разрыв, без алиасов |
 | R1 | Registry: режим + полный UUID | Бейдж `R`/`W` у образов; полный UUID выбранной строки в hint-баре при `focus == Registry` |
 | R2 | Completion: image-ID слоты | `switch/close <TAB>` (слот-1) → кандидаты-образы; `--mode` cmd-зависимый |
 | R3 | Write-UX: `w` + `:reopen` | `:reopen [--mode write|read]` (без `--image-id`) с гвардом READ→WRITE; клавиша `w` — тот же флоу |
@@ -83,9 +83,10 @@ completion после `image ` не предлагает субкоманд во
    несохранённые мутации). Старый образ закрываем после switch.
 4. Help — скролл (j/k + PgUp/PgDn), без реорганизации текста.
 5. Грамматика TUI — вариант (A) «вынос до конца»: `switch`/`close`/`reopen`
-   top-level, существительное `image` умирает, `--image-id` у reopen выкинут
-   (таргетинг: registry-строка или активный образ; неактивный — сначала
-   `:switch`). Чистый разрыв, без алиасов.
+   top-level, субкоманды `image` умирают; bare `:image` остаётся
+   view-переключателем (паритет `:forms`, обнаружено при рекогне плана).
+   `--image-id` у reopen выкинут (таргетинг: registry-строка или активный
+   образ; неактивный — сначала `:switch`). Чистый разрыв, без алиасов.
 6. CLI остаётся noun-first (`image|node|artifact|hii`) — скриптуемость и
    однозначность при чтении скриптов.
 7. R8 (скролл details-панелей) добавлен по ревью спеки: Forms View —
@@ -101,17 +102,20 @@ completion после `image ` не предлагает субкоманд во
 
 ### R0: Вынос образовых глаголов наверх
 
-Диспетч `execute_command` (`commands.rs`): вложенные ветки
-`"image" => { "switch" | "close" }` становятся top-level `"switch"` /
-`"close"` (слот-1 = ID); существительное `image` прекращает существование —
-чистый разрыв, алиасов нет. Сопроводительные правки:
+Диспетч `execute_command` (`commands.rs`): тела `"switch"`/`"close"`
+выносятся из вложенных веток в top-level (слот-1 = ID). Ветка `"image"`
+сохраняет ТОЛЬКО bare-поведение — переключение вида обратно в Image-view
+(паритет `:forms`, `commands.rs:494`); `:image <что-либо ещё>` — ошибка с
+подсказкой «image subcommands moved: :switch/:close». Сопроводительные
+правки:
 
-- `const COMMANDS` (`commands.rs:863`) — убрать `"image"`, добавить
-  `"switch"`, `"close"`, `"reopen"` (top-level completion).
+- `const COMMANDS` (`commands.rs:863`) — `"image"` остаётся, добавляются
+  `"switch"`, `"close"` (позже — `"reopen"`).
 - Внутренний вызов `image switch {id}` в `handle_registry_enter`
   (`main.rs:166`) → `switch {id}`.
-- HELP-текст (`ui/help.rs`) — `image switch/close` → `switch/close`, чтобы
-  R6-скролл показывал уже актуальную грамматику.
+- HELP-текст (`ui/help.rs`) — строка `:image switch ID | :image close [ID]`
+  → `:switch ID | :close [ID]`; bare-строка `:image` (возврат в Image-view)
+  остаётся.
 
 Итоговая грамматика: образы — `open save upload switch close reopen
 snapshot(s) restore`; узлы — `extract insert replace remove rebuild goto`;
@@ -270,7 +274,8 @@ strings) + перед рендером
 Чек-лист: бейдж режима у образов; `w` на read-only образе → write, мутации
 проходят; `:reopen` на уже-write → статус-нооп; `i`/`r` при курсоре на
 артефакте → prefill `--artifact-id`; `switch <Tab>` → меню образов;
-`:image switch` → unknown command (чистый разрыв); `:export ID` без PATH →
+`:image` (bare) по-прежнему возвращает в Image-view; `:image switch` →
+подсказка о переносе; `:export ID` без PATH →
 файл в cwd; help на низком терминале — докручивается до EX-COMMANDS;
 длинная форма (IntelRCSetup) — маркер вопроса в кадре при прогулке j/k,
 question_info появляется в кадре; Details основного вида скроллится;
