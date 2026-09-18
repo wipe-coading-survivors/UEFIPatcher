@@ -29,6 +29,7 @@ item-кандидатах (`hii question add <TAB>`) доводка упирае
 | C3 | Completion-меню | TUI | Popup над cmdline: навигация, приём кандидата, live-фильтрация |
 | C4 | Рендер cmdline | TUI | Курсор внутри строки, горизонтальный скролл длинных строк |
 | C5 | Мелочи complete() | TUI | item-format-хелпер, `--ffs` guard по позиции токена, симлинки в complete_path |
+| C6 | Контекстный hint-бар | TUI | Подсказка по клавишам ввода в hint-строке при активном Command/Insert, с учётом состояния меню |
 
 ## Non-goals
 
@@ -199,6 +200,23 @@ pub fn complete(app: &App, cmdline: &str) -> Completion;
 - `complete_path`: симлинк-на-директорию раскрывается как директория (metadata
   по symlink-target), записи-директории получают `/`-суффикс (`TODO.md:3332`).
 
+### C6: контекстный hint-бар при активном вводе (`ui/mod.rs::render_hint`)
+
+Сегодня Command/Insert показывают минимум («Enter execute · Esc cancel ·
+Backspace»). С новым фичесетом клавиш стало больше — hint-строка при активном
+вводе раскрывает набор, следуя уже сложившемуся паттерну контекстных подсказок
+Normal-режима (вариация по view/focus):
+
+- `Command`, меню закрыто:
+  `COMMAND: TAB compl · ↑↓ hist · Ctrl+←→ word · Ctrl+W/U/K del · Home/End · Enter run · Esc cancel`
+- `Command`, меню открыто:
+  `COMMAND[menu]: ↑↓ select · TAB/→ accept · BackTab back · Esc close · Enter run`
+- `Insert`: те же две строки с префиксом `INSERT` (буфер и клавиши общие).
+
+UTF-8 стрелки допустимы (hint-бар уже соседствует с Nerd Font и
+box-drawing псевдографикой). Длина строк сопоставима с существующими
+Normal-подсказками.
+
 ### input.rs
 
 `AppEvent` += `Left, Right, Home, End, Delete, WordLeft, WordRight`. Маппинг:
@@ -234,7 +252,8 @@ Prefill (`enter_command_mode`/`enter_insert_mode`) — `set_str` (курсор �
 - `commands.rs`: миграция существующих completion-тестов на `Completion`; новые —
   `--ffs` по позиции, симлинк-директория (tempdir), `fmt_item`.
 - Render (TestBackend): курсор-спан в середине строки; hscroll длинной строки;
-  popup меню (высота ≤8, подсветка selected, счётчик `n/N`).
+  popup меню (высота ≤8, подсветка selected, счётчик `n/N`); hint-строка для
+  четырёх состояний ввода (Command/Insert × меню открыто/закрыто).
 - Integration `tui_integration`: существующие кейсы не ломаются (миграция
   вызовов complete).
 - TUI-гейт владельца на живом образе в конце цикла (паттерн Revival A).
