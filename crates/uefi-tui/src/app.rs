@@ -213,6 +213,8 @@ pub struct App {
     pub details_anchor: Option<String>,
     pub tree_state: ListState,
     pub registry_state: ListState,
+    pub forms_list_state: ListState,
+    pub strings_list_state: ListState,
     pub tree_viewport_rows: usize,
 }
 
@@ -242,6 +244,8 @@ impl App {
             details_anchor: None,
             tree_state: ListState::default(),
             registry_state: ListState::default(),
+            forms_list_state: ListState::default(),
+            strings_list_state: ListState::default(),
             tree_viewport_rows: 0,
         }
     }

@@ -1,10 +1,11 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Style};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 
 use crate::app::{App, FormsFocus};
 use crate::forms::FormsRow;
+use crate::tree::compute_scrolled_offset;
 
 fn focus_style(active: bool) -> Style {
     if active {
@@ -80,25 +81,28 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
         .split(area);
     let rows = app.forms_rows();
     let items: Vec<ListItem> = rows.iter().map(row_item).collect();
-    let mut state = ListState::default();
-    if rows.is_empty() {
-        state.select(None);
-    } else {
-        state.select(Some(app.forms.cursor.min(rows.len() - 1)));
-    }
     let list_focus = app.forms.focus == FormsFocus::List;
-    f.render_stateful_widget(
-        List::new(items)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("Forms")
-                    .border_style(focus_style(list_focus)),
-            )
-            .highlight_style(Style::default().bg(Color::DarkGray)),
-        cols[0],
-        &mut state,
-    );
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Forms")
+                .border_style(focus_style(list_focus)),
+        )
+        .highlight_style(Style::default().bg(Color::DarkGray));
+    let total = rows.len();
+    let inner_h = cols[0].height.saturating_sub(2) as usize;
+    let cursor = if rows.is_empty() {
+        0
+    } else {
+        app.forms.cursor.min(total - 1)
+    };
+    let prev_off = app.forms_list_state.offset();
+    let new_off = compute_scrolled_offset(cursor, prev_off, inner_h, total, FORMS_SCROLL_PAD);
+    app.forms_list_state
+        .select(if rows.is_empty() { None } else { Some(cursor) });
+    *app.forms_list_state.offset_mut() = new_off;
+    f.render_stateful_widget(list, cols[0], &mut app.forms_list_state);
     let fd = crate::forms::form_details(&app.forms, &rows, app.forms.cursor);
     let anchor = match rows.get(app.forms.cursor) {
         Some(FormsRow::Form { key, .. }) => Some(format!(
@@ -141,28 +145,34 @@ fn render_strings(f: &mut Frame, area: Rect, app: &mut App) {
         .filter_map(|&i| app.forms.strings.get(i))
         .map(|s| ListItem::from(format!("{}  #{:<5} {}", s.language, s.string_id, s.text)))
         .collect();
-    let mut state = ListState::default();
-    if visible.is_empty() {
-        state.select(None);
-    } else {
-        let pos = visible
-            .iter()
-            .position(|&i| i == app.forms.strings_cursor)
-            .unwrap_or(0);
-        state.select(Some(pos));
-    }
     let title = if app.forms.strings_filter.is_empty() {
         "Strings".to_string()
     } else {
         format!("Strings (filter: {})", app.forms.strings_filter)
     };
-    f.render_stateful_widget(
-        List::new(items)
-            .block(Block::default().borders(Borders::ALL).title(title))
-            .highlight_style(Style::default().bg(Color::DarkGray)),
-        area,
-        &mut state,
-    );
+    let list = List::new(items)
+        .block(Block::default().borders(Borders::ALL).title(title))
+        .highlight_style(Style::default().bg(Color::DarkGray));
+    let total = visible.len();
+    let inner_h = area.height.saturating_sub(2) as usize;
+    let pos = visible
+        .iter()
+        .position(|&i| i == app.forms.strings_cursor)
+        .unwrap_or(0);
+    let cursor = if visible.is_empty() {
+        0
+    } else {
+        pos.min(total - 1)
+    };
+    let prev_off = app.strings_list_state.offset();
+    let new_off = compute_scrolled_offset(cursor, prev_off, inner_h, total, FORMS_SCROLL_PAD);
+    app.strings_list_state.select(if visible.is_empty() {
+        None
+    } else {
+        Some(cursor)
+    });
+    *app.strings_list_state.offset_mut() = new_off;
+    f.render_stateful_widget(list, area, &mut app.strings_list_state);
 }
 
 #[cfg(test)]
@@ -265,5 +275,63 @@ mod tests {
             app.forms.details_scroll, 0,
             "anchor сменился (другая форма) — скролл сброшен"
         );
+    }
+
+    #[test]
+    fn forms_list_offset_kept_when_cursor_walks_up() {
+        let mut app = crate::app::App::new();
+        app.forms.flat_mode = true;
+        app.forms.forms = (0..30)
+            .map(|i| uefi_proto::FormInfo {
+                form_id: format!("f{i}"),
+                formset_guid: "S".into(),
+                form_id_ifr: i,
+                title: format!("F{i}"),
+                visible: true,
+            })
+            .collect();
+        app.forms.expanded = ["S".into()].into();
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 10)).unwrap();
+        for _ in 0..20 {
+            app.forms_cursor_down();
+        }
+        terminal
+            .draw(|f| super::render(f, f.area(), &mut app))
+            .unwrap();
+        let off = app.forms_list_state.offset();
+        assert!(off > 0, "прокрутка началась");
+        app.forms_cursor_up();
+        terminal
+            .draw(|f| super::render(f, f.area(), &mut app))
+            .unwrap();
+        assert_eq!(
+            app.forms_list_state.offset(),
+            off,
+            "вверх двигает курсор, не страницу"
+        );
+        assert!(app.forms.cursor < 20);
+    }
+
+    #[test]
+    fn strings_list_uses_persistent_state() {
+        let mut app = crate::app::App::new();
+        app.forms.show_strings = true;
+        app.forms.strings = (0..30)
+            .map(|i| uefi_proto::StringInfo {
+                language: "en".into(),
+                string_id: i,
+                text: format!("s{i}"),
+            })
+            .collect();
+        for _ in 0..20 {
+            app.strings_cursor_down();
+        }
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 10)).unwrap();
+        terminal
+            .draw(|f| super::render(f, f.area(), &mut app))
+            .unwrap();
+        assert!(app.strings_list_state.offset() > 0);
     }
 }
