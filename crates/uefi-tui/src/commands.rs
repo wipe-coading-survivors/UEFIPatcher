@@ -891,7 +891,12 @@ const COMMANDS: &[&str] = &[
     "q",
 ];
 
-pub fn complete(app: &App, cmdline: &str) -> (Option<String>, Vec<String>) {
+pub struct Completion {
+    pub common: Option<String>,
+    pub items: Vec<crate::app::MenuItem>,
+}
+
+pub fn complete(app: &App, cmdline: &str) -> Completion {
     let ends_space = cmdline.ends_with(' ');
     let mut parts: Vec<&str> = cmdline.split_whitespace().collect();
     let token = if ends_space || parts.is_empty() {
@@ -910,19 +915,40 @@ pub fn complete(app: &App, cmdline: &str) -> (Option<String>, Vec<String>) {
         context_candidates(app, head[0], &head, &token)
     };
     if candidates.is_empty() {
-        return (None, vec![]);
+        return Completion {
+            common: None,
+            items: vec![],
+        };
     }
-    let mut out = head.join(" ");
-    if !out.is_empty() {
-        out.push(' ');
+    let mut base = head.join(" ");
+    if !base.is_empty() {
+        base.push(' ');
     }
+    let items: Vec<crate::app::MenuItem> = candidates
+        .iter()
+        .map(|c| {
+            let mut apply = base.clone();
+            apply.push_str(c);
+            if !c.ends_with('/') {
+                apply.push(' ');
+            }
+            crate::app::MenuItem {
+                display: c.clone(),
+                apply,
+            }
+        })
+        .collect();
     if candidates.len() == 1 {
-        out.push_str(&candidates[0]);
-        (Some(out), vec![])
-    } else {
-        let prefix = common_prefix(&candidates);
-        out.push_str(&prefix);
-        (Some(out), candidates)
+        return Completion {
+            common: Some(items[0].apply.clone()),
+            items: vec![],
+        };
+    }
+    let prefix = common_prefix(&candidates);
+    base.push_str(&prefix);
+    Completion {
+        common: Some(base),
+        items,
     }
 }
 
@@ -932,6 +958,10 @@ fn common_prefix(items: &[String]) -> String {
         p.truncate(p.chars().zip(s.chars()).take_while(|(a, b)| a == b).count());
     }
     p
+}
+
+fn fmt_item(target: impl std::fmt::Display, form_id_ifr: u32) -> String {
+    format!("{}#{}", target, form_id_ifr)
 }
 
 fn unique_form_targets(app: &App) -> Vec<String> {
@@ -957,7 +987,19 @@ fn unique_formset_guids(app: &App) -> Vec<String> {
 /// Пути по префиксу для позиции schema-файла: набранный каталог-префикс
 /// сохраняется как есть (абсолютный/относительный), каталоги получают
 /// "/", скрытые файлы — только по точечному префиксу. Спека §4 V3.
+fn expand_tilde(token: &str, home: &str) -> String {
+    if token == "~" {
+        return home.to_string();
+    }
+    if let Some(rest) = token.strip_prefix("~/") {
+        return format!("{home}/{rest}");
+    }
+    token.to_string()
+}
+
 fn complete_path(token: &str) -> Vec<String> {
+    let expanded = expand_tilde(token, &std::env::var("HOME").unwrap_or_default());
+    let token = expanded.as_str();
     let (dir_part, prefix) = match token.rfind('/') {
         Some(i) => (&token[..=i], &token[i + 1..]),
         None => ("", token),
@@ -971,7 +1013,9 @@ fn complete_path(token: &str) -> Vec<String> {
         .map(|e| {
             (
                 e.file_name().to_string_lossy().to_string(),
-                e.file_type().map(|t| t.is_dir()).unwrap_or(false),
+                std::fs::metadata(e.path())
+                    .map(|m| m.is_dir())
+                    .unwrap_or(false),
             )
         })
         .filter(|(name, _)| name.starts_with(prefix))
@@ -983,6 +1027,9 @@ fn complete_path(token: &str) -> Vec<String> {
 }
 
 fn context_candidates(app: &App, cmd: &str, head: &[&str], token: &str) -> Vec<String> {
+    if head.last() == Some(&"--file") {
+        return complete_path(token);
+    }
     if head.last() == Some(&"--mode") {
         return ["into", "before", "after"]
             .iter()
@@ -1009,7 +1056,7 @@ fn context_candidates(app: &App, cmd: &str, head: &[&str], token: &str) -> Vec<S
         let flags: &[&str] = match cmd {
             "insert" => &["--file", "--artifact-id", "--mode"],
             "replace" => &["--file", "--artifact-id", "--body-only"],
-            "hii" if head.contains(&"formset") && head.contains(&"add") => &["--ffs"],
+            "hii" if head.len() == 4 && head[1] == "formset" && head[2] == "add" => &["--ffs"],
             _ => &[],
         };
         return flags
@@ -1017,6 +1064,24 @@ fn context_candidates(app: &App, cmd: &str, head: &[&str], token: &str) -> Vec<S
             .filter(|c| c.starts_with(token))
             .map(|s| s.to_string())
             .collect();
+    }
+    if cmd == "export" {
+        if head.len() == 1 {
+            return app
+                .registry
+                .artifacts
+                .iter()
+                .map(|a| a.artifact_id.clone())
+                .filter(|c| c.starts_with(token))
+                .collect();
+        }
+        if head.len() == 2 {
+            return complete_path(token);
+        }
+        return vec![];
+    }
+    if matches!(cmd, "open" | "o" | "save" | "s" | "upload" | "import") && head.len() == 1 {
+        return complete_path(token);
     }
     if cmd == "hii" {
         if head.len() == 1 {
@@ -1057,7 +1122,7 @@ fn context_candidates(app: &App, cmd: &str, head: &[&str], token: &str) -> Vec<S
                         .forms
                         .forms
                         .iter()
-                        .map(|f| format!("{}#{}", f.form_id, f.form_id_ifr))
+                        .map(|f| fmt_item(&f.form_id, f.form_id_ifr))
                         .filter(|c| c.starts_with(token))
                         .collect();
                 }
@@ -1087,7 +1152,7 @@ fn context_candidates(app: &App, cmd: &str, head: &[&str], token: &str) -> Vec<S
                 .forms
                 .forms
                 .iter()
-                .map(|f| format!("{}#{}", f.form_id, f.form_id_ifr))
+                .map(|f| fmt_item(&f.form_id, f.form_id_ifr))
                 .filter(|c| c.starts_with(token))
                 .collect();
         }
@@ -1190,7 +1255,7 @@ pub async fn refresh_registry(app: &mut App, client: &mut Client) -> Result<(), 
 /// десятичное, контракт parse_item_id). None — если строка не форма.
 pub fn selected_form_item_id(app: &App) -> Option<String> {
     let key = app.selected_form_key()?;
-    Some(format!("{}#{}", key.target, key.form_id_ifr))
+    Some(fmt_item(&key.target, key.form_id_ifr))
 }
 
 /// Insert-prefill для Enter на вопросе: вопрос из question_cursor.
@@ -1477,7 +1542,7 @@ pub async fn refresh_form_details_if_needed(
     app.forms.question_cursor = 0;
     app.forms.question_info = None;
     app.forms.question_info_key = None;
-    let item_id = format!("{}#{}", key.target, key.form_id_ifr);
+    let item_id = fmt_item(&key.target, key.form_id_ifr);
     match client
         .inner
         .hii_gates_list(auth_req(
@@ -1592,9 +1657,9 @@ mod tests {
     #[test]
     fn complete_first_token_to_unique_command() {
         let app = crate::app::App::new();
-        let (rep, opts) = complete(&app, "rebui");
-        assert_eq!(rep.as_deref(), Some("rebuild"));
-        assert!(opts.is_empty());
+        let c = complete(&app, "rebui");
+        assert_eq!(c.common.as_deref(), Some("rebuild "));
+        assert!(c.items.is_empty());
     }
 
     #[test]
@@ -1610,18 +1675,27 @@ mod tests {
                 ..Default::default()
             },
         ];
-        let (rep, _) = complete(&app, "insert 0/3 --artifact-id art-");
-        assert_eq!(rep.as_deref(), Some("insert 0/3 --artifact-id art-"));
-        let (_, opts) = complete(&app, "insert 0/3 --artifact-id ");
-        assert_eq!(opts, vec!["art-1".to_string(), "art-2".to_string()]);
+        let c = complete(&app, "insert 0/3 --artifact-id art-");
+        assert_eq!(c.common.as_deref(), Some("insert 0/3 --artifact-id art-"));
+        let c = complete(&app, "insert 0/3 --artifact-id ");
+        assert_eq!(
+            c.items
+                .iter()
+                .map(|i| i.display.clone())
+                .collect::<Vec<_>>(),
+            vec!["art-1".to_string(), "art-2".to_string()]
+        );
     }
 
     #[test]
     fn complete_flags_of_insert() {
         let app = crate::app::App::new();
-        let (_, opts) = complete(&app, "insert 0/3 --");
+        let c = complete(&app, "insert 0/3 --");
         assert_eq!(
-            opts,
+            c.items
+                .iter()
+                .map(|i| i.display.clone())
+                .collect::<Vec<_>>(),
             vec![
                 "--file".to_string(),
                 "--artifact-id".to_string(),
@@ -1750,9 +1824,12 @@ mod tests {
             title: "Main".into(),
             visible: true,
         }];
-        let (_, opts) = complete(&app, "hii ");
+        let c = complete(&app, "hii ");
         assert_eq!(
-            opts,
+            c.items
+                .iter()
+                .map(|i| i.display.clone())
+                .collect::<Vec<_>>(),
             vec![
                 "formset".to_string(),
                 "form".to_string(),
@@ -1764,10 +1841,10 @@ mod tests {
                 "unlock".to_string()
             ]
         );
-        let (rep, opts) = complete(&app, "hii set-value ");
-        assert_eq!(rep.as_deref(), Some("hii set-value t:0x19:0#10001"));
+        let c = complete(&app, "hii set-value ");
+        assert_eq!(c.common.as_deref(), Some("hii set-value t:0x19:0#10001 "));
         assert!(
-            opts.is_empty(),
+            c.items.is_empty(),
             "unique candidate completes directly, no menu"
         );
     }
@@ -1791,28 +1868,122 @@ mod tests {
                 visible: false,
             },
         ];
-        let (rep, _) = complete(&app, "hii form ");
+        let c = complete(&app, "hii form ");
         assert_eq!(
-            rep.as_deref(),
-            Some("hii form add"),
+            c.common.as_deref(),
+            Some("hii form add "),
             "единственный кандидат инлайн-дополняется (контракт complete)"
         );
-        let (rep, _) = complete(&app, "hii formset ");
-        assert_eq!(rep.as_deref(), Some("hii formset add"));
+        let c = complete(&app, "hii formset ");
+        assert_eq!(c.common.as_deref(), Some("hii formset add "));
 
-        let (rep, _) = complete(&app, "hii form add ");
+        let c = complete(&app, "hii form add ");
         assert_eq!(
-            rep.as_deref(),
-            Some("hii form add t:0x19:0"),
+            c.common.as_deref(),
+            Some("hii form add t:0x19:0 "),
             "голые target-кандидаты, дедуп по двум формам одного target"
         );
-        let (rep, _) = complete(&app, "hii hijack ");
-        assert_eq!(rep.as_deref(), Some("hii hijack t:0x19:0"));
-        let (_, opts) = complete(&app, "hii question add ");
+        let c = complete(&app, "hii hijack ");
+        assert_eq!(c.common.as_deref(), Some("hii hijack t:0x19:0 "));
+        let c = complete(&app, "hii question add ");
         assert_eq!(
-            opts,
+            c.items
+                .iter()
+                .map(|i| i.display.clone())
+                .collect::<Vec<_>>(),
             vec!["t:0x19:0#10001".to_string(), "t:0x19:0#10019".to_string()],
             "question add — item-кандидаты target#form_id (form_id десятичное)"
+        );
+    }
+
+    #[test]
+    fn unique_candidate_gets_trailing_space() {
+        let app = crate::app::App::new();
+        let c = complete(&app, "hi");
+        assert_eq!(c.common.as_deref(), Some("hii "));
+        assert!(c.items.is_empty());
+    }
+
+    #[test]
+    fn open_completes_paths_in_slot1() {
+        let td = tempfile::tempdir().unwrap();
+        std::fs::create_dir(td.path().join("real")).unwrap();
+        std::fs::write(td.path().join("lite"), b"").unwrap();
+        std::os::unix::fs::symlink(td.path().join("real"), td.path().join("link")).unwrap();
+        let base = td.path().display().to_string();
+        let c = complete(&crate::app::App::new(), &format!("open {base}/li"));
+        let applies: Vec<&str> = c.items.iter().map(|i| i.apply.as_str()).collect();
+        assert!(
+            applies
+                .iter()
+                .any(|a| a.ends_with("/link/") && !a.ends_with("/link/ "))
+        );
+        assert!(applies.iter().any(|a| a.ends_with("lite ")));
+    }
+
+    #[test]
+    fn file_flag_value_completes_paths() {
+        let td = tempfile::tempdir().unwrap();
+        std::fs::write(td.path().join("schema-a.json"), b"{}").unwrap();
+        let base = td.path().display().to_string();
+        let c = complete(
+            &crate::app::App::new(),
+            &format!("insert --file {base}/schema-a"),
+        );
+        assert_eq!(
+            c.common.as_deref(),
+            Some(format!("insert --file {base}/schema-a.json ").as_str())
+        );
+    }
+
+    #[test]
+    fn expand_tilde_variants() {
+        assert_eq!(expand_tilde("~", "/home/u"), "/home/u");
+        assert_eq!(expand_tilde("~/x/y", "/home/u"), "/home/u/x/y");
+        assert_eq!(expand_tilde("x/~", "/home/u"), "x/~");
+        assert_eq!(expand_tilde("", "/home/u"), "");
+    }
+
+    #[test]
+    fn export_completes_artifact_ids_then_path() {
+        let mut app = crate::app::App::new();
+        app.registry.artifacts = vec![
+            uefi_proto::ArtifactInfo {
+                artifact_id: "art-1".into(),
+                ..Default::default()
+            },
+            uefi_proto::ArtifactInfo {
+                artifact_id: "art-2".into(),
+                ..Default::default()
+            },
+        ];
+        let c = complete(&app, "export art");
+        assert_eq!(
+            c.items
+                .iter()
+                .map(|i| i.display.clone())
+                .collect::<Vec<_>>(),
+            vec!["art-1".to_string(), "art-2".to_string()]
+        );
+        let td = tempfile::tempdir().unwrap();
+        std::fs::write(td.path().join("blob.bin"), b"").unwrap();
+        let base = td.path().display().to_string();
+        let c = complete(&app, &format!("export art-1 {base}/bl"));
+        assert_eq!(
+            c.common.as_deref(),
+            Some(format!("export art-1 {base}/blob.bin ").as_str())
+        );
+    }
+
+    #[test]
+    fn import_completes_paths_in_slot1() {
+        let td = tempfile::tempdir().unwrap();
+        std::fs::write(td.path().join("blob.bin"), b"").unwrap();
+        let base = td.path().display().to_string();
+        let c = complete(&crate::app::App::new(), &format!("import {base}/bl"));
+        assert_eq!(
+            c.common.as_deref(),
+            Some(format!("import {base}/blob.bin ").as_str())
         );
     }
 
@@ -1857,20 +2028,20 @@ mod tests {
             title: "Main".into(),
             visible: true,
         }];
-        let (rep, _) = complete(&app, &format!("hii formset add {base}/schema-x"));
+        let c = complete(&app, &format!("hii formset add {base}/schema-x"));
         assert_eq!(
-            rep.as_deref(),
-            Some(format!("hii formset add {base}/schema-x.json").as_str())
+            c.common.as_deref(),
+            Some(format!("hii formset add {base}/schema-x.json ").as_str())
         );
-        let (rep, _) = complete(&app, &format!("hii form add t:0x19:0 {base}/schema-x"));
+        let c = complete(&app, &format!("hii form add t:0x19:0 {base}/schema-x"));
         assert_eq!(
-            rep.as_deref(),
-            Some(format!("hii form add t:0x19:0 {base}/schema-x.json").as_str())
+            c.common.as_deref(),
+            Some(format!("hii form add t:0x19:0 {base}/schema-x.json ").as_str())
         );
-        let (rep, _) = complete(&app, &format!("hii hijack t:0x19:0 {base}/schema-x"));
+        let c = complete(&app, &format!("hii hijack t:0x19:0 {base}/schema-x"));
         assert_eq!(
-            rep.as_deref(),
-            Some(format!("hii hijack t:0x19:0 {base}/schema-x.json").as_str())
+            c.common.as_deref(),
+            Some(format!("hii hijack t:0x19:0 {base}/schema-x.json ").as_str())
         );
     }
 
@@ -1884,10 +2055,37 @@ mod tests {
             title: "Main".into(),
             visible: true,
         }];
-        let (rep, _) = complete(&app, "hii formset add f.json --");
-        assert_eq!(rep.as_deref(), Some("hii formset add f.json --ffs"));
-        let (rep, _) = complete(&app, "hii formset add f.json --ffs ");
-        assert_eq!(rep.as_deref(), Some("hii formset add f.json --ffs SET-A"));
+        let c = complete(&app, "hii formset add f.json --");
+        assert_eq!(c.common.as_deref(), Some("hii formset add f.json --ffs "));
+        let c = complete(&app, "hii formset add f.json --ffs ");
+        assert_eq!(
+            c.common.as_deref(),
+            Some("hii formset add f.json --ffs SET-A ")
+        );
+    }
+
+    #[test]
+    fn ffs_flag_only_in_grammar_position() {
+        let app = crate::app::App::new();
+        let c = complete(&app, "hii formset add f.json --f");
+        assert_eq!(c.common.as_deref(), Some("hii formset add f.json --ffs "));
+        let c = complete(&app, "hii formset add --f");
+        assert_eq!(c.common.as_deref(), None);
+        let c = complete(&app, "hii form add x --f");
+        assert_ne!(c.common.as_deref(), Some("hii form add x --ffs"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn complete_path_descends_into_dir_symlinks() {
+        let td = tempfile::tempdir().unwrap();
+        std::fs::create_dir(td.path().join("real")).unwrap();
+        std::os::unix::fs::symlink(td.path().join("real"), td.path().join("link")).unwrap();
+        let base = td.path().display().to_string();
+        assert_eq!(
+            complete_path(&format!("{base}/li")),
+            vec![format!("{base}/link/")]
+        );
     }
 
     #[test]
@@ -1942,7 +2140,7 @@ mod tests {
             has_children: false,
         };
         app.tree = vec![mk("1", 65), mk("1/28", 66)];
-        let (rep, _) = complete(&app, "remove 1/2");
-        assert_eq!(rep.as_deref(), Some("remove 1/28"));
+        let c = complete(&app, "remove 1/2");
+        assert_eq!(c.common.as_deref(), Some("remove 1/28 "));
     }
 }

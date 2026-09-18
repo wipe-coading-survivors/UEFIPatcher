@@ -1,0 +1,10 @@
+[FV.BIF_EPA_FV]
+FvNameGuid           = 4D2E7A1C-9F3B-4C6D-8E5A-1B7C3D9F2E64
+INF UefiPatcherBifPkg/BifEpaProbe/BifEpaProbe.inf
+
+[Rule.Common.DXE_DRIVER]
+  FILE DRIVER = $(NAMED_GUID) {
+    DXE_DEPEX    DXE_DEPEX Optional      $(INF_OUTPUT)/$(MODULE_NAME).depex
+    PE32     PE32                    $(INF_OUTPUT)/$(MODULE_NAME).efi
+    UI       STRING="$(MODULE_NAME)" Optional
+  }

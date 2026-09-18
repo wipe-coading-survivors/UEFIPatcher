@@ -64,18 +64,21 @@ pub fn resolve_sock(cli_sock: Option<&str>, state: &State) -> PathBuf {
     default_sock()
 }
 
-pub fn default_sock() -> PathBuf {
+pub fn state_dir() -> PathBuf {
     if let Some(b) = directories::BaseDirs::new()
         && let Some(state) = b.state_dir()
     {
-        return state.join("uefipatcher").join("uefipatcher.sock");
+        return state.join("uefipatcher");
     }
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
     PathBuf::from(home)
         .join(".local")
         .join("state")
         .join("uefipatcher")
-        .join("uefipatcher.sock")
+}
+
+pub fn default_sock() -> PathBuf {
+    state_dir().join("uefipatcher.sock")
 }
 
 #[cfg(test)]
@@ -210,5 +213,13 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(resolve_sock(None, &st), PathBuf::from("/from-state"));
+    }
+
+    #[test]
+    fn state_dir_ends_with_uefipatcher() {
+        let d = state_dir();
+        assert!(d.ends_with("uefipatcher"));
+        assert!(default_sock().starts_with(&d));
+        assert!(default_sock().ends_with("uefipatcher.sock"));
     }
 }
