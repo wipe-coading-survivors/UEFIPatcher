@@ -53,7 +53,7 @@ fn render_hint(f: &mut Frame, area: Rect, app: &App) {
             if app.forms.show_strings {
                 "NORMAL[Forms/Strings]: j/k move · /filter · S/Esc close · Ctrl-hjkl focus · :cmd · ?help · q".into()
             } else if app.forms.focus == FormsFocus::Details {
-                "NORMAL[Forms/Details]: j/k вопрос · Enter set-value · Tab image-view · :cmd · ?help · q".into()
+                "NORMAL[Forms/Details]: j/k вопрос · PgUp/PgDn страница · Enter set-value · Tab image-view · :cmd · ?help · q".into()
             } else {
                 "NORMAL[Forms]: j/k move · h/l collapse/expand · v show hidden (unsuppress) · u unlock · a add · T tree/flat · S strings · Tab image-view · :cmd · ?help · q".into()
             }
@@ -153,5 +153,23 @@ mod tests {
         app.mode = Mode::Insert;
         app.insert_cmd = "insert";
         assert!(hint_of(&app).contains("INSERT"));
+    }
+
+    #[test]
+    fn forms_details_hint_documents_page_keys() {
+        let mut app = crate::app::App::new();
+        app.view = crate::app::View::Forms;
+        app.forms.focus = crate::app::FormsFocus::Details;
+        let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 24)).unwrap();
+        t.draw(|f| super::render(f, &mut app)).unwrap();
+        let text: String = (0..24)
+            .map(|y| {
+                (0..100)
+                    .map(|x| t.backend().buffer().get(x, y).symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("PgUp/PgDn страница"));
     }
 }

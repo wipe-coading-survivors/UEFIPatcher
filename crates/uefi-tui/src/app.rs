@@ -79,6 +79,7 @@ pub struct FormsData {
     pub question_cursor: usize,
     pub question_info: Option<QuestionInfo>,
     pub question_info_key: Option<(crate::forms::FormKey, u32)>,
+    pub questions_viewport: usize,
     pub show_strings: bool,
     pub strings: Vec<StringInfo>,
     pub strings_filter: String,
@@ -443,6 +444,31 @@ impl App {
         if self.forms.question_cursor > 0 {
             self.forms.question_cursor -= 1;
         }
+    }
+
+    pub fn forms_question_page_size(&self) -> usize {
+        if self.forms.questions_viewport == 0 {
+            10
+        } else {
+            self.forms.questions_viewport
+        }
+    }
+
+    pub fn forms_question_page_down(&mut self) {
+        let n = self.forms.questions.len();
+        if n == 0 {
+            return;
+        }
+        self.forms.question_cursor = crate::ui::scroll::page_down(
+            self.forms.question_cursor,
+            n,
+            self.forms_question_page_size(),
+        );
+    }
+
+    pub fn forms_question_page_up(&mut self) {
+        self.forms.question_cursor =
+            crate::ui::scroll::page_up(self.forms.question_cursor, self.forms_question_page_size());
     }
 
     /// qid вопроса под `question_cursor` — только когда кэш вопросов
@@ -1223,6 +1249,36 @@ mod tests {
         );
         app.forms_question_cursor_up();
         assert_eq!(app.selected_question_id(), Some(0x210));
+    }
+
+    #[test]
+    fn forms_question_page_moves_clamp() {
+        let mut app = App::new();
+        app.forms.questions = (0..30)
+            .map(|i| uefi_proto::QuestionSummary {
+                question_id: 0x210 + i,
+                prompt: format!("q{i}"),
+                ..Default::default()
+            })
+            .collect();
+        app.forms.questions_viewport = 10;
+        app.forms_question_page_down();
+        assert_eq!(app.forms.question_cursor, 10);
+        app.forms_question_page_down();
+        assert_eq!(app.forms.question_cursor, 20);
+        app.forms_question_page_down();
+        assert_eq!(app.forms.question_cursor, 29, "clamp по последнему вопросу");
+        app.forms_question_page_up();
+        assert_eq!(app.forms.question_cursor, 19);
+        app.forms.question_cursor = 2;
+        app.forms_question_page_up();
+        assert_eq!(app.forms.question_cursor, 0, "saturating");
+    }
+
+    #[test]
+    fn forms_question_page_size_defaults_to_10() {
+        let app = App::new();
+        assert_eq!(app.forms_question_page_size(), 10);
     }
 
     #[test]
