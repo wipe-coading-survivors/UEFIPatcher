@@ -55,6 +55,20 @@ fn row_item(row: &FormsRow) -> ListItem<'static> {
     ListItem::from(row_text(row))
 }
 
+const FORMS_SCROLL_PAD: usize = 3;
+
+/// Скролл details «Form»: follow info/marker-строки с гистерезисом дерева,
+/// без цели — clamp. Спека R8.
+pub fn follow_offset(prev: u16, target: Option<usize>, total: usize, inner_h: usize) -> u16 {
+    match target {
+        Some(t) => {
+            crate::tree::compute_scrolled_offset(t, prev as usize, inner_h, total, FORMS_SCROLL_PAD)
+                as u16
+        }
+        None => (prev as usize).min(total.saturating_sub(inner_h)) as u16,
+    }
+}
+
 pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
     if app.forms.show_strings {
         render_strings(f, area, app);
@@ -85,10 +99,31 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
         cols[0],
         &mut state,
     );
-    let text = crate::forms::form_details_text(&app.forms, &rows, app.forms.cursor);
+    let fd = crate::forms::form_details(&app.forms, &rows, app.forms.cursor);
+    let anchor = match rows.get(app.forms.cursor) {
+        Some(FormsRow::Form { key, .. }) => Some(format!(
+            "{}|{}|{}",
+            key.target, key.formset_guid, key.form_id_ifr
+        )),
+        _ => None,
+    };
+    if app.forms.details_anchor != anchor {
+        app.forms.details_scroll = 0;
+        app.forms.details_anchor = anchor;
+    }
+    let inner_h = cols[1].height.saturating_sub(2) as usize;
+    let total = fd.text.lines().count();
+    let off = follow_offset(
+        app.forms.details_scroll,
+        fd.info_line.or(fd.marker_line),
+        total,
+        inner_h,
+    );
+    app.forms.details_scroll = off;
     f.render_widget(
-        Paragraph::new(text)
+        Paragraph::new(fd.text)
             .wrap(ratatui::widgets::Wrap { trim: false })
+            .scroll((off, 0))
             .block(
                 Block::default()
                     .borders(Borders::ALL)
@@ -191,5 +226,44 @@ mod tests {
             "'!' DanglingRef в колонке form id того же depth: {d:?} vs {f:?}"
         );
         assert!(d.starts_with("      ! 99    "));
+    }
+
+    #[test]
+    fn follow_offset_follows_target_and_keeps_window() {
+        assert_eq!(
+            follow_offset(0, Some(50), 100, 10),
+            44,
+            "цель ниже окна — докрутка с pad"
+        );
+        assert_eq!(
+            follow_offset(44, Some(50), 100, 10),
+            44,
+            "цель в окне — офсет на месте"
+        );
+        assert_eq!(follow_offset(90, None, 100, 10), 90);
+        assert_eq!(follow_offset(90, None, 20, 10), 10, "clamp по total");
+        assert_eq!(follow_offset(0, Some(0), 100, 10), 0);
+    }
+
+    #[test]
+    fn details_anchor_reset_on_form_change() {
+        let mut app = crate::app::App::new();
+        app.forms.forms = vec![uefi_proto::FormInfo {
+            form_id: "t1".into(),
+            formset_guid: "S".into(),
+            form_id_ifr: 1,
+            title: "Main".into(),
+            visible: true,
+        }];
+        app.forms.expanded = ["S".into()].into();
+        app.forms.cursor = 1;
+        app.forms.details_scroll = 7;
+        app.forms.details_anchor = Some("old|S|1".into());
+        let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+        t.draw(|f| render(f, f.area(), &mut app)).unwrap();
+        assert_eq!(
+            app.forms.details_scroll, 0,
+            "anchor сменился (другая форма) — скролл сброшен"
+        );
     }
 }

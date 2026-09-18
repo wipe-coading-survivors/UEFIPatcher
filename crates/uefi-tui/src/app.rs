@@ -83,6 +83,8 @@ pub struct FormsData {
     pub strings: Vec<StringInfo>,
     pub strings_filter: String,
     pub strings_cursor: usize,
+    pub details_scroll: u16,
+    pub details_anchor: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -207,6 +209,8 @@ pub struct App {
     pub quit: bool,
     pub show_help: bool,
     pub help_scroll: u16,
+    pub details_scroll: u16,
+    pub details_anchor: Option<String>,
     pub tree_state: ListState,
     pub registry_state: ListState,
     pub tree_viewport_rows: usize,
@@ -234,6 +238,8 @@ impl App {
             quit: false,
             show_help: false,
             help_scroll: 0,
+            details_scroll: 0,
+            details_anchor: None,
             tree_state: ListState::default(),
             registry_state: ListState::default(),
             tree_viewport_rows: 0,
@@ -300,6 +306,15 @@ impl App {
     pub fn toggle_help(&mut self) {
         self.show_help = !self.show_help;
         self.help_scroll = 0;
+    }
+
+    /// Ручной скролл details-панели основного вида. Спека R8.
+    pub fn details_scroll_by(&mut self, delta: i32) {
+        if delta >= 0 {
+            self.details_scroll = self.details_scroll.saturating_add(delta as u16);
+        } else {
+            self.details_scroll = self.details_scroll.saturating_sub((-delta) as u16);
+        }
     }
 
     pub fn set_expand_selected(&mut self, expand: bool) {
@@ -1428,5 +1443,14 @@ mod tests {
         app.cmd_key(&AppEvent::Key('x'));
         assert_eq!(app.cmdline.as_str(), "snapshotx");
         assert!(!app.menu.open);
+    }
+
+    #[test]
+    fn details_scroll_by_saturates() {
+        let mut app = App::new();
+        app.details_scroll_by(5);
+        assert_eq!(app.details_scroll, 5);
+        app.details_scroll_by(-10);
+        assert_eq!(app.details_scroll, 0);
     }
 }

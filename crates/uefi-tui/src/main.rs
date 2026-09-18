@@ -125,23 +125,23 @@ async fn handle_normal(app: &mut App, ev: &AppEvent, client: &mut Option<command
         AppEvent::Key('j') | AppEvent::Down => match app.focus {
             Focus::Registry => app.registry_cursor_down(),
             Focus::Tree => app.cursor_down(),
-            Focus::Details => {}
+            Focus::Details => app.details_scroll_by(1),
         },
         AppEvent::Key('k') | AppEvent::Up => match app.focus {
             Focus::Registry => app.registry_cursor_up(),
             Focus::Tree => app.cursor_up(),
-            Focus::Details => {}
+            Focus::Details => app.details_scroll_by(-1),
         },
-        AppEvent::PageDown => {
-            if app.focus == Focus::Tree {
-                app.cursor_page_down();
-            }
-        }
-        AppEvent::PageUp => {
-            if app.focus == Focus::Tree {
-                app.cursor_page_up();
-            }
-        }
+        AppEvent::PageDown => match app.focus {
+            Focus::Tree => app.cursor_page_down(),
+            Focus::Details => app.details_scroll_by(10),
+            Focus::Registry => {}
+        },
+        AppEvent::PageUp => match app.focus {
+            Focus::Tree => app.cursor_page_up(),
+            Focus::Details => app.details_scroll_by(-10),
+            Focus::Registry => {}
+        },
         AppEvent::Key('h') => {
             if app.focus == Focus::Tree {
                 app.set_expand_selected(false);
@@ -271,6 +271,12 @@ async fn handle_normal_forms(app: &mut App, ev: &AppEvent, client: &mut Option<c
             if let Some(c) = client.as_mut() {
                 let _ = commands::refresh_question_info_if_needed(app, c).await;
             }
+        }
+        AppEvent::PageDown if app.forms.focus == FormsFocus::Details && !app.forms.show_strings => {
+            app.forms.details_scroll = app.forms.details_scroll.saturating_add(10);
+        }
+        AppEvent::PageUp if app.forms.focus == FormsFocus::Details && !app.forms.show_strings => {
+            app.forms.details_scroll = app.forms.details_scroll.saturating_sub(10);
         }
         AppEvent::Enter if app.forms.focus == FormsFocus::Details && !app.forms.show_strings => {
             if let Some(pre) = commands::set_value_prefill(app) {

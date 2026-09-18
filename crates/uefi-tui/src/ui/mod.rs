@@ -62,7 +62,7 @@ fn render_hint(f: &mut Frame, area: Rect, app: &App) {
                 "NORMAL[Tree]: j/k move · h/l collapse/expand · i/r/d · Ctrl-hjkl focus · :cmd · ?help · q".into()
             }
             crate::app::Focus::Details => {
-                "NORMAL[Details]: Ctrl-hjkl focus · :cmd · ?help · q".into()
+                "NORMAL[Details]: j/k scroll · Ctrl-hjkl focus · :cmd · ?help · q".into()
             }
             crate::app::Focus::Registry => registry_hint(app),
         },

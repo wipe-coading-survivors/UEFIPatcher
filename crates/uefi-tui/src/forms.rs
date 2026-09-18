@@ -283,53 +283,74 @@ pub fn selected_key(rows: &[FormsRow], cursor: usize) -> Option<FormKey> {
 /// options), блок гейтов. Чистая функция от state — рендерит
 /// ui/forms.rs. Спека tui-forms-view §3.2, §4 V2.
 pub fn form_details_text(forms: &FormsData, rows: &[FormsRow], cursor: usize) -> String {
+    form_details(forms, rows, cursor).text
+}
+
+pub struct FormDetails {
+    pub text: String,
+    pub marker_line: Option<usize>,
+    pub info_line: Option<usize>,
+}
+
+/// Правая панель Forms-view: текст (`form_details_text` дословно) +
+/// номера строк маркера вопроса (`marker_line`) и заголовка блока
+/// question_info (`info_line`) для авто-follow скролла. Спека R8.
+pub fn form_details(forms: &FormsData, rows: &[FormsRow], cursor: usize) -> FormDetails {
     let Some(FormsRow::Form { key, path, .. }) = rows.get(cursor) else {
-        return "no form selected".into();
+        return FormDetails {
+            text: "no form selected".into(),
+            marker_line: None,
+            info_line: None,
+        };
     };
-    let mut s = format!(
-        "Form:    {}\nForm ID: {}\nFormSet: {}\nTarget:  {}\n",
-        key.title,
-        key.form_id_ifr,
-        short_guid(&key.formset_guid),
-        key.target
-    );
+    let mut lines = vec![
+        format!("Form:    {}", key.title),
+        format!("Form ID: {}", key.form_id_ifr),
+        format!("FormSet: {}", short_guid(&key.formset_guid)),
+        format!("Target:  {}", key.target),
+    ];
     if !path.is_empty() {
-        s.push_str(&format!("Path:    {path}\n"));
+        lines.push(format!("Path:    {path}"));
     }
+    let mut marker_line = None;
+    let mut info_line = None;
     if forms.questions_key.as_ref() == Some(key) {
-        s.push_str(&format!(
-            "\nPrompt · Questions ({}) — qid:\n",
+        lines.push(String::new());
+        lines.push(format!(
+            "Prompt · Questions ({}) — qid:",
             forms.questions.len()
         ));
         for (i, q) in forms.questions.iter().enumerate() {
             let marker = if i == forms.question_cursor { ">" } else { " " };
             let prompt = if q.prompt.is_empty() { "-" } else { &q.prompt };
             let icon = crate::theme::question_icon(&q.kind);
-            s.push_str(&format!(
-                "{marker} {icon} {} (q{:#x}) ({})\n",
+            if i == forms.question_cursor {
+                marker_line = Some(lines.len());
+            }
+            lines.push(format!(
+                "{marker} {icon} {} (q{:#x}) ({})",
                 prompt, q.question_id, q.kind
             ));
         }
         if let Some(qi) = &forms.question_info {
             let icon = crate::theme::question_icon(&qi.kind);
-            s.push_str(&format!(
-                "\n{icon} Question q{:#x} ({}):\n",
+            lines.push(String::new());
+            info_line = Some(lines.len());
+            lines.push(format!(
+                "{icon} Question q{:#x} ({}):",
                 qi.question_id, qi.kind
             ));
-            s.push_str(&format!(
-                "  store {} · offset {:#x} · width {}\n",
+            lines.push(format!(
+                "  store {} · offset {:#x} · width {}",
                 qi.var_store_id, qi.var_offset, qi.width
             ));
             match qi.kind.as_str() {
                 "numeric" => {
-                    s.push_str(&format!(
-                        "  range {}..={} step {}\n",
-                        qi.min, qi.max, qi.step
-                    ));
+                    lines.push(format!("  range {}..={} step {}", qi.min, qi.max, qi.step));
                 }
                 "one_of" => {
                     if qi.options.is_empty() {
-                        s.push_str("  options: (none)\n");
+                        lines.push("  options: (none)".into());
                     }
                     for (i, o) in qi.options.iter().enumerate() {
                         let item = if o.text.is_empty() {
@@ -342,14 +363,15 @@ pub fn form_details_text(forms: &FormsData, rows: &[FormsRow], cursor: usize) ->
                         } else {
                             " ".repeat(11)
                         };
-                        s.push_str(&format!("{prefix}{item}\n"));
+                        lines.push(format!("{prefix}{item}"));
                     }
                 }
                 _ => {}
             }
         }
         if !forms.gates.is_empty() {
-            s.push_str(&format!("\nGates ({}):\n", forms.gates.len()));
+            lines.push(String::new());
+            lines.push(format!("Gates ({}):", forms.gates.len()));
             for g in &forms.gates {
                 let flip = if g.flippable { "flippable" } else { "-" };
                 let src = if g.source_target.is_empty() {
@@ -357,16 +379,23 @@ pub fn form_details_text(forms: &FormsData, rows: &[FormsRow], cursor: usize) ->
                 } else {
                     format!(" @{}", g.source_target)
                 };
-                s.push_str(&format!(
-                    "  {:<8} {:<24} {}{}\n",
+                lines.push(format!(
+                    "  {:<8} {:<24} {}{}",
                     g.gate_kind, g.expression, flip, src
                 ));
             }
         }
     } else {
-        s.push_str("\nQuestions: loading…\n");
+        lines.push(String::new());
+        lines.push("Questions: loading…".into());
     }
-    s
+    let mut text = lines.join("\n");
+    text.push('\n');
+    FormDetails {
+        text,
+        marker_line,
+        info_line,
+    }
 }
 
 pub fn all_formset_guids(forms: &[FormInfo]) -> HashSet<String> {
@@ -748,5 +777,68 @@ mod tests {
             t.contains("options: 0x0(sid 18)\n           0x1(sid 17)"),
             "пустой text — fallback на sid, каждая опция на своей строке"
         );
+    }
+
+    #[test]
+    fn form_details_reports_marker_and_info_lines() {
+        let forms = vec![
+            fi("t1", "S", 1, "Main", true),
+            fi("t1", "S", 2, "Serial", false),
+        ];
+        let edges = vec![edge("S", 1, 2, "")];
+        let ex = all_row_keys(&forms, &edges);
+        let rows = build_tree_rows(&forms, &edges, &ex);
+        let fd = FormsData {
+            questions: vec![
+                uefi_proto::QuestionSummary {
+                    question_id: 0x210,
+                    kind: "one_of".into(),
+                    prompt: "Serial Port".into(),
+                    ..Default::default()
+                },
+                uefi_proto::QuestionSummary {
+                    question_id: 0x211,
+                    kind: "numeric".into(),
+                    prompt: "Baud".into(),
+                    ..Default::default()
+                },
+            ],
+            questions_key: Some(FormKey {
+                target: "t1".into(),
+                formset_guid: "S".into(),
+                form_id_ifr: 2,
+                title: "Serial".into(),
+            }),
+            question_cursor: 1,
+            question_info: Some(uefi_proto::QuestionInfo {
+                question_id: 0x211,
+                kind: "numeric".into(),
+                var_store_id: 1,
+                var_offset: 0x60,
+                width: 1,
+                min: 0,
+                max: 255,
+                step: 1,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let d = form_details(&fd, &rows, 2);
+        assert_eq!(
+            d.marker_line,
+            Some(8),
+            "строки: заголовок 0-3, Path 4, бланк 5, шапка вопросов 6, q0 7, маркер q1 8"
+        );
+        assert_eq!(
+            d.info_line,
+            Some(10),
+            "после бланка 9 — заголовок «Question q0x211»"
+        );
+        assert_eq!(
+            d.text,
+            form_details_text(&fd, &rows, 2),
+            "текст не изменился"
+        );
+        assert!(d.text.contains("> \u{F1EC} Baud (q0x211) (numeric)"));
     }
 }
