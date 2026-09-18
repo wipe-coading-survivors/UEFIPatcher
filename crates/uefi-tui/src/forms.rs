@@ -398,6 +398,140 @@ pub fn form_details(forms: &FormsData, rows: &[FormsRow], cursor: usize) -> Form
     }
 }
 
+pub struct FormPanel {
+    pub header: Vec<String>,
+    pub questions: Vec<String>,
+    pub gates: Vec<String>,
+    pub bottom: Vec<String>,
+    pub questions_ready: bool,
+}
+
+/// Трёхзонная сборка правой панели Forms-view (спека
+/// forms-panel-three-zone §2-§3): шапка формы + колонки-хедер, строки
+/// вопросов, хвост гейтов, низ — детали выбранного вопроса. Рендерит
+/// ui/forms.rs. НЕ скроллит — скролл списка делает рендер.
+pub fn form_panel(forms: &FormsData, rows: &[FormsRow], cursor: usize) -> FormPanel {
+    let Some(FormsRow::Form { key, path, .. }) = rows.get(cursor) else {
+        return FormPanel {
+            header: vec!["no form selected".into()],
+            questions: vec![],
+            gates: vec![],
+            bottom: vec![],
+            questions_ready: false,
+        };
+    };
+    let mut header = vec![
+        format!("Form:    {}", key.title),
+        format!("Form ID: {}", key.form_id_ifr),
+        format!("FormSet: {}", short_guid(&key.formset_guid)),
+        format!("Target:  {}", key.target),
+    ];
+    if !path.is_empty() {
+        header.push(format!("Path:    {path}"));
+    }
+    let ready = forms.questions_key.as_ref() == Some(key);
+    header.push(String::new());
+    header.push(if ready {
+        format!("Questions ({}): prompt · qid · kind", forms.questions.len())
+    } else {
+        "Questions: loading…".into()
+    });
+
+    let questions: Vec<String> = if ready {
+        forms
+            .questions
+            .iter()
+            .map(|q| {
+                let prompt = if q.prompt.is_empty() { "-" } else { &q.prompt };
+                format!(
+                    "{} {prompt:<28} q{:#x} {}",
+                    crate::theme::question_icon(&q.kind),
+                    q.question_id,
+                    q.kind
+                )
+            })
+            .collect()
+    } else {
+        vec![]
+    };
+
+    let mut gates = Vec::new();
+    if ready && !forms.gates.is_empty() {
+        gates.push(String::new());
+        gates.push(format!("Gates ({}):", forms.gates.len()));
+        for g in &forms.gates {
+            let flip = if g.flippable { "flippable" } else { "-" };
+            let src = if g.source_target.is_empty() {
+                String::new()
+            } else {
+                format!(" @{}", g.source_target)
+            };
+            gates.push(format!(
+                "  {:<8} {:<24} {}{}",
+                g.gate_kind, g.expression, flip, src
+            ));
+        }
+    }
+
+    let info_for_this = forms
+        .question_info_key
+        .as_ref()
+        .is_some_and(|(k, _)| k == key);
+    let bottom = if info_for_this {
+        forms
+            .question_info
+            .as_ref()
+            .map(question_bottom)
+            .unwrap_or_else(|| vec!["(loading…)".into()])
+    } else {
+        vec!["(loading…)".into()]
+    };
+
+    FormPanel {
+        header,
+        questions,
+        gates,
+        bottom,
+        questions_ready: ready,
+    }
+}
+
+fn question_bottom(qi: &uefi_proto::QuestionInfo) -> Vec<String> {
+    let icon = crate::theme::question_icon(&qi.kind);
+    let mut lines = vec![
+        format!("{icon} Question q{:#x} ({}):", qi.question_id, qi.kind),
+        format!(
+            "  store {} · offset {:#x} · width {}",
+            qi.var_store_id, qi.var_offset, qi.width
+        ),
+    ];
+    match qi.kind.as_str() {
+        "numeric" => {
+            lines.push(format!("  range {}..={} step {}", qi.min, qi.max, qi.step));
+        }
+        "one_of" => {
+            if qi.options.is_empty() {
+                lines.push("  options: (none)".into());
+            }
+            for (i, o) in qi.options.iter().enumerate() {
+                let item = if o.text.is_empty() {
+                    format!("{:#x}(sid {})", o.value, o.string_id)
+                } else {
+                    format!("{:#x} \"{}\"", o.value, o.text)
+                };
+                let prefix = if i == 0 {
+                    "  options: ".to_string()
+                } else {
+                    " ".repeat(11)
+                };
+                lines.push(format!("{prefix}{item}"));
+            }
+        }
+        _ => {}
+    }
+    lines
+}
+
 pub fn all_formset_guids(forms: &[FormInfo]) -> HashSet<String> {
     forms.iter().map(|f| f.formset_guid.clone()).collect()
 }
@@ -840,5 +974,94 @@ mod tests {
             "текст не изменился"
         );
         assert!(d.text.contains("> \u{F1EC} Baud (q0x211) (numeric)"));
+    }
+
+    #[test]
+    fn form_panel_builds_zones() {
+        let mut app = crate::app::App::new();
+        app.forms.forms = vec![uefi_proto::FormInfo {
+            form_id: "t1".into(),
+            formset_guid: "S".into(),
+            form_id_ifr: 1,
+            title: "Main".into(),
+            visible: true,
+        }];
+        app.forms.expanded = ["S".into()].into();
+        let rows = app.forms_rows();
+        let key = FormKey {
+            target: "t1".into(),
+            formset_guid: "S".into(),
+            form_id_ifr: 1,
+            title: "Main".into(),
+        };
+        app.forms.questions_key = Some(key.clone());
+        app.forms.questions = vec![
+            uefi_proto::QuestionSummary {
+                question_id: 0x210,
+                prompt: "Cores".into(),
+                kind: "numeric".into(),
+                ..Default::default()
+            },
+            uefi_proto::QuestionSummary {
+                question_id: 0x211,
+                prompt: String::new(),
+                kind: "one_of".into(),
+                ..Default::default()
+            },
+        ];
+        app.forms.gates = vec![uefi_proto::GateInfo {
+            gate_kind: "suppress".into(),
+            expression: "e0".into(),
+            flippable: true,
+            ..Default::default()
+        }];
+        app.forms.question_info = Some(uefi_proto::QuestionInfo {
+            question_id: 0x210,
+            kind: "numeric".into(),
+            var_store_id: 2,
+            var_offset: 0x37,
+            width: 1,
+            min: 1,
+            max: 8,
+            step: 1,
+            ..Default::default()
+        });
+        app.forms.question_info_key = Some((key, 0x210));
+        let p = form_panel(&app.forms, &rows, 1);
+        assert!(p.questions_ready);
+        assert_eq!(
+            p.header.last().unwrap(),
+            "Questions (2): prompt · qid · kind"
+        );
+        assert_eq!(p.questions.len(), 2);
+        assert!(p.questions[0].contains("Cores"));
+        assert!(p.questions[0].contains("q0x210"));
+        assert!(p.questions[1].contains('-'), "пустой промпт — дефис");
+        assert_eq!(p.gates[1], "Gates (1):");
+        assert!(p.bottom[0].contains("Question q0x210"));
+        assert!(p.bottom.iter().any(|l| l.contains("range 1..=8 step 1")));
+    }
+
+    #[test]
+    fn form_panel_loading_and_no_form() {
+        let mut app = crate::app::App::new();
+        app.forms.forms = vec![uefi_proto::FormInfo {
+            form_id: "t1".into(),
+            formset_guid: "S".into(),
+            form_id_ifr: 1,
+            title: "Main".into(),
+            visible: true,
+        }];
+        app.forms.expanded = ["S".into()].into();
+        let rows = app.forms_rows();
+        let p = form_panel(&app.forms, &rows, 1);
+        assert!(!p.questions_ready);
+        assert_eq!(p.header.last().unwrap(), "Questions: loading…");
+        assert!(p.questions.is_empty());
+        assert!(p.gates.is_empty());
+        assert_eq!(p.bottom, vec!["(loading…)".to_string()]);
+        let p0 = form_panel(&app.forms, &rows, 0);
+        assert_eq!(p0.header, vec!["no form selected".to_string()]);
+        assert!(!p0.questions_ready);
     }
 }
