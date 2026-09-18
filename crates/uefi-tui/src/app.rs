@@ -6,6 +6,7 @@ use uefi_proto::{
     StringInfo,
 };
 
+use crate::input::AppEvent;
 use crate::tree::visible_rows;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -604,6 +605,157 @@ impl Default for App {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CmdFlow {
+    Execute,
+    Exit,
+    None,
+}
+
+impl App {
+    pub fn cmd_key(&mut self, ev: &AppEvent) -> CmdFlow {
+        use crate::input::AppEvent as E;
+        let mut mutated = false;
+        let flow = match ev {
+            E::Key(c) => {
+                self.cmdline.insert(*c);
+                mutated = true;
+                CmdFlow::None
+            }
+            E::Ctrl(c) => match c {
+                'a' => {
+                    self.cmdline.home();
+                    CmdFlow::None
+                }
+                'e' => {
+                    self.cmdline.end();
+                    CmdFlow::None
+                }
+                'w' => {
+                    self.cmdline.kill_word();
+                    mutated = true;
+                    CmdFlow::None
+                }
+                'u' => {
+                    self.cmdline.kill_to_start();
+                    mutated = true;
+                    CmdFlow::None
+                }
+                'k' => {
+                    self.cmdline.kill_to_end();
+                    mutated = true;
+                    CmdFlow::None
+                }
+                _ => CmdFlow::None,
+            },
+            E::Backspace => {
+                self.cmdline.backspace();
+                mutated = true;
+                CmdFlow::None
+            }
+            E::Delete => {
+                self.cmdline.delete();
+                mutated = true;
+                CmdFlow::None
+            }
+            E::Left => {
+                self.cmdline.left();
+                CmdFlow::None
+            }
+            E::Right => {
+                if self.menu.open {
+                    self.accept_menu_selection();
+                } else {
+                    self.cmdline.right();
+                }
+                CmdFlow::None
+            }
+            E::WordLeft => {
+                self.cmdline.word_left();
+                CmdFlow::None
+            }
+            E::WordRight => {
+                self.cmdline.word_right();
+                CmdFlow::None
+            }
+            E::Home => {
+                self.cmdline.home();
+                CmdFlow::None
+            }
+            E::End => {
+                self.cmdline.end();
+                CmdFlow::None
+            }
+            E::Up => {
+                if self.menu.open {
+                    self.menu.up();
+                } else if let Some(s) = self.history.prev(self.cmdline.as_str()) {
+                    self.cmdline.set_str(&s);
+                }
+                CmdFlow::None
+            }
+            E::Down => {
+                if self.menu.open {
+                    self.menu.down();
+                } else if let Some(s) = self.history.next(self.cmdline.as_str()) {
+                    self.cmdline.set_str(&s);
+                }
+                CmdFlow::None
+            }
+            E::Tab => {
+                if self.menu.open {
+                    self.accept_menu_selection();
+                } else {
+                    let comp = crate::commands::complete(self, self.cmdline.as_str());
+                    if let Some(c) = comp.common {
+                        self.cmdline.set_str(&c);
+                    }
+                    if comp.items.is_empty() {
+                        self.menu.close();
+                    } else {
+                        self.menu.open_with(comp.items);
+                    }
+                    self.history.reset();
+                }
+                CmdFlow::None
+            }
+            E::BackTab => {
+                if self.menu.open {
+                    self.menu.up();
+                }
+                CmdFlow::None
+            }
+            E::Enter => CmdFlow::Execute,
+            E::Esc => {
+                if self.menu.open {
+                    self.menu.close();
+                    CmdFlow::None
+                } else {
+                    CmdFlow::Exit
+                }
+            }
+            _ => CmdFlow::None,
+        };
+        if mutated {
+            self.history.reset();
+            if self.menu.open {
+                let comp = crate::commands::complete(self, self.cmdline.as_str());
+                self.menu.refresh(comp.items);
+            }
+        }
+        flow
+    }
+
+    fn accept_menu_selection(&mut self) {
+        if let Some(apply) = self.menu.selected_apply().map(str::to_string) {
+            self.cmdline.set_str(&apply);
+            self.history.reset();
+            let comp = crate::commands::complete(self, self.cmdline.as_str());
+            self.menu.refresh(comp.items);
+        }
+    }
+}
+
 pub fn details_text(node: &TreeNode) -> String {
     let type_name = uefi_common::names::node_type_name(node.node_type as u32);
     let sub_name = match node.node_type {
@@ -639,6 +791,7 @@ pub fn details_text(node: &TreeNode) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::input::AppEvent;
     use crate::theme::ACTION_NO;
 
     fn node(path: &str, depth: usize) -> TreeNode {
@@ -1117,5 +1270,60 @@ mod tests {
         assert!(m.open);
         assert_eq!(m.selected, 0);
         assert_eq!(m.selected_apply(), Some("x b"));
+    }
+
+    #[test]
+    fn cmd_key_editing_and_history() {
+        let mut app = App::new();
+        app.history = crate::history::History::empty();
+        app.mode = Mode::Command;
+        for c in "save x".chars() {
+            app.cmd_key(&AppEvent::Key(c));
+        }
+        assert_eq!(app.cmdline.as_str(), "save x");
+        app.cmd_key(&AppEvent::Left);
+        app.cmd_key(&AppEvent::WordLeft);
+        app.cmd_key(&AppEvent::End);
+        app.cmd_key(&AppEvent::Ctrl('w'));
+        assert_eq!(app.cmdline.as_str(), "save ");
+        assert_eq!(app.cmd_key(&AppEvent::Enter), CmdFlow::Execute);
+        app.history.submit("save x");
+
+        app.cmdline.set_str("");
+        app.cmd_key(&AppEvent::Up);
+        assert_eq!(app.cmdline.as_str(), "save x");
+        app.cmd_key(&AppEvent::Backspace);
+        assert_eq!(app.cmdline.as_str(), "save ");
+        app.cmd_key(&AppEvent::Up);
+        assert_eq!(app.cmdline.as_str(), "save x");
+    }
+
+    #[test]
+    fn cmd_key_tab_opens_menu_and_right_accepts() {
+        let mut app = App::new();
+        app.history = crate::history::History::empty();
+        app.mode = Mode::Command;
+        app.cmdline.set_str("snap");
+        assert_eq!(app.cmd_key(&AppEvent::Tab), CmdFlow::None);
+        assert!(app.menu.open);
+        assert!(app.menu.selected_apply().unwrap().starts_with("snap"));
+        app.cmd_key(&AppEvent::Down);
+        let expected = app.menu.items[1].apply.clone();
+        app.cmd_key(&AppEvent::Right);
+        assert_eq!(app.cmdline.as_str(), expected);
+        assert!(!app.menu.open);
+    }
+
+    #[test]
+    fn cmd_key_esc_two_stage_and_enter_flow() {
+        let mut app = App::new();
+        app.history = crate::history::History::empty();
+        app.mode = Mode::Command;
+        app.cmdline.set_str("s");
+        app.cmd_key(&AppEvent::Tab);
+        assert!(app.menu.open);
+        assert_eq!(app.cmd_key(&AppEvent::Esc), CmdFlow::None);
+        assert!(!app.menu.open);
+        assert_eq!(app.cmd_key(&AppEvent::Esc), CmdFlow::Exit);
     }
 }

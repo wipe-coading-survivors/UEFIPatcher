@@ -8,7 +8,7 @@ use crossterm::terminal::{
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use uefi_tui::app::{App, Focus, FormsFocus, Mode, RegistryRow, View};
+use uefi_tui::app::{App, CmdFlow, Focus, FormsFocus, Mode, RegistryRow, View};
 use uefi_tui::commands;
 use uefi_tui::input::{self, AppEvent};
 use uefi_tui::ui;
@@ -138,9 +138,8 @@ async fn handle_normal(app: &mut App, ev: &AppEvent, client: &mut Option<command
 }
 
 async fn handle_command(app: &mut App, ev: &AppEvent, client: &mut Option<commands::Client>) {
-    match ev {
-        AppEvent::Key(c) => app.cmdline.insert(*c),
-        AppEvent::Enter => {
+    match app.cmd_key(ev) {
+        CmdFlow::Execute => {
             let cmd = app.cmdline.as_str().to_string();
             if let Some(c) = client {
                 match commands::execute_command(app, &cmd, c).await {
@@ -150,22 +149,12 @@ async fn handle_command(app: &mut App, ev: &AppEvent, client: &mut Option<comman
             } else {
                 app.status_msg = "no engine connection".into();
             }
+            app.history.submit(&cmd);
+            app.history.save();
             app.exit_to_normal();
         }
-        AppEvent::Esc => app.exit_to_normal(),
-        AppEvent::Backspace => {
-            app.cmdline.backspace();
-        }
-        AppEvent::Tab => {
-            let comp = commands::complete(app, app.cmdline.as_str());
-            if let Some(r) = comp.common {
-                app.cmdline.set_str(&r);
-            }
-            if !comp.items.is_empty() {
-                app.status_msg = format!("{} candidates", comp.items.len());
-            }
-        }
-        _ => {}
+        CmdFlow::Exit => app.exit_to_normal(),
+        CmdFlow::None => {}
     }
 }
 
