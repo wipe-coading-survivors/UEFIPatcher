@@ -2,6 +2,7 @@ pub mod app;
 pub mod commands;
 pub mod forms;
 pub mod input;
+pub mod line;
 pub mod theme;
 pub mod tree;
 pub mod ui;
