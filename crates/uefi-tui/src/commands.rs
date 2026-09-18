@@ -1030,7 +1030,12 @@ fn context_candidates(app: &App, cmd: &str, head: &[&str], token: &str) -> Vec<S
         return complete_path(token);
     }
     if head.last() == Some(&"--mode") {
-        return ["into", "before", "after"]
+        let vals: &[&str] = if cmd == "reopen" {
+            &["read", "write"]
+        } else {
+            &["into", "before", "after"]
+        };
+        return vals
             .iter()
             .filter(|c| c.starts_with(token))
             .map(|s| s.to_string())
@@ -1045,6 +1050,15 @@ fn context_candidates(app: &App, cmd: &str, head: &[&str], token: &str) -> Vec<S
             .filter(|c| c.starts_with(token))
             .collect();
     }
+    if matches!(cmd, "switch" | "close") && head.len() == 1 {
+        return app
+            .registry
+            .images
+            .iter()
+            .map(|im| im.image_id.clone())
+            .filter(|c| c.starts_with(token))
+            .collect();
+    }
     if head.last() == Some(&"--ffs") {
         return unique_formset_guids(app)
             .into_iter()
@@ -1055,6 +1069,7 @@ fn context_candidates(app: &App, cmd: &str, head: &[&str], token: &str) -> Vec<S
         let flags: &[&str] = match cmd {
             "insert" => &["--file", "--artifact-id", "--mode"],
             "replace" => &["--file", "--artifact-id", "--body-only"],
+            "reopen" => &["--mode"],
             "hii" if head.len() == 4 && head[1] == "formset" && head[2] == "add" => &["--ffs"],
             _ => &[],
         };
@@ -1694,6 +1709,47 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["art-1".to_string(), "art-2".to_string()]
         );
+    }
+
+    #[test]
+    fn complete_switch_close_offer_registry_image_ids() {
+        let mut app = crate::app::App::new();
+        app.registry.images = vec![
+            uefi_proto::ImageInfo {
+                image_id: "img-aaa".into(),
+                ..Default::default()
+            },
+            uefi_proto::ImageInfo {
+                image_id: "img-bbb".into(),
+                ..Default::default()
+            },
+        ];
+        for cmd in ["switch ", "close "] {
+            let c = complete(&app, cmd);
+            assert_eq!(
+                c.items
+                    .iter()
+                    .map(|i| i.display.clone())
+                    .collect::<Vec<_>>(),
+                vec!["img-aaa".to_string(), "img-bbb".to_string()],
+                "слот-1 {cmd}"
+            );
+        }
+        let c = complete(&app, "switch img-a");
+        assert_eq!(c.common.as_deref(), Some("switch img-aaa "));
+    }
+
+    #[test]
+    fn complete_mode_values_depend_on_command() {
+        let app = crate::app::App::new();
+        let c = complete(&app, "insert 0/3 --mode ");
+        let vals: Vec<_> = c.items.iter().map(|i| i.display.clone()).collect();
+        assert!(vals.contains(&"into".to_string()));
+        let c = complete(&app, "reopen --mode ");
+        let vals: Vec<_> = c.items.iter().map(|i| i.display.clone()).collect();
+        assert_eq!(vals, vec!["read".to_string(), "write".to_string()]);
+        let c = complete(&app, "reopen --");
+        assert_eq!(c.common.as_deref(), Some("reopen --mode "));
     }
 
     #[test]
