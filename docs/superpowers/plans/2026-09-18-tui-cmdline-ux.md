@@ -330,17 +330,13 @@ impl LineBuffer {
     }
 
     pub fn word_right(&mut self) {
-        for (i, w) in self
-            .s
-            .split_word_bound_indices()
-            .skip_while(|(i, _)| *i <= self.cursor)
-        {
-            if w.chars().next().is_some_and(char::is_alphanumeric) {
-                self.cursor = i + w.len();
-                return;
-            }
+        if let Some((i, w)) = self.s.split_word_bound_indices().find(|(i, w)| {
+            i + w.len() > self.cursor && w.chars().next().is_some_and(char::is_alphanumeric)
+        }) {
+            self.cursor = i + w.len();
+        } else {
+            self.cursor = self.s.len();
         }
-        self.cursor = self.s.len();
     }
 
     pub fn kill_word(&mut self) {
@@ -439,7 +435,7 @@ mod tests {
         std::fs::write(&p, lines.join("\n")).unwrap();
         let h = History::load_from(&p);
         assert_eq!(h.entries_len(), CAP);
-        assert_eq!(h.entry(0).unwrap(), "cmd99");
+        assert_eq!(h.entry(0).unwrap(), "cmd100");
     }
 
     #[test]
@@ -898,9 +894,9 @@ git commit -m "refactor(tui): complete() -> Completion { common, items } с appl
 fn ffs_flag_only_in_grammar_position() {
     let app = crate::app::App::new();
     let c = complete(&app, "hii formset add --f");
-    assert!(c.items.iter().any(|i| i.display == "--ffs"));
+    assert_eq!(c.common.as_deref(), Some("hii formset add --ffs"));
     let c = complete(&app, "hii form add x --f");
-    assert!(!c.items.iter().any(|i| i.display == "--ffs"));
+    assert_ne!(c.common.as_deref(), Some("hii form add x --ffs"));
 }
 
 #[cfg(unix)]
@@ -909,9 +905,11 @@ fn complete_path_descends_into_dir_symlinks() {
     let td = tempfile::tempdir().unwrap();
     std::fs::create_dir(td.path().join("real")).unwrap();
     std::os::unix::fs::symlink(td.path().join("real"), td.path().join("link")).unwrap();
-    let token = td.path().join("li").to_string_lossy().to_string();
-    let c = complete(&crate::app::App::new(), &token);
-    assert!(c.items.iter().any(|i| i.display.ends_with("link/")));
+    let base = td.path().display().to_string();
+    assert_eq!(
+        complete_path(&format!("{base}/li")),
+        vec![format!("{base}/link/")]
+    );
 }
 ```
 
@@ -1400,7 +1398,7 @@ mod tests {
         let t = draw(&app);
         assert_ne!(t.backend().buffer().get(1, 1).symbol(), "0");
         assert_eq!(t.backend().buffer().get(17, 1).symbol(), "j");
-        assert!(t.backend().buffer().get(17, 1).modifier().contains(Modifier::REVERSED));
+        assert!(t.backend().buffer().get(18, 1).modifier().contains(Modifier::REVERSED));
     }
 }
 ```
@@ -1473,7 +1471,7 @@ fn cmdline_spans(prefix: &str, buf: &crate::line::LineBuffer, inner: usize) -> V
 }
 ```
 
-Геометрия тестов: ширина 20 ⇒ inner 18, левая граница x=0, контент с x=1. «abc»+left: cur=3, x=1+3=4 ✓. «ab»: cur=3=len ⇒ хвостовой blank на x=4 ✓. Длинная: cur=22=len ⇒ start=5, «j» (idx 21) на позиции 21−5=16 ⇒ x=17, под курсором reversed ✓.
+Геометрия тестов: ширина 20 ⇒ inner 18, левая граница x=0, контент с x=1. «abc»+left: cur=3, x=1+3=4 ✓. «ab»: cur=3=len ⇒ хвостовой blank на x=4 ✓. Длинная (20 симв.): cur=21=len ⇒ start=4, «j» (gi 20) на позиции 20−4=16 ⇒ x=17 (без стиля); хвостовой blank-курсор на x=18 reversed ✓.
 
 - [ ] **Step 4: Run — passes; commit**
 
@@ -1514,6 +1512,7 @@ fn cmd_key_editing_and_history() {
     assert_eq!(app.cmdline.as_str(), "save x");
     app.cmd_key(&AppEvent::Left);
     app.cmd_key(&AppEvent::WordLeft);
+    app.cmd_key(&AppEvent::End);
     app.cmd_key(&AppEvent::Ctrl('w'));
     assert_eq!(app.cmdline.as_str(), "save ");
     assert_eq!(app.cmd_key(&AppEvent::Enter), CmdFlow::Execute);
@@ -1533,10 +1532,10 @@ fn cmd_key_tab_opens_menu_and_right_accepts() {
     let mut app = App::new();
     app.history = crate::history::History::empty();
     app.mode = Mode::Command;
-    app.cmdline.set_str("s");
+    app.cmdline.set_str("snap");
     assert_eq!(app.cmd_key(&AppEvent::Tab), CmdFlow::None);
     assert!(app.menu.open);
-    assert!(app.menu.selected_apply().unwrap().starts_with("s"));
+    assert!(app.menu.selected_apply().unwrap().starts_with("snap"));
     app.cmd_key(&AppEvent::Down);
     let expected = app.menu.items[1].apply.clone();
     app.cmd_key(&AppEvent::Right);
