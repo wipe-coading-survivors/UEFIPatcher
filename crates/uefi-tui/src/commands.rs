@@ -1081,6 +1081,7 @@ fn context_candidates(app: &App, cmd: &str, head: &[&str], token: &str) -> Vec<S
         let flags: &[&str] = match cmd {
             "insert" => &["--file", "--artifact-id", "--mode"],
             "replace" => &["--file", "--artifact-id", "--body-only"],
+            "extract" => &["--body-only"],
             "reopen" => &["--mode"],
             "open" => &["--mode"],
             "hii" if head.len() == 4 && head[1] == "formset" && head[2] == "add" => &["--ffs"],
@@ -1921,6 +1922,19 @@ mod tests {
                 "--artifact-id".to_string(),
                 "--mode".to_string()
             ]
+        );
+    }
+
+    #[test]
+    fn complete_extract_offers_body_only_flag() {
+        let app = crate::app::App::new();
+        let c = complete(&app, "extract 1/3 --bod");
+        assert_eq!(c.common.as_deref(), Some("extract 1/3 --body-only "));
+        let c = complete(&app, "extract 1/3 --");
+        assert_eq!(
+            c.common.as_deref(),
+            Some("extract 1/3 --body-only "),
+            "единственный флаг — через common, items пуст (паттерн single-candidate)"
         );
     }
 
