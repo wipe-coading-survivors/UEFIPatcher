@@ -1326,4 +1326,17 @@ mod tests {
         assert!(!app.menu.open);
         assert_eq!(app.cmd_key(&AppEvent::Esc), CmdFlow::Exit);
     }
+
+    #[test]
+    fn cmd_key_enter_with_open_menu_executes_as_typed() {
+        let mut app = App::new();
+        app.history = crate::history::History::empty();
+        app.mode = Mode::Command;
+        app.cmdline.set_str("s");
+        app.cmd_key(&AppEvent::Tab);
+        assert!(app.menu.open);
+        assert_ne!(app.menu.selected_apply(), Some("s"));
+        assert_eq!(app.cmd_key(&AppEvent::Enter), CmdFlow::Execute);
+        assert_eq!(app.cmdline.as_str(), "s");
+    }
 }
