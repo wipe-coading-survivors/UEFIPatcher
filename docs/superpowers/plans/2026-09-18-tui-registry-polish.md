@@ -296,8 +296,7 @@ fn complete_mode_values_depend_on_command() {
     let vals: Vec<_> = c.items.iter().map(|i| i.display.clone()).collect();
     assert_eq!(vals, vec!["read".to_string(), "write".to_string()]);
     let c = complete(&app, "reopen --");
-    let vals: Vec<_> = c.items.iter().map(|i| i.display.clone()).collect();
-    assert_eq!(vals, vec!["--mode".to_string()]);
+    assert_eq!(c.common.as_deref(), Some("reopen --mode "));
 }
 ```
 
