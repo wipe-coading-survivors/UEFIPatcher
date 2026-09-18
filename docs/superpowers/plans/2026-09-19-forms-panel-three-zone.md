@@ -653,7 +653,7 @@ git commit -m "feat(tui): form_panel — чистая трёхзонная сб�
         app.view = crate::app::View::Forms;
         app.forms.focus = crate::app::FormsFocus::Details;
         let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 24)).unwrap();
-        t.draw(|f| super::render(f, f.area(), &mut app)).unwrap();
+        t.draw(|f| super::render(f, &mut app)).unwrap();
         let text: String = (0..24)
             .map(|y| {
                 (0..100)
@@ -679,11 +679,7 @@ Expected: FAIL (методов/поля нет — compile error; help-стро�
     pub questions_viewport: usize,
 ```
 
-и в `App::new()` (рядом с инициализацией остальных полей forms, после `strings_cursor`-блока, где сегодня `details_scroll: 0, details_anchor: None, details_followed: None,`) добавить:
-
-```rust
-            questions_viewport: 0,
-```
+`App::new()` правки не требует: `forms: FormsData::default()`, 0 даёт derive Default.
 
 Методы рядом с `forms_question_cursor_up` (app.rs:442-446):
 
