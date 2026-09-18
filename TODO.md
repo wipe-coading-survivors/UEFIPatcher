@@ -3385,6 +3385,22 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   (registry-панель TUI, список образов WebUI). Контекст:
   `crates/uefi-tui/src/ui/registry.rs`, `crates/uefi-tui/src/commands.rs`
   (`:open`/`:image`), proto — `ImageOpen`/`ImageMode` (uefi-proto).
+* [ ] **uefi-tui: Ctrl+Home/End/Delete затенены в map_key** — гарды
+  `if ctrl` есть только у Left/Right (WordLeft/WordRight); Home/End/Delete
+  матчатся без модификаторов, так что Ctrl+Home/Ctrl+End/Ctrl+Delete
+  неотличимы от голых клавиш. Если понадобится Ctrl+Delete =
+  kill-word-forward — рассинхрон уже ждёт. Контекст:
+  `crates/uefi-tui/src/input.rs` (map_key).
+* [ ] **uefi-tui: Buffer::get deprecated (ratatui 0.28.1)** — 8
+  deprecation-варнингов в тест-хелперах `ui/cmdline.rs`, `ui/menu.rs`,
+  `ui/mod.rs`; механический swap на cell-индексацию (`buffer[(x, y)]`
+  / `Buffer::cell`) при апгрейде ratatui. Контекст:
+  `crates/uefi-tui/src/ui/cmdline.rs`, `ui/menu.rs`, `ui/mod.rs` (tests).
+* [ ] **uefi-tui: App::new() делает fs I/O** — `History::load()` читает
+  реальный `cmdline_history` из state_dir; каждый тест, создающий App,
+  трогает файловую систему хозяина. Для тест-изоляции нужна инъекция
+  или env-override. Контекст: `crates/uefi-tui/src/app.rs` (App::new),
+  `crates/uefi-tui/src/history.rs` (load).
 
 ## Находки live-сессии 450x: unlock формсета, порча артефакта (2026-09-12)
 
