@@ -82,21 +82,39 @@ mod tests {
     #[test]
     fn arrows_and_words() {
         assert_eq!(key(KeyCode::Left, KeyModifiers::NONE), Some(AppEvent::Left));
-        assert_eq!(key(KeyCode::Right, KeyModifiers::NONE), Some(AppEvent::Right));
-        assert_eq!(key(KeyCode::Left, KeyModifiers::CONTROL), Some(AppEvent::WordLeft));
-        assert_eq!(key(KeyCode::Right, KeyModifiers::CONTROL), Some(AppEvent::WordRight));
+        assert_eq!(
+            key(KeyCode::Right, KeyModifiers::NONE),
+            Some(AppEvent::Right)
+        );
+        assert_eq!(
+            key(KeyCode::Left, KeyModifiers::CONTROL),
+            Some(AppEvent::WordLeft)
+        );
+        assert_eq!(
+            key(KeyCode::Right, KeyModifiers::CONTROL),
+            Some(AppEvent::WordRight)
+        );
     }
 
     #[test]
     fn home_end_delete() {
         assert_eq!(key(KeyCode::Home, KeyModifiers::NONE), Some(AppEvent::Home));
         assert_eq!(key(KeyCode::End, KeyModifiers::NONE), Some(AppEvent::End));
-        assert_eq!(key(KeyCode::Delete, KeyModifiers::NONE), Some(AppEvent::Delete));
+        assert_eq!(
+            key(KeyCode::Delete, KeyModifiers::NONE),
+            Some(AppEvent::Delete)
+        );
     }
 
     #[test]
     fn ctrl_char_still_mapped() {
-        assert_eq!(key(KeyCode::Char('u'), KeyModifiers::CONTROL), Some(AppEvent::Ctrl('u')));
-        assert_eq!(key(KeyCode::Char('x'), KeyModifiers::NONE), Some(AppEvent::Key('x')));
+        assert_eq!(
+            key(KeyCode::Char('u'), KeyModifiers::CONTROL),
+            Some(AppEvent::Ctrl('u'))
+        );
+        assert_eq!(
+            key(KeyCode::Char('x'), KeyModifiers::NONE),
+            Some(AppEvent::Key('x'))
+        );
     }
 }

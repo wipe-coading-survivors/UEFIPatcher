@@ -7,7 +7,10 @@ pub struct LineBuffer {
 
 impl LineBuffer {
     pub fn new() -> Self {
-        Self { s: String::new(), cursor: 0 }
+        Self {
+            s: String::new(),
+            cursor: 0,
+        }
     }
 
     #[allow(clippy::should_implement_trait)]

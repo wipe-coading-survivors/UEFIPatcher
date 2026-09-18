@@ -13,7 +13,11 @@ pub struct History {
 
 impl History {
     pub fn empty() -> Self {
-        Self { entries: vec![], recall: None, saved: None }
+        Self {
+            entries: vec![],
+            recall: None,
+            saved: None,
+        }
     }
 
     pub fn load() -> Self {
