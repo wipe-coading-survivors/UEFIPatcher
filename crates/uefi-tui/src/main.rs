@@ -64,6 +64,22 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn handle_normal(app: &mut App, ev: &AppEvent, client: &mut Option<commands::Client>) {
+    if app.show_help {
+        match ev {
+            AppEvent::Key('?') => app.toggle_help(),
+            AppEvent::Key('q') | AppEvent::Quit => app.quit = true,
+            AppEvent::Key('j') | AppEvent::Down => {
+                app.help_scroll = app.help_scroll.saturating_add(1);
+            }
+            AppEvent::Key('k') | AppEvent::Up => {
+                app.help_scroll = app.help_scroll.saturating_sub(1);
+            }
+            AppEvent::PageDown => app.help_scroll = app.help_scroll.saturating_add(10),
+            AppEvent::PageUp => app.help_scroll = app.help_scroll.saturating_sub(10),
+            _ => {}
+        }
+        return;
+    }
     if matches!(ev, AppEvent::Tab | AppEvent::BackTab) {
         switch_view(app, client).await;
         return;
@@ -75,7 +91,7 @@ async fn handle_normal(app: &mut App, ev: &AppEvent, client: &mut Option<command
     match ev {
         AppEvent::Ctrl('h') | AppEvent::Ctrl('k') => app.focus_prev(),
         AppEvent::Ctrl('l') | AppEvent::Ctrl('j') => app.focus_next(),
-        AppEvent::Key('?') => app.show_help = !app.show_help,
+        AppEvent::Key('?') => app.toggle_help(),
         AppEvent::Key('q') | AppEvent::Quit => app.quit = true,
         AppEvent::Key(':') => app.enter_command_mode(),
         AppEvent::Key('i') | AppEvent::Key('r') | AppEvent::Key('d')
@@ -219,7 +235,7 @@ async fn switch_view(app: &mut App, client: &mut Option<commands::Client>) {
 
 async fn handle_normal_forms(app: &mut App, ev: &AppEvent, client: &mut Option<commands::Client>) {
     match ev {
-        AppEvent::Key('?') => app.show_help = !app.show_help,
+        AppEvent::Key('?') => app.toggle_help(),
         AppEvent::Key('q') | AppEvent::Quit => app.quit = true,
         AppEvent::Key(':') => app.enter_command_mode(),
         AppEvent::Ctrl('h') | AppEvent::Ctrl('k') => app.forms.focus = app.forms.focus.prev(),

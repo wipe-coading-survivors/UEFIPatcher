@@ -206,6 +206,7 @@ pub struct App {
     pub engine_online: bool,
     pub quit: bool,
     pub show_help: bool,
+    pub help_scroll: u16,
     pub tree_state: ListState,
     pub registry_state: ListState,
     pub tree_viewport_rows: usize,
@@ -232,6 +233,7 @@ impl App {
             engine_online: true,
             quit: false,
             show_help: false,
+            help_scroll: 0,
             tree_state: ListState::default(),
             registry_state: ListState::default(),
             tree_viewport_rows: 0,
@@ -292,6 +294,12 @@ impl App {
         {
             node.expanded = !node.expanded;
         }
+    }
+
+    /// Toggle help-оверлея; скролл сбрасывается при каждом переключении. Спека R6.
+    pub fn toggle_help(&mut self) {
+        self.show_help = !self.show_help;
+        self.help_scroll = 0;
     }
 
     pub fn set_expand_selected(&mut self, expand: bool) {

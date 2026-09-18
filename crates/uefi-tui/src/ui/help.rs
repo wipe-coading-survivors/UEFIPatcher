@@ -75,13 +75,23 @@ EX-COMMANDS
 TARGET default = node under cursor. Exactly one of --file / --artifact-id.
 ";
 
+/// Clamp скролла по числу строк и высоте окна (минус рамка). Спека R6.
+pub fn clamp_offset(off: u16, total: usize, visible: u16) -> u16 {
+    if visible == 0 {
+        return 0;
+    }
+    off.min((total as u16).saturating_sub(visible))
+}
+
 pub fn render(f: &mut Frame, app: &App) {
     if !app.show_help {
         return;
     }
     let area = f.area();
     f.render_widget(Clear, area);
-    let p = Paragraph::new(HELP).block(
+    let visible = area.height.saturating_sub(2);
+    let off = clamp_offset(app.help_scroll, HELP.lines().count(), visible);
+    let p = Paragraph::new(HELP).scroll((off, 0)).block(
         Block::default()
             .borders(Borders::ALL)
             .title("Help (? to close)"),
@@ -91,7 +101,15 @@ pub fn render(f: &mut Frame, app: &App) {
 
 #[cfg(test)]
 mod tests {
-    use super::HELP;
+    use super::{HELP, clamp_offset};
+
+    #[test]
+    fn clamp_offset_bounds() {
+        assert_eq!(clamp_offset(0, 70, 20), 0);
+        assert_eq!(clamp_offset(100, 70, 20), 50);
+        assert_eq!(clamp_offset(100, 10, 20), 0, "текст короче окна — скролл 0");
+        assert_eq!(clamp_offset(5, 70, 0), 0, "нулевая высота — 0");
+    }
 
     #[test]
     fn help_documents_top_level_switch_close() {
