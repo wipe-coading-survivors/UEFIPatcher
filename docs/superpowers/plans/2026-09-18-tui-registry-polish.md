@@ -874,7 +874,7 @@ git commit -m "refactor(tui): R7 — хелпер fmt_u32_ids (join-дедуп �
 
 **Interfaces:**
 - Consumes: `compute_scrolled_offset` (`tree.rs:53`).
-- Produces: `pub struct FormDetails { pub text: String, pub marker_line: Option<usize>, pub info_line: Option<usize> }`; `pub fn form_details(&FormsData, &[FormsRow], usize) -> FormDetails`; `pub fn follow_offset(prev: u16, target: Option<usize>, total: usize, inner_h: usize) -> u16` (ui/forms.rs); `App::details_scroll_by(&mut self, delta: i32)`; `const FORMS_SCROLL_PAD: usize = 3` (ui/forms.rs).
+- Produces: `pub struct FormDetails { pub text: String, pub marker_line: Option<usize>, pub info_line: Option<usize> }`; `pub fn form_details(&FormsData, &[FormsRow], usize) -> FormDetails`; `pub fn follow_offset(prev: u16, target: Option<usize>, total: usize, inner_h: usize) -> u16` (ui/forms.rs); `App::details_scroll_by(&mut self, delta: i32)`; `const FORMS_SCROLL_PAD: usize = 3` (ui/forms.rs); `FormsData.details_followed: Option<usize>` — последний target, на который авто-follow уже среагировал (fix: follow только при смене цели — та же цель → clamp, ручной PgUp/PgDn выживает; якорь-сброс чистит `details_followed`).
 
 - [ ] **Step 1: Failing-тесты**
 
@@ -981,7 +981,7 @@ fn details_scroll_by_saturates() {
 
 `forms.rs`: перевести тело `form_details_text` на накопление `Vec<String>` (строки — те же format!-выражения дословно); `form_details` возвращает структуру, фиксируя `lines.len()` в момент пуша строки маркера (`i == forms.question_cursor`) и первой строки info-блока; `form_details_text` становится обёрткой `.text` (старые тесты не трогаем).
 
-`app.rs`: в `FormsData` — `pub details_scroll: u16, pub details_anchor: Option<String>`; в `App` — `pub details_scroll: u16, pub details_anchor: Option<String>` (+ нули/None в `App::new`); метод:
+`app.rs`: в `FormsData` — `pub details_scroll: u16, pub details_anchor: Option<String>, pub details_followed: Option<usize>`; в `App` — `pub details_scroll: u16, pub details_anchor: Option<String>` (+ нули/None в `App::new`); метод:
 
 ```rust
 /// Ручной скролл details-панели основного вида. Спека R8.
@@ -1024,15 +1024,18 @@ let anchor = match rows.get(app.forms.cursor) {
 if app.forms.details_anchor != anchor {
     app.forms.details_scroll = 0;
     app.forms.details_anchor = anchor;
+    app.forms.details_followed = None;
 }
 let inner_h = cols[1].height.saturating_sub(2) as usize;
 let total = fd.text.lines().count();
-let off = follow_offset(
-    app.forms.details_scroll,
-    fd.info_line.or(fd.marker_line),
-    total,
-    inner_h,
-);
+let target = fd.info_line.or(fd.marker_line);
+let off = if app.forms.details_followed == target {
+    follow_offset(app.forms.details_scroll, None, total, inner_h)
+} else {
+    let off = follow_offset(app.forms.details_scroll, target, total, inner_h);
+    app.forms.details_followed = target;
+    off
+};
 app.forms.details_scroll = off;
 f.render_widget(
     Paragraph::new(fd.text)
@@ -1047,6 +1050,8 @@ f.render_widget(
     cols[1],
 );
 ```
+
+Fix (финальное ревью): безусловный write-back `follow_offset` глотал ручной PgUp/PgDn — от resting-офсета цель сидит на нижней кромке гистерезисной полосы, и любая ручная докрутка откатывалась на следующем draw. Follow срабатывает ТОЛЬКО при смене цели (`details_followed != target`): та же цель → clamp-only ветка (`follow_offset(.., None, ..)`), новая цель → follow + запоминание. Якорь-сброс (смена формы) чистит `details_followed`, чтобы follow гарантированно включился на новой форме даже при совпадении номеров строк.
 
 Ручной скролл Forms-details — в `handle_normal_forms` (main.rs, рядом с j/k-ветками Details):
 
