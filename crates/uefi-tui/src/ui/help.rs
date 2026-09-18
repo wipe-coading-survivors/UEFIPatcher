@@ -42,7 +42,8 @@ FORMS VIEW (Tab / Shift-Tab, :forms / :image)
   Tab            обратно в Image-view
 
 COMMAND / INSERT
-  Enter           execute cmdline   ·  Esc  cancel   ·  Backspace  delete
+  TAB compl · ↑↓ hist · Ctrl+←→ word · Ctrl+W/U/K del · Home/End · Enter run · Esc cancel
+  [menu]: ↑↓ select · TAB/→ accept · BackTab back · Esc close · Enter run
 
 EX-COMMANDS
   :open PATH [--mode read|write]

@@ -29,13 +29,15 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
 
 fn cmdline_spans(prefix: &str, buf: &crate::line::LineBuffer, inner: usize) -> Vec<Span<'static>> {
     use unicode_segmentation::UnicodeSegmentation;
-    let text = format!("{}{}", prefix, buf.as_str());
-    let graphemes: Vec<&str> = text.graphemes(true).collect();
-    let cur = prefix.graphemes(true).count() + buf.cursor_grapheme();
-    let start = if cur >= inner { cur + 1 - inner } else { 0 };
-    let mut spans: Vec<Span<'static>> = Vec::new();
+    let plen = prefix.graphemes(true).count();
+    let avail = inner.saturating_sub(plen);
+    let cur = buf.cursor_grapheme();
+    let start = if cur >= avail { cur + 1 - avail } else { 0 };
+    let graphemes: Vec<&str> = buf.as_str().graphemes(true).collect();
+    let mut spans: Vec<Span<'static>> = vec![Span::raw(prefix.to_string())];
     let mut run = String::new();
-    for (gi, g) in graphemes.iter().enumerate().skip(start).take(inner) {
+    let mut shown = 0usize;
+    for (gi, g) in graphemes.iter().enumerate().skip(start).take(avail) {
         if gi == cur {
             if !run.is_empty() {
                 spans.push(Span::raw(std::mem::take(&mut run)));
@@ -47,11 +49,12 @@ fn cmdline_spans(prefix: &str, buf: &crate::line::LineBuffer, inner: usize) -> V
         } else {
             run.push_str(g);
         }
+        shown += 1;
     }
     if !run.is_empty() {
         spans.push(Span::raw(run));
     }
-    if cur == graphemes.len() {
+    if cur == graphemes.len() && shown < avail {
         spans.push(Span::styled(
             " ".to_string(),
             Style::default().add_modifier(Modifier::REVERSED),
@@ -113,8 +116,15 @@ mod tests {
         app.mode = crate::app::Mode::Command;
         app.cmdline.set_str("0123456789abcdefghij");
         let t = draw(&app);
-        assert_ne!(t.backend().buffer().get(1, 1).symbol(), "0");
+        assert_eq!(t.backend().buffer().get(1, 1).symbol(), ":");
         assert_eq!(t.backend().buffer().get(17, 1).symbol(), "j");
+        assert!(
+            !t.backend()
+                .buffer()
+                .get(17, 1)
+                .modifier
+                .contains(Modifier::REVERSED)
+        );
         assert!(
             t.backend()
                 .buffer()

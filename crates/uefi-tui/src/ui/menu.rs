@@ -1,6 +1,6 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Color, Style};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem};
 
 use crate::app::{MENU_ROWS, MenuState};
@@ -25,9 +25,7 @@ pub fn render(f: &mut Frame, anchor: Rect, menu: &MenuState) {
         .map(|(i, item)| {
             let idx = menu.offset + i;
             let style = if idx == menu.selected {
-                Style::default()
-                    .bg(Color::Blue)
-                    .add_modifier(Modifier::BOLD)
+                Style::default().bg(Color::DarkGray)
             } else {
                 Style::default()
             };
