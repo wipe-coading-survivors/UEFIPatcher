@@ -75,7 +75,7 @@ fn render_hint(f: &mut Frame, area: Rect, app: &App) {
                 "INSERT"
             };
             if app.menu.open {
-                format!("{mode}[menu]: ↑↓ select · TAB/→ accept · BackTab back · Esc close · Enter run")
+                format!("{mode}[menu]: ↑↓/jk select · TAB/→ accept · BackTab back · Esc close · Enter run")
             } else {
                 format!("{mode}: TAB compl · ↑↓ hist · Ctrl+←→ word · Ctrl+W/U/K del · Home/End · Enter run · Esc cancel")
             }
@@ -116,7 +116,7 @@ mod tests {
         }]);
         let open = hint_of(&app);
         assert!(open.contains("[menu]"));
-        assert!(open.contains("↑↓ select"));
+        assert!(open.contains("↑↓/jk select"));
         assert!(open.contains("Esc close"));
     }
 

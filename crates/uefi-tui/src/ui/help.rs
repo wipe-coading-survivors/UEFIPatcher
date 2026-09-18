@@ -43,7 +43,7 @@ FORMS VIEW (Tab / Shift-Tab, :forms / :image)
 
 COMMAND / INSERT
   TAB compl · ↑↓ hist · Ctrl+←→ word · Ctrl+W/U/K del · Home/End · Enter run · Esc cancel
-  [menu]: ↑↓ select · TAB/→ accept · BackTab back · Esc close · Enter run
+  [menu]: ↑↓/jk select · TAB/→ accept · BackTab back · Esc close · Enter run selected
 
 EX-COMMANDS
   :open PATH [--mode read|write]

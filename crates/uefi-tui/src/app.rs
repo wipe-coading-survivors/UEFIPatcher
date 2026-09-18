@@ -617,6 +617,14 @@ impl App {
         use crate::input::AppEvent as E;
         let mut mutated = false;
         let flow = match ev {
+            E::Key('j') if self.menu.open => {
+                self.menu.down();
+                CmdFlow::None
+            }
+            E::Key('k') if self.menu.open => {
+                self.menu.up();
+                CmdFlow::None
+            }
             E::Key(c) => {
                 self.cmdline.insert(*c);
                 mutated = true;
@@ -725,7 +733,15 @@ impl App {
                 }
                 CmdFlow::None
             }
-            E::Enter => CmdFlow::Execute,
+            E::Enter => {
+                if self.menu.open
+                    && let Some(apply) = self.menu.selected_apply().map(str::to_string)
+                {
+                    self.cmdline.set_str(&apply);
+                    self.menu.close();
+                }
+                CmdFlow::Execute
+            }
             E::Esc => {
                 if self.menu.open {
                     self.menu.close();
@@ -1346,15 +1362,49 @@ mod tests {
     }
 
     #[test]
-    fn cmd_key_enter_with_open_menu_executes_as_typed() {
+    fn cmd_key_enter_with_open_menu_executes_selected() {
         let mut app = App::new();
         app.history = crate::history::History::empty();
         app.mode = Mode::Command;
         app.cmdline.set_str("s");
         app.cmd_key(&AppEvent::Tab);
         assert!(app.menu.open);
-        assert_ne!(app.menu.selected_apply(), Some("s"));
+        let selected = app.menu.selected_apply().unwrap().to_string();
+        assert_ne!(selected.as_str(), "s");
         assert_eq!(app.cmd_key(&AppEvent::Enter), CmdFlow::Execute);
-        assert_eq!(app.cmdline.as_str(), "s");
+        assert_eq!(app.cmdline.as_str(), selected);
+        assert!(!app.menu.open);
+    }
+
+    #[test]
+    fn cmd_key_h_tab_enter_runs_selected_command() {
+        let mut app = App::new();
+        app.history = crate::history::History::empty();
+        app.mode = Mode::Command;
+        app.cmdline.set_str("h");
+        app.cmd_key(&AppEvent::Tab);
+        assert!(app.menu.open);
+        assert_eq!(app.cmd_key(&AppEvent::Enter), CmdFlow::Execute);
+        assert_eq!(app.cmdline.as_str(), "hii");
+    }
+
+    #[test]
+    fn cmd_key_jk_navigate_menu_when_open() {
+        let mut app = App::new();
+        app.history = crate::history::History::empty();
+        app.mode = Mode::Command;
+        app.cmdline.set_str("snap");
+        app.cmd_key(&AppEvent::Tab);
+        assert!(app.menu.open);
+        assert_eq!(app.cmdline.as_str(), "snapshot");
+        assert_eq!(app.menu.selected, 0);
+        assert_eq!(app.cmd_key(&AppEvent::Key('j')), CmdFlow::None);
+        assert_eq!(app.menu.selected, 1);
+        assert_eq!(app.cmdline.as_str(), "snapshot");
+        assert_eq!(app.cmd_key(&AppEvent::Key('k')), CmdFlow::None);
+        assert_eq!(app.menu.selected, 0);
+        app.cmd_key(&AppEvent::Key('x'));
+        assert_eq!(app.cmdline.as_str(), "snapshotx");
+        assert!(!app.menu.open);
     }
 }
