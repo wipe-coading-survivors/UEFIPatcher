@@ -1140,6 +1140,7 @@ fn forms_list_offset_kept_when_cursor_walks_up() {
             visible: true,
         })
         .collect();
+    app.forms.expanded = ["S".into()].into();
     let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 10)).unwrap();
     for _ in 0..20 {
         app.forms_cursor_down();
