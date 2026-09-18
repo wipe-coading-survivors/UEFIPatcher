@@ -3332,6 +3332,12 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   позиции; (5) `complete_path` не спускается по симлинкам. Контекст:
   `crates/uefi-tui/src/commands.rs` (formset/form_add_status;
   complete-ветки form/question; add_prefill + тест; complete_head).
+  Частично закрыто циклом cmdline UX (2026-09-18, спека
+  `2026-09-18-tui-cmdline-ux-design.md`): (2) хелпер `fmt_item`
+  (form/question-кандидаты + add_prefill), (4) `--ffs` guard по
+  позиции (`head.len() == 4`), (5) `complete_path` спускается по
+  симлинкам (`fs::metadata`); (1) `fmt_u32_ids` и (3) ассерт пустого
+  forms-списка — Non-goals цикла, остаются открытыми.
 * [ ] **uefi-tui: «форма под формой» — UX ref-шага** — form add
   вставляет форму в конец формсета (в IFR нет позиции «под формой»);
   вложенность выражается второй операцией — `question add` с refs
@@ -3347,7 +3353,7 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   чистейший вариант, но отдельная дуга. Контекст:
   `crates/uefi-tui/src/commands.rs` (add_prefill, ветка `"form"`);
   семантика — `uefi_engine::hii::add_ref` (`hii/mod.rs`).
-* [ ] **uefi-tui: completion-меню не рендерится** — `complete()`
+* [x] **uefi-tui: completion-меню не рендерится** — `complete()`
   возвращает `(rep, opts)`, но `ui/cmdline.rs` рисует только строку
   команды: список кандидатов выбрасывается. При множестве кандидатов
   с общим префиксом (`hii question add <TAB>` → ~180 item-кандидатов
@@ -3357,6 +3363,9 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   общим префиксом уже работает). Контекст:
   `crates/uefi-tui/src/ui/cmdline.rs` (render),
   `crates/uefi-tui/src/commands.rs` (complete).
+  Закрыто циклом cmdline UX (2026-09-18, спека
+  `2026-09-18-tui-cmdline-ux-design.md`): popup-меню над cmdline
+  (`ui/menu.rs`), навигация ↑↓, приём TAB/→, live-фильтрация.
 * [ ] **uefi-tui: help-экран подрезается на низких терминалах** — HELP
   в `ui/help.rs` = 70 строк, рендерится одним Paragraph без скролла:
   при высоте терминала меньше ~70 строк хвост (секция EX-COMMANDS, где
