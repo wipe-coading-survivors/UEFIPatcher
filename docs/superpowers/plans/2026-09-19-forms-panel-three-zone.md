@@ -91,7 +91,7 @@ mod tests {
         sync_list_state(&mut st, 50, 100, 10, SCROLL_PAD, Some(50));
         assert_eq!(st.selected(), Some(50));
         assert_eq!(st.offset(), 44, "цель ниже окна — докрутка с pad");
-        sync_list_state(&mut st, 44, 100, 10, SCROLL_PAD, Some(44));
+        sync_list_state(&mut st, 47, 100, 10, SCROLL_PAD, Some(47));
         assert_eq!(st.offset(), 44, "цель в окне — офсет на месте (гистерезис)");
     }
 
