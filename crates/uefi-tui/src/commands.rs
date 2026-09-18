@@ -151,6 +151,18 @@ fn absolutize_path(raw: &str) -> String {
     }
 }
 
+/// PATH для :export — absolutize либо cwd/<artifact_id> (паритет CLI,
+/// resolve_output_path uefi-cli). Спека R5: чинит дефолт-каталог.
+fn export_output_path(arg: Option<&str>, artifact_id: &str) -> String {
+    match arg {
+        Some(p) => absolutize_path(p),
+        None => match std::env::current_dir() {
+            Ok(cwd) => cwd.join(artifact_id).display().to_string(),
+            Err(_) => artifact_id.to_string(),
+        },
+    }
+}
+
 /// Читает schema-файл в TUI-процессе (клиент): в RPC уходит содержимое
 /// строкой, путь до движка не доходит (не :save — там пишет engine).
 fn read_schema(file: &str) -> Result<String, String> {
@@ -321,12 +333,7 @@ pub async fn execute_command(
         }
         "export" => {
             let artifact_id = parts.get(1).ok_or("usage: :export ARTIFACT_ID [PATH]")?;
-            let path = parts.get(2).map(|s| s.to_string()).unwrap_or_else(|| {
-                std::env::current_dir()
-                    .ok()
-                    .map(|d| d.display().to_string())
-                    .unwrap_or_default()
-            });
+            let path = export_output_path(parts.get(2).copied(), artifact_id);
             let req = ArtifactExportRequest {
                 artifact_id: artifact_id.to_string(),
                 output_path: path.clone(),
@@ -490,67 +497,68 @@ pub async fn execute_command(
             Ok(target)
         }
         "image" => {
-            if parts.get(1).is_none() {
-                app.view = View::Image;
-                return Ok("image".into());
+            if parts.len() > 1 {
+                return Err("image subcommands moved: :switch ID | :close [ID]".into());
             }
-            let sub = parts.get(1).expect("checked above");
-            match *sub {
-                "switch" => {
-                    let id = parts.get(2).ok_or("usage: :image switch ID")?.to_string();
-                    let dump = client
-                        .inner
-                        .image_nodes_list(auth_req(
-                            &client.state,
-                            ImageNodesListRequest {
-                                image_id: id.clone(),
-                                filter: String::new(),
-                            },
-                        ))
-                        .await
-                        .map_err(|e| e.message().to_string())?
-                        .into_inner();
-                    app.tree = crate::tree::build_tree(&dump.nodes);
-                    app.cursor = 0;
-                    app.active_image_id = Some(id.clone());
-                    client.state.active_image_id = Some(id.clone());
-                    app.image_loaded = true;
-                    app.status_msg = format!("switched to {id}");
-                    let _ = refresh_registry(app, client).await;
-                    if app.view == View::Forms {
-                        refresh_forms(app, client).await?;
-                    }
-                    Ok(id)
-                }
-                "close" => {
-                    let id = parts
-                        .get(2)
-                        .map(|s| s.to_string())
-                        .or_else(|| client.state.active_image_id.clone())
-                        .ok_or("no active image")?;
-                    let req = ImageCloseRequest {
+            app.view = View::Image;
+            Ok("image".into())
+        }
+        "switch" => {
+            let id = parts.get(1).ok_or("usage: :switch ID")?.to_string();
+            let dump = client
+                .inner
+                .image_nodes_list(auth_req(
+                    &client.state,
+                    ImageNodesListRequest {
                         image_id: id.clone(),
-                    };
-                    client
-                        .inner
-                        .image_close(auth_req(&client.state, req))
-                        .await
-                        .map_err(|e| e.message().to_string())?
-                        .into_inner();
-                    if app.active_image_id.as_deref() == Some(id.as_str()) {
-                        app.active_image_id = None;
-                        client.state.active_image_id = None;
-                        app.tree.clear();
-                        app.cursor = 0;
-                        app.image_loaded = false;
-                        app.view = View::Image;
-                    }
-                    app.status_msg = format!("closed {id}");
-                    let _ = refresh_registry(app, client).await;
-                    Ok(id)
-                }
-                other => Err(format!("unknown image subcommand: {other}")),
+                        filter: String::new(),
+                    },
+                ))
+                .await
+                .map_err(|e| e.message().to_string())?
+                .into_inner();
+            app.tree = crate::tree::build_tree(&dump.nodes);
+            app.cursor = 0;
+            app.active_image_id = Some(id.clone());
+            client.state.active_image_id = Some(id.clone());
+            app.image_loaded = true;
+            app.status_msg = format!("switched to {id}");
+            let _ = refresh_registry(app, client).await;
+            if app.view == View::Forms {
+                refresh_forms(app, client).await?;
             }
+            Ok(id)
+        }
+        "close" => {
+            let id = parts
+                .get(1)
+                .map(|s| s.to_string())
+                .or_else(|| client.state.active_image_id.clone())
+                .ok_or("no active image")?;
+            let req = ImageCloseRequest {
+                image_id: id.clone(),
+            };
+            client
+                .inner
+                .image_close(auth_req(&client.state, req))
+                .await
+                .map_err(|e| e.message().to_string())?
+                .into_inner();
+            if app.active_image_id.as_deref() == Some(id.as_str()) {
+                app.active_image_id = None;
+                client.state.active_image_id = None;
+                app.tree.clear();
+                app.cursor = 0;
+                app.image_loaded = false;
+                app.view = View::Image;
+            }
+            app.status_msg = format!("closed {id}");
+            let _ = refresh_registry(app, client).await;
+            Ok(id)
+        }
+        "reopen" => {
+            let want_write = !parts.contains(&"read");
+            reopen(app, client, want_write).await
         }
         "forms" | "f" => {
             if app.active_image_id.is_none() && client.state.active_image_id.is_none() {
@@ -853,7 +861,7 @@ pub async fn execute_command(
             Ok("quitting".into())
         }
         "help" | "h" => {
-            app.show_help = !app.show_help;
+            app.toggle_help();
             Ok("help toggled".into())
         }
         _ => Err(format!("unknown command: :{cmd}, try :help")),
@@ -873,6 +881,9 @@ const COMMANDS: &[&str] = &[
     "replace",
     "remove",
     "rebuild",
+    "switch",
+    "close",
+    "reopen",
     "image",
     "refresh",
     "forms",
@@ -1031,7 +1042,12 @@ fn context_candidates(app: &App, cmd: &str, head: &[&str], token: &str) -> Vec<S
         return complete_path(token);
     }
     if head.last() == Some(&"--mode") {
-        return ["into", "before", "after"]
+        let vals: &[&str] = if matches!(cmd, "reopen" | "open") {
+            &["read", "write"]
+        } else {
+            &["into", "before", "after"]
+        };
+        return vals
             .iter()
             .filter(|c| c.starts_with(token))
             .map(|s| s.to_string())
@@ -1046,6 +1062,15 @@ fn context_candidates(app: &App, cmd: &str, head: &[&str], token: &str) -> Vec<S
             .filter(|c| c.starts_with(token))
             .collect();
     }
+    if matches!(cmd, "switch" | "close") && head.len() == 1 {
+        return app
+            .registry
+            .images
+            .iter()
+            .map(|im| im.image_id.clone())
+            .filter(|c| c.starts_with(token))
+            .collect();
+    }
     if head.last() == Some(&"--ffs") {
         return unique_formset_guids(app)
             .into_iter()
@@ -1056,6 +1081,9 @@ fn context_candidates(app: &App, cmd: &str, head: &[&str], token: &str) -> Vec<S
         let flags: &[&str] = match cmd {
             "insert" => &["--file", "--artifact-id", "--mode"],
             "replace" => &["--file", "--artifact-id", "--body-only"],
+            "extract" => &["--body-only"],
+            "reopen" => &["--mode"],
+            "open" => &["--mode"],
             "hii" if head.len() == 4 && head[1] == "formset" && head[2] == "add" => &["--ffs"],
             _ => &[],
         };
@@ -1284,12 +1312,152 @@ pub fn add_prefill(app: &App) -> Option<String> {
     }
 }
 
+/// Prefill i/r: registry-курсор на артефакте → --artifact-id, иначе --file.
+/// Спека R4 (вариант A, TODO:808).
+pub fn mutation_prefill(
+    kind: &str,
+    path: &str,
+    row: Option<&crate::app::RegistryRow>,
+    artifacts: &[uefi_proto::ArtifactInfo],
+) -> String {
+    let artifact = row.and_then(|r| match r {
+        crate::app::RegistryRow::Artifact(i) => artifacts.get(*i),
+        crate::app::RegistryRow::Image(_) => None,
+    });
+    match artifact {
+        Some(a) => format!("{kind} {path} --artifact-id {} ", a.artifact_id),
+        None => format!("{kind} {path} --file "),
+    }
+}
+
+/// Гвард-решение :reopen по желаемому и текущему режиму. Спека R3 (матрица).
+#[derive(Debug, PartialEq, Eq)]
+pub enum ReopenPlan {
+    OpenWrite,
+    AlreadyWrite,
+    AlreadyRead,
+    RefuseUnsavedWrite,
+}
+
+/// READ→WRITE только: повторный open с диска молча выбросил бы несохранённые
+/// мутации WRITE-образа. Спека R3.
+pub fn reopen_plan(want_write: bool, current_write: bool) -> ReopenPlan {
+    match (want_write, current_write) {
+        (true, false) => ReopenPlan::OpenWrite,
+        (true, true) => ReopenPlan::AlreadyWrite,
+        (false, false) => ReopenPlan::AlreadyRead,
+        (false, true) => ReopenPlan::RefuseUnsavedWrite,
+    }
+}
+
+/// Цель :reopen/:w — строка-образ в Registry при фокусе там, иначе активный
+/// образ. Спека R3.
+pub fn reopen_target(app: &App) -> Option<String> {
+    if app.focus == crate::app::Focus::Registry
+        && let Some(crate::app::RegistryRow::Image(i)) = app.current_registry_row()
+        && let Some(im) = app.registry.images.get(i)
+    {
+        return Some(im.image_id.clone());
+    }
+    app.active_image_id.clone()
+}
+
+/// Переоткрытие образа в write: open(WRITE) → switch → close(old) → refresh.
+/// No-op ветки не делают RPC. Спека R3.
+pub async fn reopen(
+    app: &mut App,
+    client: &mut Client,
+    want_write: bool,
+) -> Result<String, String> {
+    let target_id = reopen_target(app).ok_or("no image selected (registry row or active)")?;
+    let im = app
+        .registry
+        .images
+        .iter()
+        .find(|i| i.image_id == target_id)
+        .cloned()
+        .ok_or("image not in registry — :refresh")?;
+    match reopen_plan(want_write, im.mode == 1) {
+        ReopenPlan::AlreadyWrite => {
+            app.status_msg = format!("already in write mode: {}", im.image_id);
+            return Ok(im.image_id);
+        }
+        ReopenPlan::AlreadyRead => {
+            app.status_msg = format!("already read-only: {}", im.image_id);
+            return Ok(im.image_id);
+        }
+        ReopenPlan::RefuseUnsavedWrite => {
+            return Err(format!(
+                "refusing: unsaved write-mode image; :save first — {}",
+                im.image_id
+            ));
+        }
+        ReopenPlan::OpenWrite => {}
+    }
+    let sid = client.state.session_id.clone().ok_or("no session")?;
+    let req = ImageOpenRequest {
+        session_id: sid,
+        path: im.path.clone(),
+        mode: 1,
+        name: String::new(),
+    };
+    let r = client
+        .inner
+        .image_open(auth_req(&client.state, req))
+        .await
+        .map_err(|e| e.message().to_string())?
+        .into_inner();
+    let dump = client
+        .inner
+        .image_nodes_list(auth_req(
+            &client.state,
+            ImageNodesListRequest {
+                image_id: r.image_id.clone(),
+                filter: String::new(),
+            },
+        ))
+        .await
+        .map_err(|e| e.message().to_string())?
+        .into_inner();
+    app.tree = crate::tree::build_tree(&dump.nodes);
+    app.cursor = 0;
+    app.active_image_id = Some(r.image_id.clone());
+    client.state.active_image_id = Some(r.image_id.clone());
+    let _ = client
+        .inner
+        .image_close(auth_req(
+            &client.state,
+            ImageCloseRequest {
+                image_id: target_id,
+            },
+        ))
+        .await;
+    let _ = refresh_registry(app, client).await;
+    if app.view == View::Forms {
+        refresh_forms(app, client).await?;
+    }
+    app.status_msg = format!("reopened {} in write mode", im.name);
+    Ok(r.image_id)
+}
+
 /// Команда для клавиши `v` на выбранной форме. Движок реализует только
 /// unsuppress (visibility on); скрытие (off) — ошибка, поэтому на уже
 /// видимой форме возвращает None — вызывающий показывает пояснение,
 /// а не шлёт команду.
 pub fn form_visibility_command(item: &str, visible: bool) -> Option<String> {
     (!visible).then(|| format!("hii visibility {item} on"))
+}
+
+/// Join u32-списков статусов; пустой — (none). Спека R7 (V3-мелочь 1).
+fn fmt_u32_ids(ids: &[u32]) -> String {
+    if ids.is_empty() {
+        "(none)".into()
+    } else {
+        ids.iter()
+            .map(|i| i.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    }
 }
 
 fn fmt_string_ids(ids: &std::collections::HashMap<String, u32>) -> String {
@@ -1310,15 +1478,7 @@ pub fn formset_add_status(
     form_ids: &[u32],
     string_ids: &std::collections::HashMap<String, u32>,
 ) -> String {
-    let forms = if form_ids.is_empty() {
-        "(none)".into()
-    } else {
-        form_ids
-            .iter()
-            .map(|i| i.to_string())
-            .collect::<Vec<_>>()
-            .join(",")
-    };
+    let forms = fmt_u32_ids(form_ids);
     format!(
         "formset added: ffs {new_ffs_id} · forms {forms} · strings {}",
         fmt_string_ids(string_ids)
@@ -1330,15 +1490,7 @@ pub fn form_add_status(
     form_ids: &[u32],
     string_ids: &std::collections::HashMap<String, u32>,
 ) -> String {
-    let forms = if form_ids.is_empty() {
-        "(none)".into()
-    } else {
-        form_ids
-            .iter()
-            .map(|i| i.to_string())
-            .collect::<Vec<_>>()
-            .join(",")
-    };
+    let forms = fmt_u32_ids(form_ids);
     format!(
         "form added: forms {forms} · strings {}",
         fmt_string_ids(string_ids)
@@ -1663,6 +1815,25 @@ mod tests {
     }
 
     #[test]
+    fn commands_const_has_top_level_switch_close() {
+        assert!(COMMANDS.contains(&"switch"));
+        assert!(COMMANDS.contains(&"close"));
+        assert!(
+            COMMANDS.contains(&"image"),
+            "bare :image остаётся view-переключателем"
+        );
+    }
+
+    #[test]
+    fn reopen_plan_guard_matrix() {
+        use ReopenPlan::*;
+        assert_eq!(super::reopen_plan(true, false), OpenWrite);
+        assert_eq!(super::reopen_plan(true, true), AlreadyWrite);
+        assert_eq!(super::reopen_plan(false, false), AlreadyRead);
+        assert_eq!(super::reopen_plan(false, true), RefuseUnsavedWrite);
+    }
+
+    #[test]
     fn complete_artifact_ids_after_flag() {
         let mut app = crate::app::App::new();
         app.registry.artifacts = vec![
@@ -1688,6 +1859,56 @@ mod tests {
     }
 
     #[test]
+    fn complete_switch_close_offer_registry_image_ids() {
+        let mut app = crate::app::App::new();
+        app.registry.images = vec![
+            uefi_proto::ImageInfo {
+                image_id: "img-aaa".into(),
+                ..Default::default()
+            },
+            uefi_proto::ImageInfo {
+                image_id: "img-bbb".into(),
+                ..Default::default()
+            },
+        ];
+        for cmd in ["switch ", "close "] {
+            let c = complete(&app, cmd);
+            assert_eq!(
+                c.items
+                    .iter()
+                    .map(|i| i.display.clone())
+                    .collect::<Vec<_>>(),
+                vec!["img-aaa".to_string(), "img-bbb".to_string()],
+                "слот-1 {cmd}"
+            );
+        }
+        let c = complete(&app, "switch img-a");
+        assert_eq!(c.common.as_deref(), Some("switch img-aaa "));
+    }
+
+    #[test]
+    fn complete_mode_values_depend_on_command() {
+        let app = crate::app::App::new();
+        let c = complete(&app, "insert 0/3 --mode ");
+        let vals: Vec<_> = c.items.iter().map(|i| i.display.clone()).collect();
+        assert!(vals.contains(&"into".to_string()));
+        let c = complete(&app, "reopen --mode ");
+        let vals: Vec<_> = c.items.iter().map(|i| i.display.clone()).collect();
+        assert_eq!(vals, vec!["read".to_string(), "write".to_string()]);
+        let c = complete(&app, "reopen --");
+        assert_eq!(c.common.as_deref(), Some("reopen --mode "));
+        let c = complete(&app, "open /x --mode ");
+        let vals: Vec<_> = c.items.iter().map(|i| i.display.clone()).collect();
+        assert_eq!(
+            vals,
+            vec!["read".to_string(), "write".to_string()],
+            ":open PATH --mode read|write — как в usage"
+        );
+        let c = complete(&app, "open /x --");
+        assert_eq!(c.common.as_deref(), Some("open /x --mode "));
+    }
+
+    #[test]
     fn complete_flags_of_insert() {
         let app = crate::app::App::new();
         let c = complete(&app, "insert 0/3 --");
@@ -1701,6 +1922,19 @@ mod tests {
                 "--artifact-id".to_string(),
                 "--mode".to_string()
             ]
+        );
+    }
+
+    #[test]
+    fn complete_extract_offers_body_only_flag() {
+        let app = crate::app::App::new();
+        let c = complete(&app, "extract 1/3 --bod");
+        assert_eq!(c.common.as_deref(), Some("extract 1/3 --body-only "));
+        let c = complete(&app, "extract 1/3 --");
+        assert_eq!(
+            c.common.as_deref(),
+            Some("extract 1/3 --body-only "),
+            "единственный флаг — через common, items пуст (паттерн single-candidate)"
         );
     }
 
@@ -1720,6 +1954,21 @@ mod tests {
         let rel = absolutize_path("out.bin");
         let cwd = std::env::current_dir().unwrap();
         assert_eq!(rel, cwd.join("out.bin").display().to_string());
+    }
+
+    #[test]
+    fn export_output_path_absolute_or_cwd_default() {
+        let abs = export_output_path(Some("/tmp/out.bin"), "art-1");
+        assert_eq!(abs, "/tmp/out.bin");
+        let rel = export_output_path(Some("out.bin"), "art-1");
+        let cwd = std::env::current_dir().unwrap();
+        assert_eq!(rel, cwd.join("out.bin").display().to_string());
+        let def = export_output_path(None, "art-1");
+        assert_eq!(
+            def,
+            cwd.join("art-1").display().to_string(),
+            "дефолт — файл, не каталог"
+        );
     }
 
     #[test]
@@ -2121,6 +2370,53 @@ mod tests {
             add_prefill(&app),
             None,
             "DanglingRef — не форма и не формсет, prefill нет"
+        );
+    }
+
+    #[test]
+    fn fmt_u32_ids_join_and_none() {
+        assert_eq!(fmt_u32_ids(&[]), "(none)");
+        assert_eq!(fmt_u32_ids(&[10029, 10057]), "10029,10057");
+    }
+
+    #[test]
+    fn add_prefill_none_when_no_forms() {
+        let app = crate::app::App::new();
+        assert!(
+            add_prefill(&app).is_none(),
+            "пустой forms-список — префиллa нет"
+        );
+    }
+
+    #[test]
+    fn mutation_prefill_artifact_row_wins_over_file() {
+        let artifacts = vec![uefi_proto::ArtifactInfo {
+            artifact_id: "art-1".into(),
+            ..Default::default()
+        }];
+        let row = Some(crate::app::RegistryRow::Artifact(0));
+        assert_eq!(
+            mutation_prefill("insert", "1/3", row.as_ref(), &artifacts),
+            "insert 1/3 --artifact-id art-1 "
+        );
+        assert_eq!(
+            mutation_prefill("replace", "1/3", row.as_ref(), &artifacts),
+            "replace 1/3 --artifact-id art-1 "
+        );
+        let image_row = Some(crate::app::RegistryRow::Image(0));
+        assert_eq!(
+            mutation_prefill("insert", "1/3", image_row.as_ref(), &artifacts),
+            "insert 1/3 --file "
+        );
+        assert_eq!(
+            mutation_prefill("insert", "1/3", None, &artifacts),
+            "insert 1/3 --file "
+        );
+        let stale = Some(crate::app::RegistryRow::Artifact(9));
+        assert_eq!(
+            mutation_prefill("insert", "1/3", stale.as_ref(), &artifacts),
+            "insert 1/3 --file ",
+            "вышедший за границы индекс — фолбэк на --file"
         );
     }
 

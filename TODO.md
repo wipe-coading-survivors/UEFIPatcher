@@ -805,7 +805,7 @@
 > артефакт нельзя. Prefill хардкодит `--file`, даже когда нужен `--artifact-id`.
 > Hotkeys `i/r/d` работают только при `focus == Tree` (`main.rs:73-74`).
 
-* [ ] **TUI: конфликт режимов при replace** — выбрать источник замены
+* [x] **TUI: конфликт режимов при replace** — выбрать источник замены
   (артефакт) не выходя из Insert-режима невозможно. Варианты решения:
 
   | Вариант | Описание | Плюс | Минус |
@@ -822,6 +822,10 @@
   (guided-промпт после выбора target). B и C — альтернативы, если A+D неприемлемы.
   Дополнительно к любому варианту: в Insert-режиме разрешить `Tab`/`Ctrl-L` для
   смены фокуса (выбор артефакта не выходя из режима).
+  Закрыто циклом registry & flow polish (2026-09-18, спека
+  `2026-09-18-tui-registry-polish-design.md` R4): вариант A —
+  `mutation_prefill`, registry-курсор на артефакте → prefill `--artifact-id`;
+  D отклонён владельцем в спеке (варианта A достаточно).
 
 ### Registry: TUI обрезает UUID образов/артефактов (issue VI, ревизия 2026-08-14)
 
@@ -840,15 +844,22 @@
 > из модели данных (не из рендер-строки) → работает; баг затрагивает только
 > display + ручной ввод ID в cmdline.
 
-* [ ] **TUI: показывать полный UUID в Registry** — убрать `short()` для ID
+* [x] **TUI: показывать полный UUID в Registry** — убрать `short()` для ID
   (или truncation с раскрытием полного значения при выборе строки — в details/
   status). Контекст: `crates/uefi-tui/src/ui/registry.rs:34,44,80-82`. Узкая
   панель может не вместить 36 символов — рассмотреть двухстрочный рендер для
   выбранной строки или вынос полного UUID в status-bar при `focus == Registry`.
-* [ ] **TUI: copy-to-clipboard ID из Registry** — даже с полным отображением
+  Закрыто циклом registry & flow polish (2026-09-18, R1): полный UUID выбранной
+  строки — первым сегментом hint-бара при `focus == Registry` (вариант «вынос
+  в status-bar»); short-ID в списке сохранены, бейдж R/W добавлен.
+* [x] **TUI: copy-to-clipboard ID из Registry** — даже с полным отображением
   набирать 36 символов вручную в `:image switch`/`--artifact-id` неудобно.
   Добавить `y`/Enter-вариант для копирования `image_id`/`artifact_id` в
   буфер (и/или вставку в cmdline). Снимает зависимость от ручного ввода.
+  Закрыто иначе циклом registry & flow polish (2026-09-18, R2, решение
+  владельца): clipboard отклонён (волатильность буфера), вместо него —
+  подстановка из регистри через completion (`switch/close <TAB>` → image-ID,
+  `--artifact-id <TAB>`), ручной ввод ID больше не нужен.
 
 ### Compression barrier: мутации внутри LZMA/GUID_DEFINED (issue IV, ревизия 2026-08-13)
 
@@ -2763,6 +2774,9 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   пути (гейт `artifact_export`). Контекст: нужен client-side резолв в
   абсолютный путь по образцу `resolve_output_path` uefi-cli
   (`crates/uefi-cli/src/commands/artifact.rs`).
+  TUI-часть закрыта циклом registry & flow polish (2026-09-18, R5):
+  `export_output_path` — absolutize PATH, дефолт `cwd/<artifact_id>`.
+  Осталась gateway/WebUI-часть.
 * [ ] **string_pack: shrink-путь `insert_strings_at_ids_in_resource`** —
   (1) после усадки string-пакета внутри raw-extent .rsrc остаются
   stale-байты старого хвоста (длины авторитетны, безвредно; zeroing хвоста
@@ -3322,7 +3336,7 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   (`2026-09-11-tui-forms-view-design.md`) или help. Контекст:
   `crates/uefi-cli/src/main.rs` (HiiFormCmd::Hijack) vs
   `crates/uefi-tui/src/commands.rs` (`"hijack"`).
-* [ ] **uefi-tui V3, мелочи** — (1) join-дедуп formset_add_status/
+* [x] **uefi-tui V3, мелочи** — (1) join-дедуп formset_add_status/
   form_add_status: блок `map(to_string).join(",")` у u32-списков
   одинаков — хелпер `fmt_u32_ids`; (2) item-format `format!("{}#{}")`
   дублируется в completion (form/question-кандидаты) и add_prefill —
@@ -3337,7 +3351,10 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   (form/question-кандидаты + add_prefill), (4) `--ffs` guard по
   позиции (`head.len() == 4`), (5) `complete_path` спускается по
   симлинкам (`fs::metadata`); (1) `fmt_u32_ids` и (3) ассерт пустого
-  forms-списка — Non-goals цикла, остаются открытыми.
+  forms-списка — Non-goals цикла, остаются открытыми. Закрыты циклом
+  registry & flow polish (2026-09-18, R7): хелпер `fmt_u32_ids`
+  (join-дедуп обоих статусов, пустой → `(none)`) + ассерт
+  `add_prefill_none_when_no_forms`. Пункт закрыт полностью.
 * [ ] **uefi-tui: «форма под формой» — UX ref-шага** — form add
   вставляет форму в конец формсета (в IFR нет позиции «под формой»);
   вложенность выражается второй операцией — `question add` с refs
@@ -3366,7 +3383,7 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   Закрыто циклом cmdline UX (2026-09-18, спека
   `2026-09-18-tui-cmdline-ux-design.md`): popup-меню над cmdline
   (`ui/menu.rs`), навигация ↑↓, приём TAB/→, live-фильтрация.
-* [ ] **uefi-tui: help-экран подрезается на низких терминалах** — HELP
+* [x] **uefi-tui: help-экран подрезается на низких терминалах** — HELP
   в `ui/help.rs` = 70 строк, рендерится одним Paragraph без скролла:
   при высоте терминала меньше ~70 строк хвост (секция EX-COMMANDS, где
   пять `:hii … add`-строк V3) не виден — владелец не нашёл документацию
@@ -3376,7 +3393,10 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   подставляется из выделения); TAB ведёт по позициям грамматики;
   `:hii` без аргументов печатает usage всех пяти команд. Контекст:
   `crates/uefi-tui/src/ui/help.rs` (render, const HELP).
-* [ ] **TUI/WebUI: UX write-режима** — образ по умолчанию открывается
+  Закрыто циклом registry & flow polish (2026-09-18, R6): модальный
+  скролл j/k/↑/↓ ±1, PgUp/PgDn ±10, clamp по высоте текста; toggle
+  сбрасывает скролл; q работает из help. Подтверждено живым гейтом.
+* [x] **TUI/WebUI: UX write-режима** — образ по умолчанию открывается
   read-only, HII-мутации требуют write; сейчас приходится заново
   `:open <путь> --mode write` (владелец, 2026-09-12). Пожелания:
   (1) клавиша `w` на выбранном образе — переоткрыть его в write;
@@ -3385,6 +3405,28 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   (registry-панель TUI, список образов WebUI). Контекст:
   `crates/uefi-tui/src/ui/registry.rs`, `crates/uefi-tui/src/commands.rs`
   (`:open`/`:image`), proto — `ImageOpen`/`ImageMode` (uefi-proto).
+  TUI-часть закрыта циклом registry & flow polish (2026-09-18, R1+R3):
+  (1) `w` + (2) `:reopen [--mode write|read]` с гвардом READ→WRITE
+  (`--image-id` выкинут по решению владельца — цель = registry-строка или
+  активный образ), (3) бейдж R/W у образов; подтверждено живым гейтом.
+  WebUI-часть (режим в списке образов WebUI) остаётся — WebUI-цикл.
+* [ ] **Форма-панель: трёхзонный layout** — панель «Form» (Forms View)
+  сейчас один скроллируемый Paragraph: шапка формы + вопросы с маркером +
+  question_info вместе (R8-дизайн цикла registry-polish). На живом гейте
+  (владелец, 2026-09-18, IntelRCSetup → Processor Configuration): на первом
+  вопросе details ниже сгиба; при скролле строки details накладываются на
+  вопросы (визуальные артефакты); на последнем вопросе details появляются,
+  шапка панели уезжает. Предложение владельца: (а) фиксированная шапка
+  ~7 строк — детали формы + пустая строка + шапка вопросов (промпт, qid,
+  kind); (б) скроллируемая середина — вопросы, паттерн Image/Forms View
+  (гистерезис, курсор за 3 строки до края); (в) фиксированный низ ~5 строк —
+  детали выбранного вопроса. Контекст: `crates/uefi-tui/src/ui/forms.rs`
+  (details-рендер, follow_offset/FORMS_SCROLL_PAD), `crates/uefi-tui/src/
+  forms.rs` (`form_details`/`FormDetails` — marker_line/info_line уступают
+  место трёхзонной сборке), `crates/uefi-tui/src/app.rs` (FormsData.
+  details_scroll/details_anchor/details_followed). Спека-вердикт:
+  `2026-09-18-tui-registry-polish-design.md` §Вердикт. Заодно: алиас `:o`
+  не получает read/write-значения `--mode` (fix-wave цикла, minor).
 * [ ] **uefi-tui: Ctrl+Home/End/Delete затенены в map_key** — гарды
   `if ctrl` есть только у Left/Right (WordLeft/WordRight); Home/End/Delete
   матчатся без модификаторов, так что Ctrl+Home/Ctrl+End/Ctrl+Delete

@@ -29,8 +29,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
         } else {
             "  "
         };
+        let badge = if im.mode == 1 { "W" } else { "R" };
         items.push(ListItem::new(Line::from(format!(
-            "{marker}{}  {}  {}",
+            "{marker}{}  {}  {}  {badge}",
             short(&im.image_id),
             im.name,
             fmt_size(im.size),
@@ -94,6 +95,15 @@ fn fmt_size(n: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    fn row(terminal: &Terminal<TestBackend>, y: u16) -> String {
+        (0..100)
+            .map(|x| terminal.backend().buffer().get(x, y).symbol().to_string())
+            .collect()
+    }
+
     #[test]
     fn fmt_size_units() {
         assert_eq!(fmt_size(512), "512 B");
@@ -104,5 +114,33 @@ mod tests {
     fn short_truncates_to_8() {
         assert_eq!(short("abcdefghijklmnop"), "abcdefgh");
         assert_eq!(short("ab"), "ab");
+    }
+    #[test]
+    fn image_rows_show_mode_badge() {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 10)).unwrap();
+        let mut app = crate::app::App::new();
+        app.registry.images = vec![
+            uefi_proto::ImageInfo {
+                image_id: "aaaaaaaa-0000-0000-0000-000000000000".into(),
+                name: "r.bin".into(),
+                mode: 0,
+                size: 1024,
+                ..Default::default()
+            },
+            uefi_proto::ImageInfo {
+                image_id: "bbbbbbbb-0000-0000-0000-000000000000".into(),
+                name: "w.bin".into(),
+                mode: 1,
+                size: 1024,
+                ..Default::default()
+            },
+        ];
+        terminal
+            .draw(|f| super::render(f, f.area(), &mut app))
+            .unwrap();
+        let text = (0..10).map(|y| row(&terminal, y)).collect::<String>();
+        assert!(text.contains("r.bin  1.0 KB  R"));
+        assert!(text.contains("w.bin  1.0 KB  W"));
     }
 }

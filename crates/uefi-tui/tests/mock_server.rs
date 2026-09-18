@@ -831,7 +831,7 @@ mod tests {
         assert!(!app.tree[1].expanded);
         app.toggle_expand_selected();
         assert!(!app.tree[app.selected_tree_idx().unwrap()].expanded);
-        commands::execute_command(&mut app, "image switch mock-img-1", &mut client)
+        commands::execute_command(&mut app, "switch mock-img-1", &mut client)
             .await
             .unwrap();
         assert_eq!(app.active_image_id.as_deref(), Some("mock-img-1"));
@@ -924,7 +924,7 @@ mod tests {
         assert!(app.image_loaded);
         assert!(app.active_image_id.is_some());
         let active = app.active_image_id.clone().unwrap();
-        commands::execute_command(&mut app, &format!("image close {active}"), &mut client)
+        commands::execute_command(&mut app, &format!("close {active}"), &mut client)
             .await
             .unwrap();
         assert!(app.tree.is_empty(), "tree should be cleared after close");

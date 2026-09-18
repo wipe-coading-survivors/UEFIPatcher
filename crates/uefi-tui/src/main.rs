@@ -64,6 +64,22 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn handle_normal(app: &mut App, ev: &AppEvent, client: &mut Option<commands::Client>) {
+    if app.show_help {
+        match ev {
+            AppEvent::Key('?') => app.toggle_help(),
+            AppEvent::Key('q') | AppEvent::Quit => app.quit = true,
+            AppEvent::Key('j') | AppEvent::Down => {
+                app.help_scroll = app.help_scroll.saturating_add(1);
+            }
+            AppEvent::Key('k') | AppEvent::Up => {
+                app.help_scroll = app.help_scroll.saturating_sub(1);
+            }
+            AppEvent::PageDown => app.help_scroll = app.help_scroll.saturating_add(10),
+            AppEvent::PageUp => app.help_scroll = app.help_scroll.saturating_sub(10),
+            _ => {}
+        }
+        return;
+    }
     if matches!(ev, AppEvent::Tab | AppEvent::BackTab) {
         switch_view(app, client).await;
         return;
@@ -75,48 +91,58 @@ async fn handle_normal(app: &mut App, ev: &AppEvent, client: &mut Option<command
     match ev {
         AppEvent::Ctrl('h') | AppEvent::Ctrl('k') => app.focus_prev(),
         AppEvent::Ctrl('l') | AppEvent::Ctrl('j') => app.focus_next(),
-        AppEvent::Key('?') => app.show_help = !app.show_help,
+        AppEvent::Key('?') => app.toggle_help(),
         AppEvent::Key('q') | AppEvent::Quit => app.quit = true,
         AppEvent::Key(':') => app.enter_command_mode(),
         AppEvent::Key('i') | AppEvent::Key('r') | AppEvent::Key('d')
             if app.focus == Focus::Tree =>
         {
-            let (cmd_str, prefill) = match ev {
-                AppEvent::Key('i') => (
-                    "insert",
-                    format!("insert {} --file ", app.selected_path().unwrap_or_default()),
-                ),
-                AppEvent::Key('r') => (
-                    "replace",
-                    format!(
-                        "replace {} --file ",
-                        app.selected_path().unwrap_or_default()
+            let (cmd_str, prefill) = {
+                let path = app.selected_path().unwrap_or_default();
+                let row = app.current_registry_row();
+                let artifacts = &app.registry.artifacts;
+                match ev {
+                    AppEvent::Key('i') => (
+                        "insert",
+                        commands::mutation_prefill("insert", &path, row.as_ref(), artifacts),
                     ),
-                ),
-                _ => ("remove", "remove ".to_string()),
+                    AppEvent::Key('r') => (
+                        "replace",
+                        commands::mutation_prefill("replace", &path, row.as_ref(), artifacts),
+                    ),
+                    _ => ("remove", format!("remove {path}")),
+                }
             };
             app.enter_insert_mode(cmd_str, prefill);
         }
+        AppEvent::Key('w') if app.focus != Focus::Details => match client.as_mut() {
+            Some(c) => {
+                if let Err(e) = commands::reopen(app, c, true).await {
+                    app.status_msg = format!("error: {e}");
+                }
+            }
+            None => app.status_msg = "no engine connection".into(),
+        },
         AppEvent::Key('j') | AppEvent::Down => match app.focus {
             Focus::Registry => app.registry_cursor_down(),
             Focus::Tree => app.cursor_down(),
-            Focus::Details => {}
+            Focus::Details => app.details_scroll_by(1),
         },
         AppEvent::Key('k') | AppEvent::Up => match app.focus {
             Focus::Registry => app.registry_cursor_up(),
             Focus::Tree => app.cursor_up(),
-            Focus::Details => {}
+            Focus::Details => app.details_scroll_by(-1),
         },
-        AppEvent::PageDown => {
-            if app.focus == Focus::Tree {
-                app.cursor_page_down();
-            }
-        }
-        AppEvent::PageUp => {
-            if app.focus == Focus::Tree {
-                app.cursor_page_up();
-            }
-        }
+        AppEvent::PageDown => match app.focus {
+            Focus::Tree => app.cursor_page_down(),
+            Focus::Details => app.details_scroll_by(10),
+            Focus::Registry => {}
+        },
+        AppEvent::PageUp => match app.focus {
+            Focus::Tree => app.cursor_page_up(),
+            Focus::Details => app.details_scroll_by(-10),
+            Focus::Registry => {}
+        },
         AppEvent::Key('h') => {
             if app.focus == Focus::Tree {
                 app.set_expand_selected(false);
@@ -163,23 +189,20 @@ async fn handle_registry_enter(app: &mut App, client: &mut Option<commands::Clie
     match app.current_registry_row() {
         Some(RegistryRow::Image(i)) => {
             if let Some(im) = app.registry.images.get(i).cloned() {
-                let cmd = format!("image switch {}", im.image_id);
+                let cmd = format!("switch {}", im.image_id);
                 if let Err(e) = commands::execute_command(app, &cmd, c).await {
                     app.status_msg = format!("error: {e}");
                 }
                 app.focus = Focus::Tree;
             }
         }
-        Some(RegistryRow::Artifact(i)) => {
-            if let Some(ar) = app.registry.artifacts.get(i).cloned() {
-                let path = app.selected_path().unwrap_or_default();
-                app.enter_insert_mode(
-                    "insert",
-                    format!("insert {path} --artifact-id {} ", ar.artifact_id),
-                );
-            }
+        Some(row @ RegistryRow::Artifact(i)) if app.registry.artifacts.get(i).is_some() => {
+            let path = app.selected_path().unwrap_or_default();
+            let prefill =
+                commands::mutation_prefill("insert", &path, Some(&row), &app.registry.artifacts);
+            app.enter_insert_mode("insert", prefill);
         }
-        None => {}
+        _ => {}
     }
 }
 
@@ -210,7 +233,7 @@ async fn switch_view(app: &mut App, client: &mut Option<commands::Client>) {
 
 async fn handle_normal_forms(app: &mut App, ev: &AppEvent, client: &mut Option<commands::Client>) {
     match ev {
-        AppEvent::Key('?') => app.show_help = !app.show_help,
+        AppEvent::Key('?') => app.toggle_help(),
         AppEvent::Key('q') | AppEvent::Quit => app.quit = true,
         AppEvent::Key(':') => app.enter_command_mode(),
         AppEvent::Ctrl('h') | AppEvent::Ctrl('k') => app.forms.focus = app.forms.focus.prev(),
@@ -246,6 +269,12 @@ async fn handle_normal_forms(app: &mut App, ev: &AppEvent, client: &mut Option<c
             if let Some(c) = client.as_mut() {
                 let _ = commands::refresh_question_info_if_needed(app, c).await;
             }
+        }
+        AppEvent::PageDown if app.forms.focus == FormsFocus::Details && !app.forms.show_strings => {
+            app.forms.details_scroll = app.forms.details_scroll.saturating_add(10);
+        }
+        AppEvent::PageUp if app.forms.focus == FormsFocus::Details && !app.forms.show_strings => {
+            app.forms.details_scroll = app.forms.details_scroll.saturating_sub(10);
         }
         AppEvent::Enter if app.forms.focus == FormsFocus::Details && !app.forms.show_strings => {
             if let Some(pre) = commands::set_value_prefill(app) {

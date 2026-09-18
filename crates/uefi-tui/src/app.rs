@@ -83,6 +83,9 @@ pub struct FormsData {
     pub strings: Vec<StringInfo>,
     pub strings_filter: String,
     pub strings_cursor: usize,
+    pub details_scroll: u16,
+    pub details_anchor: Option<String>,
+    pub details_followed: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -206,8 +209,13 @@ pub struct App {
     pub engine_online: bool,
     pub quit: bool,
     pub show_help: bool,
+    pub help_scroll: u16,
+    pub details_scroll: u16,
+    pub details_anchor: Option<String>,
     pub tree_state: ListState,
     pub registry_state: ListState,
+    pub forms_list_state: ListState,
+    pub strings_list_state: ListState,
     pub tree_viewport_rows: usize,
 }
 
@@ -232,8 +240,13 @@ impl App {
             engine_online: true,
             quit: false,
             show_help: false,
+            help_scroll: 0,
+            details_scroll: 0,
+            details_anchor: None,
             tree_state: ListState::default(),
             registry_state: ListState::default(),
+            forms_list_state: ListState::default(),
+            strings_list_state: ListState::default(),
             tree_viewport_rows: 0,
         }
     }
@@ -291,6 +304,21 @@ impl App {
             && node.has_children
         {
             node.expanded = !node.expanded;
+        }
+    }
+
+    /// Toggle help-оверлея; скролл сбрасывается при каждом переключении. Спека R6.
+    pub fn toggle_help(&mut self) {
+        self.show_help = !self.show_help;
+        self.help_scroll = 0;
+    }
+
+    /// Ручной скролл details-панели основного вида. Спека R8.
+    pub fn details_scroll_by(&mut self, delta: i32) {
+        if delta >= 0 {
+            self.details_scroll = self.details_scroll.saturating_add(delta as u16);
+        } else {
+            self.details_scroll = self.details_scroll.saturating_sub((-delta) as u16);
         }
     }
 
@@ -768,6 +796,15 @@ impl App {
             let comp = crate::commands::complete(self, self.cmdline.as_str());
             self.menu.refresh(comp.items);
         }
+    }
+}
+
+/// Полный ID выбранной registry-строки (image/artifact) для hint-бара.
+/// Спека R1: short-ID в списке остаются, полный UUID живёт в hint.
+pub fn registry_selected_full_id(app: &App) -> Option<String> {
+    match app.current_registry_row()? {
+        RegistryRow::Image(i) => app.registry.images.get(i).map(|im| im.image_id.clone()),
+        RegistryRow::Artifact(i) => app.registry.artifacts.get(i).map(|a| a.artifact_id.clone()),
     }
 }
 
@@ -1411,5 +1448,14 @@ mod tests {
         app.cmd_key(&AppEvent::Key('x'));
         assert_eq!(app.cmdline.as_str(), "snapshotx");
         assert!(!app.menu.open);
+    }
+
+    #[test]
+    fn details_scroll_by_saturates() {
+        let mut app = App::new();
+        app.details_scroll_by(5);
+        assert_eq!(app.details_scroll, 5);
+        app.details_scroll_by(-10);
+        assert_eq!(app.details_scroll, 0);
     }
 }
