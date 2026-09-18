@@ -4,6 +4,7 @@ pub mod forms;
 pub mod help;
 pub mod menu;
 pub mod registry;
+pub mod scroll;
 pub mod status;
 pub mod tree;
 
