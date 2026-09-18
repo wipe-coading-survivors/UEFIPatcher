@@ -1446,6 +1446,18 @@ pub fn form_visibility_command(item: &str, visible: bool) -> Option<String> {
     (!visible).then(|| format!("hii visibility {item} on"))
 }
 
+/// Join u32-списков статусов; пустой — (none). Спека R7 (V3-мелочь 1).
+fn fmt_u32_ids(ids: &[u32]) -> String {
+    if ids.is_empty() {
+        "(none)".into()
+    } else {
+        ids.iter()
+            .map(|i| i.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+}
+
 fn fmt_string_ids(ids: &std::collections::HashMap<String, u32>) -> String {
     if ids.is_empty() {
         return "(none)".into();
@@ -1464,15 +1476,7 @@ pub fn formset_add_status(
     form_ids: &[u32],
     string_ids: &std::collections::HashMap<String, u32>,
 ) -> String {
-    let forms = if form_ids.is_empty() {
-        "(none)".into()
-    } else {
-        form_ids
-            .iter()
-            .map(|i| i.to_string())
-            .collect::<Vec<_>>()
-            .join(",")
-    };
+    let forms = fmt_u32_ids(form_ids);
     format!(
         "formset added: ffs {new_ffs_id} · forms {forms} · strings {}",
         fmt_string_ids(string_ids)
@@ -1484,15 +1488,7 @@ pub fn form_add_status(
     form_ids: &[u32],
     string_ids: &std::collections::HashMap<String, u32>,
 ) -> String {
-    let forms = if form_ids.is_empty() {
-        "(none)".into()
-    } else {
-        form_ids
-            .iter()
-            .map(|i| i.to_string())
-            .collect::<Vec<_>>()
-            .join(",")
-    };
+    let forms = fmt_u32_ids(form_ids);
     format!(
         "form added: forms {forms} · strings {}",
         fmt_string_ids(string_ids)
@@ -2350,6 +2346,21 @@ mod tests {
             add_prefill(&app),
             None,
             "DanglingRef — не форма и не формсет, prefill нет"
+        );
+    }
+
+    #[test]
+    fn fmt_u32_ids_join_and_none() {
+        assert_eq!(fmt_u32_ids(&[]), "(none)");
+        assert_eq!(fmt_u32_ids(&[10029, 10057]), "10029,10057");
+    }
+
+    #[test]
+    fn add_prefill_none_when_no_forms() {
+        let app = crate::app::App::new();
+        assert!(
+            add_prefill(&app).is_none(),
+            "пустой forms-список — префиллa нет"
         );
     }
 
