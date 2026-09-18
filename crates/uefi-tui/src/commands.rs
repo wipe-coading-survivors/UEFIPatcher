@@ -957,6 +957,10 @@ fn common_prefix(items: &[String]) -> String {
     p
 }
 
+fn fmt_item(target: impl std::fmt::Display, form_id_ifr: u32) -> String {
+    format!("{}#{}", target, form_id_ifr)
+}
+
 fn unique_form_targets(app: &App) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
     app.forms
@@ -994,7 +998,7 @@ fn complete_path(token: &str) -> Vec<String> {
         .map(|e| {
             (
                 e.file_name().to_string_lossy().to_string(),
-                e.file_type().map(|t| t.is_dir()).unwrap_or(false),
+                std::fs::metadata(e.path()).map(|m| m.is_dir()).unwrap_or(false),
             )
         })
         .filter(|(name, _)| name.starts_with(prefix))
@@ -1032,7 +1036,7 @@ fn context_candidates(app: &App, cmd: &str, head: &[&str], token: &str) -> Vec<S
         let flags: &[&str] = match cmd {
             "insert" => &["--file", "--artifact-id", "--mode"],
             "replace" => &["--file", "--artifact-id", "--body-only"],
-            "hii" if head.contains(&"formset") && head.contains(&"add") => &["--ffs"],
+            "hii" if head.len() == 4 && head[1] == "formset" && head[2] == "add" => &["--ffs"],
             _ => &[],
         };
         return flags
@@ -1080,7 +1084,7 @@ fn context_candidates(app: &App, cmd: &str, head: &[&str], token: &str) -> Vec<S
                         .forms
                         .forms
                         .iter()
-                        .map(|f| format!("{}#{}", f.form_id, f.form_id_ifr))
+                        .map(|f| fmt_item(&f.form_id, f.form_id_ifr))
                         .filter(|c| c.starts_with(token))
                         .collect();
                 }
@@ -1110,7 +1114,7 @@ fn context_candidates(app: &App, cmd: &str, head: &[&str], token: &str) -> Vec<S
                 .forms
                 .forms
                 .iter()
-                .map(|f| format!("{}#{}", f.form_id, f.form_id_ifr))
+                .map(|f| fmt_item(&f.form_id, f.form_id_ifr))
                 .filter(|c| c.starts_with(token))
                 .collect();
         }
@@ -1213,7 +1217,7 @@ pub async fn refresh_registry(app: &mut App, client: &mut Client) -> Result<(), 
 /// десятичное, контракт parse_item_id). None — если строка не форма.
 pub fn selected_form_item_id(app: &App) -> Option<String> {
     let key = app.selected_form_key()?;
-    Some(format!("{}#{}", key.target, key.form_id_ifr))
+    Some(fmt_item(&key.target, key.form_id_ifr))
 }
 
 /// Insert-prefill для Enter на вопросе: вопрос из question_cursor.
@@ -1500,7 +1504,7 @@ pub async fn refresh_form_details_if_needed(
     app.forms.question_cursor = 0;
     app.forms.question_info = None;
     app.forms.question_info_key = None;
-    let item_id = format!("{}#{}", key.target, key.form_id_ifr);
+    let item_id = fmt_item(&key.target, key.form_id_ifr);
     match client
         .inner
         .hii_gates_list(auth_req(
@@ -1928,6 +1932,30 @@ mod tests {
         assert_eq!(
             c.common.as_deref(),
             Some("hii formset add f.json --ffs SET-A")
+        );
+    }
+
+    #[test]
+    fn ffs_flag_only_in_grammar_position() {
+        let app = crate::app::App::new();
+        let c = complete(&app, "hii formset add f.json --f");
+        assert_eq!(c.common.as_deref(), Some("hii formset add f.json --ffs"));
+        let c = complete(&app, "hii formset add --f");
+        assert_eq!(c.common.as_deref(), None);
+        let c = complete(&app, "hii form add x --f");
+        assert_ne!(c.common.as_deref(), Some("hii form add x --ffs"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn complete_path_descends_into_dir_symlinks() {
+        let td = tempfile::tempdir().unwrap();
+        std::fs::create_dir(td.path().join("real")).unwrap();
+        std::os::unix::fs::symlink(td.path().join("real"), td.path().join("link")).unwrap();
+        let base = td.path().display().to_string();
+        assert_eq!(
+            complete_path(&format!("{base}/li")),
+            vec![format!("{base}/link/")]
         );
     }
 
