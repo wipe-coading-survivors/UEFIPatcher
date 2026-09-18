@@ -81,19 +81,21 @@ async fn handle_normal(app: &mut App, ev: &AppEvent, client: &mut Option<command
         AppEvent::Key('i') | AppEvent::Key('r') | AppEvent::Key('d')
             if app.focus == Focus::Tree =>
         {
-            let (cmd_str, prefill) = match ev {
-                AppEvent::Key('i') => (
-                    "insert",
-                    format!("insert {} --file ", app.selected_path().unwrap_or_default()),
-                ),
-                AppEvent::Key('r') => (
-                    "replace",
-                    format!(
-                        "replace {} --file ",
-                        app.selected_path().unwrap_or_default()
+            let (cmd_str, prefill) = {
+                let path = app.selected_path().unwrap_or_default();
+                let row = app.current_registry_row();
+                let artifacts = &app.registry.artifacts;
+                match ev {
+                    AppEvent::Key('i') => (
+                        "insert",
+                        commands::mutation_prefill("insert", &path, row.as_ref(), artifacts),
                     ),
-                ),
-                _ => ("remove", "remove ".to_string()),
+                    AppEvent::Key('r') => (
+                        "replace",
+                        commands::mutation_prefill("replace", &path, row.as_ref(), artifacts),
+                    ),
+                    _ => ("remove", format!("remove {path}")),
+                }
             };
             app.enter_insert_mode(cmd_str, prefill);
         }

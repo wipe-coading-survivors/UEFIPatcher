@@ -1303,6 +1303,24 @@ pub fn add_prefill(app: &App) -> Option<String> {
     }
 }
 
+/// Prefill i/r: registry-курсор на артефакте → --artifact-id, иначе --file.
+/// Спека R4 (вариант A, TODO:808).
+pub fn mutation_prefill(
+    kind: &str,
+    path: &str,
+    row: Option<&crate::app::RegistryRow>,
+    artifacts: &[uefi_proto::ArtifactInfo],
+) -> String {
+    let artifact = row.and_then(|r| match r {
+        crate::app::RegistryRow::Artifact(i) => artifacts.get(*i),
+        crate::app::RegistryRow::Image(_) => None,
+    });
+    match artifact {
+        Some(a) => format!("{kind} {path} --artifact-id {} ", a.artifact_id),
+        None => format!("{kind} {path} --file "),
+    }
+}
+
 /// Гвард-решение :reopen по желаемому и текущему режиму. Спека R3 (матрица).
 #[derive(Debug, PartialEq, Eq)]
 pub enum ReopenPlan {
@@ -2310,6 +2328,38 @@ mod tests {
             add_prefill(&app),
             None,
             "DanglingRef — не форма и не формсет, prefill нет"
+        );
+    }
+
+    #[test]
+    fn mutation_prefill_artifact_row_wins_over_file() {
+        let artifacts = vec![uefi_proto::ArtifactInfo {
+            artifact_id: "art-1".into(),
+            ..Default::default()
+        }];
+        let row = Some(crate::app::RegistryRow::Artifact(0));
+        assert_eq!(
+            mutation_prefill("insert", "1/3", row.as_ref(), &artifacts),
+            "insert 1/3 --artifact-id art-1 "
+        );
+        assert_eq!(
+            mutation_prefill("replace", "1/3", row.as_ref(), &artifacts),
+            "replace 1/3 --artifact-id art-1 "
+        );
+        let image_row = Some(crate::app::RegistryRow::Image(0));
+        assert_eq!(
+            mutation_prefill("insert", "1/3", image_row.as_ref(), &artifacts),
+            "insert 1/3 --file "
+        );
+        assert_eq!(
+            mutation_prefill("insert", "1/3", None, &artifacts),
+            "insert 1/3 --file "
+        );
+        let stale = Some(crate::app::RegistryRow::Artifact(9));
+        assert_eq!(
+            mutation_prefill("insert", "1/3", stale.as_ref(), &artifacts),
+            "insert 1/3 --file ",
+            "вышедший за границы индекс — фолбэк на --file"
         );
     }
 
