@@ -347,7 +347,7 @@ async fn hii_verbs_visibility_setvalue_unlock() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn image_switch_sets_active_state() {
+async fn switch_top_level_image_bare_moved_hint() {
     let td = TempDir::new().unwrap();
     let sock = td.path().join("test.sock");
     let _handle = mock_server::start_mock(&sock).await;
@@ -361,16 +361,28 @@ async fn image_switch_sets_active_state() {
     let mut app = uefi_tui::app::App::new();
     assert!(!app.image_loaded);
 
-    let r = uefi_tui::commands::execute_command(&mut app, "image switch img-existing", &mut client)
-        .await;
-
+    let r = uefi_tui::commands::execute_command(&mut app, "switch img-existing", &mut client).await;
     assert_eq!(r.unwrap(), "img-existing");
     assert_eq!(app.active_image_id.as_deref(), Some("img-existing"));
-    assert!(
-        app.image_loaded,
-        "switch помечает образ загруженным (статус-бар)"
-    );
+    assert!(app.image_loaded);
     assert!(!app.tree.is_empty());
+
+    uefi_tui::commands::execute_command(&mut app, "forms", &mut client)
+        .await
+        .unwrap();
+    assert!(matches!(app.view, uefi_tui::app::View::Forms));
+    let r = uefi_tui::commands::execute_command(&mut app, "image", &mut client).await;
+    assert_eq!(r.unwrap(), "image");
+    assert!(matches!(app.view, uefi_tui::app::View::Image));
+
+    let err =
+        uefi_tui::commands::execute_command(&mut app, "image switch img-existing", &mut client)
+            .await
+            .unwrap_err();
+    assert!(
+        err.contains("moved"),
+        "ошибка переносится с подсказкой: {err}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

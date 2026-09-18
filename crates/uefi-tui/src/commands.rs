@@ -490,67 +490,64 @@ pub async fn execute_command(
             Ok(target)
         }
         "image" => {
-            if parts.get(1).is_none() {
-                app.view = View::Image;
-                return Ok("image".into());
+            if parts.len() > 1 {
+                return Err("image subcommands moved: :switch ID | :close [ID]".into());
             }
-            let sub = parts.get(1).expect("checked above");
-            match *sub {
-                "switch" => {
-                    let id = parts.get(2).ok_or("usage: :image switch ID")?.to_string();
-                    let dump = client
-                        .inner
-                        .image_nodes_list(auth_req(
-                            &client.state,
-                            ImageNodesListRequest {
-                                image_id: id.clone(),
-                                filter: String::new(),
-                            },
-                        ))
-                        .await
-                        .map_err(|e| e.message().to_string())?
-                        .into_inner();
-                    app.tree = crate::tree::build_tree(&dump.nodes);
-                    app.cursor = 0;
-                    app.active_image_id = Some(id.clone());
-                    client.state.active_image_id = Some(id.clone());
-                    app.image_loaded = true;
-                    app.status_msg = format!("switched to {id}");
-                    let _ = refresh_registry(app, client).await;
-                    if app.view == View::Forms {
-                        refresh_forms(app, client).await?;
-                    }
-                    Ok(id)
-                }
-                "close" => {
-                    let id = parts
-                        .get(2)
-                        .map(|s| s.to_string())
-                        .or_else(|| client.state.active_image_id.clone())
-                        .ok_or("no active image")?;
-                    let req = ImageCloseRequest {
+            app.view = View::Image;
+            Ok("image".into())
+        }
+        "switch" => {
+            let id = parts.get(1).ok_or("usage: :switch ID")?.to_string();
+            let dump = client
+                .inner
+                .image_nodes_list(auth_req(
+                    &client.state,
+                    ImageNodesListRequest {
                         image_id: id.clone(),
-                    };
-                    client
-                        .inner
-                        .image_close(auth_req(&client.state, req))
-                        .await
-                        .map_err(|e| e.message().to_string())?
-                        .into_inner();
-                    if app.active_image_id.as_deref() == Some(id.as_str()) {
-                        app.active_image_id = None;
-                        client.state.active_image_id = None;
-                        app.tree.clear();
-                        app.cursor = 0;
-                        app.image_loaded = false;
-                        app.view = View::Image;
-                    }
-                    app.status_msg = format!("closed {id}");
-                    let _ = refresh_registry(app, client).await;
-                    Ok(id)
-                }
-                other => Err(format!("unknown image subcommand: {other}")),
+                        filter: String::new(),
+                    },
+                ))
+                .await
+                .map_err(|e| e.message().to_string())?
+                .into_inner();
+            app.tree = crate::tree::build_tree(&dump.nodes);
+            app.cursor = 0;
+            app.active_image_id = Some(id.clone());
+            client.state.active_image_id = Some(id.clone());
+            app.image_loaded = true;
+            app.status_msg = format!("switched to {id}");
+            let _ = refresh_registry(app, client).await;
+            if app.view == View::Forms {
+                refresh_forms(app, client).await?;
             }
+            Ok(id)
+        }
+        "close" => {
+            let id = parts
+                .get(1)
+                .map(|s| s.to_string())
+                .or_else(|| client.state.active_image_id.clone())
+                .ok_or("no active image")?;
+            let req = ImageCloseRequest {
+                image_id: id.clone(),
+            };
+            client
+                .inner
+                .image_close(auth_req(&client.state, req))
+                .await
+                .map_err(|e| e.message().to_string())?
+                .into_inner();
+            if app.active_image_id.as_deref() == Some(id.as_str()) {
+                app.active_image_id = None;
+                client.state.active_image_id = None;
+                app.tree.clear();
+                app.cursor = 0;
+                app.image_loaded = false;
+                app.view = View::Image;
+            }
+            app.status_msg = format!("closed {id}");
+            let _ = refresh_registry(app, client).await;
+            Ok(id)
         }
         "forms" | "f" => {
             if app.active_image_id.is_none() && client.state.active_image_id.is_none() {
@@ -873,6 +870,8 @@ const COMMANDS: &[&str] = &[
     "replace",
     "remove",
     "rebuild",
+    "switch",
+    "close",
     "image",
     "refresh",
     "forms",
@@ -1660,6 +1659,16 @@ mod tests {
         let c = complete(&app, "rebui");
         assert_eq!(c.common.as_deref(), Some("rebuild "));
         assert!(c.items.is_empty());
+    }
+
+    #[test]
+    fn commands_const_has_top_level_switch_close() {
+        assert!(COMMANDS.contains(&"switch"));
+        assert!(COMMANDS.contains(&"close"));
+        assert!(
+            COMMANDS.contains(&"image"),
+            "bare :image остаётся view-переключателем"
+        );
     }
 
     #[test]

@@ -163,7 +163,7 @@ async fn handle_registry_enter(app: &mut App, client: &mut Option<commands::Clie
     match app.current_registry_row() {
         Some(RegistryRow::Image(i)) => {
             if let Some(im) = app.registry.images.get(i).cloned() {
-                let cmd = format!("image switch {}", im.image_id);
+                let cmd = format!("switch {}", im.image_id);
                 if let Err(e) = commands::execute_command(app, &cmd, c).await {
                     app.status_msg = format!("error: {e}");
                 }

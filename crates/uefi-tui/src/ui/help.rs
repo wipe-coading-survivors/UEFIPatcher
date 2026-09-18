@@ -25,7 +25,7 @@ NORMAL (Tree focus)
 
 REGISTRY focus
   j / k          move selection
-  Enter on image    -> :image switch <id>  (return to Tree)
+  Enter on image    -> :switch <id>  (return to Tree)
   Enter on artifact -> prefill :insert <path> --artifact-id <id>
 
 FORMS VIEW (Tab / Shift-Tab, :forms / :image)
@@ -55,7 +55,7 @@ EX-COMMANDS
   :replace [TARGET] (--file PATH | --artifact-id ID) [--body-only]
   :remove [TARGET]
   :rebuild [TARGET]
-  :image switch ID | :image close [ID]
+  :switch ID | :close [ID]
   :forms                      переключить Forms-view (требует активный образ)
   :image                      обратно в Image-view
   :hii set-value ITEM VALUE   (ITEM = target#form[:qid], form — десятичное)
@@ -92,6 +92,13 @@ pub fn render(f: &mut Frame, app: &App) {
 #[cfg(test)]
 mod tests {
     use super::HELP;
+
+    #[test]
+    fn help_documents_top_level_switch_close() {
+        assert!(HELP.contains(":switch ID | :close [ID]"));
+        assert!(HELP.contains("Enter on image    -> :switch <id>"));
+        assert!(HELP.contains(":image                      обратно в Image-view"));
+    }
 
     #[test]
     fn help_documents_v3_add_commands_and_a_key() {
