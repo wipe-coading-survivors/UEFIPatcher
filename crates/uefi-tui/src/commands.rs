@@ -1042,7 +1042,7 @@ fn context_candidates(app: &App, cmd: &str, head: &[&str], token: &str) -> Vec<S
         return complete_path(token);
     }
     if head.last() == Some(&"--mode") {
-        let vals: &[&str] = if matches!(cmd, "reopen" | "open") {
+        let vals: &[&str] = if matches!(cmd, "reopen" | "open" | "o") {
             &["read", "write"]
         } else {
             &["into", "before", "after"]
@@ -1949,6 +1949,8 @@ mod tests {
         );
         let c = complete(&app, "o p.bin --");
         assert_eq!(c.common.as_deref(), Some("o p.bin --mode "));
+        let c = complete(&app, "o p.bin --mode re");
+        assert_eq!(c.common.as_deref(), Some("o p.bin --mode read "));
     }
 
     #[test]
