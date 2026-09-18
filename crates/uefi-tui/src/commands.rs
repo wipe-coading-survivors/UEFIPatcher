@@ -929,6 +929,9 @@ pub fn complete(app: &App, cmdline: &str) -> Completion {
         .map(|c| {
             let mut apply = base.clone();
             apply.push_str(c);
+            if !c.ends_with('/') {
+                apply.push(' ');
+            }
             crate::app::MenuItem {
                 display: c.clone(),
                 apply,
@@ -984,7 +987,19 @@ fn unique_formset_guids(app: &App) -> Vec<String> {
 /// Пути по префиксу для позиции schema-файла: набранный каталог-префикс
 /// сохраняется как есть (абсолютный/относительный), каталоги получают
 /// "/", скрытые файлы — только по точечному префиксу. Спека §4 V3.
+fn expand_tilde(token: &str, home: &str) -> String {
+    if token == "~" {
+        return home.to_string();
+    }
+    if let Some(rest) = token.strip_prefix("~/") {
+        return format!("{home}/{rest}");
+    }
+    token.to_string()
+}
+
 fn complete_path(token: &str) -> Vec<String> {
+    let expanded = expand_tilde(token, &std::env::var("HOME").unwrap_or_default());
+    let token = expanded.as_str();
     let (dir_part, prefix) = match token.rfind('/') {
         Some(i) => (&token[..=i], &token[i + 1..]),
         None => ("", token),
@@ -1012,6 +1027,9 @@ fn complete_path(token: &str) -> Vec<String> {
 }
 
 fn context_candidates(app: &App, cmd: &str, head: &[&str], token: &str) -> Vec<String> {
+    if head.last() == Some(&"--file") {
+        return complete_path(token);
+    }
     if head.last() == Some(&"--mode") {
         return ["into", "before", "after"]
             .iter()
@@ -1046,6 +1064,9 @@ fn context_candidates(app: &App, cmd: &str, head: &[&str], token: &str) -> Vec<S
             .filter(|c| c.starts_with(token))
             .map(|s| s.to_string())
             .collect();
+    }
+    if matches!(cmd, "open" | "o" | "save" | "s" | "upload") && head.len() == 1 {
+        return complete_path(token);
     }
     if cmd == "hii" {
         if head.len() == 1 {
@@ -1622,7 +1643,7 @@ mod tests {
     fn complete_first_token_to_unique_command() {
         let app = crate::app::App::new();
         let c = complete(&app, "rebui");
-        assert_eq!(c.common.as_deref(), Some("rebuild"));
+        assert_eq!(c.common.as_deref(), Some("rebuild "));
         assert!(c.items.is_empty());
     }
 
@@ -1806,7 +1827,7 @@ mod tests {
             ]
         );
         let c = complete(&app, "hii set-value ");
-        assert_eq!(c.common.as_deref(), Some("hii set-value t:0x19:0#10001"));
+        assert_eq!(c.common.as_deref(), Some("hii set-value t:0x19:0#10001 "));
         assert!(
             c.items.is_empty(),
             "unique candidate completes directly, no menu"
@@ -1835,20 +1856,20 @@ mod tests {
         let c = complete(&app, "hii form ");
         assert_eq!(
             c.common.as_deref(),
-            Some("hii form add"),
+            Some("hii form add "),
             "единственный кандидат инлайн-дополняется (контракт complete)"
         );
         let c = complete(&app, "hii formset ");
-        assert_eq!(c.common.as_deref(), Some("hii formset add"));
+        assert_eq!(c.common.as_deref(), Some("hii formset add "));
 
         let c = complete(&app, "hii form add ");
         assert_eq!(
             c.common.as_deref(),
-            Some("hii form add t:0x19:0"),
+            Some("hii form add t:0x19:0 "),
             "голые target-кандидаты, дедуп по двум формам одного target"
         );
         let c = complete(&app, "hii hijack ");
-        assert_eq!(c.common.as_deref(), Some("hii hijack t:0x19:0"));
+        assert_eq!(c.common.as_deref(), Some("hii hijack t:0x19:0 "));
         let c = complete(&app, "hii question add ");
         assert_eq!(
             c.items
@@ -1858,6 +1879,54 @@ mod tests {
             vec!["t:0x19:0#10001".to_string(), "t:0x19:0#10019".to_string()],
             "question add — item-кандидаты target#form_id (form_id десятичное)"
         );
+    }
+
+    #[test]
+    fn unique_candidate_gets_trailing_space() {
+        let app = crate::app::App::new();
+        let c = complete(&app, "hi");
+        assert_eq!(c.common.as_deref(), Some("hii "));
+        assert!(c.items.is_empty());
+    }
+
+    #[test]
+    fn open_completes_paths_in_slot1() {
+        let td = tempfile::tempdir().unwrap();
+        std::fs::create_dir(td.path().join("real")).unwrap();
+        std::fs::write(td.path().join("lite"), b"").unwrap();
+        std::os::unix::fs::symlink(td.path().join("real"), td.path().join("link")).unwrap();
+        let base = td.path().display().to_string();
+        let c = complete(&crate::app::App::new(), &format!("open {base}/li"));
+        let applies: Vec<&str> = c.items.iter().map(|i| i.apply.as_str()).collect();
+        assert!(
+            applies
+                .iter()
+                .any(|a| a.ends_with("/link/") && !a.ends_with("/link/ "))
+        );
+        assert!(applies.iter().any(|a| a.ends_with("lite ")));
+    }
+
+    #[test]
+    fn file_flag_value_completes_paths() {
+        let td = tempfile::tempdir().unwrap();
+        std::fs::write(td.path().join("schema-a.json"), b"{}").unwrap();
+        let base = td.path().display().to_string();
+        let c = complete(
+            &crate::app::App::new(),
+            &format!("insert --file {base}/schema-a"),
+        );
+        assert_eq!(
+            c.common.as_deref(),
+            Some(format!("insert --file {base}/schema-a.json ").as_str())
+        );
+    }
+
+    #[test]
+    fn expand_tilde_variants() {
+        assert_eq!(expand_tilde("~", "/home/u"), "/home/u");
+        assert_eq!(expand_tilde("~/x/y", "/home/u"), "/home/u/x/y");
+        assert_eq!(expand_tilde("x/~", "/home/u"), "x/~");
+        assert_eq!(expand_tilde("", "/home/u"), "");
     }
 
     #[test]
@@ -1904,17 +1973,17 @@ mod tests {
         let c = complete(&app, &format!("hii formset add {base}/schema-x"));
         assert_eq!(
             c.common.as_deref(),
-            Some(format!("hii formset add {base}/schema-x.json").as_str())
+            Some(format!("hii formset add {base}/schema-x.json ").as_str())
         );
         let c = complete(&app, &format!("hii form add t:0x19:0 {base}/schema-x"));
         assert_eq!(
             c.common.as_deref(),
-            Some(format!("hii form add t:0x19:0 {base}/schema-x.json").as_str())
+            Some(format!("hii form add t:0x19:0 {base}/schema-x.json ").as_str())
         );
         let c = complete(&app, &format!("hii hijack t:0x19:0 {base}/schema-x"));
         assert_eq!(
             c.common.as_deref(),
-            Some(format!("hii hijack t:0x19:0 {base}/schema-x.json").as_str())
+            Some(format!("hii hijack t:0x19:0 {base}/schema-x.json ").as_str())
         );
     }
 
@@ -1929,11 +1998,11 @@ mod tests {
             visible: true,
         }];
         let c = complete(&app, "hii formset add f.json --");
-        assert_eq!(c.common.as_deref(), Some("hii formset add f.json --ffs"));
+        assert_eq!(c.common.as_deref(), Some("hii formset add f.json --ffs "));
         let c = complete(&app, "hii formset add f.json --ffs ");
         assert_eq!(
             c.common.as_deref(),
-            Some("hii formset add f.json --ffs SET-A")
+            Some("hii formset add f.json --ffs SET-A ")
         );
     }
 
@@ -1941,7 +2010,7 @@ mod tests {
     fn ffs_flag_only_in_grammar_position() {
         let app = crate::app::App::new();
         let c = complete(&app, "hii formset add f.json --f");
-        assert_eq!(c.common.as_deref(), Some("hii formset add f.json --ffs"));
+        assert_eq!(c.common.as_deref(), Some("hii formset add f.json --ffs "));
         let c = complete(&app, "hii formset add --f");
         assert_eq!(c.common.as_deref(), None);
         let c = complete(&app, "hii form add x --f");
@@ -2014,6 +2083,6 @@ mod tests {
         };
         app.tree = vec![mk("1", 65), mk("1/28", 66)];
         let c = complete(&app, "remove 1/2");
-        assert_eq!(c.common.as_deref(), Some("remove 1/28"));
+        assert_eq!(c.common.as_deref(), Some("remove 1/28 "));
     }
 }

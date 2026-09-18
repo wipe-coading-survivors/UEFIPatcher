@@ -42,6 +42,7 @@ impl History {
     }
 
     pub fn submit(&mut self, line: &str) {
+        let line = line.trim();
         self.recall = None;
         self.saved = None;
         if line.is_empty() || self.entries.last().is_some_and(|s| s == line) {
@@ -141,7 +142,9 @@ mod tests {
         h.submit("open a");
         h.submit("open a");
         h.submit("save b");
+        h.submit("save b  ");
         assert_eq!(h.entries_len(), 2);
+        assert_eq!(h.entry(1).unwrap(), "save b");
     }
 
     #[test]

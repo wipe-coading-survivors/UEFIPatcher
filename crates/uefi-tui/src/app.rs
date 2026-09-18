@@ -1365,20 +1365,19 @@ mod tests {
         let mut app = App::new();
         app.history = crate::history::History::empty();
         app.mode = Mode::Command;
-        app.cmdline.set_str("s");
+        app.cmdline.set_str("q");
         app.cmd_key(&AppEvent::Tab);
         assert!(app.menu.open);
-        let selected = app.menu.selected_apply().unwrap().to_string();
-        assert_ne!(selected.as_str(), "s");
+        assert_eq!(app.menu.selected_apply(), Some("quit "));
         assert_eq!(app.cmd_key(&AppEvent::Enter), CmdFlow::None);
-        assert_eq!(app.cmdline.as_str(), selected);
+        assert_eq!(app.cmdline.as_str(), "quit ");
         assert!(!app.menu.open);
         assert_eq!(app.cmd_key(&AppEvent::Enter), CmdFlow::Execute);
-        assert_eq!(app.cmdline.as_str(), selected);
+        assert_eq!(app.cmdline.as_str(), "quit ");
     }
 
     #[test]
-    fn cmd_key_h_tab_enter_accepts_then_second_enter_runs() {
+    fn cmd_key_h_tab_enter_accepts_then_runs_after_esc() {
         let mut app = App::new();
         app.history = crate::history::History::empty();
         app.mode = Mode::Command;
@@ -1386,10 +1385,12 @@ mod tests {
         app.cmd_key(&AppEvent::Tab);
         assert!(app.menu.open);
         assert_eq!(app.cmd_key(&AppEvent::Enter), CmdFlow::None);
-        assert_eq!(app.cmdline.as_str(), "hii");
+        assert_eq!(app.cmdline.as_str(), "hii ");
+        assert!(app.menu.open);
+        app.cmd_key(&AppEvent::Esc);
         assert!(!app.menu.open);
         assert_eq!(app.cmd_key(&AppEvent::Enter), CmdFlow::Execute);
-        assert_eq!(app.cmdline.as_str(), "hii");
+        assert_eq!(app.cmdline.as_str(), "hii ");
     }
 
     #[test]
