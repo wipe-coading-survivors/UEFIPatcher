@@ -947,7 +947,7 @@ fn form_details_reports_marker_and_info_lines() {
 #[test]
 fn follow_offset_follows_target_and_keeps_window() {
     assert_eq!(follow_offset(0, Some(50), 100, 10), 44, "цель ниже окна — докрутка с pad");
-    assert_eq!(follow_offset(44, Some(45), 100, 10), 44, "цель в окне — офсет на месте");
+    assert_eq!(follow_offset(44, Some(50), 100, 10), 44, "цель в окне — офсет на месте");
     assert_eq!(follow_offset(90, None, 100, 10), 90);
     assert_eq!(follow_offset(90, None, 20, 10), 10, "clamp по total");
     assert_eq!(follow_offset(0, Some(0), 100, 10), 0);
