@@ -893,8 +893,10 @@ git commit -m "refactor(tui): complete() -> Completion { common, items } с appl
 #[test]
 fn ffs_flag_only_in_grammar_position() {
     let app = crate::app::App::new();
+    let c = complete(&app, "hii formset add f.json --f");
+    assert_eq!(c.common.as_deref(), Some("hii formset add f.json --ffs"));
     let c = complete(&app, "hii formset add --f");
-    assert_eq!(c.common.as_deref(), Some("hii formset add --ffs"));
+    assert_eq!(c.common.as_deref(), None);
     let c = complete(&app, "hii form add x --f");
     assert_ne!(c.common.as_deref(), Some("hii form add x --ffs"));
 }
@@ -924,8 +926,8 @@ Expected: FAIL
 
 ```rust
 // было: "hii" if head.contains(&"formset") && head.contains(&"add") => &["--ffs"],
-// стало:
-"hii" if head.len() == 3 && head[1] == "formset" && head[2] == "add" => &["--ffs"],
+// стало (файл строго позиционен в parts[3], флаговый слот — после него):
+"hii" if head.len() == 4 && head[1] == "formset" && head[2] == "add" => &["--ffs"],
 ```
 
 3b. Симлинки в `complete_path` — заменить маппинг кортежа:
@@ -1070,6 +1072,7 @@ impl MenuState {
             self.close();
         } else {
             self.items = items;
+            self.open = true;
             self.selected = 0;
             self.offset = 0;
         }
