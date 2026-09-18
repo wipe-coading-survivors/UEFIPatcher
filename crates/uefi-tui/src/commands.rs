@@ -1083,7 +1083,7 @@ fn context_candidates(app: &App, cmd: &str, head: &[&str], token: &str) -> Vec<S
             "replace" => &["--file", "--artifact-id", "--body-only"],
             "extract" => &["--body-only"],
             "reopen" => &["--mode"],
-            "open" => &["--mode"],
+            "open" | "o" => &["--mode"],
             "hii" if head.len() == 4 && head[1] == "formset" && head[2] == "add" => &["--ffs"],
             _ => &[],
         };
@@ -1936,6 +1936,19 @@ mod tests {
             Some("extract 1/3 --body-only "),
             "единственный флаг — через common, items пуст (паттерн single-candidate)"
         );
+    }
+
+    #[test]
+    fn complete_o_alias_offers_mode_flag() {
+        let app = crate::app::App::new();
+        let c = complete(&app, "o p.bin --mo");
+        assert_eq!(
+            c.common.as_deref(),
+            Some("o p.bin --mode "),
+            "алиас :o получает флаги :open (single-candidate: common, items пуст)"
+        );
+        let c = complete(&app, "o p.bin --");
+        assert_eq!(c.common.as_deref(), Some("o p.bin --mode "));
     }
 
     #[test]
