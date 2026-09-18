@@ -290,6 +290,7 @@ Prefill (`enter_command_mode`/`enter_insert_mode`) — `set_str` (курсор �
    сразу жмёт следующее слово); директории (кандидат с `/`) — без
    пробела; `History::submit` тримит строку.
 4. Path-completion на всех позициях грамматики с путём: `:open/:o`,
-   `:save/:s`, `:upload` (слот после глагола) и значение `--file`;
+   `:save/:s`, `:upload`, `:import` (слот после глагола) и значение
+   `--file`; `:export` — слот 1 артефакт-ID (из registry), слот 2 путь;
    `~` / `~/` в `complete_path` раскрывается в `$HOME`. Относительные
    пути комплитятся от cwd процесса TUI (как в bash).

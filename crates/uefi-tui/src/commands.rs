@@ -1065,7 +1065,22 @@ fn context_candidates(app: &App, cmd: &str, head: &[&str], token: &str) -> Vec<S
             .map(|s| s.to_string())
             .collect();
     }
-    if matches!(cmd, "open" | "o" | "save" | "s" | "upload") && head.len() == 1 {
+    if cmd == "export" {
+        if head.len() == 1 {
+            return app
+                .registry
+                .artifacts
+                .iter()
+                .map(|a| a.artifact_id.clone())
+                .filter(|c| c.starts_with(token))
+                .collect();
+        }
+        if head.len() == 2 {
+            return complete_path(token);
+        }
+        return vec![];
+    }
+    if matches!(cmd, "open" | "o" | "save" | "s" | "upload" | "import") && head.len() == 1 {
         return complete_path(token);
     }
     if cmd == "hii" {
@@ -1927,6 +1942,49 @@ mod tests {
         assert_eq!(expand_tilde("~/x/y", "/home/u"), "/home/u/x/y");
         assert_eq!(expand_tilde("x/~", "/home/u"), "x/~");
         assert_eq!(expand_tilde("", "/home/u"), "");
+    }
+
+    #[test]
+    fn export_completes_artifact_ids_then_path() {
+        let mut app = crate::app::App::new();
+        app.registry.artifacts = vec![
+            uefi_proto::ArtifactInfo {
+                artifact_id: "art-1".into(),
+                ..Default::default()
+            },
+            uefi_proto::ArtifactInfo {
+                artifact_id: "art-2".into(),
+                ..Default::default()
+            },
+        ];
+        let c = complete(&app, "export art");
+        assert_eq!(
+            c.items
+                .iter()
+                .map(|i| i.display.clone())
+                .collect::<Vec<_>>(),
+            vec!["art-1".to_string(), "art-2".to_string()]
+        );
+        let td = tempfile::tempdir().unwrap();
+        std::fs::write(td.path().join("blob.bin"), b"").unwrap();
+        let base = td.path().display().to_string();
+        let c = complete(&app, &format!("export art-1 {base}/bl"));
+        assert_eq!(
+            c.common.as_deref(),
+            Some(format!("export art-1 {base}/blob.bin ").as_str())
+        );
+    }
+
+    #[test]
+    fn import_completes_paths_in_slot1() {
+        let td = tempfile::tempdir().unwrap();
+        std::fs::write(td.path().join("blob.bin"), b"").unwrap();
+        let base = td.path().display().to_string();
+        let c = complete(&crate::app::App::new(), &format!("import {base}/bl"));
+        assert_eq!(
+            c.common.as_deref(),
+            Some(format!("import {base}/blob.bin ").as_str())
+        );
     }
 
     #[test]
