@@ -915,7 +915,10 @@ pub fn complete(app: &App, cmdline: &str) -> Completion {
         context_candidates(app, head[0], &head, &token)
     };
     if candidates.is_empty() {
-        return Completion { common: None, items: vec![] };
+        return Completion {
+            common: None,
+            items: vec![],
+        };
     }
     let mut base = head.join(" ");
     if !base.is_empty() {
@@ -926,15 +929,24 @@ pub fn complete(app: &App, cmdline: &str) -> Completion {
         .map(|c| {
             let mut apply = base.clone();
             apply.push_str(c);
-            crate::app::MenuItem { display: c.clone(), apply }
+            crate::app::MenuItem {
+                display: c.clone(),
+                apply,
+            }
         })
         .collect();
     if candidates.len() == 1 {
-        return Completion { common: Some(items[0].apply.clone()), items: vec![] };
+        return Completion {
+            common: Some(items[0].apply.clone()),
+            items: vec![],
+        };
     }
     let prefix = common_prefix(&candidates);
     base.push_str(&prefix);
-    Completion { common: Some(base), items }
+    Completion {
+        common: Some(base),
+        items,
+    }
 }
 
 fn common_prefix(items: &[String]) -> String {
@@ -1625,7 +1637,10 @@ mod tests {
         assert_eq!(c.common.as_deref(), Some("insert 0/3 --artifact-id art-"));
         let c = complete(&app, "insert 0/3 --artifact-id ");
         assert_eq!(
-            c.items.iter().map(|i| i.display.clone()).collect::<Vec<_>>(),
+            c.items
+                .iter()
+                .map(|i| i.display.clone())
+                .collect::<Vec<_>>(),
             vec!["art-1".to_string(), "art-2".to_string()]
         );
     }
@@ -1635,7 +1650,10 @@ mod tests {
         let app = crate::app::App::new();
         let c = complete(&app, "insert 0/3 --");
         assert_eq!(
-            c.items.iter().map(|i| i.display.clone()).collect::<Vec<_>>(),
+            c.items
+                .iter()
+                .map(|i| i.display.clone())
+                .collect::<Vec<_>>(),
             vec![
                 "--file".to_string(),
                 "--artifact-id".to_string(),
@@ -1766,7 +1784,10 @@ mod tests {
         }];
         let c = complete(&app, "hii ");
         assert_eq!(
-            c.items.iter().map(|i| i.display.clone()).collect::<Vec<_>>(),
+            c.items
+                .iter()
+                .map(|i| i.display.clone())
+                .collect::<Vec<_>>(),
             vec![
                 "formset".to_string(),
                 "form".to_string(),
@@ -1824,7 +1845,10 @@ mod tests {
         assert_eq!(c.common.as_deref(), Some("hii hijack t:0x19:0"));
         let c = complete(&app, "hii question add ");
         assert_eq!(
-            c.items.iter().map(|i| i.display.clone()).collect::<Vec<_>>(),
+            c.items
+                .iter()
+                .map(|i| i.display.clone())
+                .collect::<Vec<_>>(),
             vec!["t:0x19:0#10001".to_string(), "t:0x19:0#10019".to_string()],
             "question add — item-кандидаты target#form_id (form_id десятичное)"
         );
@@ -1901,7 +1925,10 @@ mod tests {
         let c = complete(&app, "hii formset add f.json --");
         assert_eq!(c.common.as_deref(), Some("hii formset add f.json --ffs"));
         let c = complete(&app, "hii formset add f.json --ffs ");
-        assert_eq!(c.common.as_deref(), Some("hii formset add f.json --ffs SET-A"));
+        assert_eq!(
+            c.common.as_deref(),
+            Some("hii formset add f.json --ffs SET-A")
+        );
     }
 
     #[test]
