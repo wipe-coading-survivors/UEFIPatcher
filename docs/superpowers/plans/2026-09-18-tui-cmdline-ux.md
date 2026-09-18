@@ -1381,7 +1381,7 @@ mod tests {
         app.cmdline.left();
         let t = draw(&app);
         assert_eq!(t.backend().buffer().get(4, 1).symbol(), "c");
-        assert!(t.backend().buffer().get(4, 1).modifier().contains(Modifier::REVERSED));
+        assert!(t.backend().buffer().get(4, 1).modifier.contains(Modifier::REVERSED));
     }
 
     #[test]
@@ -1390,7 +1390,7 @@ mod tests {
         app.mode = crate::app::Mode::Command;
         app.cmdline.set_str("ab");
         let t = draw(&app);
-        assert!(t.backend().buffer().get(4, 1).modifier().contains(Modifier::REVERSED));
+        assert!(t.backend().buffer().get(4, 1).modifier.contains(Modifier::REVERSED));
     }
 
     #[test]
@@ -1401,7 +1401,7 @@ mod tests {
         let t = draw(&app);
         assert_ne!(t.backend().buffer().get(1, 1).symbol(), "0");
         assert_eq!(t.backend().buffer().get(17, 1).symbol(), "j");
-        assert!(t.backend().buffer().get(18, 1).modifier().contains(Modifier::REVERSED));
+        assert!(t.backend().buffer().get(18, 1).modifier.contains(Modifier::REVERSED));
     }
 }
 ```
@@ -1449,7 +1449,7 @@ fn cmdline_spans(prefix: &str, buf: &crate::line::LineBuffer, inner: usize) -> V
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut run = String::new();
     for (gi, g) in graphemes.iter().enumerate().skip(start).take(inner) {
-        if *gi == cur {
+        if gi == cur {
             if !run.is_empty() {
                 spans.push(Span::raw(std::mem::take(&mut run)));
             }
