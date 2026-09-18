@@ -26,7 +26,8 @@
 **Files:**
 - Modify: `crates/uefi-tui/src/commands.rs:492-556` (ветка `"image"`), `commands.rs:863` (COMMANDS)
 - Modify: `crates/uefi-tui/src/main.rs:166` (`handle_registry_enter`)
-- Modify: `crates/uefi-tui/src/ui/help.rs:29` (строка EX-COMMANDS)
+- Modify: `crates/uefi-tui/src/ui/help.rs:28-29` (REGISTRY-строка + строка EX-COMMANDS)
+- Modify: `crates/uefi-tui/tests/mock_server.rs:834,927` (старый синтаксис в тестах)
 - Test: `crates/uefi-tui/src/commands.rs` (tests), `crates/uefi-tui/tests/tui_integration.rs:350`
 
 **Interfaces:**
@@ -74,6 +75,7 @@ assert!(err.contains("moved"), "ошибка переносится с подс�
 #[test]
 fn help_documents_top_level_switch_close() {
     assert!(HELP.contains(":switch ID | :close [ID]"));
+    assert!(HELP.contains("Enter on image    -> :switch <id>"));
     assert!(HELP.contains(":image                      обратно в Image-view"));
 }
 ```
@@ -115,7 +117,9 @@ Expected: FAIL (нет «switch» в COMMANDS; `image switch` ещё работ�
 
 `main.rs:166`: `format!("image switch {}", im.image_id)` → `format!("switch {}", im.image_id)`.
 
-`ui/help.rs:29`: строку `  :image switch ID | :image close [ID]` заменить на `  :switch ID | :close [ID]` (bare-строку `:image` ниже не трогаем).
+`ui/help.rs:28`: строку `  Enter on image    -> :image switch <id>  (return to Tree)` заменить на `  Enter on image    -> :switch <id>  (return to Tree)`; `ui/help.rs:29`: строку `  :image switch ID | :image close [ID]` заменить на `  :switch ID | :close [ID]` (bare-строку `:image` ниже не трогаем).
+
+`tests/mock_server.rs:834`: `execute_command(&mut app, "image switch mock-img-1", ...)` → `"switch mock-img-1"`; `:927`: `format!("image close {active}")` → `format!("close {active}")` — иначе suite падает на старом синтаксисе.
 
 - [ ] **Step 4: Прогон**
 
