@@ -739,6 +739,86 @@ mod tests {
     }
 
     #[test]
+    fn question_bottom_branches_and_path_row() {
+        let key = FormKey {
+            target: "t1".into(),
+            formset_guid: "S".into(),
+            form_id_ifr: 1,
+            title: "Main".into(),
+        };
+        let mut forms = crate::app::FormsData::default();
+        forms.questions_key = Some(key.clone());
+        let rows = vec![FormsRow::Form {
+            key: key.clone(),
+            visible: true,
+            depth: 1,
+            path: "0/1/2".into(),
+            has_children: false,
+            expanded: false,
+        }];
+        let p = form_panel(&forms, &rows, 0);
+        assert!(p.header.iter().any(|l| l.starts_with("Path:    0/1/2")));
+
+        forms.question_info_key = Some((key.clone(), 0x220));
+        forms.question_info = Some(uefi_proto::QuestionInfo {
+            question_id: 0x220,
+            kind: "one_of".into(),
+            var_store_id: 2,
+            var_offset: 0x37,
+            width: 1,
+            options: vec![
+                uefi_proto::OptionEntry {
+                    value: 1,
+                    string_id: 0x10,
+                    text: "Enabled".into(),
+                    ..Default::default()
+                },
+                uefi_proto::OptionEntry {
+                    value: 2,
+                    string_id: 0x11,
+                    text: String::new(),
+                    ..Default::default()
+                },
+                uefi_proto::OptionEntry {
+                    value: 3,
+                    string_id: 0x12,
+                    text: String::new(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        });
+        let p = form_panel(&forms, &rows, 0);
+        assert!(
+            p.bottom.iter().any(|l| l.contains("(sid ")),
+            "пустой text — sid-fallback"
+        );
+        assert!(p.bottom.iter().any(|l| l.contains("0x1 \"Enabled\"")));
+
+        forms.question_info = Some(uefi_proto::QuestionInfo {
+            question_id: 0x220,
+            kind: "one_of".into(),
+            var_store_id: 2,
+            var_offset: 0x37,
+            width: 1,
+            ..Default::default()
+        });
+        let p = form_panel(&forms, &rows, 0);
+        assert!(p.bottom.iter().any(|l| l.contains("options: (none)")));
+
+        forms.question_info = Some(uefi_proto::QuestionInfo {
+            question_id: 0x221,
+            kind: "checkbox".into(),
+            var_store_id: 2,
+            var_offset: 0x38,
+            width: 1,
+            ..Default::default()
+        });
+        let p = form_panel(&forms, &rows, 0);
+        assert_eq!(p.bottom.len(), 2, "заголовок + store-строка, без доп-строк");
+    }
+
+    #[test]
     fn form_panel_loading_and_no_form() {
         let mut app = crate::app::App::new();
         app.forms.forms = vec![uefi_proto::FormInfo {

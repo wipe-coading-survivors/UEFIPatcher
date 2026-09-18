@@ -264,14 +264,31 @@ mod tests {
     }
 
     #[test]
+    fn tiny_terminal_keeps_question_row_visible() {
+        let mut app = app_with_form(30);
+        let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 8)).unwrap();
+        t.draw(|f| render(f, f.area(), &mut app)).unwrap();
+        let text = panel_text(&t, 8);
+        assert!(text.contains("Form:    Main"), "шапка сжата, но жива");
+        assert!(text.contains("q0x210"), "середина ≥1 строки — вопрос виден");
+    }
+
+    #[test]
     fn loading_state_shows_header_line_only() {
         let mut app = app_with_form(0);
         app.forms.questions_key = None;
+        *app.forms.questions_state.offset_mut() = 4;
+        app.forms.questions_state.select(Some(3));
         let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
         t.draw(|f| render(f, f.area(), &mut app)).unwrap();
         let text = panel_text(&t, 24);
         assert!(text.contains("Questions: loading…"));
-        assert_eq!(app.forms.questions_state.selected(), None);
+        assert_eq!(
+            app.forms.questions_state.selected(),
+            Some(3),
+            "loading: список не рендерится — состояние нетронуто"
+        );
+        assert_eq!(app.forms.questions_state.offset(), 4);
     }
 
     #[test]
