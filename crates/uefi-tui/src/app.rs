@@ -111,6 +111,12 @@ pub enum RegistryRow {
     Artifact(usize),
 }
 
+#[derive(Debug, Clone)]
+pub struct MenuItem {
+    pub display: String,
+    pub apply: String,
+}
+
 pub struct App {
     pub mode: Mode,
     pub tree: Vec<TreeNode>,

@@ -891,7 +891,12 @@ const COMMANDS: &[&str] = &[
     "q",
 ];
 
-pub fn complete(app: &App, cmdline: &str) -> (Option<String>, Vec<String>) {
+pub struct Completion {
+    pub common: Option<String>,
+    pub items: Vec<crate::app::MenuItem>,
+}
+
+pub fn complete(app: &App, cmdline: &str) -> Completion {
     let ends_space = cmdline.ends_with(' ');
     let mut parts: Vec<&str> = cmdline.split_whitespace().collect();
     let token = if ends_space || parts.is_empty() {
@@ -910,20 +915,26 @@ pub fn complete(app: &App, cmdline: &str) -> (Option<String>, Vec<String>) {
         context_candidates(app, head[0], &head, &token)
     };
     if candidates.is_empty() {
-        return (None, vec![]);
+        return Completion { common: None, items: vec![] };
     }
-    let mut out = head.join(" ");
-    if !out.is_empty() {
-        out.push(' ');
+    let mut base = head.join(" ");
+    if !base.is_empty() {
+        base.push(' ');
     }
+    let items: Vec<crate::app::MenuItem> = candidates
+        .iter()
+        .map(|c| {
+            let mut apply = base.clone();
+            apply.push_str(c);
+            crate::app::MenuItem { display: c.clone(), apply }
+        })
+        .collect();
     if candidates.len() == 1 {
-        out.push_str(&candidates[0]);
-        (Some(out), vec![])
-    } else {
-        let prefix = common_prefix(&candidates);
-        out.push_str(&prefix);
-        (Some(out), candidates)
+        return Completion { common: Some(items[0].apply.clone()), items: vec![] };
     }
+    let prefix = common_prefix(&candidates);
+    base.push_str(&prefix);
+    Completion { common: Some(base), items }
 }
 
 fn common_prefix(items: &[String]) -> String {
@@ -1592,9 +1603,9 @@ mod tests {
     #[test]
     fn complete_first_token_to_unique_command() {
         let app = crate::app::App::new();
-        let (rep, opts) = complete(&app, "rebui");
-        assert_eq!(rep.as_deref(), Some("rebuild"));
-        assert!(opts.is_empty());
+        let c = complete(&app, "rebui");
+        assert_eq!(c.common.as_deref(), Some("rebuild"));
+        assert!(c.items.is_empty());
     }
 
     #[test]
@@ -1610,18 +1621,21 @@ mod tests {
                 ..Default::default()
             },
         ];
-        let (rep, _) = complete(&app, "insert 0/3 --artifact-id art-");
-        assert_eq!(rep.as_deref(), Some("insert 0/3 --artifact-id art-"));
-        let (_, opts) = complete(&app, "insert 0/3 --artifact-id ");
-        assert_eq!(opts, vec!["art-1".to_string(), "art-2".to_string()]);
+        let c = complete(&app, "insert 0/3 --artifact-id art-");
+        assert_eq!(c.common.as_deref(), Some("insert 0/3 --artifact-id art-"));
+        let c = complete(&app, "insert 0/3 --artifact-id ");
+        assert_eq!(
+            c.items.iter().map(|i| i.display.clone()).collect::<Vec<_>>(),
+            vec!["art-1".to_string(), "art-2".to_string()]
+        );
     }
 
     #[test]
     fn complete_flags_of_insert() {
         let app = crate::app::App::new();
-        let (_, opts) = complete(&app, "insert 0/3 --");
+        let c = complete(&app, "insert 0/3 --");
         assert_eq!(
-            opts,
+            c.items.iter().map(|i| i.display.clone()).collect::<Vec<_>>(),
             vec![
                 "--file".to_string(),
                 "--artifact-id".to_string(),
@@ -1750,9 +1764,9 @@ mod tests {
             title: "Main".into(),
             visible: true,
         }];
-        let (_, opts) = complete(&app, "hii ");
+        let c = complete(&app, "hii ");
         assert_eq!(
-            opts,
+            c.items.iter().map(|i| i.display.clone()).collect::<Vec<_>>(),
             vec![
                 "formset".to_string(),
                 "form".to_string(),
@@ -1764,10 +1778,10 @@ mod tests {
                 "unlock".to_string()
             ]
         );
-        let (rep, opts) = complete(&app, "hii set-value ");
-        assert_eq!(rep.as_deref(), Some("hii set-value t:0x19:0#10001"));
+        let c = complete(&app, "hii set-value ");
+        assert_eq!(c.common.as_deref(), Some("hii set-value t:0x19:0#10001"));
         assert!(
-            opts.is_empty(),
+            c.items.is_empty(),
             "unique candidate completes directly, no menu"
         );
     }
@@ -1791,26 +1805,26 @@ mod tests {
                 visible: false,
             },
         ];
-        let (rep, _) = complete(&app, "hii form ");
+        let c = complete(&app, "hii form ");
         assert_eq!(
-            rep.as_deref(),
+            c.common.as_deref(),
             Some("hii form add"),
             "единственный кандидат инлайн-дополняется (контракт complete)"
         );
-        let (rep, _) = complete(&app, "hii formset ");
-        assert_eq!(rep.as_deref(), Some("hii formset add"));
+        let c = complete(&app, "hii formset ");
+        assert_eq!(c.common.as_deref(), Some("hii formset add"));
 
-        let (rep, _) = complete(&app, "hii form add ");
+        let c = complete(&app, "hii form add ");
         assert_eq!(
-            rep.as_deref(),
+            c.common.as_deref(),
             Some("hii form add t:0x19:0"),
             "голые target-кандидаты, дедуп по двум формам одного target"
         );
-        let (rep, _) = complete(&app, "hii hijack ");
-        assert_eq!(rep.as_deref(), Some("hii hijack t:0x19:0"));
-        let (_, opts) = complete(&app, "hii question add ");
+        let c = complete(&app, "hii hijack ");
+        assert_eq!(c.common.as_deref(), Some("hii hijack t:0x19:0"));
+        let c = complete(&app, "hii question add ");
         assert_eq!(
-            opts,
+            c.items.iter().map(|i| i.display.clone()).collect::<Vec<_>>(),
             vec!["t:0x19:0#10001".to_string(), "t:0x19:0#10019".to_string()],
             "question add — item-кандидаты target#form_id (form_id десятичное)"
         );
@@ -1857,19 +1871,19 @@ mod tests {
             title: "Main".into(),
             visible: true,
         }];
-        let (rep, _) = complete(&app, &format!("hii formset add {base}/schema-x"));
+        let c = complete(&app, &format!("hii formset add {base}/schema-x"));
         assert_eq!(
-            rep.as_deref(),
+            c.common.as_deref(),
             Some(format!("hii formset add {base}/schema-x.json").as_str())
         );
-        let (rep, _) = complete(&app, &format!("hii form add t:0x19:0 {base}/schema-x"));
+        let c = complete(&app, &format!("hii form add t:0x19:0 {base}/schema-x"));
         assert_eq!(
-            rep.as_deref(),
+            c.common.as_deref(),
             Some(format!("hii form add t:0x19:0 {base}/schema-x.json").as_str())
         );
-        let (rep, _) = complete(&app, &format!("hii hijack t:0x19:0 {base}/schema-x"));
+        let c = complete(&app, &format!("hii hijack t:0x19:0 {base}/schema-x"));
         assert_eq!(
-            rep.as_deref(),
+            c.common.as_deref(),
             Some(format!("hii hijack t:0x19:0 {base}/schema-x.json").as_str())
         );
     }
@@ -1884,10 +1898,10 @@ mod tests {
             title: "Main".into(),
             visible: true,
         }];
-        let (rep, _) = complete(&app, "hii formset add f.json --");
-        assert_eq!(rep.as_deref(), Some("hii formset add f.json --ffs"));
-        let (rep, _) = complete(&app, "hii formset add f.json --ffs ");
-        assert_eq!(rep.as_deref(), Some("hii formset add f.json --ffs SET-A"));
+        let c = complete(&app, "hii formset add f.json --");
+        assert_eq!(c.common.as_deref(), Some("hii formset add f.json --ffs"));
+        let c = complete(&app, "hii formset add f.json --ffs ");
+        assert_eq!(c.common.as_deref(), Some("hii formset add f.json --ffs SET-A"));
     }
 
     #[test]
@@ -1942,7 +1956,7 @@ mod tests {
             has_children: false,
         };
         app.tree = vec![mk("1", 65), mk("1/28", 66)];
-        let (rep, _) = complete(&app, "remove 1/2");
-        assert_eq!(rep.as_deref(), Some("remove 1/28"));
+        let c = complete(&app, "remove 1/2");
+        assert_eq!(c.common.as_deref(), Some("remove 1/28"));
     }
 }

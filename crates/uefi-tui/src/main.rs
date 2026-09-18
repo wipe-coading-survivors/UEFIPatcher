@@ -157,13 +157,12 @@ async fn handle_command(app: &mut App, ev: &AppEvent, client: &mut Option<comman
             app.cmdline.pop();
         }
         AppEvent::Tab => {
-            let cmdline = app.cmdline.clone();
-            let (rep, opts) = commands::complete(app, &cmdline);
-            if let Some(r) = rep {
+            let comp = commands::complete(app, &app.cmdline);
+            if let Some(r) = comp.common {
                 app.cmdline = r;
             }
-            if !opts.is_empty() {
-                app.status_msg = format!("options: {}", opts.join(" "));
+            if !comp.items.is_empty() {
+                app.status_msg = format!("{} candidates", comp.items.len());
             }
         }
         _ => {}
