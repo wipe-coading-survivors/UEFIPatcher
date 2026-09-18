@@ -1,11 +1,12 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 
 use crate::app::{App, FormsFocus};
 use crate::forms::FormsRow;
-use crate::tree::compute_scrolled_offset;
+use crate::ui::scroll;
 
 fn focus_style(active: bool) -> Style {
     if active {
@@ -56,20 +57,6 @@ fn row_item(row: &FormsRow) -> ListItem<'static> {
     ListItem::from(row_text(row))
 }
 
-const FORMS_SCROLL_PAD: usize = 3;
-
-/// Скролл details «Form»: follow info/marker-строки с гистерезисом дерева,
-/// без цели — clamp. Спека R8.
-pub fn follow_offset(prev: u16, target: Option<usize>, total: usize, inner_h: usize) -> u16 {
-    match target {
-        Some(t) => {
-            crate::tree::compute_scrolled_offset(t, prev as usize, inner_h, total, FORMS_SCROLL_PAD)
-                as u16
-        }
-        None => (prev as usize).min(total.saturating_sub(inner_h)) as u16,
-    }
-}
-
 pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
     if app.forms.show_strings {
         render_strings(f, area, app);
@@ -90,55 +77,83 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
                 .border_style(focus_style(list_focus)),
         )
         .highlight_style(Style::default().bg(Color::DarkGray));
-    let total = rows.len();
-    let inner_h = cols[0].height.saturating_sub(2) as usize;
-    let cursor = if rows.is_empty() {
-        0
-    } else {
-        app.forms.cursor.min(total - 1)
-    };
-    let prev_off = app.forms_list_state.offset();
-    let new_off = compute_scrolled_offset(cursor, prev_off, inner_h, total, FORMS_SCROLL_PAD);
-    app.forms_list_state
-        .select(if rows.is_empty() { None } else { Some(cursor) });
-    *app.forms_list_state.offset_mut() = new_off;
-    f.render_stateful_widget(list, cols[0], &mut app.forms_list_state);
-    let fd = crate::forms::form_details(&app.forms, &rows, app.forms.cursor);
-    let anchor = match rows.get(app.forms.cursor) {
-        Some(FormsRow::Form { key, .. }) => Some(format!(
-            "{}|{}|{}",
-            key.target, key.formset_guid, key.form_id_ifr
-        )),
-        _ => None,
-    };
-    if app.forms.details_anchor != anchor {
-        app.forms.details_scroll = 0;
-        app.forms.details_anchor = anchor;
-        app.forms.details_followed = None;
-    }
-    let inner_h = cols[1].height.saturating_sub(2) as usize;
-    let total = fd.text.lines().count();
-    let target = fd.info_line.or(fd.marker_line);
-    let off = if app.forms.details_followed == target {
-        follow_offset(app.forms.details_scroll, None, total, inner_h)
-    } else {
-        let off = follow_offset(app.forms.details_scroll, target, total, inner_h);
-        app.forms.details_followed = target;
-        off
-    };
-    app.forms.details_scroll = off;
-    f.render_widget(
-        Paragraph::new(fd.text)
-            .wrap(ratatui::widgets::Wrap { trim: false })
-            .scroll((off, 0))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("Form")
-                    .border_style(focus_style(!list_focus)),
-            ),
-        cols[1],
+    scroll::render_scrolled_list(
+        f,
+        list,
+        cols[0],
+        &mut app.forms_list_state,
+        app.forms.cursor,
+        rows.len(),
+        scroll::SCROLL_PAD,
     );
+
+    let panel = crate::forms::form_panel(&app.forms, &rows, app.forms.cursor);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title("Form")
+        .border_style(focus_style(!list_focus));
+    let inner = block.inner(cols[1]);
+    f.render_widget(block, cols[1]);
+    let cap = 3.max(inner.height as usize * 45 / 100) as u16;
+    let mut header_h = (panel.header.len() as u16).min(inner.height);
+    let mut bottom_h = (panel.bottom.len() as u16).min(cap);
+    if inner.height < header_h + bottom_h + 1 {
+        bottom_h = bottom_h.min(2);
+    }
+    if inner.height < header_h + bottom_h + 1 {
+        header_h = header_h.min(2);
+    }
+    if inner.height < header_h + bottom_h + 1 {
+        bottom_h = bottom_h.min(inner.height.saturating_sub(header_h + 1));
+    }
+    let zones = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(header_h),
+            Constraint::Min(1),
+            Constraint::Length(bottom_h),
+        ])
+        .split(inner);
+    f.render_widget(Paragraph::new(panel.header.join("\n")), zones[0]);
+    render_middle(f, zones[1], app, &panel);
+    f.render_widget(Paragraph::new(panel.bottom.join("\n")), zones[2]);
+}
+
+fn render_middle(f: &mut Frame, mid: Rect, app: &mut App, panel: &crate::forms::FormPanel) {
+    if !panel.questions_ready {
+        return;
+    }
+    if panel.questions.is_empty() {
+        let mut lines = vec!["(no questions)".to_string()];
+        lines.extend(panel.gates.iter().cloned());
+        f.render_widget(Paragraph::new(lines.join("\n")), mid);
+        return;
+    }
+    let mut items: Vec<ListItem> = panel
+        .questions
+        .iter()
+        .map(|s| ListItem::new(s.clone()))
+        .collect();
+    items.extend(panel.gates.iter().map(|s| {
+        ListItem::new(Line::styled(
+            s.clone(),
+            Style::default().add_modifier(Modifier::DIM),
+        ))
+    }));
+    let total = items.len();
+    let cursor = app.forms.question_cursor.min(panel.questions.len() - 1);
+    let list = List::new(items).highlight_style(Style::default().bg(Color::DarkGray));
+    let inner_h = mid.height as usize;
+    scroll::sync_list_state(
+        &mut app.forms.questions_state,
+        cursor,
+        total,
+        inner_h,
+        scroll::SCROLL_PAD,
+        Some(cursor),
+    );
+    app.forms.questions_viewport = inner_h;
+    f.render_stateful_widget(list, mid, &mut app.forms.questions_state);
 }
 
 fn render_strings(f: &mut Frame, area: Rect, app: &mut App) {
@@ -157,25 +172,19 @@ fn render_strings(f: &mut Frame, area: Rect, app: &mut App) {
         .block(Block::default().borders(Borders::ALL).title(title))
         .highlight_style(Style::default().bg(Color::DarkGray));
     let total = visible.len();
-    let inner_h = area.height.saturating_sub(2) as usize;
     let pos = visible
         .iter()
         .position(|&i| i == app.forms.strings_cursor)
         .unwrap_or(0);
-    let cursor = if visible.is_empty() {
-        0
-    } else {
-        pos.min(total - 1)
-    };
-    let prev_off = app.strings_list_state.offset();
-    let new_off = compute_scrolled_offset(cursor, prev_off, inner_h, total, FORMS_SCROLL_PAD);
-    app.strings_list_state.select(if visible.is_empty() {
-        None
-    } else {
-        Some(cursor)
-    });
-    *app.strings_list_state.offset_mut() = new_off;
-    f.render_stateful_widget(list, area, &mut app.strings_list_state);
+    scroll::render_scrolled_list(
+        f,
+        list,
+        area,
+        &mut app.strings_list_state,
+        pos,
+        total,
+        scroll::SCROLL_PAD,
+    );
 }
 
 #[cfg(test)]
@@ -201,6 +210,143 @@ mod tests {
             has_children,
             expanded,
         }
+    }
+
+    fn row_of(t: &ratatui::Terminal<ratatui::backend::TestBackend>, y: u16) -> String {
+        (0..80)
+            .map(|x| t.backend().buffer().get(x, y).symbol().to_string())
+            .collect()
+    }
+
+    fn panel_text(t: &ratatui::Terminal<ratatui::backend::TestBackend>, y_max: u16) -> String {
+        (0..y_max)
+            .map(|y| row_of(t, y))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn app_with_form(n_questions: usize) -> crate::app::App {
+        let mut app = crate::app::App::new();
+        app.forms.forms = vec![uefi_proto::FormInfo {
+            form_id: "t1".into(),
+            formset_guid: "S".into(),
+            form_id_ifr: 1,
+            title: "Main".into(),
+            visible: true,
+        }];
+        app.forms.expanded = ["S".into()].into();
+        app.forms.cursor = 1;
+        app.forms.questions_key = Some(fk(1));
+        app.forms.questions = (0..n_questions)
+            .map(|i| uefi_proto::QuestionSummary {
+                question_id: 0x210 + i as u32,
+                prompt: format!("q{i}"),
+                kind: "numeric".into(),
+                ..Default::default()
+            })
+            .collect();
+        app
+    }
+
+    #[test]
+    fn three_zone_header_stays_put_on_last_question() {
+        let mut app = app_with_form(30);
+        app.forms.question_cursor = 29;
+        let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+        t.draw(|f| render(f, f.area(), &mut app)).unwrap();
+        let text = panel_text(&t, 24);
+        assert!(text.contains("Form:    Main"), "шапка формы на месте");
+        assert!(
+            text.contains("Questions (30): prompt · qid · kind"),
+            "колонки-хедер на месте"
+        );
+        assert!(text.contains("q29"), "последний вопрос виден");
+    }
+
+    #[test]
+    fn loading_state_shows_header_line_only() {
+        let mut app = app_with_form(0);
+        app.forms.questions_key = None;
+        let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+        t.draw(|f| render(f, f.area(), &mut app)).unwrap();
+        let text = panel_text(&t, 24);
+        assert!(text.contains("Questions: loading…"));
+        assert_eq!(app.forms.questions_state.selected(), None);
+    }
+
+    #[test]
+    fn bottom_zone_shows_selected_question_and_gates_tail_reachable() {
+        let mut app = app_with_form(30);
+        app.forms.question_cursor = 29;
+        app.forms.gates = vec![
+            uefi_proto::GateInfo {
+                gate_kind: "suppress".into(),
+                expression: "e0".into(),
+                flippable: true,
+                ..Default::default()
+            },
+            uefi_proto::GateInfo {
+                gate_kind: "suppress".into(),
+                expression: "e1".into(),
+                ..Default::default()
+            },
+        ];
+        app.forms.question_info = Some(uefi_proto::QuestionInfo {
+            question_id: 0x22d,
+            kind: "numeric".into(),
+            var_store_id: 2,
+            var_offset: 0x37,
+            width: 1,
+            min: 1,
+            max: 8,
+            step: 1,
+            ..Default::default()
+        });
+        app.forms.question_info_key = Some((fk(1), 0x22d));
+        let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+        t.draw(|f| render(f, f.area(), &mut app)).unwrap();
+        let text = panel_text(&t, 24);
+        assert!(
+            text.contains("Question q0x22d"),
+            "низ — детали выбранного вопроса"
+        );
+        assert!(text.contains("Gates (2):"), "гейт-хвост достижим скроллом");
+        let sel = app.forms.questions_state.selected();
+        assert_eq!(sel, Some(29), "курсор на последнем вопросе, не на гейтах");
+    }
+
+    #[test]
+    fn bottom_cap_keeps_questions_visible() {
+        let mut app = app_with_form(6);
+        app.forms.question_cursor = 0;
+        let mut options = Vec::new();
+        for i in 0..12u64 {
+            options.push(uefi_proto::OptionEntry {
+                value: i,
+                string_id: 0,
+                text: format!("opt{i}"),
+                ..Default::default()
+            });
+        }
+        app.forms.question_info = Some(uefi_proto::QuestionInfo {
+            question_id: 0x210,
+            kind: "one_of".into(),
+            var_store_id: 2,
+            var_offset: 0x40,
+            width: 1,
+            options,
+            ..Default::default()
+        });
+        app.forms.question_info_key = Some((fk(1), 0x210));
+        let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 20)).unwrap();
+        t.draw(|f| render(f, f.area(), &mut app)).unwrap();
+        let text = panel_text(&t, 20);
+        assert!(text.contains("options: 0x0"), "начало options видно");
+        assert!(
+            text.contains("q0x210"),
+            "вопросы не выдавлены низом-переростком"
+        );
+        assert!(text.contains("Form:    Main"), "шапка на месте");
     }
 
     #[test]
@@ -239,97 +385,6 @@ mod tests {
             "'!' DanglingRef в колонке form id того же depth: {d:?} vs {f:?}"
         );
         assert!(d.starts_with("      ! 99    "));
-    }
-
-    #[test]
-    fn follow_offset_follows_target_and_keeps_window() {
-        assert_eq!(
-            follow_offset(0, Some(50), 100, 10),
-            44,
-            "цель ниже окна — докрутка с pad"
-        );
-        assert_eq!(
-            follow_offset(44, Some(50), 100, 10),
-            44,
-            "цель в окне — офсет на месте"
-        );
-        assert_eq!(follow_offset(90, None, 100, 10), 90);
-        assert_eq!(follow_offset(90, None, 20, 10), 10, "clamp по total");
-        assert_eq!(follow_offset(0, Some(0), 100, 10), 0);
-    }
-
-    #[test]
-    fn details_anchor_reset_on_form_change() {
-        let mut app = crate::app::App::new();
-        app.forms.forms = vec![uefi_proto::FormInfo {
-            form_id: "t1".into(),
-            formset_guid: "S".into(),
-            form_id_ifr: 1,
-            title: "Main".into(),
-            visible: true,
-        }];
-        app.forms.expanded = ["S".into()].into();
-        app.forms.cursor = 1;
-        app.forms.details_scroll = 7;
-        app.forms.details_anchor = Some("old|S|1".into());
-        let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
-        t.draw(|f| render(f, f.area(), &mut app)).unwrap();
-        assert_eq!(
-            app.forms.details_scroll, 0,
-            "anchor сменился (другая форма) — скролл сброшен"
-        );
-    }
-
-    #[test]
-    fn forms_details_manual_scroll_survives_until_target_moves() {
-        let mut app = crate::app::App::new();
-        app.forms.flat_mode = true;
-        app.forms.forms = vec![uefi_proto::FormInfo {
-            form_id: "t1".into(),
-            formset_guid: "S".into(),
-            form_id_ifr: 1,
-            title: "Main".into(),
-            visible: true,
-        }];
-        app.forms.expanded = ["S".into()].into();
-        app.forms.cursor = 1;
-        app.forms.questions_key = Some(fk(1));
-        app.forms.questions = (0..30)
-            .map(|i| uefi_proto::QuestionSummary {
-                question_id: 0x210 + i,
-                prompt: format!("q{i}"),
-                ..Default::default()
-            })
-            .collect();
-        app.forms.question_cursor = 10;
-        app.forms.gates = (0..30)
-            .map(|i| uefi_proto::GateInfo {
-                gate_kind: "suppress".into(),
-                expression: format!("e{i}"),
-                ..Default::default()
-            })
-            .collect();
-        let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 12)).unwrap();
-        t.draw(|f| render(f, f.area(), &mut app)).unwrap();
-        let rested = app.forms.details_scroll;
-        assert!(
-            rested > 0,
-            "авто-follow включился: маркер question_cursor=10 ниже окна inner_h=10"
-        );
-        app.forms.details_scroll = rested.saturating_add(10);
-        t.draw(|f| render(f, f.area(), &mut app)).unwrap();
-        assert_eq!(
-            app.forms.details_scroll,
-            rested + 10,
-            "та же цель — ручной PgDn не откатывается (clamp-only)"
-        );
-        app.forms.question_cursor = 25;
-        t.draw(|f| render(f, f.area(), &mut app)).unwrap();
-        assert_ne!(
-            app.forms.details_scroll,
-            rested + 10,
-            "цель сместилась (question_cursor 10→25) — follow догоняет новый маркер"
-        );
     }
 
     #[test]

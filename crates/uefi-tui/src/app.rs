@@ -84,9 +84,7 @@ pub struct FormsData {
     pub strings: Vec<StringInfo>,
     pub strings_filter: String,
     pub strings_cursor: usize,
-    pub details_scroll: u16,
-    pub details_anchor: Option<String>,
-    pub details_followed: Option<usize>,
+    pub questions_state: ratatui::widgets::ListState,
 }
 
 #[derive(Debug, Clone)]
@@ -473,7 +471,7 @@ impl App {
 
     /// qid вопроса под `question_cursor` — только когда кэш вопросов
     /// (`questions_key`) принадлежит выделенной строке-форме (гейт как в
-    /// `form_details_text`); иначе None — кросс-форменный prefill исключён.
+    /// `form_panel`); иначе None — кросс-форменный prefill исключён.
     pub fn selected_question_id(&self) -> Option<u32> {
         let key = self.selected_form_key()?;
         if self.forms.questions_key.as_ref() != Some(&key) {
