@@ -794,6 +794,7 @@ git commit -m "feat(tui): PgUp/PgDn на Forms/Details — страница во
             visible: true,
         }];
         app.forms.expanded = ["S".into()].into();
+        app.forms.cursor = 1;
         app.forms.questions_key = Some(fk(1));
         app.forms.questions = (0..n_questions)
             .map(|i| uefi_proto::QuestionSummary {
