@@ -196,7 +196,9 @@ pub struct App {
     pub forms: FormsData,
     pub active_image_id: Option<String>,
     pub selected: Option<String>,
-    pub cmdline: String,
+    pub cmdline: crate::line::LineBuffer,
+    pub menu: MenuState,
+    pub history: crate::history::History,
     pub insert_cmd: &'static str,
     pub status_msg: String,
     pub image_loaded: bool,
@@ -220,7 +222,9 @@ impl App {
             forms: FormsData::default(),
             active_image_id: None,
             selected: None,
-            cmdline: String::new(),
+            cmdline: crate::line::LineBuffer::new(),
+            menu: MenuState::default(),
+            history: crate::history::History::load(),
             insert_cmd: "",
             status_msg: "Welcome. Press : for commands, ? for help".into(),
             image_loaded: false,
@@ -550,18 +554,23 @@ impl App {
         self.mode = Mode::Command;
         self.cmdline.clear();
         self.insert_cmd = "";
+        self.menu.close();
+        self.history.reset();
     }
 
     pub fn enter_insert_mode(&mut self, cmd: &'static str, prefill: String) {
         self.mode = Mode::Insert;
         self.insert_cmd = cmd;
-        self.cmdline = prefill;
+        self.cmdline.set_str(&prefill);
+        self.menu.close();
+        self.history.reset();
     }
 
     pub fn exit_to_normal(&mut self) {
         self.mode = Mode::Normal;
         self.cmdline.clear();
         self.insert_cmd = "";
+        self.menu.close();
     }
 
     pub fn node_label(&self, node: &TreeNode) -> String {

@@ -139,9 +139,9 @@ async fn handle_normal(app: &mut App, ev: &AppEvent, client: &mut Option<command
 
 async fn handle_command(app: &mut App, ev: &AppEvent, client: &mut Option<commands::Client>) {
     match ev {
-        AppEvent::Key(c) => app.cmdline.push(*c),
+        AppEvent::Key(c) => app.cmdline.insert(*c),
         AppEvent::Enter => {
-            let cmd = app.cmdline.clone();
+            let cmd = app.cmdline.as_str().to_string();
             if let Some(c) = client {
                 match commands::execute_command(app, &cmd, c).await {
                     Ok(_) => {}
@@ -154,12 +154,12 @@ async fn handle_command(app: &mut App, ev: &AppEvent, client: &mut Option<comman
         }
         AppEvent::Esc => app.exit_to_normal(),
         AppEvent::Backspace => {
-            app.cmdline.pop();
+            app.cmdline.backspace();
         }
         AppEvent::Tab => {
-            let comp = commands::complete(app, &app.cmdline);
+            let comp = commands::complete(app, app.cmdline.as_str());
             if let Some(r) = comp.common {
-                app.cmdline = r;
+                app.cmdline.set_str(&r);
             }
             if !comp.items.is_empty() {
                 app.status_msg = format!("{} candidates", comp.items.len());
