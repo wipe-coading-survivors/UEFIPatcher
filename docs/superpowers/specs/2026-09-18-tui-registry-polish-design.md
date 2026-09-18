@@ -22,16 +22,20 @@ HII-мутации, приходится заново набирать `:open <�
 `cwd` — каталог вместо файла (латентный баг; CLI дефолтит в `cwd/<id>`).
 HELP — 70 строк одним Paragraph без скролла: на низких терминалах секция
 EX-COMMANDS невидима (TODO:3369). Остаток V3-мелочей: `fmt_u32_ids` и ассерт
-пустого forms-списка (TODO:3325). Фичесет согласован с владельцем в
-брейнсторме 2026-09-18 (см. «Решения владельца»).
+пустого forms-списка (TODO:3325). Наконец, грамматика образовых глаголов
+разорвана: `open/save/upload` — top-level, `switch/close` — под `image`, а
+completion после `image ` не предлагает субкоманд вовсе (мёртвый конец
+`:im<Tab>`). Фичесет согласован с владельцем в брейнсторме 2026-09-18
+(см. «Решения владельца»).
 
 ## Goals
 
 | # | Задача | Суть |
 |---|--------|------|
+| R0 | Грамматика: образовые глаголы наверх | `switch`/`close` top-level, существительное `image` умирает (чистый разрыв, без алиасов) |
 | R1 | Registry: режим + полный UUID | Бейдж `R`/`W` у образов; полный UUID выбранной строки в hint-баре при `focus == Registry` |
-| R2 | Completion: image-ID слоты | `image switch/close <TAB>`, `reopen --image-id <TAB>` → кандидаты-образы; `--mode` становится cmd-зависимым |
-| R3 | Write-UX: `w` + `:reopen` | `:reopen [--mode write|read] [--image-id <id>]` с гвардом READ→WRITE; клавиша `w` — тот же флоу |
+| R2 | Completion: image-ID слоты | `switch/close <TAB>` (слот-1) → кандидаты-образы; `--mode` cmd-зависимый |
+| R3 | Write-UX: `w` + `:reopen` | `:reopen [--mode write|read]` (без `--image-id`) с гвардом READ→WRITE; клавиша `w` — тот же флоу |
 | R4 | Smart prefill `i`/`r` | Registry-курсор на артефакте → prefill `--artifact-id <id>`, иначе `--file ` |
 | R5 | `:export` absolutизация | PATH через существующий `absolutize_path`; дефолт без PATH — `cwd/<artifact_id>` |
 | R6 | Help-скролл | Модальный скролл j/k/↑/↓/PgUp/PgDn с clamp по высоте |
@@ -50,6 +54,11 @@ EX-COMMANDS невидима (TODO:3369). Остаток V3-мелочей: `fmt
   deprecation — наследие cmdline-цикла/ratatui-upgrade, не registry-домен.
 - Prefix-match по ID на стороне движка (ввод полного UUID больше не нужен —
   меню/prefill закрывают).
+- CLI-грамматика не меняется: noun-first (`image|node|artifact|hii`)
+  осознанно сохраняется — CLI скриптуется, при последующем чтении даёт
+  однозначное понимание (решение владельца 2026-09-18). TUI↔CLI-расхождение —
+  политика (TUI verb-first интерактивен, CLI noun-first скриптуем), не дефект
+  (ср. TODO:3318).
 
 ## Решения владельца (брейнсторм 2026-09-18)
 
@@ -62,8 +71,33 @@ EX-COMMANDS невидима (TODO:3369). Остаток V3-мелочей: `fmt
    перечитывает образ с диска — повторный open WRITE-образа молча выбросил бы
    несохранённые мутации). Старый образ закрываем после switch.
 4. Help — скролл (j/k + PgUp/PgDn), без реорганизации текста.
+5. Грамматика TUI — вариант (A) «вынос до конца»: `switch`/`close`/`reopen`
+   top-level, существительное `image` умирает, `--image-id` у reopen выкинут
+   (таргетинг: registry-строка или активный образ; неактивный — сначала
+   `:switch`). Чистый разрыв, без алиасов.
+6. CLI остаётся noun-first (`image|node|artifact|hii`) — скриптуемость и
+   однозначность при чтении скриптов.
 
 ## Design
+
+### R0: Вынос образовых глаголов наверх
+
+Диспетч `execute_command` (`commands.rs`): вложенные ветки
+`"image" => { "switch" | "close" }` становятся top-level `"switch"` /
+`"close"` (слот-1 = ID); существительное `image` прекращает существование —
+чистый разрыв, алиасов нет. Сопроводительные правки:
+
+- `const COMMANDS` (`commands.rs:863`) — убрать `"image"`, добавить
+  `"switch"`, `"close"`, `"reopen"` (top-level completion).
+- Внутренний вызов `image switch {id}` в `handle_registry_enter`
+  (`main.rs:166`) → `switch {id}`.
+- HELP-текст (`ui/help.rs`) — `image switch/close` → `switch/close`, чтобы
+  R6-скролл показывал уже актуальную грамматику.
+
+Итоговая грамматика: образы — `open save upload switch close reopen
+snapshot(s) restore`; узлы — `extract insert replace remove rebuild goto`;
+артефакты — `artifacts export import`; HII — `hii <существительное> …`
+(существительное остаётся: formset/form/question/page — их много).
 
 ### R1: Registry — бейдж режима и полный UUID в hint-баре
 
@@ -87,10 +121,9 @@ UUID идёт первым сегментом, чтобы клипование �
 
 `context_candidates` (`commands.rs`):
 
-- `cmd == "image"`, `head.len() == 2` (позиционный слот после `switch`/`close`)
-  → кандидаты `image_id` всех образов registry с префикс-фильтром.
-- `cmd == "reopen"`: флаги `["--mode", "--image-id"]`; значение `--image-id`
-  → те же кандидаты.
+- `cmd == "switch" | "close"`, `head.len() == 1` (позиционный слот-1 после
+  R0-выноса) → кандидаты `image_id` всех образов registry с префикс-фильтром.
+- `cmd == "reopen"`: флаг `--mode`.
 - Существующее правило `head.last() == "--mode"` даёт `into/before/after`
   (грамматика `insert`) — становится cmd-зависимым: `insert` → позиционные
   режимы, `reopen` → `read|write`. Бранч по `cmd` до общего правила.
@@ -101,9 +134,10 @@ Tab/Enter/→), без изменений. Тесты — зеркало арт�
 
 ### R3: Write-UX — `:reopen` и клавиша `w`
 
-Грамматика: `:reopen [--mode write|read] [--image-id <id>]`. Дефолты:
-`--mode write`, образ = `--image-id` > (focus==Registry и строка-образ) >
-активный. Разрешение образа — из `app.registry.images` (там `path` и `mode`).
+Грамматика: `:reopen [--mode write|read]` — без `--image-id` (решение
+владельца: таргетинг из UI-контекста, не из флага). Дефолты: `--mode write`,
+образ = (focus==Registry и строка-образ) > активный. Разрешение образа — из
+`app.registry.images` (там `path` и `mode`).
 
 Матрица гварда (до любых RPC):
 
@@ -163,8 +197,10 @@ Enter-на-артефакте (`main.rs:173`) остаётся как есть.
 
 - Юнит: `mutation_prefill` (артефакт/образ/нет строки × insert/replace),
   `export_output_path` (явный/дефолт), `fmt_u32_ids`, completion-ветки
-  (`image switch/close`, `reopen --mode/--image-id`, cmd-зависимый `--mode`),
-  гвард-матрица reopen (pure-часть).
+  (`switch/close` слот-1, `reopen --mode`, cmd-зависимый `--mode`;
+  `COMMANDS` содержит `switch/close/reopen` и не содержит `image`),
+  диспетч после R0 (`switch`/`close` top-level работают, `image …` —
+  unknown command), гвард-матрица reopen (pure-часть).
 - TestBackend-рендер: бейдж R/W в строках образов, полный UUID выбранной
   строки в hint-баре при `focus == Registry`, clamp help-скролла.
 - Integration (mock-сервер, паттерн цикла 3): `:reopen` READ→WRITE —
@@ -174,9 +210,10 @@ Enter-на-артефакте (`main.rs:173`) остаётся как есть.
 
 Чек-лист: бейдж режима у образов; `w` на read-only образе → write, мутации
 проходят; `:reopen` на уже-write → статус-нооп; `i`/`r` при курсоре на
-артефакте → prefill `--artifact-id`; `image switch <Tab>` → меню образов;
-`:export ID` без PATH → файл в cwd; help на низком терминале — докручивается
-до EX-COMMANDS. §Вердикт дописывается после гейта.
+артефакте → prefill `--artifact-id`; `switch <Tab>` → меню образов;
+`:image switch` → unknown command (чистый разрыв); `:export ID` без PATH →
+файл в cwd; help на низком терминале — докручивается до EX-COMMANDS.
+§Вердикт дописывается после гейта.
 
 ## Процесс
 
