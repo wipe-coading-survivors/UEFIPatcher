@@ -998,7 +998,9 @@ fn complete_path(token: &str) -> Vec<String> {
         .map(|e| {
             (
                 e.file_name().to_string_lossy().to_string(),
-                std::fs::metadata(e.path()).map(|m| m.is_dir()).unwrap_or(false),
+                std::fs::metadata(e.path())
+                    .map(|m| m.is_dir())
+                    .unwrap_or(false),
             )
         })
         .filter(|(name, _)| name.starts_with(prefix))

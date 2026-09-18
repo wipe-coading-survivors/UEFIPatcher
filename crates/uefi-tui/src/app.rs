@@ -165,7 +165,11 @@ impl MenuState {
         if self.items.is_empty() {
             return;
         }
-        self.selected = if self.selected == 0 { self.items.len() - 1 } else { self.selected - 1 };
+        self.selected = if self.selected == 0 {
+            self.items.len() - 1
+        } else {
+            self.selected - 1
+        };
         self.scroll();
     }
 
@@ -1055,7 +1059,10 @@ mod tests {
     fn menu_navigation_wraps_and_scrolls() {
         let mut m = MenuState::default();
         let items: Vec<MenuItem> = (0..10)
-            .map(|i| MenuItem { display: format!("i{i}"), apply: format!("a{i}") })
+            .map(|i| MenuItem {
+                display: format!("i{i}"),
+                apply: format!("a{i}"),
+            })
             .collect();
         m.open_with(items);
         assert_eq!(m.selected, 0);
@@ -1080,13 +1087,22 @@ mod tests {
     #[test]
     fn menu_refresh_resets_and_closes_on_empty() {
         let mut m = MenuState::default();
-        m.open_with(vec![MenuItem { display: "a".into(), apply: "x a".into() }]);
+        m.open_with(vec![MenuItem {
+            display: "a".into(),
+            apply: "x a".into(),
+        }]);
         m.down();
         m.refresh(vec![]);
         assert!(!m.open);
         let items = vec![
-            MenuItem { display: "b".into(), apply: "x b".into() },
-            MenuItem { display: "c".into(), apply: "x c".into() },
+            MenuItem {
+                display: "b".into(),
+                apply: "x b".into(),
+            },
+            MenuItem {
+                display: "c".into(),
+                apply: "x c".into(),
+            },
         ];
         m.refresh(items);
         assert!(m.open);
