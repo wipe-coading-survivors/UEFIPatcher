@@ -64,9 +64,7 @@ fn render_hint(f: &mut Frame, area: Rect, app: &App) {
             crate::app::Focus::Details => {
                 "NORMAL[Details]: Ctrl-hjkl focus · :cmd · ?help · q".into()
             }
-            crate::app::Focus::Registry => {
-                "NORMAL[Registry]: j/k select · Enter pick · Ctrl-hjkl focus · ?help · q".into()
-            }
+            crate::app::Focus::Registry => registry_hint(app),
         },
         crate::app::Mode::Command | crate::app::Mode::Insert => {
             let mode = if matches!(app.mode, crate::app::Mode::Command) {
@@ -83,6 +81,17 @@ fn render_hint(f: &mut Frame, area: Rect, app: &App) {
     };
     let p = Paragraph::new(hint).block(Block::default().borders(Borders::NONE));
     f.render_widget(p, area);
+}
+
+/// Hint Registry: полный UUID выбранной строки первым сегментом (клипование
+/// режет хвост-подсказки, не ID). Спека R1.
+fn registry_hint(app: &App) -> String {
+    let id = crate::app::registry_selected_full_id(app)
+        .map(|s| format!("{s}  "))
+        .unwrap_or_default();
+    format!(
+        "{id}NORMAL[Registry]: j/k select · Enter pick · w write-mode · Ctrl-hjkl focus · :cmd · ?help · q"
+    )
 }
 
 #[cfg(test)]
@@ -118,6 +127,23 @@ mod tests {
         assert!(open.contains("[menu]"));
         assert!(open.contains("↑↓/jk select"));
         assert!(open.contains("Esc close"));
+    }
+
+    #[test]
+    fn registry_hint_prefixes_full_uuid_and_w_key() {
+        let mut app = crate::app::App::new();
+        app.focus = crate::app::Focus::Registry;
+        app.registry.images = vec![uefi_proto::ImageInfo {
+            image_id: "956ad394-1111-2222-3333-444444444444".into(),
+            ..Default::default()
+        }];
+        app.registry.cursor = 0;
+        let h = registry_hint(&app);
+        assert!(
+            h.starts_with("956ad394-1111-2222-3333-444444444444  "),
+            "UUID первым сегментом"
+        );
+        assert!(h.contains("w write-mode"));
     }
 
     #[test]

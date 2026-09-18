@@ -771,6 +771,15 @@ impl App {
     }
 }
 
+/// Полный ID выбранной registry-строки (image/artifact) для hint-бара.
+/// Спека R1: short-ID в списке остаются, полный UUID живёт в hint.
+pub fn registry_selected_full_id(app: &App) -> Option<String> {
+    match app.current_registry_row()? {
+        RegistryRow::Image(i) => app.registry.images.get(i).map(|im| im.image_id.clone()),
+        RegistryRow::Artifact(i) => app.registry.artifacts.get(i).map(|a| a.artifact_id.clone()),
+    }
+}
+
 pub fn details_text(node: &TreeNode) -> String {
     let type_name = uefi_common::names::node_type_name(node.node_type as u32);
     let sub_name = match node.node_type {
