@@ -934,7 +934,7 @@ Expected: FAIL (`questions_state` поля нет — compile error; после 
     pub questions_state: ratatui::widgets::ListState,
 ```
 
-В `App::new()` инициализацию `details_scroll: 0, details_anchor: None, details_followed: None,` заменить на `questions_state: ListState::default(),`. Doc-комментарий у `selected_question_qid` (app.rs:448-450): упоминание `form_details_text` заменить на `form_panel`.
+`App::new()` правки не требует: `forms: FormsData::default()`, а иные `details_scroll`/`details_anchor` в App::new() — поля самого App (Image-view), не трогаем. Doc-комментарий у `selected_question_id` (app.rs:474-476): упоминание `form_details_text` заменить на `form_panel`.
 
 **ui/forms.rs** — новый рендер. Импорты: убрать `use crate::tree::compute_scrolled_offset;`, добавить `use crate::ui::scroll;` и в ratatui-импортах `Line`, `Modifier` (`ratatui::text::Line`, `ratatui::style::Modifier`). Удалить `const FORMS_SCROLL_PAD` (строка 59) и `pub fn follow_offset` (строки 61-71) с их тестами (`follow_offset_follows_target_and_keeps_window`, `details_anchor_reset_on_form_change`, `forms_details_manual_scroll_survives_until_target_moves`).
 
