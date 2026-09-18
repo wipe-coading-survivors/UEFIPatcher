@@ -861,7 +861,7 @@ pub async fn execute_command(
             Ok("quitting".into())
         }
         "help" | "h" => {
-            app.show_help = !app.show_help;
+            app.toggle_help();
             Ok("help toggled".into())
         }
         _ => Err(format!("unknown command: :{cmd}, try :help")),
@@ -1042,7 +1042,7 @@ fn context_candidates(app: &App, cmd: &str, head: &[&str], token: &str) -> Vec<S
         return complete_path(token);
     }
     if head.last() == Some(&"--mode") {
-        let vals: &[&str] = if cmd == "reopen" {
+        let vals: &[&str] = if matches!(cmd, "reopen" | "open") {
             &["read", "write"]
         } else {
             &["into", "before", "after"]
@@ -1082,6 +1082,7 @@ fn context_candidates(app: &App, cmd: &str, head: &[&str], token: &str) -> Vec<S
             "insert" => &["--file", "--artifact-id", "--mode"],
             "replace" => &["--file", "--artifact-id", "--body-only"],
             "reopen" => &["--mode"],
+            "open" => &["--mode"],
             "hii" if head.len() == 4 && head[1] == "formset" && head[2] == "add" => &["--ffs"],
             _ => &[],
         };
@@ -1895,6 +1896,15 @@ mod tests {
         assert_eq!(vals, vec!["read".to_string(), "write".to_string()]);
         let c = complete(&app, "reopen --");
         assert_eq!(c.common.as_deref(), Some("reopen --mode "));
+        let c = complete(&app, "open /x --mode ");
+        let vals: Vec<_> = c.items.iter().map(|i| i.display.clone()).collect();
+        assert_eq!(
+            vals,
+            vec!["read".to_string(), "write".to_string()],
+            ":open PATH --mode read|write — как в usage"
+        );
+        let c = complete(&app, "open /x --");
+        assert_eq!(c.common.as_deref(), Some("open /x --mode "));
     }
 
     #[test]

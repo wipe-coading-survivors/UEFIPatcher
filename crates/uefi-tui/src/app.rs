@@ -85,6 +85,7 @@ pub struct FormsData {
     pub strings_cursor: usize,
     pub details_scroll: u16,
     pub details_anchor: Option<String>,
+    pub details_followed: Option<usize>,
 }
 
 #[derive(Debug, Clone)]

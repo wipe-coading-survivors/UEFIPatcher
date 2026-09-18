@@ -115,13 +115,14 @@ async fn handle_normal(app: &mut App, ev: &AppEvent, client: &mut Option<command
             };
             app.enter_insert_mode(cmd_str, prefill);
         }
-        AppEvent::Key('w') if app.focus != Focus::Details => {
-            if let Some(c) = client.as_mut()
-                && let Err(e) = commands::reopen(app, c, true).await
-            {
-                app.status_msg = format!("error: {e}");
+        AppEvent::Key('w') if app.focus != Focus::Details => match client.as_mut() {
+            Some(c) => {
+                if let Err(e) = commands::reopen(app, c, true).await {
+                    app.status_msg = format!("error: {e}");
+                }
             }
-        }
+            None => app.status_msg = "no engine connection".into(),
+        },
         AppEvent::Key('j') | AppEvent::Down => match app.focus {
             Focus::Registry => app.registry_cursor_down(),
             Focus::Tree => app.cursor_down(),
@@ -195,16 +196,13 @@ async fn handle_registry_enter(app: &mut App, client: &mut Option<commands::Clie
                 app.focus = Focus::Tree;
             }
         }
-        Some(RegistryRow::Artifact(i)) => {
-            if let Some(ar) = app.registry.artifacts.get(i).cloned() {
-                let path = app.selected_path().unwrap_or_default();
-                app.enter_insert_mode(
-                    "insert",
-                    format!("insert {path} --artifact-id {} ", ar.artifact_id),
-                );
-            }
+        Some(row @ RegistryRow::Artifact(i)) if app.registry.artifacts.get(i).is_some() => {
+            let path = app.selected_path().unwrap_or_default();
+            let prefill =
+                commands::mutation_prefill("insert", &path, Some(&row), &app.registry.artifacts);
+            app.enter_insert_mode("insert", prefill);
         }
-        None => {}
+        _ => {}
     }
 }
 

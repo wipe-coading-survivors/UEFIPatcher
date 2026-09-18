@@ -114,15 +114,18 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
     if app.forms.details_anchor != anchor {
         app.forms.details_scroll = 0;
         app.forms.details_anchor = anchor;
+        app.forms.details_followed = None;
     }
     let inner_h = cols[1].height.saturating_sub(2) as usize;
     let total = fd.text.lines().count();
-    let off = follow_offset(
-        app.forms.details_scroll,
-        fd.info_line.or(fd.marker_line),
-        total,
-        inner_h,
-    );
+    let target = fd.info_line.or(fd.marker_line);
+    let off = if app.forms.details_followed == target {
+        follow_offset(app.forms.details_scroll, None, total, inner_h)
+    } else {
+        let off = follow_offset(app.forms.details_scroll, target, total, inner_h);
+        app.forms.details_followed = target;
+        off
+    };
     app.forms.details_scroll = off;
     f.render_widget(
         Paragraph::new(fd.text)
@@ -274,6 +277,58 @@ mod tests {
         assert_eq!(
             app.forms.details_scroll, 0,
             "anchor сменился (другая форма) — скролл сброшен"
+        );
+    }
+
+    #[test]
+    fn forms_details_manual_scroll_survives_until_target_moves() {
+        let mut app = crate::app::App::new();
+        app.forms.flat_mode = true;
+        app.forms.forms = vec![uefi_proto::FormInfo {
+            form_id: "t1".into(),
+            formset_guid: "S".into(),
+            form_id_ifr: 1,
+            title: "Main".into(),
+            visible: true,
+        }];
+        app.forms.expanded = ["S".into()].into();
+        app.forms.cursor = 1;
+        app.forms.questions_key = Some(fk(1));
+        app.forms.questions = (0..30)
+            .map(|i| uefi_proto::QuestionSummary {
+                question_id: 0x210 + i,
+                prompt: format!("q{i}"),
+                ..Default::default()
+            })
+            .collect();
+        app.forms.question_cursor = 10;
+        app.forms.gates = (0..30)
+            .map(|i| uefi_proto::GateInfo {
+                gate_kind: "suppress".into(),
+                expression: format!("e{i}"),
+                ..Default::default()
+            })
+            .collect();
+        let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 12)).unwrap();
+        t.draw(|f| render(f, f.area(), &mut app)).unwrap();
+        let rested = app.forms.details_scroll;
+        assert!(
+            rested > 0,
+            "авто-follow включился: маркер question_cursor=10 ниже окна inner_h=10"
+        );
+        app.forms.details_scroll = rested.saturating_add(10);
+        t.draw(|f| render(f, f.area(), &mut app)).unwrap();
+        assert_eq!(
+            app.forms.details_scroll,
+            rested + 10,
+            "та же цель — ручной PgDn не откатывается (clamp-only)"
+        );
+        app.forms.question_cursor = 25;
+        t.draw(|f| render(f, f.area(), &mut app)).unwrap();
+        assert_ne!(
+            app.forms.details_scroll,
+            rested + 10,
+            "цель сместилась (question_cursor 10→25) — follow догоняет новый маркер"
         );
     }
 
