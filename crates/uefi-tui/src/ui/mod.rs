@@ -2,6 +2,7 @@ pub mod cmdline;
 pub mod details;
 pub mod forms;
 pub mod help;
+pub mod menu;
 pub mod registry;
 pub mod status;
 pub mod tree;
@@ -40,6 +41,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
         crate::app::View::Forms => forms::render(f, vertical[1], app),
     }
     cmdline::render(f, vertical[2], app);
+    menu::render(f, vertical[2], &app.menu);
     render_hint(f, vertical[3], app);
 }
 
