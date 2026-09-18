@@ -271,10 +271,16 @@ async fn handle_normal_forms(app: &mut App, ev: &AppEvent, client: &mut Option<c
             }
         }
         AppEvent::PageDown if app.forms.focus == FormsFocus::Details && !app.forms.show_strings => {
-            app.forms.details_scroll = app.forms.details_scroll.saturating_add(10);
+            app.forms_question_page_down();
+            if let Some(c) = client.as_mut() {
+                let _ = commands::refresh_question_info_if_needed(app, c).await;
+            }
         }
         AppEvent::PageUp if app.forms.focus == FormsFocus::Details && !app.forms.show_strings => {
-            app.forms.details_scroll = app.forms.details_scroll.saturating_sub(10);
+            app.forms_question_page_up();
+            if let Some(c) = client.as_mut() {
+                let _ = commands::refresh_question_info_if_needed(app, c).await;
+            }
         }
         AppEvent::Enter if app.forms.focus == FormsFocus::Details && !app.forms.show_strings => {
             if let Some(pre) = commands::set_value_prefill(app) {

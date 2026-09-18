@@ -5,7 +5,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem};
 
 use crate::app::{App, Focus};
-use crate::tree::compute_scrolled_offset;
+use crate::ui::scroll;
 
 const SCROLL_PAD: usize = 2;
 
@@ -57,15 +57,19 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
     } else {
         app.registry.cursor.min(total - 1)
     };
-    let prev_off = app.registry_state.offset();
-    let new_off = compute_scrolled_offset(cursor, prev_off, inner_h, row_count, SCROLL_PAD);
     let sel = if selectable_items_idx.is_empty() {
         None
     } else {
         Some(selectable_items_idx[cursor])
     };
-    app.registry_state.select(sel);
-    *app.registry_state.offset_mut() = new_off;
+    scroll::sync_list_state(
+        &mut app.registry_state,
+        cursor,
+        row_count,
+        inner_h,
+        SCROLL_PAD,
+        sel,
+    );
 
     let title = if app.focus == Focus::Registry {
         "Registry *"

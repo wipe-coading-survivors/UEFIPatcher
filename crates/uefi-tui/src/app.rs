@@ -79,13 +79,12 @@ pub struct FormsData {
     pub question_cursor: usize,
     pub question_info: Option<QuestionInfo>,
     pub question_info_key: Option<(crate::forms::FormKey, u32)>,
+    pub questions_viewport: usize,
     pub show_strings: bool,
     pub strings: Vec<StringInfo>,
     pub strings_filter: String,
     pub strings_cursor: usize,
-    pub details_scroll: u16,
-    pub details_anchor: Option<String>,
-    pub details_followed: Option<usize>,
+    pub questions_state: ratatui::widgets::ListState,
 }
 
 #[derive(Debug, Clone)]
@@ -291,11 +290,11 @@ impl App {
         if n == 0 {
             return;
         }
-        self.cursor = self.cursor.saturating_add(self.page_size()).min(n - 1);
+        self.cursor = crate::ui::scroll::page_down(self.cursor, n, self.page_size());
     }
 
     pub fn cursor_page_up(&mut self) {
-        self.cursor = self.cursor.saturating_sub(self.page_size());
+        self.cursor = crate::ui::scroll::page_up(self.cursor, self.page_size());
     }
 
     pub fn toggle_expand_selected(&mut self) {
@@ -445,9 +444,34 @@ impl App {
         }
     }
 
+    pub fn forms_question_page_size(&self) -> usize {
+        if self.forms.questions_viewport == 0 {
+            10
+        } else {
+            self.forms.questions_viewport
+        }
+    }
+
+    pub fn forms_question_page_down(&mut self) {
+        let n = self.forms.questions.len();
+        if n == 0 {
+            return;
+        }
+        self.forms.question_cursor = crate::ui::scroll::page_down(
+            self.forms.question_cursor,
+            n,
+            self.forms_question_page_size(),
+        );
+    }
+
+    pub fn forms_question_page_up(&mut self) {
+        self.forms.question_cursor =
+            crate::ui::scroll::page_up(self.forms.question_cursor, self.forms_question_page_size());
+    }
+
     /// qid вопроса под `question_cursor` — только когда кэш вопросов
     /// (`questions_key`) принадлежит выделенной строке-форме (гейт как в
-    /// `form_details_text`); иначе None — кросс-форменный prefill исключён.
+    /// `form_panel`); иначе None — кросс-форменный prefill исключён.
     pub fn selected_question_id(&self) -> Option<u32> {
         let key = self.selected_form_key()?;
         if self.forms.questions_key.as_ref() != Some(&key) {
@@ -1223,6 +1247,36 @@ mod tests {
         );
         app.forms_question_cursor_up();
         assert_eq!(app.selected_question_id(), Some(0x210));
+    }
+
+    #[test]
+    fn forms_question_page_moves_clamp() {
+        let mut app = App::new();
+        app.forms.questions = (0..30)
+            .map(|i| uefi_proto::QuestionSummary {
+                question_id: 0x210 + i,
+                prompt: format!("q{i}"),
+                ..Default::default()
+            })
+            .collect();
+        app.forms.questions_viewport = 10;
+        app.forms_question_page_down();
+        assert_eq!(app.forms.question_cursor, 10);
+        app.forms_question_page_down();
+        assert_eq!(app.forms.question_cursor, 20);
+        app.forms_question_page_down();
+        assert_eq!(app.forms.question_cursor, 29, "clamp по последнему вопросу");
+        app.forms_question_page_up();
+        assert_eq!(app.forms.question_cursor, 19);
+        app.forms.question_cursor = 2;
+        app.forms_question_page_up();
+        assert_eq!(app.forms.question_cursor, 0, "saturating");
+    }
+
+    #[test]
+    fn forms_question_page_size_defaults_to_10() {
+        let app = App::new();
+        assert_eq!(app.forms_question_page_size(), 10);
     }
 
     #[test]

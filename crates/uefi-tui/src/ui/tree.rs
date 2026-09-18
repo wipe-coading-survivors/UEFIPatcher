@@ -6,9 +6,7 @@ use ratatui::widgets::{Block, Borders, List, ListItem};
 
 use crate::app::{App, Focus};
 use crate::theme::*;
-use crate::tree::compute_scrolled_offset;
-
-const SCROLL_PAD: usize = 3;
+use crate::ui::scroll;
 
 pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
     let visible = app.visible();
@@ -47,18 +45,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
         .collect();
 
     let total = visible.len();
-    let inner_h = area.height.saturating_sub(2) as usize;
-    app.tree_viewport_rows = inner_h;
-    let cursor = if total == 0 {
-        0
-    } else {
-        app.cursor.min(total - 1)
-    };
-    let prev_off = app.tree_state.offset();
-    let new_off = compute_scrolled_offset(cursor, prev_off, inner_h, total, SCROLL_PAD);
-    app.tree_state
-        .select(if total == 0 { None } else { Some(cursor) });
-    *app.tree_state.offset_mut() = new_off;
+    app.tree_viewport_rows = area.height.saturating_sub(2) as usize;
 
     let title = if app.focus == Focus::Tree {
         "Tree *"
@@ -68,5 +55,13 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
     let list = List::new(items)
         .block(Block::default().borders(Borders::ALL).title(title))
         .highlight_style(Style::default().bg(Color::DarkGray));
-    f.render_stateful_widget(list, area, &mut app.tree_state);
+    scroll::render_scrolled_list(
+        f,
+        list,
+        area,
+        &mut app.tree_state,
+        app.cursor,
+        total,
+        scroll::SCROLL_PAD,
+    );
 }
