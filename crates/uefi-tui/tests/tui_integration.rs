@@ -386,6 +386,45 @@ async fn switch_top_level_image_bare_moved_hint() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn reopen_read_to_write_and_guards() {
+    let td = tempfile::TempDir::new().unwrap();
+    let sock = td.path().join("test.sock");
+    let _handle = mock_server::start_mock(&sock).await;
+    let state = uefi_common::State {
+        session_id: Some("s1".into()),
+        token: Some("t1".into()),
+        active_image_id: None,
+        sock_path: Some(sock.display().to_string()),
+    };
+    let mut client = uefi_tui::commands::connect(None, state).await.unwrap();
+    let mut app = uefi_tui::app::App::new();
+    uefi_tui::commands::execute_command(&mut app, "refresh", &mut client)
+        .await
+        .unwrap();
+    app.focus = uefi_tui::app::Focus::Registry;
+
+    let r = uefi_tui::commands::reopen(&mut app, &mut client, true).await;
+    assert!(r.is_ok());
+    assert_ne!(app.active_image_id.as_deref(), Some("mock-img-1"));
+    assert!(
+        app.status_msg.contains("reopened"),
+        "статус: {}",
+        app.status_msg
+    );
+
+    app.registry.images[0].mode = 1;
+    uefi_tui::commands::reopen(&mut app, &mut client, true)
+        .await
+        .unwrap();
+    assert!(app.status_msg.contains("already in write mode"));
+
+    let err = uefi_tui::commands::reopen(&mut app, &mut client, false)
+        .await
+        .unwrap_err();
+    assert!(err.contains(":save first"), "WRITE→read отказ: {err}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn hii_set_value_keeps_question_cursor() {
     let td = TempDir::new().unwrap();
     let sock = td.path().join("test.sock");

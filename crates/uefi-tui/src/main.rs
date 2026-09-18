@@ -97,6 +97,13 @@ async fn handle_normal(app: &mut App, ev: &AppEvent, client: &mut Option<command
             };
             app.enter_insert_mode(cmd_str, prefill);
         }
+        AppEvent::Key('w') if app.focus != Focus::Details => {
+            if let Some(c) = client.as_mut()
+                && let Err(e) = commands::reopen(app, c, true).await
+            {
+                app.status_msg = format!("error: {e}");
+            }
+        }
         AppEvent::Key('j') | AppEvent::Down => match app.focus {
             Focus::Registry => app.registry_cursor_down(),
             Focus::Tree => app.cursor_down(),

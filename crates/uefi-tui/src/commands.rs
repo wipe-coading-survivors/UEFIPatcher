@@ -549,6 +549,10 @@ pub async fn execute_command(
             let _ = refresh_registry(app, client).await;
             Ok(id)
         }
+        "reopen" => {
+            let want_write = !parts.contains(&"read");
+            reopen(app, client, want_write).await
+        }
         "forms" | "f" => {
             if app.active_image_id.is_none() && client.state.active_image_id.is_none() {
                 return Err("no active image — :open PATH first".into());
@@ -872,6 +876,7 @@ const COMMANDS: &[&str] = &[
     "rebuild",
     "switch",
     "close",
+    "reopen",
     "image",
     "refresh",
     "forms",
@@ -1298,6 +1303,116 @@ pub fn add_prefill(app: &App) -> Option<String> {
     }
 }
 
+/// Гвард-решение :reopen по желаемому и текущему режиму. Спека R3 (матрица).
+#[derive(Debug, PartialEq, Eq)]
+pub enum ReopenPlan {
+    OpenWrite,
+    AlreadyWrite,
+    AlreadyRead,
+    RefuseUnsavedWrite,
+}
+
+/// READ→WRITE только: повторный open с диска молча выбросил бы несохранённые
+/// мутации WRITE-образа. Спека R3.
+pub fn reopen_plan(want_write: bool, current_write: bool) -> ReopenPlan {
+    match (want_write, current_write) {
+        (true, false) => ReopenPlan::OpenWrite,
+        (true, true) => ReopenPlan::AlreadyWrite,
+        (false, false) => ReopenPlan::AlreadyRead,
+        (false, true) => ReopenPlan::RefuseUnsavedWrite,
+    }
+}
+
+/// Цель :reopen/:w — строка-образ в Registry при фокусе там, иначе активный
+/// образ. Спека R3.
+pub fn reopen_target(app: &App) -> Option<String> {
+    if app.focus == crate::app::Focus::Registry
+        && let Some(crate::app::RegistryRow::Image(i)) = app.current_registry_row()
+        && let Some(im) = app.registry.images.get(i)
+    {
+        return Some(im.image_id.clone());
+    }
+    app.active_image_id.clone()
+}
+
+/// Переоткрытие образа в write: open(WRITE) → switch → close(old) → refresh.
+/// No-op ветки не делают RPC. Спека R3.
+pub async fn reopen(
+    app: &mut App,
+    client: &mut Client,
+    want_write: bool,
+) -> Result<String, String> {
+    let target_id = reopen_target(app).ok_or("no image selected (registry row or active)")?;
+    let im = app
+        .registry
+        .images
+        .iter()
+        .find(|i| i.image_id == target_id)
+        .cloned()
+        .ok_or("image not in registry — :refresh")?;
+    match reopen_plan(want_write, im.mode == 1) {
+        ReopenPlan::AlreadyWrite => {
+            app.status_msg = format!("already in write mode: {}", im.image_id);
+            return Ok(im.image_id);
+        }
+        ReopenPlan::AlreadyRead => {
+            app.status_msg = format!("already read-only: {}", im.image_id);
+            return Ok(im.image_id);
+        }
+        ReopenPlan::RefuseUnsavedWrite => {
+            return Err(format!(
+                "refusing: unsaved write-mode image; :save first — {}",
+                im.image_id
+            ));
+        }
+        ReopenPlan::OpenWrite => {}
+    }
+    let sid = client.state.session_id.clone().ok_or("no session")?;
+    let req = ImageOpenRequest {
+        session_id: sid,
+        path: im.path.clone(),
+        mode: 1,
+        name: String::new(),
+    };
+    let r = client
+        .inner
+        .image_open(auth_req(&client.state, req))
+        .await
+        .map_err(|e| e.message().to_string())?
+        .into_inner();
+    let dump = client
+        .inner
+        .image_nodes_list(auth_req(
+            &client.state,
+            ImageNodesListRequest {
+                image_id: r.image_id.clone(),
+                filter: String::new(),
+            },
+        ))
+        .await
+        .map_err(|e| e.message().to_string())?
+        .into_inner();
+    app.tree = crate::tree::build_tree(&dump.nodes);
+    app.cursor = 0;
+    app.active_image_id = Some(r.image_id.clone());
+    client.state.active_image_id = Some(r.image_id.clone());
+    let _ = client
+        .inner
+        .image_close(auth_req(
+            &client.state,
+            ImageCloseRequest {
+                image_id: target_id,
+            },
+        ))
+        .await;
+    let _ = refresh_registry(app, client).await;
+    if app.view == View::Forms {
+        refresh_forms(app, client).await?;
+    }
+    app.status_msg = format!("reopened {} in write mode", im.name);
+    Ok(r.image_id)
+}
+
 /// Команда для клавиши `v` на выбранной форме. Движок реализует только
 /// unsuppress (visibility on); скрытие (off) — ошибка, поэтому на уже
 /// видимой форме возвращает None — вызывающий показывает пояснение,
@@ -1684,6 +1799,15 @@ mod tests {
             COMMANDS.contains(&"image"),
             "bare :image остаётся view-переключателем"
         );
+    }
+
+    #[test]
+    fn reopen_plan_guard_matrix() {
+        use ReopenPlan::*;
+        assert_eq!(super::reopen_plan(true, false), OpenWrite);
+        assert_eq!(super::reopen_plan(true, true), AlreadyWrite);
+        assert_eq!(super::reopen_plan(false, false), AlreadyRead);
+        assert_eq!(super::reopen_plan(false, true), RefuseUnsavedWrite);
     }
 
     #[test]
