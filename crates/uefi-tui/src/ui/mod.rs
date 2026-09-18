@@ -75,7 +75,7 @@ fn render_hint(f: &mut Frame, area: Rect, app: &App) {
                 "INSERT"
             };
             if app.menu.open {
-                format!("{mode}[menu]: ↑↓/jk select · TAB/→ accept · BackTab back · Esc close · Enter run")
+                format!("{mode}[menu]: ↑↓/jk select · TAB/→/Enter accept · BackTab back · Esc close")
             } else {
                 format!("{mode}: TAB compl · ↑↓ hist · Ctrl+←→ word · Ctrl+W/U/K del · Home/End · Enter run · Esc cancel")
             }
