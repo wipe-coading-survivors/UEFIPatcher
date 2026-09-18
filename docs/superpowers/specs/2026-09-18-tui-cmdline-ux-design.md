@@ -52,8 +52,9 @@ item-кандидатах (`hii question add <TAB>`) доводка упирае
    префиксом); Ctrl+R — YAGNI сейчас.
 2. Набор клавиш редактирования: база + пословные прыжки + kill-опы
    (vim-cmdline/bash-паритет, таблица в секции handle_command).
-3. Меню: вариант «Меню + навигация» — Up/Down листают открытое меню,
-   Enter всегда исполняет набранное, Esc двухступенчатый.
+3. Меню: вариант «Меню + навигация» — Up/Down/j/k листают открытое меню,
+   Enter при открытом меню исполняет выбранного кандидата (при закрытом —
+   набранное), Esc двухступенчатый. [правка живого гейта, см. § Вердикт]
 4. Ядро line-editor: собственный `LineBuffer` на `unicode-segmentation`
    (tui-input/tui-textarea отклонены: их event-модель конфликтует с нашим
    AppEvent-пайплайном).
@@ -163,16 +164,18 @@ pub fn complete(app: &App, cmdline: &str) -> Completion;
 
 - Открытие: TAB при `!open` → complete(); `common` применяется к буферу
   (`set_str`); `items` непусты → `open=true, selected=0, offset=0`.
-- Навигация: Up/Down → `selected` ± 1 с wrap-around (как vim wildmenu);
-  окно 8 строк, `offset` скроллится.
+- Навигация: Up/Down/j/k → `selected` ± 1 с wrap-around (как vim wildmenu);
+  окно 8 строк, `offset` скроллится. j/k работают только при `open`
+  (закрытое меню — обычный ввод символов).
 - Приём: TAB/Right при `open` → `set_str(items[selected].apply)`, затем
   re-complete по новой строке (items опустели → закрыть).
 - BackTab — цикл назад.
 - Live-фильтрация: любая мутация буфера при `open` → re-complete, сброс
   `selected=0, offset=0`; items пусты → закрыть.
 - Esc: `open` → закрыть; иначе — выход из Command-режима (как сегодня).
-- Enter: всегда исполняет набранное (кандидата НЕ принимает); после исполнения —
-  `history.submit`, menu close.
+- Enter: `open` → подставить `items[selected].apply` и исполнить его;
+  `!open` → исполнить набранное; после исполнения — `history.submit`,
+  menu close. [правка живого гейта: прежде «всегда набранное»]
 - Up/Down при `!open` — prefix-recall истории (префикс = текущий буфер).
 - Меню работает и в Insert-режиме (handle_command общий).
 
@@ -210,7 +213,7 @@ Normal-режима (вариация по view/focus):
 - `Command`, меню закрыто:
   `COMMAND: TAB compl · ↑↓ hist · Ctrl+←→ word · Ctrl+W/U/K del · Home/End · Enter run · Esc cancel`
 - `Command`, меню открыто:
-  `COMMAND[menu]: ↑↓ select · TAB/→ accept · BackTab back · Esc close · Enter run`
+  `COMMAND[menu]: ↑↓/jk select · TAB/→ accept · BackTab back · Esc close · Enter run`
 - `Insert`: те же две строки с префиксом `INSERT` (буфер и клавиши общие).
 
 UTF-8 стрелки допустимы (hint-бар уже соседствует с Nerd Font и
@@ -233,9 +236,10 @@ Ctrl+A/E/W/U/K уже приходят как `Ctrl(c)`.
 | Backspace / Delete | удалить grapheme перед / под курсором |
 | Ctrl+W / Ctrl+U / Ctrl+K | kill_word / kill_to_start / kill_to_end |
 | Up / Down | меню открыто → навигация меню; закрыто → history prev/next(prefix) |
+| j / k | меню открыто → навигация меню (down/up); закрыто → ввод символа |
 | TAB | !open → доводка common + открыть меню; open → принять selected |
 | BackTab | цикл по кандидатам назад |
-| Enter | исполнить набранное; history.submit; menu close |
+| Enter | open → подставить и исполнить выбранного кандидата; иначе — исполнить набранное; history.submit; menu close |
 | Esc | open → закрыть меню; иначе — выход из Command-режима |
 | прочие мутации буфера | op + сброс recall/saved + live-фильтр меню |
 
@@ -266,3 +270,13 @@ Prefill (`enter_command_mode`/`enter_insert_mode`) — `set_str` (курсор �
   transitive-мусора).
 - State-dir может не существовать при первом запуске — `create_dir_all` в
   `save()`; отсутствие файла истории — норма (пустая история).
+
+## Вердикт (живой гейт владельца, 2026-09-18)
+
+Цикл принят с одной правкой по итогам живого гейта: «Enter всегда исполняет
+набранное» заменено на «Enter при открытом меню исполняет выбранного
+кандидата», навигация меню расширена до Up/Down/**j/k**. Причина: `:h<TAB>`
+подсвечивает `hii`, но `<Enter>` исполнял сырой текст `h` (алиас help) —
+ломает мышечный паттерн «выбрал пункт → рука возвращается на home-row,
+попутно нажимая Enter». История после рестарта подтверждена владельцем.
+Non-goals цикла (fmt_u32_ids, ассерт пустого forms-списка) остались в TODO.
