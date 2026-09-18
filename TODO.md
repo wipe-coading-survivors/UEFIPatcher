@@ -3410,23 +3410,16 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   (`--image-id` выкинут по решению владельца — цель = registry-строка или
   активный образ), (3) бейдж R/W у образов; подтверждено живым гейтом.
   WebUI-часть (режим в списке образов WebUI) остаётся — WebUI-цикл.
-* [ ] **Форма-панель: трёхзонный layout** — панель «Form» (Forms View)
-  сейчас один скроллируемый Paragraph: шапка формы + вопросы с маркером +
-  question_info вместе (R8-дизайн цикла registry-polish). На живом гейте
-  (владелец, 2026-09-18, IntelRCSetup → Processor Configuration): на первом
-  вопросе details ниже сгиба; при скролле строки details накладываются на
-  вопросы (визуальные артефакты); на последнем вопросе details появляются,
-  шапка панели уезжает. Предложение владельца: (а) фиксированная шапка
-  ~7 строк — детали формы + пустая строка + шапка вопросов (промпт, qid,
-  kind); (б) скроллируемая середина — вопросы, паттерн Image/Forms View
-  (гистерезис, курсор за 3 строки до края); (в) фиксированный низ ~5 строк —
-  детали выбранного вопроса. Контекст: `crates/uefi-tui/src/ui/forms.rs`
-  (details-рендер, follow_offset/FORMS_SCROLL_PAD), `crates/uefi-tui/src/
-  forms.rs` (`form_details`/`FormDetails` — marker_line/info_line уступают
-  место трёхзонной сборке), `crates/uefi-tui/src/app.rs` (FormsData.
-  details_scroll/details_anchor/details_followed). Спека-вердикт:
-  `2026-09-18-tui-registry-polish-design.md` §Вердикт. Заодно: алиас `:o`
-  не получает read/write-значения `--mode` (fix-wave цикла, minor).
+* [x] **Форма-панель: трёхзонный layout** — закрыта циклом
+  forms-panel-three-zone (2026-09-19): панель «Form» = фикс-шапка (детали
+  формы + колонки-хедер вопросов) / скроллируемый список вопросов с
+  гейт-хвостом (гистерезис pad 3, курсор на гейты не заходит) / фикс-низ с
+  деталями выбранного вопроса (авто-рост до ~45% панели); PgUp/PgDn на
+  Details = страница вопросов; wrap+scroll-Paragraph (источник артефактов
+  R8) и follow_offset/FORMS_SCROLL_PAD/details_* удалены; скролл-механика
+  списков унифицирована в `ui/scroll.rs` (tree/registry/forms/strings/
+  вопросы). Минор `:o --mode` закрыт там же (flags- и values-ветки
+  complete). Спека: `2026-09-19-forms-panel-three-zone-design.md`.
 * [ ] **uefi-tui: Ctrl+Home/End/Delete затенены в map_key** — гарды
   `if ctrl` есть только у Left/Right (WordLeft/WordRight); Home/End/Delete
   матчатся без модификаторов, так что Ctrl+Home/Ctrl+End/Ctrl+Delete
