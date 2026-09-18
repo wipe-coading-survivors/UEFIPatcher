@@ -798,7 +798,7 @@ git commit -m "feat(tui): PgUp/PgDn на Forms/Details — страница во
         app.forms.questions_key = Some(fk(1));
         app.forms.questions = (0..n_questions)
             .map(|i| uefi_proto::QuestionSummary {
-                question_id: 0x210 + i,
+                question_id: 0x210 + i as u32,
                 prompt: format!("q{i}"),
                 kind: "numeric".into(),
                 ..Default::default()
