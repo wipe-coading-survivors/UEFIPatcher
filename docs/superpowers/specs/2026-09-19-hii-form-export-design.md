@@ -56,6 +56,10 @@ grayout-if / кросс-формсетные REF3/REF4 в schema не выраж
 - **Довески**: клавиша `e` на строке формы → prefill `:hii form export`;
   клавиша `A` (Shift+a) → prefill второго шага `hii question add <t>#<f> `
   (стал осмысленным после cmdline-цикла — completion-меню рендерится).
+- **`ref_into` полиморфный** (ревью спеки, владелец): число-«просто вложить»
+  или объект с авторскими override'ами (prompt/help/question_id GOTO-строки,
+  кейс живого `np_ref.json` с разными prompt/help). Плейсхолдерных id
+  ещё-не-существующей формы в файле нет — id приходит только из ответа RPC.
 
 ## §1 Конверт: `uefi-common::envelope` (новый модуль)
 
@@ -72,9 +76,28 @@ grayout-if / кросс-формсетные REF3/REF4 в schema не выраж
 }
 ```
 
-- `meta` — типизированная структура (не free-form): `ref_into: Option<u16>`,
-  `source: Option<SourceMeta { formset_guid: String }>`,
+- `meta` — типизированная структура (не free-form): `ref_into:
+  Option<RefInto>`, `source: Option<SourceMeta { formset_guid: String }>`,
   `lossy: Vec<String>`. Неизвестные ключи меты игнорируются (forward-compat).
+- `RefInto` полиморфный (serde untagged): bare-число — id родителя, «просто
+  вложить»; либо объект с override'ами авторской GOTO-строки:
+
+```json
+"ref_into": {
+  "form_id": 10001,
+  "prompt": "UEFIPatcher Setup",
+  "help": "UEFIPatcher serial console settings",
+  "question_id": 528
+}
+```
+
+  Объектная форма требует `form_id` (serde); `prompt`/`help`/`question_id`
+  опциональны — недостающее планировщик достраивает дефолтами (§3).
+- **Никаких магических чисел в файле**: id новой формы в конверте не
+  встречается ни в каком виде (плейсхолдеры запрещены) — он становится
+  известен только из `inserted_form_ids[0]` ответа RPC. Единственное
+  «магическое» число системы — базис высоких question-id `0x7F00` (конвенция
+  до закрытия TODO:490) — и то не вшито в файл, а вычисляется планировщиком.
 - Тело — ключ `formset`, значение — валидная `FormSetSchema`: `hii_form_add`
   парсит `schema_json` через `parse_schema` → `FormSetSchema`
   (`rpc/server.rs:875`), значит re-сериализованное тело клиент шлёт в RPC
@@ -134,12 +157,18 @@ message HiiFormExportResponse {
 
 Общий слой — `uefi-common::envelope` (чистые функции, без RPC):
 
-- `plan_ref_step(meta, form_add_outcome, busy_qids) -> Option<RefStepPlan>`:
-  при `meta.ref_into = Some(parent)` и непустом `inserted_form_ids` строит
-  план — refs-список формата `parse_question_add_schema`:
-  `{form_id: inserted_form_ids[0], prompt: <title формы>, help: <title
-  формы>, question_id: max(0x7F00, max(busy_qids)+1)}`. Высокие id —
-  конвенция до закрытия TODO:490; `busy_qids` — занятые вопрос-id родителя
+- `plan_ref_step(meta, body, form_add_outcome, busy_qids)
+  -> Option<RefStepPlan>`: при `meta.ref_into = Some(...)` и непустом
+  `inserted_form_ids` строит план — refs-список формата
+  `parse_question_add_schema`:
+  `{form_id: inserted_form_ids[0], prompt, help, question_id}`. Поля
+  достраиваются каскадом: override из объектной `ref_into` → дефолт.
+  Дефолты: `prompt` = `help` = title вставляемой формы (envelope-модуль
+  достаёт его из тела мягким reach-in `forms[0].title` по тому же
+  `serde_json::Value`, что и для re-serialize; жёсткой зависимости
+  common→engine-schema нет; title недоступен → строка `Form <id>`);
+  `question_id` = `max(0x7F00, max(busy_qids)+1)`. Высокие id — конвенция
+  до закрытия TODO:490; `busy_qids` — занятые вопрос-id родителя
   (`hii_list_questions` доступен обоим клиентам: TUI — состояние Forms-view,
   CLI — RPC-обёртка; `check_ref_slots` в движке — вторая линия обороны).
   Пустые `inserted_form_ids` при заданном `ref_into`
@@ -178,8 +207,9 @@ message HiiFormExportResponse {
 ## §5 Ошибки и граничные случаи
 
 - Bare-файл → поведение байт-в-байт как сегодня (нулевая регрессия).
-- Неизвестные ключи меты → игнор. `ref_into` на несуществующего родителя →
-  pre-check §3.1, fail fast.
+- Неизвестные ключи меты → игнор. Объектная `ref_into` без `form_id` →
+  invalid meta (serde), файл целиком отвергается до RPC.
+- `ref_into` на несуществующего родителя → pre-check §3.1, fail fast.
 - Кросс-формсетный GOTO в экспортируемой форме → skip + `meta.lossy`.
 - `meta.lossy` непуст → файл честно помечен; round-tripвер знает, что
   suppress-if и пр. не перенеслись.
@@ -195,7 +225,8 @@ message HiiFormExportResponse {
   тест «schema → build → export → семантически равно исходной schema» ловит
   дырки walker'а автоматически.
 - **uefi-common (unit)**: `split_envelope` — bare-проход насквозь, разбор
-  конверта, unknown-ключи; `plan_ref_step` — план/пустые id/конфликт qid.
+  конверта, unknown-ключи; `plan_ref_step` — план/пустые id/конфликт qid/
+  override объектной формы против дефолтов.
 - **Клиенты (integration, mock-server)**: журнал вызовов mock'а ассертит
   последовательность `list_forms → form_add → question_add` на конверт-файле;
   паритет CLI/TUI — равенство RPC-журналов на одном файле (сильнее и дешевле
