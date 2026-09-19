@@ -386,8 +386,15 @@ mod tests {
             name: "Setup".into(),
         }];
         let out = plan_varstores(body, &target).unwrap();
-        assert!(out.contains(r#""id":21"#));
-        assert!(!out.contains(r#""id":1,"guid":"EC87D643-""#));
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let ids: Vec<u64> = v["varstores"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["id"].as_u64().unwrap())
+            .collect();
+        assert!(ids.contains(&21));
+        assert!(!ids.contains(&1));
 
         let conflict = vec![VarstoreBrief {
             id: 1,
