@@ -727,8 +727,13 @@ git commit -m "feat(engine): form_export — вопросы полной fidelit
 
 - [ ] **Step 1: Text/Action/Ref + lossy-подсчёт в export_form**
 
-В обход `walk_statements` добавить ветки: `IFR_TEXT_OP`/`IFR_SUBTITLE_OP` → `ItemSchema::Text` (prompt/help по sid; TextItem-поля сверить с `schema.rs`), `IFR_ACTION_OP` → `Action`; `IFR_REF_OP` → `ItemSchema::Ref` (form_id из тела op; REF-варианты различает `ref_variant.rs` — REF3/REF4/REF5 с `target_formset_guid` → **skip + lossy** `cross_formset_ref:N`). Непокрытые statement-опкоды (`IFR_SUPPRESS_IF_OP`, `IFR_GRAY_OUT_IF_OP`, прочие внутриформенные) — счётчик по видам: `suppress_if:N`, `grayout_if:N`, `unknown_op_<hex>:N`.
+В обход `walk_statements` добавить ветки: `IFR_TEXT_OP`/`IFR_SUBTITLE_OP` → `ItemSchema::Text` (TextItem = `{prompt, help, text_two}`; TEXT: prompt@+2/help@+4/text_two@+6, len≥8; SUBTITLE: prompt/help, len≥6, text_two=""). `IFR_ACTION_OP` → `Action` (question-header@+2..+13, config StringId@+13, len≥15). `IFR_REF_OP` → `ItemSchema::Ref` — вариант различает `ref_variant::parse_ref`: REF1 (len 15) → RefItem чисто; REF2 (len 17, FormQuestion) → RefItem, но schema не выражает target-question → lossy `ref_question_target:N`; REF3/REF4 (Formset, `target_formset_guid`) → **skip + lossy** `cross_formset_ref:N`; REF5 (len 13, Dynamic) целевого form_id не несёт вовсе (план ошибочно приписывал ему target_formset_guid) → **skip + lossy** `dynamic_ref:N`; неканоническая длина REF → `unknown_op_0f:N`. Length-гарды — по-веточные: ранний `len < 13` из Task 3 выкинул бы TEXT (len 8)/SUBTITLE (len 7).
+
+Lossy-счётчики: walker-функция получает `lossy: &mut Vec<String>` (Task 3 `question_items` переименовывается в `collect_items`; consumer'ов вне файла нет, Task 5+ ходят через `export_form`). `walk_statements` НЕ визитирует `IFR_SUPPRESS_IF_OP`/`IFR_GRAY_OUT_IF_OP` (это не statement-опкоды — счётчики из замыкания недоступны) → walker расширяется: gate-опкоды визитируются с current-form охватывающей формы, БЕЗ expr_end-маркировки (все существующие потребители фильтруют по op/is_question_op — совместимо; тест в values.rs). Считаются только внутриформенные стейтменты (`current == Some(form_id)`); formset-уровневые gates (обёртки вокруг FORM, current=None) НЕ считаются. `IFR_ONE_OF_OPTION_OP`/`IFR_DEFAULT_OP` consumed one_of-веткой и `IFR_FORM_OP` — не считаются; прочие непокрытые (PASSWORD/ORDERED_LIST/STRING/DATE/TIME/…) — `unknown_op_<hex2>:N`.
+
 - [ ] **Step 2: Varstore-заполнение (контракт varstore-contract §6)**
+
+`VarStoreMap` (values.rs) несёт `{id, guid, size, name}` — БЕЗ типа и атрибутов (`is_name_value` из ранней редакции шага не существует). Расширение отдельным коммитом ДО реализации (санкционировано этим шагом): `kind: VarStoreKind {Buffer, Efi, NameValue}` (по опкоду декларации VARSTORE/VARSTORE_EFI/VARSTORE_NAME_VALUE) + `attributes: u32` (из тела `IFR_VARSTORE_EFI_OP` @+20; существующие consumer'ы — `list_varstores`, RPC — поле не читают, компилируются как есть).
 
 ```rust
 fn fill_varstores(
@@ -743,6 +748,7 @@ fn fill_varstores(
             schema::ItemSchema::Numeric(x) => Some(x.var_store_id),
             schema::ItemSchema::CheckBox(x) => Some(x.var_store_id),
             schema::ItemSchema::String(x) => Some(x.var_store_id),
+            schema::ItemSchema::OrderedList(x) => Some(x.var_store_id),
             _ => None,
         })
         .filter(|id| *id != 0)
@@ -754,16 +760,25 @@ fn fill_varstores(
         .iter()
         .filter_map(|id| {
             let vs = map.iter().find(|m| m.id == *id)?;
-            match (&vs.guid, vs.is_name_value) {
-                (Some(g), false) => Some(schema::VarStoreSchema {
+            let guid = || vs.guid.as_ref().map(crate::guid_to_upper_string).unwrap_or_default();
+            match vs.kind {
+                values::VarStoreKind::Buffer => Some(schema::VarStoreSchema {
                     id: vs.id,
-                    guid: g.to_string().to_ascii_uppercase(),
+                    guid: guid(),
                     size: vs.size,
                     name: vs.name.clone(),
                     var_type: schema::VarStoreType::Buffer,
                     attributes: 7,
                 }),
-                _ => {
+                values::VarStoreKind::Efi => Some(schema::VarStoreSchema {
+                    id: vs.id,
+                    guid: guid(),
+                    size: vs.size,
+                    name: vs.name.clone(),
+                    var_type: schema::VarStoreType::Efi,
+                    attributes: vs.attributes,
+                }),
+                values::VarStoreKind::NameValue => {
                     lossy.push(format!("varstore {id:#x} is name-value, not exportable"));
                     None
                 }
@@ -772,18 +787,18 @@ fn fill_varstores(
         .collect()
 }
 ```
-`is_name_value`/различение Buffer/Efi — по данным `varstore_map` + `VARSTORE_EFI`-ветке ( атрибуты из `IFR_VARSTORE_EFI_OP`-тела; если карта не несёт типа — расширить `VarStoreMap` отдельным коммитом docs:fix → реализация).
+Примечания по фактическому коду: `schema::ItemSchema::String` существует и несёт `var_store_id` (walker его не порождает — arm валиден для произвольного списка); добавлен и `OrderedListItem` (тоже несёт var_store_id). guid — через `crate::guid_to_upper_string` (рабочая конвенция), не `g.to_string().to_ascii_uppercase()`. Buffer → attributes 7 (serde-дефолт schema.rs «только для type=efi»), Efi → реальные атрибуты из карты. Undeclared vsid (нет декларации в карте) — молчаливый skip (движковая валидация импорта его поймает).
 - [ ] **Step 3: parent_form_id из рёбер**
 
-В `export_form` (после резолва): `let edges = super::ref_tree::collect_edges(image);` → родители = edges с `form_id == form_id` и `formset_guid == наш` и пустым `target_formset_guid`; ровно один → `parent_form_id`, иначе 0. entries-подсказку (prompt/help родительского GOTO) экспорт НЕ заполняет по question_id (спека §2) — только `parent_form_id`.
+В `export_form` (после резолва): `let edges = super::ref_tree::collect_edges(image);` → родители = edges с `form_id == form_id` и `formset_guid == наш` (обе — upper-строки `guid_to_upper_string`) и пустым `target_formset_guid` (FormEdge-поля: `{formset_guid, parent_form_id, form_id, target_formset_guid}` — имя родителя `parent_form_id`); после dedup ровно один → `parent_form_id`, иначе 0. entries-подсказку (prompt/help родительского GOTO) экспорт НЕ заполняет по question_id (спека §2) — только `parent_form_id`.
 - [ ] **Step 4: Симметрия с билдером (главный инвариант)**
 
-Тест: собрать schema → `ifr_builder` (emit_form_set/var_store/form/one_of/numeric/check_box/ref/text) → `export_form` на полученном пакете → сравнить семантически (id/тексты/options/varstores) с исходной schema. Расхождения — чинить walker, пока тест не зелёный.
+Тест: собрать schema → `ifr_builder` (emit_form_set/var_store/form/text/one_of/one_of_option/default/numeric/check_box/ref) → `export_form` на полученном пакете → сравнить семантически (id/тексты/options/varstores) с исходной schema. Расхождения — чинить walker, пока тест не зелёный. По фактическому инвентарю ifr_builder: `emit_action`/`emit_subtitle` НЕ существуют — Action/Subtitle-ветки покрываются ручными байтовыми fixtures (паттерн Task 3), в симметрию входит TEXT через `emit_text`. Сравнение ItemSchema/VarStoreSchema — через `serde_json::to_value` (PartialEq у schema-типов нет); тексты — явной texts-картой на pkg-уровне (`collect_items` + `fill_varstores`), плюс отдельный end-to-end `export_form`-тест на синтетическом Image (паттерн `sample_image_with_ifr_guid`: RAW-секция 0x19 + target `<guid>:0x19:0#<form_id>`) — parent-рёбра и lossy.
 - [ ] **Step 5: Запустить + clippy + коммит**
 
 Run: `cargo test -p uefi-engine form_export && cargo clippy -p uefi-engine -- -D warnings`
 ```bash
-git add crates/uefi-engine/src/hii/form_export.rs
+git add crates/uefi-engine/src/hii/form_export.rs crates/uefi-engine/src/hii/values.rs
 git commit -m "feat(engine): form_export — Text/Action/Ref + lossy + referenced varstores + parent edge (контракт varstore-contract §6)"
 ```
 
