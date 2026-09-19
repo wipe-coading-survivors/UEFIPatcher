@@ -1600,12 +1600,17 @@ pub async fn refresh_forms(app: &mut App, client: &mut Client) -> Result<(), Str
     app.forms.strings_filter.clear();
     app.forms.strings_cursor = 0;
     app.forms.show_strings = false;
+    app.forms.varstores.clear();
+    app.forms.varstores_target = None;
+    app.forms.varstores_cursor = 0;
+    app.forms.show_varstores = false;
     Ok(())
 }
 
 /// Re-fetch форм И рёбер после мутации: сохраняет flat_mode,
 /// развёрнутость, выделение (по formset+form_id), strings-браузер;
-/// сбрасывает per-form кэши (questions, gates, question_info).
+/// сбрасывает per-form кэши (questions, gates, question_info) и
+/// varstores-кэш (target — панель остаётся, 'V' re-fetch'ит).
 /// Вход во view — refresh_forms (сброс), не эта функция.
 /// Спека tui-forms-view §3.3.
 pub async fn reload_forms(app: &mut App, client: &mut Client) -> Result<(), String> {
@@ -1644,6 +1649,7 @@ pub async fn reload_forms(app: &mut App, client: &mut Client) -> Result<(), Stri
     app.forms.question_cursor = 0;
     app.forms.question_info = None;
     app.forms.question_info_key = None;
+    app.forms.varstores_target = None;
     match sel {
         Some((guid, fid)) => {
             let rows = app.forms_rows();

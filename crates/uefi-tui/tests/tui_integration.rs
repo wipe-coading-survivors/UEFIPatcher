@@ -194,6 +194,59 @@ async fn forms_load_fetches_edges_and_reload_preserves_state() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn varstores_cache_invalidated_on_refresh_and_reload() {
+    let td = TempDir::new().unwrap();
+    let sock = td.path().join("test.sock");
+    let _handle = mock_server::start_mock(&sock).await;
+    let state = uefi_common::State {
+        session_id: Some("s1".into()),
+        token: Some("t1".into()),
+        active_image_id: None,
+        sock_path: Some(sock.display().to_string()),
+    };
+    let mut client = uefi_tui::commands::connect(None, state).await.unwrap();
+    let mut app = uefi_tui::app::App::new();
+    uefi_tui::commands::execute_command(&mut app, "open /dev/null", &mut client)
+        .await
+        .unwrap();
+    uefi_tui::commands::execute_command(&mut app, "forms", &mut client)
+        .await
+        .unwrap();
+
+    app.forms.varstores = vec![uefi_proto::VarStoreInfo {
+        id: 2,
+        guid: String::new(),
+        size: 0x94,
+        name: "Setup".into(),
+    }];
+    app.forms.varstores_target = Some("t:0x19:0".into());
+    app.forms.varstores_cursor = 1;
+    app.forms.show_varstores = true;
+    uefi_tui::commands::refresh_forms(&mut app, &mut client)
+        .await
+        .unwrap();
+    assert!(
+        app.forms.varstores.is_empty(),
+        "refresh_forms: varstores-кэш очищен (как strings)"
+    );
+    assert!(app.forms.varstores_target.is_none());
+    assert_eq!(app.forms.varstores_cursor, 0);
+    assert!(
+        !app.forms.show_varstores,
+        "refresh_forms: панель закрыта (как strings)"
+    );
+
+    app.forms.varstores_target = Some("t:0x19:0".into());
+    uefi_tui::commands::reload_forms(&mut app, &mut client)
+        .await
+        .unwrap();
+    assert!(
+        app.forms.varstores_target.is_none(),
+        "reload_forms: мутация форсит re-fetch по следующему 'V'"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn forms_tree_mode_nested_path() {
     let td = tempfile::TempDir::new().unwrap();
     let sock = td.path().join("test.sock");
