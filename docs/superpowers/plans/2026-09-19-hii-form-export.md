@@ -790,7 +790,7 @@ fn fill_varstores(
 Примечания по фактическому коду: `schema::ItemSchema::String` существует и несёт `var_store_id` (walker его не порождает — arm валиден для произвольного списка); добавлен и `OrderedListItem` (тоже несёт var_store_id). guid — через `crate::guid_to_upper_string` (рабочая конвенция), не `g.to_string().to_ascii_uppercase()`. Buffer → attributes 7 (serde-дефолт schema.rs «только для type=efi»), Efi → реальные атрибуты из карты. Undeclared vsid (нет декларации в карте) — молчаливый skip (движковая валидация импорта его поймает).
 - [ ] **Step 3: parent_form_id из рёбер**
 
-В `export_form` (после резолва): `let edges = super::ref_tree::collect_edges(image);` → родители = edges с `form_id == form_id` и `formset_guid == наш` (обе — upper-строки `guid_to_upper_string`) и пустым `target_formset_guid` (FormEdge-поля: `{formset_guid, parent_form_id, form_id, target_formset_guid}` — имя родителя `parent_form_id`); после dedup ровно один → `parent_form_id`, иначе 0. entries-подсказку (prompt/help родительского GOTO) экспорт НЕ заполняет по question_id (спека §2) — только `parent_form_id`.
+В `export_form` (после резолва): `let edges = super::ref_tree::collect_edges(image);` → родители = edges с `form_id == form_id` и `formset_guid == наш` (обе — upper-строки `guid_to_upper_string`) и пустым `target_formset_guid` (FormEdge-поля: `{formset_guid, parent_form_id, form_id, target_formset_guid}` — имя родителя `parent_form_id`); после dedup ровно один → `parent_form_id`, иначе 0. При parent_form_id != 0 экспорт ДОПОЛНИТЕЛЬНО заполняет entries-подсказку (спека §2, дефект финального ревью: план ошибочно сузил до parent_form_id-only): walk REF-стейтментов родительской формы (в том же pkg), ведущих на form_id экспортируемой формы (варианты Form/FormQuestion, семантика package_edges); на каждый GOTO — по entry с prompt/help, резолвнутыми через texts-канал; `question_id` сознательно НЕ пишется (коллизия при реимпорте в тот же образ, выбор оставлен планировщику). Несколько GOTO → по entry на каждый; ноль найдено → пустой vec (расхождение рёбер/пакета терпимо).
 - [ ] **Step 4: Симметрия с билдером (главный инвариант)**
 
 Тест: собрать schema → `ifr_builder` (emit_form_set/var_store/form/text/one_of/one_of_option/default/numeric/check_box/ref) → `export_form` на полученном пакете → сравнить семантически (id/тексты/options/varstores) с исходной schema. Расхождения — чинить walker, пока тест не зелёный. По фактическому инвентарю ifr_builder: `emit_action`/`emit_subtitle` НЕ существуют — Action/Subtitle-ветки покрываются ручными байтовыми fixtures (паттерн Task 3), в симметрию входит TEXT через `emit_text`. Сравнение ItemSchema/VarStoreSchema — через `serde_json::to_value` (PartialEq у schema-типов нет); тексты — явной texts-картой на pkg-уровне (`collect_items` + `fill_varstores`), плюс отдельный end-to-end `export_form`-тест на синтетическом Image (паттерн `sample_image_with_ifr_guid`: RAW-секция 0x19 + target `<guid>:0x19:0#<form_id>`) — parent-рёбра и lossy.
@@ -821,13 +821,16 @@ git commit -m "feat(engine): form_export — Text/Action/Ref + lossy + reference
 ```
 ```proto
 message HiiFormExportRequest  { string image_id = 1; string item_id = 2; }
+message HiiFormExportEntry { string prompt = 1; string help = 2; }
 message HiiFormExportResponse {
   string schema_json = 1;
   string formset_guid = 2;
   uint32 parent_form_id = 3;
   repeated string lossy = 4;
+  repeated HiiFormExportEntry parent_entries = 5;
 }
 ```
+(`parent_entries` — prompt/help GOTO родителя, дефект финального ревью: спека §2 требует заполнять refs.entries, план proto-поле не нёс)
 Пересобрать: `cargo build -p uefi-proto`.
 - [ ] **Step 2: Хендлер (read-only образец :986/:1023 — get_or_load_image → `export_form(&img, …)`, hii_error_status_ctx, instrument + sm.touch)**
 
@@ -882,7 +885,7 @@ git commit -m "feat(proto,rpc): HiiFormExport RPC + хендлер + моки (�
         item_id: &str,
     ) -> Result<HiiFormExportResponse, AppError> { … }
 ```
-`form_export(item_id, out: Option<PathBuf>, sock, format)`: RPC → конверт собирает клиент (`uefi_common::envelope::wrap_export(body, Some(SourceMeta{formset_guid}), refs_from_parent, lossy)`; refs = parent_form_id != 0 → `Some(RefsSection{parent_form_id, entries: vec![]})`) → stdout pretty ИЛИ `--out` с absolutization по образцу `resolve_output_path` (`commands/artifact.rs`).
+`form_export(item_id, out: Option<PathBuf>, sock, format)`: RPC → конверт собирает клиент (`uefi_common::envelope::wrap_export(body, Some(SourceMeta{formset_guid}), refs_from_parent, lossy)`; refs = parent_form_id != 0 → `Some(RefsSection{parent_form_id, entries: parent_entries из ответа → RefEntry{prompt: Some, help: Some, ..default}})` — спека §2: экспорт заполняет refs.entries prompt/help из GOTO родителя, план ошибочно сузил до parent_form_id-only) → stdout pretty ИЛИ `--out` с absolutization по образцу `resolve_output_path` (`commands/artifact.rs`).
 - [ ] **Step 2: Маршрутизация в form_add**
 
 В начале `form_add`: прочитать файл, `split_envelope` → если конверт (был ключ `meta`): `Err` «package file: use hii import». Bare — прежний путь.
