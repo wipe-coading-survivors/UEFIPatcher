@@ -990,7 +990,7 @@ git commit -m "test(tui): import-журналы (полный/refs-only/марш
 **Files:**
 - Modify: `crates/uefi-engine/tests/real_image.rs` (новые `#[ignore]`-тесты)
 
-- [ ] **Step 1: Экспорт известной формы HNX** (таргет `899407D7-99FE-43D8-9A21-79EC328CAC21:0x10:0`, форма Processor Configuration): ассерты — число вопросов, непустые prompt/help, options-тексты, `varstores` содержит Setup id 1 (EC87D643…, size 0x72), `meta.lossy` ⊆ ожидаемого множества (suppress_if/grayout_if/…).
+- [ ] **Step 1: Экспорт известной формы HNX** (таргет `899407D7-99FE-43D8-9A21-79EC328CAC21:0x10:0`, форма 10029 PCI Subsystem Settings: «Processor Configuration» — форма 2 формсета IntelRCSetup `ABBCE13D…`, под корневым Setup её нет, а её вопросы ссылаются на RC-varstore, не Setup id 1): ассерты — число вопросов, непустые prompt/help, options-тексты, `varstores` содержит Setup id 1 (EC87D643…, size 0x72), `meta.lossy` ⊆ ожидаемого множества (suppress_if/grayout_if/…).
 - [ ] **Step 2: Round-trip гейт**: export → `add_form` (write-копия образа) → `export_form` новой формы → семантическое равенство (кроме form_id/question_id/string_id).
 - [ ] **Step 3: `cargo test --all` + `cargo clippy --all -- -D warnings` + `cargo fmt --all -- --check`**
 - [ ] **Step 4: Коммит**
