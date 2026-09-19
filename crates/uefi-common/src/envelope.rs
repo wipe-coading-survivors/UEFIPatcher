@@ -45,8 +45,10 @@ pub struct Envelope {
 /// Refs-only пакет (Task 7): объект верхнего уровня с ключом `refs`
 /// (значение-объект) без ключа `formset`, `meta` опциональна — все entries
 /// обязаны нести явный `form_id` (спека §1/§5, invalid package до RPC);
-/// `body` такого пакета — пустая строка (мутации формсета нет). Массивный
-/// np_ref-wire `{"refs":[…]}` — по-прежнему bare для question add.
+/// `body` такого пакета — пустая строка (мутации формсета нет). Гибрид
+/// `{"formset":{…},"refs":{…}}` без `meta` — полный пакет (тело из
+/// `formset`, refs разобраны), семантика та же, что у конверта с `meta`.
+/// Массивный np_ref-wire `{"refs":[…]}` — по-прежнему bare для question add.
 pub fn split_envelope(text: &str) -> Result<Envelope, EnvelopeError> {
     let v: serde_json::Value =
         serde_json::from_str(text).map_err(|e| EnvelopeError::InvalidJson(e.to_string()))?;
@@ -59,7 +61,17 @@ pub fn split_envelope(text: &str) -> Result<Envelope, EnvelopeError> {
     };
     if !obj.contains_key("meta") {
         if let Some(raw) = obj.get("refs").filter(|r| r.is_object()) {
-            return refs_only(Meta::default(), raw.clone());
+            if let Some(formset) = obj.get("formset") {
+                let refs = parse_refs(raw)?;
+                let body = serde_json::to_string(formset)
+                    .map_err(|e| EnvelopeError::InvalidJson(e.to_string()))?;
+                return Ok(Envelope {
+                    meta: Meta::default(),
+                    refs: Some(refs),
+                    body,
+                });
+            }
+            return refs_only(Meta::default(), raw);
         }
         return Ok(Envelope {
             meta: Meta::default(),
@@ -70,10 +82,7 @@ pub fn split_envelope(text: &str) -> Result<Envelope, EnvelopeError> {
     let meta: Meta = serde_json::from_value(obj["meta"].clone())
         .map_err(|e| EnvelopeError::InvalidMeta(e.to_string()))?;
     let refs = match obj.get("refs") {
-        Some(r) => Some(
-            serde_json::from_value(r.clone())
-                .map_err(|e| EnvelopeError::InvalidRefs(e.to_string()))?,
-        ),
+        Some(r) => Some(parse_refs(r)?),
         None => None,
     };
     let body = match obj.get("formset") {
@@ -82,7 +91,7 @@ pub fn split_envelope(text: &str) -> Result<Envelope, EnvelopeError> {
         }
         None => {
             return match refs {
-                Some(_) => refs_only(meta, obj["refs"].clone()),
+                Some(_) => refs_only(meta, &obj["refs"]),
                 None => Err(EnvelopeError::MissingFormsetBody),
             };
         }
@@ -90,9 +99,12 @@ pub fn split_envelope(text: &str) -> Result<Envelope, EnvelopeError> {
     Ok(Envelope { meta, refs, body })
 }
 
-fn refs_only(meta: Meta, raw: serde_json::Value) -> Result<Envelope, EnvelopeError> {
-    let refs: RefsSection =
-        serde_json::from_value(raw).map_err(|e| EnvelopeError::InvalidRefs(e.to_string()))?;
+fn parse_refs(raw: &serde_json::Value) -> Result<RefsSection, EnvelopeError> {
+    serde_json::from_value(raw.clone()).map_err(|e| EnvelopeError::InvalidRefs(e.to_string()))
+}
+
+fn refs_only(meta: Meta, raw: &serde_json::Value) -> Result<Envelope, EnvelopeError> {
+    let refs = parse_refs(raw)?;
     if refs.entries.is_empty() || refs.entries.iter().any(|e| e.form_id.is_none()) {
         return Err(EnvelopeError::InvalidRefs(
             "refs-only package entries must be non-empty with explicit form_id".to_string(),
@@ -487,5 +499,15 @@ mod tests {
         let e = split_envelope(np).unwrap();
         assert_eq!(e.body, np);
         assert!(e.refs.is_none());
+    }
+
+    #[test]
+    fn refs_with_formset_without_meta_is_full_package() {
+        let text = r#"{"formset":{"forms":[{"id":7}]},"refs":{"parent_form_id":10001,"entries":[{"prompt":"P"}]}}"#;
+        let e = split_envelope(text).unwrap();
+        assert!(e.body.contains(r#""forms":[{"id":7}]"#));
+        let r = e.refs.unwrap();
+        assert_eq!(r.parent_form_id, 10001);
+        assert!(r.entries[0].form_id.is_none());
     }
 }
