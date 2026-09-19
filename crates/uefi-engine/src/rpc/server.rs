@@ -781,6 +781,20 @@ impl EngineService for EngineServer {
     }
 
     #[tracing::instrument(skip(self, req), err)]
+    async fn hii_list_varstores(
+        &self,
+        req: Request<HiiListVarstoresRequest>,
+    ) -> RpcResult<HiiListVarstoresResponse> {
+        let r = req.into_inner();
+        let img = self.get_or_load_image(&r.image_id).await?;
+        let varstores = crate::hii::list_varstores(&img, &r.target)
+            .map_err(|e| hii_error_status_ctx(e, &r.target))?;
+        let _ = self.sm.touch(&img.session_id);
+        tracing::info!(image_id = %r.image_id, target = %r.target, varstores = varstores.len(), "hii list varstores");
+        Ok(Response::new(HiiListVarstoresResponse { varstores }))
+    }
+
+    #[tracing::instrument(skip(self, req), err)]
     async fn hii_form_tree(
         &self,
         req: Request<HiiFormTreeRequest>,
