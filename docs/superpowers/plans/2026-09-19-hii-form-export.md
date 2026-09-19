@@ -321,7 +321,7 @@ pub fn body_form_title(body: &str) -> Option<String> {
 }
 
 fn next_qid(busy: &[u16]) -> u16 {
-    busy.iter().copied().max().map_or(0x7F00, |m| m.max(0x7F00).saturating_add(1))
+    busy.iter().copied().max().map_or(0x7F00, |m| m.saturating_add(1).max(0x7F00))
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -868,7 +868,7 @@ fn import(target, file):
 `hii_list_forms`/`hii_list_questions`/`hii_list_varstores`-обёртки уже есть (client.rs). `HiiQuestionAddRequest.schema_json` — `serde_json::to_string(&QuestionAddList-совместимый json {"refs":[…]})` (формат `np_ref.json`: записи с form_id/prompt/help/question_id[/formset_guid]).
 - [ ] **Step 2: Integration-тест с журналом mock'а**
 
-Полный пакет (formset+refs): журнал == `[HiiListForms, HiiListQuestions, HiiFormAdd, HiiQuestionAdd]`; refs-only: `[HiiListForms, HiiListQuestions, HiiQuestionAdd]`; bad parent: `[HiiListForms]` + ошибка, ноль мутаций.
+Полный пакет (formset+refs): журнал == `[HiiListForms, HiiListQuestions, HiiListVarstores, HiiFormAdd, HiiQuestionAdd]` (HiiListVarstores — карта для `plan_varstores`, до FormAdd; порядок list_forms → list_questions — pre-check §3.1); refs-only: `[HiiListForms, HiiListQuestions, HiiQuestionAdd]` (varstore-free путь, без карты); bad parent: `[HiiListForms]` + ошибка, ноль мутаций.
 - [ ] **Step 3: `cargo test -p uefi-cli` + clippy + коммит**
 
 ```bash
@@ -889,7 +889,7 @@ git commit -m "feat(cli): hii import — макро pre-check→form add→quest
   - `e` на FormsRow::Form → `enter_insert_mode("hii", format!("hii form export {item} --out "))`
   - `I` → `enter_insert_mode("hii", "hii import ".into())` (target из FormSet-строки под курсором, если стоит на ней)
   - `A` на Form → `enter_insert_mode("hii", format!("hii question add {target}#{form} "))`
-  - `R` на Form → `enter_insert_mode("hii", "hii import <target>#? --file refs.json")` + в status_msg подсказка цели (`form_id`+`formset_guid` строки под курсором — автор вписывает их в пакет)
+  - `R` на Form → `enter_insert_mode("hii", format!("hii import {target} --file refs.json"))` (import не принимает `#parent` — родитель берётся из `refs.parent_form_id` пакета; target — формсет строки под курсором, автор правит) + в status_msg подсказка цели (`form_id`+`formset_guid` строки под курсором — автор вписывает их в пакет)
 - [ ] **Step 3: Completion** (`complete()`, тесты-образцы :1744-1878): `form export` → item_id-кандидаты (переиспользовать список form add); `import` → target-кандидаты + `--file` → path completion (`complete_path`).
 - [ ] **Step 4: Тесты**: unit — префиллы e/I/R/A (по образцу `add_prefill_formset_form_and_dangling`, :2356); execute-ветки на mock-клиенте невозможны (unit) — покрытие в Task 9.
 - [ ] **Step 5: `cargo test -p uefi-tui` + clippy + коммит**
@@ -906,7 +906,7 @@ git commit -m "feat(tui): :hii form export/:hii import + клавиши e/I/R/A 
 **Files:**
 - Modify: `crates/uefi-tui/tests/tui_integration.rs` (или новый `hii_import.rs`)
 
-- [ ] **Step 1: Тесты через `start_mock` + `SchemaCall`-журнал (:16-39, :575)**: полный пакет → журнал `["HiiListForms","HiiListQuestions","HiiFormAdd","HiiQuestionAdd"]`, schema_json question add содержит form_id из ответа form add; refs-only → без HiiFormAdd; конверт в `:hii form add` → ошибка-маршрутизатор.
+- [ ] **Step 1: Тесты через `start_mock` + `SchemaCall`-журнал (:16-39, :575)**: полный пакет → журнал `["HiiListForms","HiiListQuestions","HiiListVarstores","HiiFormAdd","HiiQuestionAdd"]`, schema_json question add содержит form_id из ответа form add; refs-only → без HiiFormAdd; конверт в `:hii form add` → ошибка-маршрутизатор.
 - [ ] **Step 2: Паритет**: один и тот же файл пакета прогоняется через CLI-команду (Task 7 integration) и через TUI `execute_command` — ассерт: последовательности rpc-имён журналов идентичны (спека §6).
 - [ ] **Step 3: `cargo test -p uefi-tui --test tui_integration` + коммит**
 
