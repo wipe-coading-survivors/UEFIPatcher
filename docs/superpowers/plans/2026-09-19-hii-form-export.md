@@ -808,7 +808,7 @@ git commit -m "feat(engine): form_export — Text/Action/Ref + lossy + reference
 
 **Files:**
 - Modify: `crates/uefi-proto/proto/engine.proto` (rpc-строка рядом с `HiiFormAdd`, ~:33; сообщения рядом с `HiiFormAddRequest`, ~:211)
-- Modify: `crates/uefi-engine/src/rpc/server.rs` (хендлер по образцу `hii_form_add`, :873)
+- Modify: `crates/uefi-engine/src/rpc/server.rs` (хендлер по read-only образцу `hii_gates_list`/`hii_question_info`, :986/:1023 — НЕ мутаторный `hii_form_add` :887: lock/images не нужны, `img` из `get_or_load_image`)
 - Modify: `crates/uefi-tui/tests/mock_server.rs`, `crates/uefi-cli/tests/mock_server.rs` (мок-метод), `crates/uefi-gateway/tests/mock_server.rs` (если есть EngineService-мок — заглушка)
 
 **Interfaces:**
@@ -817,7 +817,7 @@ git commit -m "feat(engine): form_export — Text/Action/Ref + lossy + reference
 - [ ] **Step 1: proto**
 
 ```proto
-  rpc HiiFormExport(HiiFormExportRequest)                 returns (HiiFormExportResponse);
+  rpc HiiFormExport(HiiFormExportRequest)               returns (HiiFormExportResponse);
 ```
 ```proto
 message HiiFormExportRequest  { string image_id = 1; string item_id = 2; }
@@ -829,18 +829,22 @@ message HiiFormExportResponse {
 }
 ```
 Пересобрать: `cargo build -p uefi-proto`.
-- [ ] **Step 2: Хендлер (по образцу :873 — get_or_load_image, lock, hii_error_status_ctx)**
+- [ ] **Step 2: Хендлер (read-only образец :986/:1023 — get_or_load_image → `export_form(&img, …)`, hii_error_status_ctx, instrument + sm.touch)**
 
 ```rust
-    async fn hii_form_export(&self, req: Request<HiiFormExportRequest>) -> RpcResult<HiiFormExportResponse> {
+    #[tracing::instrument(skip(self, req), err)]
+    async fn hii_form_export(
+        &self,
+        req: Request<HiiFormExportRequest>,
+    ) -> RpcResult<HiiFormExportResponse> {
         let r = req.into_inner();
         let img = self.get_or_load_image(&r.image_id).await?;
-        let images = self.images.lock().await;
-        let img_slot = images.get(&r.image_id).ok_or_else(|| Status::not_found("image not found"))?;
-        let export = crate::hii::form_export::export_form(img_slot, &r.item_id)
+        let export = crate::hii::form_export::export_form(&img, &r.item_id)
             .map_err(|e| hii_error_status_ctx(e, &r.item_id))?;
         let schema_json = serde_json::to_string(&export.schema)
             .map_err(|e| Status::internal(e.to_string()))?;
+        let _ = self.sm.touch(&img.session_id);
+        tracing::info!(image_id = %r.image_id, item_id = %r.item_id, "hii form export");
         Ok(Response::new(HiiFormExportResponse {
             schema_json,
             formset_guid: export.formset_guid,
@@ -849,7 +853,7 @@ message HiiFormExportResponse {
         }))
     }
 ```
-- [ ] **Step 3: Моки** — в TUI/CLI mock: `hii_form_export` возвращает фикстурный ответ (schema_json из строковой константы) и пишет в журнал `SchemaCall { rpc: "HiiFormExport", .. }`.
+- [ ] **Step 3: Моки** — TUI mock: `hii_form_export` возвращает фикстурный ответ (schema_json из строковой константы) и пишет в журнал `SchemaCall { rpc: "HiiFormExport", target: item_id, schema_json: "" }`. CLI mock: журнала в tests/mock_server.rs нет (rpc-журнал заводится в Task 7 Step 1) — только фикстурный ответ, достаточный для тестов Task 6. Gateway mock: заглушка `HiiFormExportResponse::default()`.
 - [ ] **Step 4: Тест хендлера (server.rs tests, по образцу :1686) + `cargo test --all` + clippy**
 
 - [ ] **Step 5: Коммит**
