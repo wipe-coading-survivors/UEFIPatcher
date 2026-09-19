@@ -994,7 +994,7 @@ fn validate_question_add(
     Ok((optimized, failsafe))
 }
 
-fn question_forms_package<'a>(
+pub(crate) fn question_forms_package<'a>(
     root: &'a FfsNode,
     target: &crate::types::Target,
     bare_channel: bool,
@@ -5103,6 +5103,31 @@ mod tests {
                 }
             }
 
+            fn one_of_item(var_store_id: u16) -> schema::ItemSchema {
+                schema::ItemSchema::OneOf(schema::OneOfItem {
+                    prompt: "P".into(),
+                    help: "H".into(),
+                    question_id: 0x7F01,
+                    var_store_id,
+                    var_offset: 0,
+                    size: 1,
+                    display: schema::DisplayMode::UintDec,
+                    options: vec![
+                        schema::OptionSchema {
+                            text: "Off".into(),
+                            value: 0,
+                            default: None,
+                        },
+                        schema::OptionSchema {
+                            text: "On".into(),
+                            value: 1,
+                            default: None,
+                        },
+                    ],
+                    defaults: schema::Defaults::default(),
+                })
+            }
+
             fn varstore_op_len(pkg: &[u8]) -> usize {
                 let at = pkg
                     .windows(6)
@@ -5380,6 +5405,86 @@ mod tests {
                 let err = list_varstores(&img, "00000000-0000-0000-0000-000000000000:0x10:0")
                     .unwrap_err();
                 assert!(matches!(err, HiiError::NotFound), "got {err:?}");
+            }
+
+            #[test]
+            fn add_form_rejects_item_on_undeclared_varstore_without_mutation() {
+                let (flash, _, _) = question_add_flash_image();
+                let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+                let mut schema = varstore_form_schema();
+                schema.forms[0].items.push(one_of_item(0x7F7F)); // не в формсете и не в пакете
+                let err = add_form(&mut img, ITEM_FORMSET, &schema).unwrap_err();
+                assert!(
+                    matches!(err, HiiError::InvalidSchema(ref m)
+                        if m.contains("var store id 0x7f7f is not declared")),
+                    "got {err:?}"
+                );
+                assert_eq!(
+                    build_image(&img).unwrap(),
+                    flash,
+                    "rejection must not mutate"
+                );
+            }
+
+            #[test]
+            fn add_form_rejects_duplicate_declared_varstore_id() {
+                // id 7 уже декларирован пакетом varstore_form_schema; второй раз = дубль внутри пакета
+                let (flash, _, _) = question_add_flash_image();
+                let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+                let mut schema = varstore_form_schema();
+                schema.varstores.push(schema.varstores[0].clone());
+                let err = add_form(&mut img, ITEM_FORMSET, &schema).unwrap_err();
+                assert!(
+                    matches!(err, HiiError::InvalidSchema(ref m)
+                        if m.contains("varstore id 0x7 already exists")),
+                    "got {err:?}"
+                );
+                assert_eq!(build_image(&img).unwrap(), flash);
+            }
+
+            #[test]
+            fn add_form_rejects_declared_id_existing_in_formset() {
+                // выяснить фактический занятый id базового формсета фикстуры (см. Step 2),
+                // объявить его же в пакете → дубль с формсетом
+                let (flash, _, _) = question_add_flash_image();
+                let img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+                let busy = list_varstores(&img, ITEM_FORMSET).unwrap()[0].id as u16;
+                drop(img);
+                let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+                let mut schema = varstore_form_schema();
+                schema.varstores[0].id = busy; // теперь конфликтует с формсетом
+                let err = add_form(&mut img, ITEM_FORMSET, &schema).unwrap_err();
+                assert!(
+                    matches!(err, HiiError::InvalidSchema(ref m)
+                        if m.contains("already exists in the formset")),
+                    "got {err:?}"
+                );
+                assert_eq!(build_image(&img).unwrap(), flash);
+            }
+
+            #[test]
+            fn add_form_accepts_item_on_package_declared_varstore() {
+                let (flash, _, _) = question_add_flash_image();
+                let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+                let mut schema = varstore_form_schema();
+                schema.varstores[0].id = 7;
+                schema.forms[0].items.push(one_of_item(7)); // объявлен пакетом
+                let res = add_form(&mut img, ITEM_FORMSET, &schema);
+                assert!(res.is_ok(), "got {:?}", res.unwrap_err());
+            }
+
+            #[test]
+            fn add_form_accepts_item_on_existing_formset_varstore() {
+                let (flash, _, _) = question_add_flash_image();
+                let img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+                let busy = list_varstores(&img, ITEM_FORMSET).unwrap()[0].id as u16;
+                drop(img);
+                let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+                let mut schema = varstore_form_schema();
+                schema.varstores.clear(); // не декларируем ничего — item на существующий id
+                schema.forms[0].items.push(one_of_item(busy));
+                let res = add_form(&mut img, ITEM_FORMSET, &schema);
+                assert!(res.is_ok(), "got {:?}", res.unwrap_err());
             }
         }
     }
