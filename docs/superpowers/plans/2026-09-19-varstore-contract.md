@@ -916,10 +916,44 @@ fn real_450x_varstore_ids_21_30_probe() {
    семантика (size 1, options непустые); для скорректированного метода
    схема вообще не нужна (проба в varstores-параметре).
 
+- [ ] **Step 2a: Live-гейт валидаций §2 add_form на 450x (спека §10)**
+
+```rust
+/// Спека varstore-contract §10: §2-валидации add_form на живом образе.
+/// (а) item на несуществующий var_store_id и (б) дубль декларации с
+/// формсетом → оба InvalidSchema, дифф образа пустой (отказ до мутаций);
+/// (в) happy-path пакет с varstores → одна декларация на id, ре-парс
+/// читает её картой list_varstores.
+#[test]
+#[ignore = "real image required"]
+fn real_add_form_varstore_validations_450x() {
+    // 450x-образ, RC-формсет ABBCE13D…:0x10:0 (карта: ids 1–2; 21–30
+    // свободны — §7.1); схема пакета — в Rust из schema::FormSetSchema
+    // (по образцу real_image_hii_form_add_into_setup_formset):
+    // (а) свежий parse (Write) + add_form: numeric item на var_store_id
+    //     0x7F7F (нет в карте формсета и не объявлен пакетом) →
+    //     InvalidSchema «var store id … is not declared», затем
+    //     build_image(&img) == исходные байты (rejection до мутаций);
+    // (б) свежий parse, пакет декларирует занятый id (busy узнаётся в
+    //     рантайме через list_varstores по таргету) → InvalidSchema
+    //     «varstore id … already exists in the formset», байты не меняются;
+    // (в) свежий parse, happy-path пакет: varstore со свободным id 21
+    //     (§7.1) + numeric item на нём → add_form Ok; build_image +
+    //     re-parse собранных байтов → list_varstores содержит id 21 с
+    //     заявленными size/name, ровно одна декларация на id.
+}
+```
+
+Дефект плана (фикс 2026-09-19, final review F1): спека §10 требует live-гейт
+валидаций §2 («rejection-кейсы (а)/(б) без мутаций + happy-path ре-парс
+картой»), Task 7 его молча уронил — добавлен Step 2a; Step 3 расширен до
+трёх тестов.
+
 - [ ] **Step 3: Прогон с образами**
 
 Run: `cargo test -p uefi-engine --test real_image real_ -- --ignored --nocapture`
-Expected: оба PASS; в выводе — таблица 21–30 (free/busy) и карта HNX.
+Expected: все три PASS; в выводе — таблица 21–30 (free/busy), карта HNX и
+отчёт валидаций §2 на 450x.
 
 - [ ] **Step 4: Фиксация знания — docs (в ветке)**
 
