@@ -3881,6 +3881,153 @@ mod tests {
         );
     }
 
+    fn value_op_map(
+        kind: values::QuestionKind,
+        width: u8,
+        min: u64,
+        max: u64,
+    ) -> values::QuestionMap {
+        values::QuestionMap {
+            question_id: 0x3B,
+            kind,
+            var_store_id: 1,
+            var_offset: 0,
+            width,
+            varstore: None,
+            options: Vec::new(),
+            defaults: Vec::new(),
+            min,
+            max,
+            step: 0,
+        }
+    }
+
+    #[test]
+    fn set_value_refuses_other_question_kind() {
+        let err = validate_set_value(
+            &value_op_map(values::QuestionKind::Other, 1, 0, u64::MAX),
+            0,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, HiiError::ValueOpUnsupported(ref m) if m.contains("question kind is not value-settable"))
+        );
+    }
+
+    #[test]
+    fn set_value_refuses_zero_width() {
+        let err = validate_set_value(
+            &value_op_map(values::QuestionKind::OneOf, 0, 0, u64::MAX),
+            1,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, HiiError::ValueOpUnsupported(ref m) if m.contains("question width 0 is not settable"))
+        );
+    }
+
+    #[test]
+    fn set_value_refuses_width_over_8() {
+        let err = validate_set_value(
+            &value_op_map(values::QuestionKind::OneOf, 9, 0, u64::MAX),
+            1,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, HiiError::ValueOpUnsupported(ref m) if m.contains("question width 9 is not settable"))
+        );
+    }
+
+    #[test]
+    fn set_value_refuses_value_not_fit_width() {
+        let err = validate_set_value(
+            &value_op_map(values::QuestionKind::OneOf, 1, 0, u64::MAX),
+            0x100,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, HiiError::ValueOpUnsupported(ref m) if m.contains("value 256 does not fit in 8 bits"))
+        );
+    }
+
+    #[test]
+    fn set_value_refuses_checkbox_not_boolean() {
+        let err = validate_set_value(
+            &value_op_map(values::QuestionKind::CheckBox, 1, 0, u64::MAX),
+            2,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, HiiError::ValueOpUnsupported(ref m) if m.contains("checkbox accepts only 0 or 1"))
+        );
+    }
+
+    #[test]
+    fn set_value_refuses_numeric_out_of_range() {
+        let err = validate_set_value(&value_op_map(values::QuestionKind::Numeric, 1, 0, 1), 5)
+            .unwrap_err();
+        assert!(
+            matches!(err, HiiError::ValueOpUnsupported(ref m) if m.contains("value 5 is outside numeric range 0..=1"))
+        );
+    }
+
+    #[test]
+    fn set_value_refuses_nameless_varstore() {
+        let pkg = forms_pkg(
+            [
+                g_varstore(1, 4, ""),
+                g_form(10029),
+                g_one_of_varstore(0x3B, 1, 0x3A),
+                g_option(4, 0x30, 0),
+                g_option(3, 0x00, 1),
+                g_end(),
+                g_end(),
+                g_end(),
+            ]
+            .concat(),
+        );
+        let mut image = vendor_image_with(0x19, pkg);
+        let err = set_value(&mut image, VENDOR_QUESTION_ITEM, 1).unwrap_err();
+        assert!(matches!(err, HiiError::ValueOpUnsupported(ref m) if m.contains("has no name")));
+    }
+
+    #[test]
+    fn set_value_refuses_var_offset_exceeds_store() {
+        let pkg = forms_pkg(
+            [
+                g_varstore(1, 4, "Setup"),
+                g_form(10029),
+                g_one_of_varstore(0x3B, 1, 4),
+                g_option(4, 0x30, 0),
+                g_option(3, 0x00, 1),
+                g_end(),
+                g_end(),
+                g_end(),
+            ]
+            .concat(),
+        );
+        let mut image = vendor_image_with(0x19, pkg);
+        let err = set_value(&mut image, VENDOR_QUESTION_ITEM, 1).unwrap_err();
+        assert!(
+            matches!(err, HiiError::ValueOpUnsupported(ref m) if m.contains("exceeds varstore size"))
+        );
+    }
+
+    #[test]
+    fn set_value_refuses_missing_record_in_store() {
+        let mut image = image_with_nvar_stores();
+        let inner = [
+            nvar_entry(Some("Other"), &[0x11u8; 6], 0x82, Some(0)),
+            nvar_entry(Some("Other"), &[0u8; 114], 0x82, Some(0)),
+        ]
+        .concat();
+        let body = nvar_entry(Some("StdDefaults"), &inner, 0x82, Some(0));
+        image.root.children[0].children[0].body = body.clone();
+        image.root.children[1].children[0].children[0].children[0].body = body;
+        let err = set_value(&mut image, VENDOR_QUESTION_ITEM, 1).unwrap_err();
+        assert!(matches!(err, HiiError::ValueOpUnsupported(ref m) if m.contains("has no record")));
+    }
+
     #[test]
     fn set_value_repeated_is_noop_report() {
         let mut image = image_with_nvar_stores();

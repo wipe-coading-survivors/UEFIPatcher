@@ -634,6 +634,27 @@ mod tests {
     }
 
     #[test]
+    fn numeric_width_2_4_8_read_from_size_flags() {
+        for (flags, width) in [
+            (r_efi::hii::IFR_NUMERIC_SIZE_2, 2u8),
+            (r_efi::hii::IFR_NUMERIC_SIZE_4, 4),
+            (r_efi::hii::IFR_NUMERIC_SIZE, 8),
+        ] {
+            let ifr = [
+                form_set(7),
+                form(10029, 21),
+                numeric_op(0x11, flags, 0, 0xFF, 1),
+                end(),
+                end(),
+                end(),
+            ]
+            .concat();
+            let q = find_question(&package(&ifr), 10029, 0x11).expect("numeric found");
+            assert_eq!(q.width, width, "flags {flags:#x}");
+        }
+    }
+
+    #[test]
     fn find_question_numeric_truncated_tail_returns_zeros() {
         let mut p = question_header(0x55, 1, 0x0010, 0x00);
         p.push(r_efi::hii::IFR_NUMERIC_SIZE_1);
@@ -714,6 +735,25 @@ mod tests {
         assert_eq!(q.defaults[0].default_id, 0);
         assert_eq!(q.defaults[0].type_, 1);
         assert_eq!(q.defaults[0].value, 0);
+    }
+
+    #[test]
+    fn default_types_2_to_4_read() {
+        for t in 2u8..=4 {
+            let ifr = [
+                form_set(7),
+                form(10029, 21),
+                one_of_4g(),
+                default_op(0, t, &[0x01]),
+                end(),
+                end(),
+                end(),
+            ]
+            .concat();
+            let q = find_question(&package(&ifr), 10029, 0x003B).expect("question found");
+            assert_eq!(q.defaults.len(), 1, "type {t}");
+            assert_eq!(q.defaults[0].type_, t);
+        }
     }
 
     #[test]
