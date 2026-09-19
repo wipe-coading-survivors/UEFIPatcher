@@ -115,9 +115,12 @@ message HiiListVarstoresResponse { repeated VarStoreInfo varstores = 1; }
 ## §4 CLI: `hii varstore list`
 
 - text: по строке на стор — `id=0x0002 guid=EC87D643-99DC-4D14-B25D-8AC6D5C7B27A
-  size=0x0094 name="Setup"` (name-value: `guid=- size=0x0000`). В text-формате
-  одна легенда-строка в **stderr** (первая в крейте конвенция: stdout чист
-  для пайпов): `# guid '-' = name-value declaration (no GUID, no bounds)`.
+  size=0x0094 name="Setup"` (name-value: `guid=- size=0x0000`). Легенда — по
+  существующему паттерну `hii_legend`/`HiiLegendCmd`
+  (uefi-common/format.rs): третий вариант `HiiLegendCmd::VarstoreList`
+  (грамматика target + строка `guid '-' = name-value declaration (no
+  GUID, no bounds)`), команда в text-формате делает `eprint!` перед
+  печатью списка — как `form list`/`question list` (commands/hii.rs:12–18).
 - json: массив VarStoreInfo; tsv: заголовок `id\tguid\tsize\tname`
   (легенда не печатается — tsv машинный).
 - Команда read-only (образ в любом режиме), completion по target-грамматике
@@ -221,12 +224,12 @@ message HiiListVarstoresResponse { repeated VarStoreInfo varstores = 1; }
   ок-existing / ок-package-declared; `list_varstores` — резолв таргета,
   name-value поля. Сокет-дефолт — unit на новую дефолт-функцию, если план
   выделит (иначе проверка компиляцией + gateway-config тест).
-- **Unit (uefi-common)**: сокет-дефолт `default_sock()` уже покрыт
-  (state.rs); новых uefi-common-функций в цикле нет (планнер §6 — цикл
-  hii-form-export).
+- **Unit (uefi-common)**: `hii_legend` VarstoreList-вариант (по образцу
+  `hii_legend_questions_variant`, format.rs); сокет-дефолт `default_sock()`
+  уже покрыт (state.rs); других новых uefi-common-функций в цикле нет
+  (планнер §6 — цикл hii-form-export).
 - **Integration (mock-server, CLI и TUI)**: новый RPC в журналах вызовов;
-  TUI-юниты панели `V` (переключение, кэш, скролл); CLI — text-легенда в
-  stderr (assert-канал).
+  TUI-юниты панели `V` (переключение, кэш, скролл).
 - **Real-image (`#[ignore]`)**: §7 (HNX-карта, 450x-зонд); гейт валидаций
   §2 на живом образе — `form_add` с пакетом (а) item на несуществующий
   `var_store_id`, (б) с дублем декларации → оба InvalidSchema, дифф образа
