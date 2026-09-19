@@ -44,7 +44,7 @@ git checkout master && git pull --ff-only 2>/dev/null; git checkout -b varstore-
 - Test: тот же файл, `mod tests`
 
 **Interfaces:**
-- Consumes: `r_efi::hii::IFR_VARSTORE_NAME_VALUE_OP` (=0x25), существующие тест-хелперы `opcode`, `form_set`, `package`, `end`.
+- Consumes: `r_efi::hii::IFR_VARSTORE_NAME_VALUE_OP` (=0x25), `is_statement_op` (регистрация опкода для walker'а), существующие тест-хелперы `opcode`, `form_set`, `package`, `end`.
 - Produces: `VarStoreMap { id: u16, guid: Option<Guid> /* None для name-value */, size: u16 /* 0 для name-value */, name: String }` — расширенная карта, используемая задачами 2, 3, 7.
 
 Формат IFR_VARSTORE_NAME_VALUE_OP: Header(2) + VarStoreId u16@+2 + Name UCS-2z@+4; минимальная длина 6.
@@ -96,6 +96,8 @@ Expected: FAIL — карта пуста (0 assertions about len 1).
             name: ucs2_strz(&pkg[off + 4..off + len]),
         }),
 ```
+
+Плюс зарегистрировать опкод в `is_statement_op` (walker `walk_statements` посещает только зарегистрированные опкоды — без этого arm не вызывается; тот же файл).
 
 - [ ] **Step 4: Run — проходит + регресс соседей**
 
