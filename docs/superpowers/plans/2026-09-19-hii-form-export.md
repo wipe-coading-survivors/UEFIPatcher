@@ -516,12 +516,12 @@ git commit -m "feat(common): envelope planners — plan_ref_step (дефолты
 
 - [ ] **Step 1: Каркас + резолв item_id**
 
-`item_id` — формат `FormInfo.form_id` (тот же, что у set-visibility). Резолв: parse target-часть через `crate::parser::target::parse_target` (как `add_form`, `form_add.rs:40-46`), спуск к FFS-файлу, поиск form-пакета каналом `questions.rs:74` (`collect_string_sections`-паттерн: RAW = готовый пакет, PE-resource = package-list через `parse_package_list`, рекурсивно через COMPRESSION/GUIDED), внутри пакета — формы по `IFR_FORM_OP` + `form_id`. formset_guid — из `IFR_FORM_SET_OP`-заголовка пакета (`ifr.rs` уже парсит; при отсутствии хелпера — вычитать GUID из заголовка formset-опкода по образцу `values.rs::varstore_map`).
+`item_id` — грамматика `set_item_visibility` для форм-таргетов: `<target>#<form_id>` (form_id — десятичный `FormInfo.form_id_ifr`, как строит TUI `fmt_item` `{}#{}`); вопрос-суффикс `:qid` и голый `<target>` без `#` → `HiiError::NotFound` (экспорт требует конкретную форму). Резолв: `super::parse_item_id` (mod.rs) → `find_item_path`/`find_item` (как `form_add.rs:40-46`, но read-only, без writability-барьеров); тексты — `questions::prompt_texts(file)` по FFS-файлу (секция — `path[..len-1]`, образец `find_question_map`, mod.rs). Поиск form-пакета — готовый `super::form_package_ranges(node)` (mod.rs: RAW-тело = пакет, PE32 = все forms-пакеты ресурса); пакет выбирается тот, где `ifr::parse_form_package` видит форму `form_id`. formset_guid — `ifr::parse_form_package(pkg) → FormSetInfo.guid` → `crate::guid_to_upper_string`.
 ```rust
 use std::collections::HashMap;
 
-use super::{schema, values, HiiError};
-use crate::types::{FfsNode, Image};
+use super::{form_package_ranges, ifr, parse_item_id, schema, values, HiiError};
+use crate::types::{FfsNode, FfsType, Image};
 
 pub struct FormExport {
     pub schema: schema::FormSetSchema,
@@ -531,19 +531,19 @@ pub struct FormExport {
 }
 
 /// Спека hii-form-export §2: экспорт формы в FormSetSchema-минимум.
-/// item_id — канонический FormInfo.form_id (как у HiiSetFormVisibility).
+/// item_id — `<target>#<form_id>` (грамматика HiiSetFormVisibility для форм).
 pub fn export_form(image: &Image, item_id: &str) -> Result<FormExport, HiiError> {
-    let (node, form_id) = resolve_form(image, item_id)?;
-    let pkg = find_form_package(&node, form_id).ok_or(HiiError::NotFound)?;
-    let texts = super::questions::prompt_texts(&node);
-    let items = question_items(&pkg, form_id, &texts);
+    let (file, node, form_id) = resolve_form(image, item_id)?;
+    let pkg = find_form_package(node, form_id).ok_or(HiiError::NotFound)?;
+    let texts = super::questions::prompt_texts(file);
+    let items = question_items(pkg, form_id, &texts);
     // Task 4 дополнит: text/action/ref-итемы, lossy, varstores, parent.
     let form = schema::FormSchema {
         id: form_id,
-        title: form_title(&pkg, form_id, &texts).unwrap_or_else(|| format!("Form {form_id}")),
+        title: form_title(pkg, form_id, &texts).unwrap_or_else(|| format!("Form {form_id}")),
         items,
     };
-    let formset_guid = package_formset_guid(&pkg);
+    let formset_guid = package_formset_guid(pkg);
     Ok(FormExport {
         schema: schema::FormSetSchema {
             formset_guid: formset_guid.clone(),
@@ -562,18 +562,23 @@ pub fn export_form(image: &Image, item_id: &str) -> Result<FormExport, HiiError>
     })
 }
 ```
-`resolve_form`/`find_form_package`/`package_formset_guid`/`form_title` — приватные хелперы этого файла; писать по образцу `form_add.rs:40-46` (parse_target) и `questions.rs:74-111` (обход каналов). Если фактические сигнатуры отличаются — docs:fix (правило 11).
+`resolve_form`/`find_form_package`/`package_formset_guid`/`form_title` — приватные хелперы этого файла: `resolve_form(image, item_id) -> (file: &FfsNode, section: &FfsNode, form_id: u16)` (parse_item_id + find_item + Section-проверка как у list_varstores), `find_form_package(node, form_id) -> Option<&[u8]>` (form_package_ranges + parse_form_package), `package_formset_guid`/`form_title` — через `ifr::parse_form_package`.
 
 - [ ] **Step 2: question_items — полная fidelity вопросов**
 
 ```rust
 /// Вопросы формы → ItemSchema (help_sid +4/+5, display-флаги, options, defaults).
+/// Display/size-флаги живут в собственном Flags-байте опкода (off+13,
+/// EDK2 EFI_IFR_ONE_OF/EFI_IFR_NUMERIC = Question + UINT8 Flags +
+/// MINMAXSTEP_DATA), НЕ в question-header Flags (off+12 — там
+/// EFI_IFR_FLAG_*, где RESET_REQUIRED=0x10/REST_STYLE=0x20 коллидируют
+/// с display-маской). len < 14 → флагов нет: display = UintDec, size = 0.
 pub(crate) fn question_items(
     pkg: &[u8],
     form_id: u16,
     texts: &HashMap<u16, String>,
 ) -> Vec<schema::ItemSchema> {
-    use r_efi::hii::{IFR_CHECKBOX_OP, IFR_NUMERIC_OP, IFR_ONE_OF_OP};
+    use r_efi::hii::{IFR_CHECKBOX_OP, IFR_NUMERIC_OP, IFR_ONE_OF_OP, IFR_NUMERIC_SIZE};
     let mut out = Vec::new();
     values::walk_statements(pkg, |op, off, len, current| {
         if current != Some(form_id) || len < 13 {
@@ -584,7 +589,6 @@ pub(crate) fn question_items(
         let question_id = u16::from_le_bytes([pkg[off + 6], pkg[off + 7]]);
         let var_store_id = u16::from_le_bytes([pkg[off + 8], pkg[off + 9]]);
         let var_offset = u16::from_le_bytes([pkg[off + 10], pkg[off + 11]]);
-        let flags = pkg[off + 12];
         let get = |sid: u16| texts.get(&sid).cloned().unwrap_or_default();
         match op {
             IFR_ONE_OF_OP => {
@@ -596,8 +600,10 @@ pub(crate) fn question_items(
                     .map(|o| schema::OptionSchema {
                         text: get(o.string_id),
                         value: o.value,
-                        default: if o.flags & 1 != 0 {
+                        default: if o.flags & r_efi::hii::IFR_OPTION_DEFAULT != 0 {
                             Some(schema::DefaultClass::Optimized)
+                        } else if o.flags & r_efi::hii::IFR_OPTION_DEFAULT_MFG != 0 {
+                            Some(schema::DefaultClass::Failsafe)
                         } else {
                             None
                         },
@@ -610,13 +616,22 @@ pub(crate) fn question_items(
                     var_store_id,
                     var_offset,
                     size: values::one_of_width(&options, &defaults),
-                    display: display_mode(flags, 0),
+                    display: if len >= 14 {
+                        display_mode(pkg[off + 13], 0)
+                    } else {
+                        schema::DisplayMode::UintDec
+                    },
                     options: schema_options,
                     defaults: map_defaults(&defaults),
                 }));
             }
             IFR_NUMERIC_OP => {
-                let size = 1u8 << (pkg[off + 13] & r_efi::hii::IFR_NUMERIC_SIZE);
+                let size = if len >= 14 {
+                    1u8 << (pkg[off + 13] & IFR_NUMERIC_SIZE)
+                } else {
+                    0
+                };
+                let (min, max, step) = numeric_min_max_step(pkg, off, len, size);
                 out.push(schema::ItemSchema::Numeric(schema::NumericItem {
                     prompt: get(prompt_sid),
                     help: get(help_sid),
@@ -624,10 +639,14 @@ pub(crate) fn question_items(
                     var_store_id,
                     var_offset,
                     size,
-                    min: 0,
-                    max: 0,
-                    step: 0,
-                    display: display_mode(flags, size),
+                    min,
+                    max,
+                    step,
+                    display: if len >= 14 {
+                        display_mode(pkg[off + 13], size)
+                    } else {
+                        schema::DisplayMode::UintDec
+                    },
                     defaults: schema::Defaults::default(),
                 }));
             }
@@ -645,13 +664,29 @@ pub(crate) fn question_items(
     out
 }
 
-/// IFR_DISPLAY_*-флаги (0x30-маска) → DisplayMode; default = UintDec.
+/// IFR_DISPLAY-флаги (маска 0x30) → DisplayMode; r-efi/EDK2:
+/// 0x00=IntDec, 0x10=UintDec, 0x20=UintHex; default = UintDec
+/// (0x30 — только TIME/DATE). Спека hii-form-export §2.
 pub(crate) fn display_mode(flags: u8, _size: u8) -> schema::DisplayMode {
-    match flags & 0x30 {
-        0x10 => schema::DisplayMode::IntDec,
-        0x20 => schema::DisplayMode::UintHex,
+    match flags & r_efi::hii::IFR_DISPLAY {
+        r_efi::hii::IFR_DISPLAY_INT_DEC => schema::DisplayMode::IntDec,
+        r_efi::hii::IFR_DISPLAY_UINT_HEX => schema::DisplayMode::UintHex,
+        r_efi::hii::IFR_DISPLAY_UINT_DEC => schema::DisplayMode::UintDec,
         _ => schema::DisplayMode::UintDec,
     }
+}
+
+/// MINMAXSTEP_DATA-хвост Numeric: min/max/step по `size` байт на значение,
+/// clamp к длине опкода (образец — values.rs::find_question; read_le_u64
+/// приватен в values.rs — локальная копия в form_export.rs).
+fn numeric_min_max_step(pkg: &[u8], off: usize, len: usize, size: u8) -> (u64, u64, u64) {
+    let w = size as usize;
+    let read = |pos: usize| {
+        let start = off + 14 + pos * w;
+        let avail = (off + len).saturating_sub(start);
+        read_le_u64(pkg, start, w.min(avail))
+    };
+    (read(0), read(1), read(2))
 }
 
 fn map_defaults(entries: &[values::DefaultEntry]) -> schema::Defaults {
@@ -665,7 +700,7 @@ fn map_defaults(entries: &[values::DefaultEntry]) -> schema::Defaults {
     d
 }
 ```
-Внимание (docs:fix-кандидаты): фактические поля `values::OptionEntry`/`DefaultEntry` и семантика default-флага опций сверить с `values.rs:30,35,245`; min/max/step Numeric лежат в хвосте opcode'а — добрать по образцу чтения в `values.rs` (детальный `HiiQuestionInfo`-путь); флаг display у OneOf живёт в `flags` вопроса.
+Выверено по фактическому коду (бывшие docs:fix-кандидаты): поля `values::OptionEntry{string_id, flags, value}`/`DefaultEntry{default_id, type_, value}` — как в skeleton; default-флаги опций — `IFR_OPTION_DEFAULT=0x10`→Optimized, `IFR_OPTION_DEFAULT_MFG=0x20`→Failsafe (bit 0x1 — не default-флаг; round-trip с `build_question_ops`, mod.rs); `map_defaults`: default_id 1=manufacturing→failsafe, 0/прочие→optimized (EDK2 `EFI_HII_DEFAULT_CLASS_*`); `r_efi::hii::IFR_NUMERIC_SIZE` существует (маска 0x03, r-efi 7.0 hii.rs:776) — использование в skeleton верно; display-маска skeleton'а (0x10→IntDec) противоречила r-efi (`IFR_DISPLAY_UINT_DEC=0x10`) — исправлено выше.
 
 - [ ] **Step 3: Синтетика-тесты (фикстуры в духе questions.rs:159-230)**
 
