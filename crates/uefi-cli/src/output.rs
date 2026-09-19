@@ -583,6 +583,91 @@ pub fn print_question_add_result(
     }
 }
 
+/// Успешный ref-шаг импорта (спека hii-form-export §3.4): родитель и
+/// запланированные question-id записей.
+pub struct ImportRefBuilt {
+    pub parent_form_id: u16,
+    pub question_ids: Vec<u16>,
+}
+
+/// JSON-отчёт неудачной ref-фазы (спека hii-form-export §3.4): cause —
+/// произвольный текст, сериализуется serde_json (экранирование кавычек/
+/// обратных слэшей/контроля), не format!-интерполяцией.
+fn import_ref_error_json(
+    form_ids: &[u32],
+    string_ids: &std::collections::HashMap<String, u32>,
+    cause: &str,
+) -> String {
+    serde_json::json!({
+        "inserted_form_ids": form_ids,
+        "string_ids": string_ids,
+        "ref": {"built": false, "error": cause}
+    })
+    .to_string()
+}
+
+/// Двухфазный отчёт `hii import` (спека hii-form-export §3.4): честный
+/// статус обеих фаз — форма (inserted_form_ids/string_ids как у form add)
+/// и ref (built/not built + причина). `ref_outcome` None — пакет без
+/// refs-секции, только form-фаза.
+pub fn print_import(
+    form_ids: &[u32],
+    string_ids: &std::collections::HashMap<String, u32>,
+    ref_outcome: Option<&Result<ImportRefBuilt, String>>,
+    format: OutputFormat,
+) {
+    let ids = form_ids
+        .iter()
+        .map(|i| i.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    match format {
+        OutputFormat::Json => {
+            let sids = serde_json::to_string(string_ids).unwrap_or_else(|_| "{}".into());
+            match ref_outcome {
+                None => println!("{{\"inserted_form_ids\":[{ids}],\"string_ids\":{sids}}}"),
+                Some(Ok(r)) => {
+                    let qids = r
+                        .question_ids
+                        .iter()
+                        .map(|q| q.to_string())
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    println!(
+                        "{{\"inserted_form_ids\":[{ids}],\"string_ids\":{sids},\"ref\":{{\"built\":true,\"parent_form_id\":{},\"question_ids\":[{qids}]}}}}",
+                        r.parent_form_id
+                    )
+                }
+                Some(Err(cause)) => {
+                    println!("{}", import_ref_error_json(form_ids, string_ids, cause))
+                }
+            }
+        }
+        _ => {
+            println!("inserted_form_ids\t{ids}");
+            for (name, sid) in string_ids {
+                println!("string_id\t{name}\t{sid}");
+            }
+            match ref_outcome {
+                None => {}
+                Some(Ok(r)) => {
+                    let qids = r
+                        .question_ids
+                        .iter()
+                        .map(|q| format!("{q:#06x}"))
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    println!(
+                        "ref\tbuilt\tparent_form_id\t{}\tquestion_id\t{qids}",
+                        r.parent_form_id
+                    );
+                }
+                Some(Err(cause)) => println!("ref\tnot built\t{cause}"),
+            }
+        }
+    }
+}
+
 pub fn print_page_add(resp: &HiiPageAddResponse, format: OutputFormat) {
     match format {
         OutputFormat::Json => println!(
@@ -597,6 +682,13 @@ pub fn print_page_add(resp: &HiiPageAddResponse, format: OutputFormat) {
             );
         }
     }
+}
+
+/// Печать конверта-документа (спека hii-form-export §4): stdout — pretty JSON
+/// от `wrap_export` как есть; `--format` не применяется — это файл-артефакт,
+/// не таблица.
+pub fn print_envelope(text: &str) {
+    println!("{text}");
 }
 
 #[allow(dead_code)]
@@ -621,6 +713,25 @@ mod tests {
     #[test]
     fn session_created_json() {
         print_session_created("s1", "t1", OutputFormat::Json);
+    }
+
+    #[test]
+    fn import_ref_error_json_escapes_cause() {
+        let sids = std::collections::HashMap::from([("title".to_string(), 600u32)]);
+        let doc = import_ref_error_json(
+            &[42],
+            &sids,
+            "question_add failed: rpc \"invalid\" at path C:\\tmp\\x",
+        );
+        let v: serde_json::Value =
+            serde_json::from_str(&doc).expect("валидный JSON при cause с кавычками/слэшами");
+        assert_eq!(v["inserted_form_ids"][0].as_u64(), Some(42));
+        assert_eq!(v["string_ids"]["title"].as_u64(), Some(600));
+        assert_eq!(v["ref"]["built"].as_bool(), Some(false));
+        assert_eq!(
+            v["ref"]["error"].as_str(),
+            Some("question_add failed: rpc \"invalid\" at path C:\\tmp\\x")
+        );
     }
 
     #[test]
@@ -734,6 +845,11 @@ mod tests {
         print_page_add(&resp, OutputFormat::Json);
         print_page_add(&resp, OutputFormat::Text);
         print_page_add(&resp, OutputFormat::Tsv);
+    }
+
+    #[test]
+    fn envelope_print_smoke() {
+        print_envelope("{\n  \"formset\": {}\n}");
     }
 
     fn mock_question() -> QuestionInfo {

@@ -34,6 +34,10 @@ FORMS VIEW (Tab / Shift-Tab, :forms / :image)
   v              показать скрытую форму (unsuppress; скрытие не поддержано)
   u              unlock выбранной формы (:hii unlock)
   a              add: FormSet → :hii formset add · Form → :hii form add <target>
+  e              export формы под курсором -> prefill :hii form export <item> --out
+  I              import конверт-пакета -> prefill :hii import <target>
+  A              ref под формой (шаг 2) -> prefill :hii question add <t>#<f>
+  R              refs-only ссылка на форму -> prefill :hii import <t> --file refs.json
   T              плоский список <-> REF-дерево (путь в details)
   S              strings-браузер (повторно — закрыть; Esc тоже)
   /              открыть strings + промпт фильтра (:filter TEXT)
@@ -63,6 +67,8 @@ EX-COMMANDS
   :hii unlock ITEM
   :hii formset add FILE [--ffs GUID]
   :hii form add TARGET FILE
+  :hii form export ITEM [--out FILE]    (конверт: meta + formset + refs)
+  :hii import TARGET --file FILE        (конверт-пакет: form add + refs)
   :hii question add TARGET#FORM FILE     (form_id — десятичное)
   :hii page add TARGET FILE
   :hii hijack TARGET FILE [SETUPDATA-GUID]
@@ -140,5 +146,22 @@ mod tests {
             HELP.contains("a              add"),
             "клавиша a в FORMS VIEW-секции"
         );
+    }
+
+    #[test]
+    fn help_documents_form_export_keys_and_commands() {
+        for key in [
+            "e              export",
+            "I              import",
+            "A              ref",
+            "R              refs-only",
+        ] {
+            assert!(
+                HELP.contains(key),
+                "клавиша цикла hii-form-export в help: {key}"
+            );
+        }
+        assert!(HELP.contains(":hii form export ITEM [--out FILE]"));
+        assert!(HELP.contains(":hii import TARGET --file FILE"));
     }
 }

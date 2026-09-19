@@ -169,6 +169,344 @@ fn read_schema(file: &str) -> Result<String, String> {
     std::fs::read_to_string(file).map_err(|e| format!("{file}: {e}"))
 }
 
+/// Конверт-маршрутизация `:hii form add` (спека hii-form-export §4/§5,
+/// паритет CLI ensure_bare_schema uefi-cli/src/commands/hii.rs:151): файл
+/// с верхнеуровневой мета/refs — пакет `:hii import`, здесь отвергается.
+/// Признак конверта: bare-файл `split_envelope` пропускает байт-в-байт;
+/// InvalidJson уходит прежним путём — валидирует движок.
+fn ensure_bare_schema(schema_json: &str) -> Result<(), String> {
+    let is_package = match uefi_common::envelope::split_envelope(schema_json) {
+        Ok(env) => env.body != schema_json,
+        Err(uefi_common::envelope::EnvelopeError::InvalidJson(_)) => false,
+        Err(_) => true,
+    };
+    if is_package {
+        return Err("package file: use hii import".to_string());
+    }
+    Ok(())
+}
+
+/// Спека hii-form-export §2/§4: parent_form_id=0 — корневая форма, refs-секции
+/// нет; иначе entries — prompt/help GOTO родителя из ответа RPC (question_id
+/// сознательно не пишется — коллизия при реимпорте в тот же образ).
+/// u32→u16 с явной ошибкой — значение больше u16 означает битый ответ движка.
+fn refs_from_parent(
+    parent_form_id: u32,
+    parent_entries: &[uefi_proto::HiiFormExportEntry],
+) -> Result<Option<uefi_common::envelope::RefsSection>, String> {
+    if parent_form_id == 0 {
+        return Ok(None);
+    }
+    let id = u16::try_from(parent_form_id)
+        .map_err(|_| format!("parent_form_id {parent_form_id} does not fit u16"))?;
+    Ok(Some(uefi_common::envelope::RefsSection {
+        parent_form_id: id,
+        entries: parent_entries
+            .iter()
+            .map(|e| uefi_common::envelope::RefEntry {
+                prompt: Some(e.prompt.clone()),
+                help: Some(e.help.clone()),
+                ..uefi_common::envelope::RefEntry::default()
+            })
+            .collect(),
+    }))
+}
+
+/// Дефолт-путь :hii form export без --out (stdout в TUI нет):
+/// $TMPDIR/uefipatcher-export-<form_id>.json, путь показывается в статусе.
+/// form_id — часть item_id после `#` (до `:qid`), без неё — "form".
+fn export_default_path(item_id: &str) -> String {
+    let dir = std::env::var("TMPDIR").unwrap_or_default();
+    export_default_path_in(&dir, item_id)
+}
+
+fn export_default_path_in(dir: &str, item_id: &str) -> String {
+    let dir = if dir.is_empty() { "/tmp" } else { dir };
+    let fid = item_id
+        .rsplit_once('#')
+        .map(|(_, d)| d.split_once(':').map_or(d, |(f, _)| f))
+        .unwrap_or("form");
+    format!("{dir}/uefipatcher-export-{fid}.json")
+}
+
+/// Pre-check §3.1: родитель refs-секции существует в целевом формсете.
+fn check_parent(forms: &[uefi_proto::FormInfo], target: &str, parent: u16) -> Result<(), String> {
+    if forms
+        .iter()
+        .any(|f| f.form_id.eq_ignore_ascii_case(target) && f.form_id_ifr == parent as u32)
+    {
+        Ok(())
+    } else {
+        Err(format!(
+            "parent form {parent} not found in target '{target}'; see 'hii form list'"
+        ))
+    }
+}
+
+/// Pre-check §3.1: авторские question_id из entries не заняты в родителе.
+fn check_qids(refs: &uefi_common::envelope::RefsSection, busy: &[u16]) -> Result<(), String> {
+    for qid in refs.entries.iter().filter_map(|e| e.question_id) {
+        if busy.contains(&qid) {
+            return Err(format!(
+                "question_id {qid:#06x} already busy in parent form {}",
+                refs.parent_form_id
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Pre-check §3.1 (анти-dangling): явные form_id-таргеты entries существуют —
+/// с formset_guid в том формсете (кросс-формсетный REF3), без — в целевом.
+fn check_targets(
+    forms: &[uefi_proto::FormInfo],
+    target: &str,
+    refs: &uefi_common::envelope::RefsSection,
+) -> Result<(), String> {
+    for e in &refs.entries {
+        let Some(id) = e.form_id else { continue };
+        let (found, err) = match e.formset_guid.as_deref() {
+            Some(guid) => (
+                forms.iter().any(|f| {
+                    f.form_id_ifr == id as u32 && f.formset_guid.eq_ignore_ascii_case(guid)
+                }),
+                format!("refs target form {id} not found in formset {guid}"),
+            ),
+            None => (
+                forms
+                    .iter()
+                    .any(|f| f.form_id_ifr == id as u32 && f.form_id.eq_ignore_ascii_case(target)),
+                format!("refs target form {id} not found in target '{target}'"),
+            ),
+        };
+        if !found {
+            return Err(err);
+        }
+    }
+    Ok(())
+}
+
+fn fit_u16(v: u32, what: &str) -> Result<u16, String> {
+    u16::try_from(v).map_err(|_| format!("{what} {v} does not fit u16"))
+}
+
+fn busy_qids(questions: &[uefi_proto::QuestionSummary]) -> Result<Vec<u16>, String> {
+    questions
+        .iter()
+        .map(|q| fit_u16(q.question_id, "question_id"))
+        .collect()
+}
+
+fn varstore_briefs(
+    stores: &[uefi_proto::VarStoreInfo],
+) -> Result<Vec<uefi_common::envelope::VarstoreBrief>, String> {
+    stores
+        .iter()
+        .map(|v| {
+            Ok(uefi_common::envelope::VarstoreBrief {
+                id: fit_u16(v.id, "varstore id")?,
+                guid: v.guid.clone(),
+                size: fit_u16(v.size, "varstore size")?,
+                name: v.name.clone(),
+            })
+        })
+        .collect()
+}
+
+/// :hii form export (спека hii-form-export §4): RPC отдаёт bare-тело и
+/// факты, конверт (meta.source/refs/meta.lossy) собирает TUI-клиент;
+/// файл пишет TUI-процесс — `--out` либо дефолт $TMPDIR (stdout в TUI нет).
+async fn hii_form_export(
+    app: &mut App,
+    client: &mut Client,
+    image_id: &str,
+    item_id: &str,
+    out: Option<&str>,
+) -> Result<String, String> {
+    let resp = client
+        .inner
+        .hii_form_export(auth_req(
+            &client.state,
+            HiiFormExportRequest {
+                image_id: image_id.into(),
+                item_id: item_id.into(),
+            },
+        ))
+        .await
+        .map_err(|e| e.message().to_string())?
+        .into_inner();
+    let refs = refs_from_parent(resp.parent_form_id, &resp.parent_entries)?;
+    let envelope = uefi_common::envelope::wrap_export(
+        &resp.schema_json,
+        Some(uefi_common::envelope::SourceMeta {
+            formset_guid: resp.formset_guid,
+        }),
+        refs,
+        resp.lossy.clone(),
+    );
+    let path = match out {
+        Some(p) => absolutize_path(p),
+        None => export_default_path(item_id),
+    };
+    std::fs::write(&path, format!("{envelope}\n")).map_err(|e| format!("{path}: {e}"))?;
+    let lossy = if resp.lossy.is_empty() {
+        String::new()
+    } else {
+        format!(" · lossy {}", resp.lossy.join(","))
+    };
+    app.status_msg = format!("form exported to {path}{lossy}");
+    Ok(path)
+}
+
+/// :hii import (спека hii-form-export §3) — тот же порядок, что CLI-импорт:
+/// pre-check (родитель/qid/таргеты, до мутаций) → plan_varstores → form add
+/// → plan_ref_step → question add `<target>#<parent>` с {"refs":[…]}-wire.
+/// Планировщики — uefi-common, RPC — клиент TUI; refs-only пакеты (body
+/// пуст) пропускают form add; падение ref-фазы после form-фазы уходит в
+/// двухфазный статус (автоотката нет, §3.4); warn чужого формсета — в
+/// статус (stderr в TUI нет).
+async fn hii_import(
+    app: &mut App,
+    client: &mut Client,
+    image_id: &str,
+    target: &str,
+    file: &str,
+) -> Result<String, String> {
+    let text = std::fs::read_to_string(file).map_err(|e| format!("{file}: {e}"))?;
+    let env = uefi_common::envelope::split_envelope(&text).map_err(|e| e.to_string())?;
+
+    let mut busy: Vec<u16> = Vec::new();
+    let mut warn = String::new();
+    if let Some(refs) = env.refs.as_ref() {
+        let forms = client
+            .inner
+            .hii_list_forms(auth_req(
+                &client.state,
+                HiiListFormsRequest {
+                    image_id: image_id.into(),
+                },
+            ))
+            .await
+            .map_err(|e| e.message().to_string())?
+            .into_inner()
+            .forms;
+        check_parent(&forms, target, refs.parent_form_id)?;
+        let questions = client
+            .inner
+            .hii_list_questions(auth_req(
+                &client.state,
+                HiiListQuestionsRequest {
+                    image_id: image_id.into(),
+                    target: target.into(),
+                    form_id: refs.parent_form_id as u32,
+                },
+            ))
+            .await
+            .map_err(|e| e.message().to_string())?
+            .into_inner()
+            .questions;
+        busy = busy_qids(&questions)?;
+        check_qids(refs, &busy)?;
+        check_targets(&forms, target, refs)?;
+        let target_formset = forms
+            .iter()
+            .find(|f| f.form_id.eq_ignore_ascii_case(target))
+            .map(|f| f.formset_guid.clone());
+        if let (Some(src), Some(actual)) = (env.meta.source.as_ref(), target_formset.as_deref())
+            && !src.formset_guid.eq_ignore_ascii_case(actual)
+        {
+            warn = format!(
+                "warn: foreign formset (package {} → target {actual}) · ",
+                src.formset_guid
+            );
+        }
+    }
+
+    let mut body: Option<String> = None;
+    let mut inserted: Vec<u32> = Vec::new();
+    let mut string_ids = std::collections::HashMap::new();
+    if !env.body.is_empty() {
+        let stores = client
+            .inner
+            .hii_list_varstores(auth_req(
+                &client.state,
+                HiiListVarstoresRequest {
+                    image_id: image_id.into(),
+                    target: target.into(),
+                },
+            ))
+            .await
+            .map_err(|e| e.message().to_string())?
+            .into_inner()
+            .varstores;
+        let planned = uefi_common::envelope::plan_varstores(&env.body, &varstore_briefs(&stores)?)
+            .map_err(|e| e.to_string())?;
+        let r = client
+            .inner
+            .hii_form_add(auth_req(
+                &client.state,
+                HiiFormAddRequest {
+                    image_id: image_id.into(),
+                    target: target.into(),
+                    schema_json: planned.clone(),
+                },
+            ))
+            .await
+            .map_err(|e| e.message().to_string())?
+            .into_inner();
+        inserted = r.inserted_form_ids;
+        string_ids = r.string_ids;
+        body = Some(planned);
+    }
+
+    let ref_outcome = match env.refs.as_ref() {
+        None => None,
+        Some(refs) => Some(
+            match uefi_common::envelope::plan_ref_step(refs, body.as_deref(), &inserted, &busy) {
+                Ok(Some(plan)) => {
+                    let schema =
+                        serde_json::to_string(&serde_json::json!({ "refs": plan.records }))
+                            .map_err(|e| format!("refs plan: {e}"))?;
+                    let parent = format!("{}#{}", target, refs.parent_form_id);
+                    let qids: Vec<u16> = plan.records.iter().map(|r| r.question_id).collect();
+                    client
+                        .inner
+                        .hii_question_add(auth_req(
+                            &client.state,
+                            HiiQuestionAddRequest {
+                                image_id: image_id.into(),
+                                target: parent,
+                                schema_json: schema,
+                            },
+                        ))
+                        .await
+                        .map(|_| (refs.parent_form_id, qids))
+                        .map_err(|e| e.message().to_string())
+                }
+                Ok(None) => Err("refs plan is empty".to_string()),
+                Err(e) => Err(e.to_string()),
+            },
+        ),
+    };
+
+    refresh_tree(app, client).await?;
+    reload_forms(app, client).await?;
+    let _ = refresh_form_details_if_needed(app, client).await;
+    app.status_msg = format!(
+        "{warn}{}",
+        import_status(&inserted, &string_ids, ref_outcome.as_ref())
+    );
+    Ok(if inserted.is_empty() {
+        target.to_string()
+    } else {
+        inserted
+            .iter()
+            .map(|i| i.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    })
+}
+
 pub async fn execute_command(
     app: &mut App,
     cmdline: &str,
@@ -571,7 +909,7 @@ pub async fn execute_command(
         }
         "hii" => {
             let sub = parts.get(1).copied().ok_or(
-                "usage: :hii set-value ITEM VALUE | :hii visibility ITEM on|off | :hii unlock ITEM | :hii formset add FILE [--ffs GUID] | :hii form add TARGET FILE | :hii question add TARGET#FORM FILE | :hii page add TARGET FILE | :hii hijack TARGET FILE [SETUPDATA-GUID]",
+                "usage: :hii set-value ITEM VALUE | :hii visibility ITEM on|off | :hii unlock ITEM | :hii formset add FILE [--ffs GUID] | :hii form add TARGET FILE | :hii form export ITEM [--out FILE] | :hii question add TARGET#FORM FILE | :hii page add TARGET FILE | :hii hijack TARGET FILE [SETUPDATA-GUID] | :hii import TARGET --file FILE",
             )?;
             let iid = client
                 .state
@@ -712,35 +1050,63 @@ pub async fn execute_command(
                         formset_add_status(&r.new_ffs_id, &r.inserted_form_ids, &r.string_ids);
                     Ok(r.new_ffs_id)
                 }
-                "form" => {
-                    if parts.get(2).copied() != Some("add") {
-                        return Err("usage: :hii form add TARGET FILE".into());
+                "form" => match parts.get(2).copied() {
+                    Some("add") => {
+                        let target = parts.get(3).ok_or("usage: :hii form add TARGET FILE")?;
+                        let file = parts.get(4).ok_or("usage: :hii form add TARGET FILE")?;
+                        let schema_json = read_schema(file)?;
+                        ensure_bare_schema(&schema_json)?;
+                        let r = client
+                            .inner
+                            .hii_form_add(auth_req(
+                                &client.state,
+                                HiiFormAddRequest {
+                                    image_id: iid,
+                                    target: target.to_string(),
+                                    schema_json,
+                                },
+                            ))
+                            .await
+                            .map_err(|e| e.message().to_string())?
+                            .into_inner();
+                        refresh_tree(app, client).await?;
+                        reload_forms(app, client).await?;
+                        let _ = refresh_form_details_if_needed(app, client).await;
+                        app.status_msg = form_add_status(&r.inserted_form_ids, &r.string_ids);
+                        Ok(r.inserted_form_ids
+                            .iter()
+                            .map(|i| i.to_string())
+                            .collect::<Vec<_>>()
+                            .join(","))
                     }
-                    let target = parts.get(3).ok_or("usage: :hii form add TARGET FILE")?;
-                    let file = parts.get(4).ok_or("usage: :hii form add TARGET FILE")?;
-                    let schema_json = read_schema(file)?;
-                    let r = client
-                        .inner
-                        .hii_form_add(auth_req(
-                            &client.state,
-                            HiiFormAddRequest {
-                                image_id: iid,
-                                target: target.to_string(),
-                                schema_json,
-                            },
-                        ))
-                        .await
-                        .map_err(|e| e.message().to_string())?
-                        .into_inner();
-                    refresh_tree(app, client).await?;
-                    reload_forms(app, client).await?;
-                    let _ = refresh_form_details_if_needed(app, client).await;
-                    app.status_msg = form_add_status(&r.inserted_form_ids, &r.string_ids);
-                    Ok(r.inserted_form_ids
+                    Some("export") => {
+                        let item = parts
+                            .get(3)
+                            .ok_or("usage: :hii form export ITEM [--out FILE]")?
+                            .to_string();
+                        let out = parts
+                            .iter()
+                            .position(|p| *p == "--out")
+                            .and_then(|i| parts.get(i + 1).copied());
+                        hii_form_export(app, client, &iid, &item, out).await
+                    }
+                    _ => Err(
+                        "usage: :hii form add TARGET FILE | :hii form export ITEM [--out FILE]"
+                            .into(),
+                    ),
+                },
+                "import" => {
+                    let target = parts
+                        .get(2)
+                        .ok_or("usage: :hii import TARGET --file FILE")?
+                        .to_string();
+                    let file = parts
                         .iter()
-                        .map(|i| i.to_string())
-                        .collect::<Vec<_>>()
-                        .join(","))
+                        .position(|p| *p == "--file")
+                        .and_then(|i| parts.get(i + 1).copied())
+                        .ok_or("usage: :hii import TARGET --file FILE")?
+                        .to_string();
+                    hii_import(app, client, &iid, &target, &file).await
                 }
                 "question" => {
                     if parts.get(2).copied() != Some("add") {
@@ -995,6 +1361,17 @@ fn unique_formset_guids(app: &App) -> Vec<String> {
         .collect()
 }
 
+/// item_id-кандидаты (`<target>#<form_id>`, form_id десятичное — контракт
+/// parse_item_id): общий список для question add / set-value /
+/// visibility / unlock / form export. Спека hii-form-export §4.
+fn item_id_candidates(app: &App) -> Vec<String> {
+    app.forms
+        .forms
+        .iter()
+        .map(|f| fmt_item(&f.form_id, f.form_id_ifr))
+        .collect()
+}
+
 /// Пути по префиксу для позиции schema-файла: набранный каталог-префикс
 /// сохраняется как есть (абсолютный/относительный), каталоги получают
 /// "/", скрытые файлы — только по точечному префиксу. Спека §4 V3.
@@ -1041,6 +1418,13 @@ fn context_candidates(app: &App, cmd: &str, head: &[&str], token: &str) -> Vec<S
     if head.last() == Some(&"--file") {
         return complete_path(token);
     }
+    if cmd == "hii"
+        && head.get(1) == Some(&"form")
+        && head.get(2) == Some(&"export")
+        && head.last() == Some(&"--out")
+    {
+        return complete_path(token);
+    }
     if head.last() == Some(&"--mode") {
         let vals: &[&str] = if matches!(cmd, "reopen" | "open" | "o") {
             &["read", "write"]
@@ -1085,6 +1469,8 @@ fn context_candidates(app: &App, cmd: &str, head: &[&str], token: &str) -> Vec<S
             "reopen" => &["--mode"],
             "open" | "o" => &["--mode"],
             "hii" if head.len() == 4 && head[1] == "formset" && head[2] == "add" => &["--ffs"],
+            "hii" if head.len() == 4 && head[1] == "form" && head[2] == "export" => &["--out"],
+            "hii" if head.len() == 3 && head[1] == "import" => &["--file"],
             _ => &[],
         };
         return flags
@@ -1122,6 +1508,7 @@ fn context_candidates(app: &App, cmd: &str, head: &[&str], token: &str) -> Vec<S
                 "set-value",
                 "visibility",
                 "unlock",
+                "import",
             ]
             .iter()
             .filter(|c| c.starts_with(token))
@@ -1129,7 +1516,7 @@ fn context_candidates(app: &App, cmd: &str, head: &[&str], token: &str) -> Vec<S
             .collect();
         }
         let noun = head[1];
-        if matches!(noun, "formset" | "form" | "question" | "page") {
+        if matches!(noun, "formset" | "question" | "page") {
             if head.len() == 2 {
                 return ["add"]
                     .iter()
@@ -1146,14 +1533,48 @@ fn context_candidates(app: &App, cmd: &str, head: &[&str], token: &str) -> Vec<S
             }
             if head.len() == file_pos - 1 {
                 if noun == "question" {
-                    return app
-                        .forms
-                        .forms
-                        .iter()
-                        .map(|f| fmt_item(&f.form_id, f.form_id_ifr))
+                    return item_id_candidates(app)
+                        .into_iter()
                         .filter(|c| c.starts_with(token))
                         .collect();
                 }
+                return unique_form_targets(app)
+                    .into_iter()
+                    .filter(|c| c.starts_with(token))
+                    .collect();
+            }
+            return vec![];
+        }
+        if noun == "form" {
+            if head.len() == 2 {
+                return ["add", "export"]
+                    .iter()
+                    .filter(|c| c.starts_with(token))
+                    .map(|s| s.to_string())
+                    .collect();
+            }
+            match head.get(2) {
+                Some(&"add") if head.len() == 4 => {
+                    return complete_path(token);
+                }
+                Some(&"add") if head.len() == 3 => {
+                    return unique_form_targets(app)
+                        .into_iter()
+                        .filter(|c| c.starts_with(token))
+                        .collect();
+                }
+                Some(&"export") if head.len() == 3 => {
+                    return item_id_candidates(app)
+                        .into_iter()
+                        .filter(|c| c.starts_with(token))
+                        .collect();
+                }
+                _ => {}
+            }
+            return vec![];
+        }
+        if noun == "import" {
+            if head.len() == 2 {
                 return unique_form_targets(app)
                     .into_iter()
                     .filter(|c| c.starts_with(token))
@@ -1176,11 +1597,8 @@ fn context_candidates(app: &App, cmd: &str, head: &[&str], token: &str) -> Vec<S
         if matches!(head[1], "set-value" | "visibility" | "unlock")
             && !head[2..].iter().any(|s| !s.starts_with("--"))
         {
-            return app
-                .forms
-                .forms
-                .iter()
-                .map(|f| fmt_item(&f.form_id, f.form_id_ifr))
+            return item_id_candidates(app)
+                .into_iter()
                 .filter(|c| c.starts_with(token))
                 .collect();
         }
@@ -1317,6 +1735,59 @@ pub fn add_prefill(app: &App) -> Option<String> {
         }
         _ => None,
     }
+}
+
+/// Insert-prefill для клавиши `e` на Form-строке: экспорт формы в конверт.
+/// Спека hii-form-export §4.
+pub fn export_prefill(app: &App) -> Option<String> {
+    selected_form_item_id(app).map(|item| format!("hii form export {item} --out "))
+}
+
+/// Insert-prefill для клавиши `I`: target из FormSet-строки под курсором
+/// (form_id первой формы формсета — грамматика `<ffs>:<type>:<idx>`), на
+/// прочих строках — bare. Спека hii-form-export §4.
+pub fn import_prefill(app: &App) -> String {
+    let target = match app.forms_rows().get(app.forms.cursor) {
+        Some(crate::forms::FormsRow::FormSet { guid, .. }) => app
+            .forms
+            .forms
+            .iter()
+            .find(|f| &f.formset_guid == guid)
+            .map(|f| f.form_id.clone()),
+        _ => None,
+    };
+    match target {
+        Some(t) => format!("hii import {t} "),
+        None => "hii import ".into(),
+    }
+}
+
+/// Insert-prefill для клавиши `A` на Form-строке: второй шаг ручного
+/// импорта — вопрос-REF под формой строки (form_id десятичное, контракт
+/// parse_item_id). Спека hii-form-export §4.
+pub fn question_add_prefill(app: &App) -> Option<String> {
+    let key = app.selected_form_key()?;
+    Some(format!(
+        "hii question add {}#{} ",
+        key.target, key.form_id_ifr
+    ))
+}
+
+/// Insert-prefill для клавиши `R` на Form-строке: refs-only импорт ссылки
+/// на форму под курсором. Import не принимает `#parent` (docs:fix 001ad0a):
+/// родитель — `refs.parent_form_id` пакета, target — формсет строки,
+/// автор правит. Спека hii-form-export §4.
+pub fn ref_import_prefill(key: &crate::forms::FormKey) -> String {
+    format!("hii import {} --file refs.json", key.target)
+}
+
+/// Подсказка статуса для `R`: значения из строки под курсором для entries
+/// пакета (form_id + formset_guid). Спека hii-form-export §4.
+pub fn ref_import_hint(key: &crate::forms::FormKey) -> String {
+    format!(
+        "refs.json entries: form_id {} · formset_guid {}",
+        key.form_id_ifr, key.formset_guid
+    )
 }
 
 /// Prefill i/r: registry-курсор на артефакте → --artifact-id, иначе --file.
@@ -1502,6 +1973,37 @@ pub fn form_add_status(
         "form added: forms {forms} · strings {}",
         fmt_string_ids(string_ids)
     )
+}
+
+/// Однострочный двухфазный статус :hii import (спека hii-form-export
+/// §3.4): form-фаза (поля как у form add) + ref-фаза — built (parent и
+/// qid hex) / not built (причина). None-исход — пакет без refs-секции.
+pub fn import_status(
+    form_ids: &[u32],
+    string_ids: &std::collections::HashMap<String, u32>,
+    ref_outcome: Option<&Result<(u16, Vec<u16>), String>>,
+) -> String {
+    let mut s = format!(
+        "import: forms {} · strings {}",
+        fmt_u32_ids(form_ids),
+        fmt_string_ids(string_ids)
+    );
+    match ref_outcome {
+        None => {}
+        Some(Ok((parent, qids))) => {
+            let q = if qids.is_empty() {
+                "(none)".to_string()
+            } else {
+                qids.iter()
+                    .map(|q| format!("{q:#06x}"))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            };
+            s.push_str(&format!(" · refs built under {parent}: {q}"));
+        }
+        Some(Err(cause)) => s.push_str(&format!(" · refs not built: {cause}")),
+    }
+    s
 }
 
 /// Однострочный статус :hii question add: qid в hex (конвенция q0xNNN),
@@ -2145,7 +2647,8 @@ mod tests {
                 "hijack".to_string(),
                 "set-value".to_string(),
                 "visibility".to_string(),
-                "unlock".to_string()
+                "unlock".to_string(),
+                "import".to_string()
             ]
         );
         let c = complete(&app, "hii set-value ");
@@ -2176,6 +2679,15 @@ mod tests {
             },
         ];
         let c = complete(&app, "hii form ");
+        assert_eq!(
+            c.items
+                .iter()
+                .map(|i| i.display.clone())
+                .collect::<Vec<_>>(),
+            vec!["add".to_string(), "export".to_string()],
+            "form — два глагола: add и export (hii-form-export §4)"
+        );
+        let c = complete(&app, "hii form a");
         assert_eq!(
             c.common.as_deref(),
             Some("hii form add "),
@@ -2442,7 +2954,336 @@ mod tests {
         let app = crate::app::App::new();
         assert!(
             add_prefill(&app).is_none(),
-            "пустой forms-список — префиллa нет"
+            "пустой forms-список — префилла нет"
+        );
+    }
+
+    fn hii_key_app() -> crate::app::App {
+        let mut app = crate::app::App::new();
+        app.forms.forms = vec![
+            uefi_proto::FormInfo {
+                form_id: "t1:0x19:0".into(),
+                formset_guid: "SET-A".into(),
+                form_id_ifr: 10001,
+                title: "Main".into(),
+                visible: true,
+            },
+            uefi_proto::FormInfo {
+                form_id: "t1:0x19:0".into(),
+                formset_guid: "SET-A".into(),
+                form_id_ifr: 10019,
+                title: "Serial".into(),
+                visible: false,
+            },
+            uefi_proto::FormInfo {
+                form_id: "t2:0x19:0".into(),
+                formset_guid: "SET-B".into(),
+                form_id_ifr: 902,
+                title: "Platform".into(),
+                visible: true,
+            },
+        ];
+        app.forms.edges = vec![uefi_proto::FormEdge {
+            formset_guid: "SET-A".into(),
+            parent_form_id: 10001,
+            form_id: 99,
+            target_formset_guid: String::new(),
+        }];
+        app.forms.expanded = crate::forms::all_row_keys(&app.forms.forms, &app.forms.edges);
+        app
+    }
+
+    #[test]
+    fn export_prefill_on_form_rows_only() {
+        let mut app = hii_key_app();
+        app.forms.cursor = 1;
+        assert_eq!(
+            export_prefill(&app).as_deref(),
+            Some("hii form export t1:0x19:0#10001 --out ")
+        );
+        app.forms.cursor = 0;
+        assert!(export_prefill(&app).is_none(), "FormSet-строка — не форма");
+        app.forms.cursor = 2;
+        assert!(export_prefill(&app).is_none(), "DanglingRef — prefill нет");
+    }
+
+    #[test]
+    fn import_prefill_target_from_formset_row_only() {
+        let mut app = hii_key_app();
+        app.forms.cursor = 0;
+        assert_eq!(
+            import_prefill(&app),
+            "hii import t1:0x19:0 ",
+            "target формсета — form_id первой его формы"
+        );
+        app.forms.cursor = 4;
+        assert_eq!(
+            import_prefill(&app),
+            "hii import t2:0x19:0 ",
+            "второй формсет — свой target"
+        );
+        app.forms.cursor = 1;
+        assert_eq!(
+            import_prefill(&app),
+            "hii import ",
+            "Form-строка — bare (план: target только с FormSet-строки)"
+        );
+        let empty = crate::app::App::new();
+        assert_eq!(import_prefill(&empty), "hii import ");
+    }
+
+    #[test]
+    fn question_add_prefill_on_form_rows_only() {
+        let mut app = hii_key_app();
+        app.forms.cursor = 3;
+        assert_eq!(
+            question_add_prefill(&app).as_deref(),
+            Some("hii question add t1:0x19:0#10019 "),
+            "form_id десятичное — контракт parse_item_id"
+        );
+        app.forms.cursor = 0;
+        assert!(question_add_prefill(&app).is_none(), "FormSet-строка");
+        app.forms.cursor = 2;
+        assert!(question_add_prefill(&app).is_none(), "DanglingRef");
+    }
+
+    #[test]
+    fn ref_import_prefill_no_parent_and_hint() {
+        let key = crate::forms::FormKey {
+            target: "t1:0x19:0".into(),
+            formset_guid: "SET-A".into(),
+            form_id_ifr: 5002,
+            title: "X".into(),
+        };
+        assert_eq!(
+            ref_import_prefill(&key),
+            "hii import t1:0x19:0 --file refs.json",
+            "import без #parent (docs:fix 001ad0a): родитель — refs.parent_form_id пакета"
+        );
+        let hint = ref_import_hint(&key);
+        assert!(hint.contains("5002"), "form_id строки под курсором: {hint}");
+        assert!(hint.contains("SET-A"), "formset_guid строки: {hint}");
+    }
+
+    #[test]
+    fn export_default_path_dir_form_id_and_fallbacks() {
+        assert_eq!(
+            export_default_path_in("/tmp", "t:0x19:0#10019"),
+            "/tmp/uefipatcher-export-10019.json"
+        );
+        assert_eq!(
+            export_default_path_in("/tmp", "t:0x19:0#10019:0x210"),
+            "/tmp/uefipatcher-export-10019.json",
+            "вопросный суффикс :qid игнорируется"
+        );
+        assert_eq!(
+            export_default_path_in("/tmp", "nohash"),
+            "/tmp/uefipatcher-export-form.json"
+        );
+        assert_eq!(
+            export_default_path_in("", "t#7"),
+            "/tmp/uefipatcher-export-7.json",
+            "пустой TMPDIR — fallback /tmp"
+        );
+    }
+
+    #[test]
+    fn refs_from_parent_zero_none_and_overflow() {
+        assert!(refs_from_parent(0, &[]).unwrap().is_none());
+        let refs = refs_from_parent(
+            10001,
+            &[uefi_proto::HiiFormExportEntry {
+                prompt: "PCI Subsystem Settings".into(),
+                help: "Open PCI subsystem settings".into(),
+            }],
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(refs.parent_form_id, 10001);
+        assert_eq!(
+            refs.entries,
+            vec![uefi_common::envelope::RefEntry {
+                prompt: Some("PCI Subsystem Settings".into()),
+                help: Some("Open PCI subsystem settings".into()),
+                ..Default::default()
+            }],
+            "entries — prompt/help GOTO родителя из ответа (спека §2)"
+        );
+        assert!(refs_from_parent(u16::MAX as u32 + 1, &[]).is_err());
+    }
+
+    #[test]
+    fn import_status_two_phase_variants() {
+        let mut sids = std::collections::HashMap::new();
+        sids.insert("title".to_string(), 600);
+        assert_eq!(
+            import_status(&[10101], &sids, None),
+            "import: forms 10101 · strings title=600",
+            "пакет без refs-секции — только form-фаза"
+        );
+        assert_eq!(
+            import_status(
+                &[],
+                &std::collections::HashMap::new(),
+                Some(&Ok((10001, vec![0x7F00])))
+            ),
+            "import: forms (none) · strings (none) · refs built under 10001: 0x7f00",
+            "refs-only: qid в hex"
+        );
+        assert_eq!(
+            import_status(
+                &[7],
+                &std::collections::HashMap::new(),
+                Some(&Err("boom".into()))
+            ),
+            "import: forms 7 · strings (none) · refs not built: boom",
+            "падение ref-фазы не прерывает отчёт (§3.4)"
+        );
+    }
+
+    #[test]
+    fn import_prechecks_mirror_cli_semantics() {
+        let form = |id: &str, set: &str, fid: u32| uefi_proto::FormInfo {
+            form_id: id.into(),
+            formset_guid: set.into(),
+            form_id_ifr: fid,
+            title: String::new(),
+            visible: true,
+        };
+        let forms = vec![form("g:0x19:0", "G-1", 1), form("other:0x10:0", "G-2", 7)];
+        assert!(check_parent(&forms, "g:0x19:0", 1).is_ok());
+        assert!(check_parent(&forms, "g:0x19:0", 9).is_err());
+        let refs = uefi_common::envelope::RefsSection {
+            parent_form_id: 1,
+            entries: vec![
+                uefi_common::envelope::RefEntry {
+                    question_id: Some(0x22),
+                    ..Default::default()
+                },
+                uefi_common::envelope::RefEntry {
+                    form_id: Some(7),
+                    formset_guid: Some("G-2".into()),
+                    ..Default::default()
+                },
+            ],
+        };
+        assert!(check_qids(&refs, &[0x23]).is_ok());
+        assert!(
+            check_qids(&refs, &[0x22])
+                .unwrap_err()
+                .contains("already busy")
+        );
+        assert!(check_targets(&forms, "g:0x19:0", &refs).is_ok());
+        let dangling = uefi_common::envelope::RefsSection {
+            parent_form_id: 1,
+            entries: vec![uefi_common::envelope::RefEntry {
+                form_id: Some(6000),
+                ..Default::default()
+            }],
+        };
+        assert!(check_targets(&forms, "g:0x19:0", &dangling).is_err());
+        let qs = vec![uefi_proto::QuestionSummary {
+            question_id: 0x210,
+            ..Default::default()
+        }];
+        assert_eq!(busy_qids(&qs).unwrap(), vec![0x210]);
+        let overflow = vec![uefi_proto::QuestionSummary {
+            question_id: 0x10000,
+            ..Default::default()
+        }];
+        assert!(busy_qids(&overflow).is_err());
+        let stores = vec![uefi_proto::VarStoreInfo {
+            id: 2,
+            guid: "G".into(),
+            size: 0x94,
+            name: "Setup".into(),
+        }];
+        assert_eq!(varstore_briefs(&stores).unwrap()[0].id, 2);
+    }
+
+    #[test]
+    fn complete_hii_form_two_verbs_add_and_export() {
+        let app = hii_key_app();
+        let c = complete(&app, "hii form ");
+        assert_eq!(
+            c.items
+                .iter()
+                .map(|i| i.display.clone())
+                .collect::<Vec<_>>(),
+            vec!["add".to_string(), "export".to_string()]
+        );
+        let c = complete(&app, "hii form e");
+        assert_eq!(c.common.as_deref(), Some("hii form export "));
+        let c = complete(&app, "hii formset ");
+        assert_eq!(c.common.as_deref(), Some("hii formset add "));
+    }
+
+    #[test]
+    fn complete_hii_form_export_item_ids_question_add_list() {
+        let app = hii_key_app();
+        let c = complete(&app, "hii form export ");
+        assert_eq!(
+            c.items
+                .iter()
+                .map(|i| i.display.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                "t1:0x19:0#10001".to_string(),
+                "t1:0x19:0#10019".to_string(),
+                "t2:0x19:0#902".to_string()
+            ],
+            "item_id-кандидаты — fmt_item target#form_id (доксларация docs:fix 2c81825)"
+        );
+        let c = complete(&app, "hii form export t1:0x19:0#10");
+        assert_eq!(
+            c.common.as_deref(),
+            Some("hii form export t1:0x19:0#100"),
+            "общий префикс двух 100xx-кандидатов"
+        );
+    }
+
+    #[test]
+    fn complete_hii_form_export_out_flag_and_path() {
+        let app = hii_key_app();
+        let c = complete(&app, "hii form export t1:0x19:0#10001 --");
+        assert_eq!(
+            c.common.as_deref(),
+            Some("hii form export t1:0x19:0#10001 --out ")
+        );
+        let td = tempfile::tempdir().unwrap();
+        std::fs::write(td.path().join("pkg.json"), b"{}").unwrap();
+        let base = td.path().display().to_string();
+        let c = complete(
+            &app,
+            &format!("hii form export t1:0x19:0#10001 --out {base}/pkg.js"),
+        );
+        assert_eq!(
+            c.common.as_deref(),
+            Some(format!("hii form export t1:0x19:0#10001 --out {base}/pkg.json ").as_str())
+        );
+    }
+
+    #[test]
+    fn complete_hii_import_target_flag_and_file() {
+        let app = hii_key_app();
+        let c = complete(&app, "hii import ");
+        assert_eq!(
+            c.items
+                .iter()
+                .map(|i| i.display.clone())
+                .collect::<Vec<_>>(),
+            vec!["t1:0x19:0".to_string(), "t2:0x19:0".to_string()],
+            "target-кандидаты с дедупом"
+        );
+        let c = complete(&app, "hii import t1:0x19:0 --");
+        assert_eq!(c.common.as_deref(), Some("hii import t1:0x19:0 --file "));
+        let td = tempfile::tempdir().unwrap();
+        std::fs::write(td.path().join("pkg.json"), b"{}").unwrap();
+        let base = td.path().display().to_string();
+        let c = complete(&app, &format!("hii import t1:0x19:0 --file {base}/pkg.js"));
+        assert_eq!(
+            c.common.as_deref(),
+            Some(format!("hii import t1:0x19:0 --file {base}/pkg.json ").as_str())
         );
     }
 
