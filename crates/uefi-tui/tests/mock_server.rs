@@ -443,6 +443,10 @@ impl EngineService for MockEngine {
             formset_guid: "11111111-2222-3333-4444-555555555555".into(),
             parent_form_id: 10001,
             lossy: vec!["suppress_if:1".into()],
+            parent_entries: vec![HiiFormExportEntry {
+                prompt: "PCI Subsystem Settings".into(),
+                help: "Open PCI subsystem settings".into(),
+            }],
         }))
     }
     async fn hii_form_hijack(

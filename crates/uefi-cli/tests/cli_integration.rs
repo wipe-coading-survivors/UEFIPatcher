@@ -399,7 +399,15 @@ async fn hii_form_export_writes_envelope() {
     assert_eq!(env.meta.lossy, vec!["suppress_if:1".to_string()]);
     let refs = env.refs.expect("mock parent_form_id=10001 != 0");
     assert_eq!(refs.parent_form_id, 10001);
-    assert!(refs.entries.is_empty());
+    assert_eq!(
+        refs.entries,
+        vec![uefi_common::envelope::RefEntry {
+            prompt: Some("PCI Subsystem Settings".into()),
+            help: Some("Open PCI subsystem settings".into()),
+            ..Default::default()
+        }],
+        "refs.entries — prompt/help GOTO родителя из parent_entries RPC (спека §2)"
+    );
     let body: serde_json::Value = serde_json::from_str(&env.body).unwrap();
     assert_eq!(body["forms"][0]["id"], 10019);
 

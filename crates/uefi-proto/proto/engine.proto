@@ -223,11 +223,13 @@ message HiiFormAddResponse {
 }
 
 message HiiFormExportRequest  { string image_id = 1; string item_id = 2; }
+message HiiFormExportEntry { string prompt = 1; string help = 2; }
 message HiiFormExportResponse {
   string schema_json = 1;
   string formset_guid = 2;
   uint32 parent_form_id = 3;
   repeated string lossy = 4;
+  repeated HiiFormExportEntry parent_entries = 5;
 }
 
 message HiiHelpControlEdit {

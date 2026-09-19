@@ -180,11 +180,14 @@ pub async fn form_add(
     Ok(())
 }
 
-/// Спека hii-form-export §4: parent_form_id=0 — корневая форма, refs-секции
-/// нет; иначе entries пустые (ссылку синтезирует `hii import`). u32→u16 с
-/// явной ошибкой — значение больше u16 в IFR-форме означает битый ответ.
+/// Спека hii-form-export §2/§4: parent_form_id=0 — корневая форма, refs-секции
+/// нет; иначе entries — prompt/help GOTO родителя из ответа RPC (question_id
+/// сознательно не пишется — коллизия при реимпорте в тот же образ).
+/// u32→u16 с явной ошибкой — значение больше u16 в IFR-форме означает
+/// битый ответ.
 fn refs_from_parent(
     parent_form_id: u32,
+    parent_entries: &[uefi_proto::HiiFormExportEntry],
 ) -> Result<Option<uefi_common::envelope::RefsSection>, AppError> {
     if parent_form_id == 0 {
         return Ok(None);
@@ -197,7 +200,14 @@ fn refs_from_parent(
     })?;
     Ok(Some(uefi_common::envelope::RefsSection {
         parent_form_id: id,
-        entries: vec![],
+        entries: parent_entries
+            .iter()
+            .map(|e| uefi_common::envelope::RefEntry {
+                prompt: Some(e.prompt.clone()),
+                help: Some(e.help.clone()),
+                ..uefi_common::envelope::RefEntry::default()
+            })
+            .collect(),
     }))
 }
 
@@ -215,7 +225,7 @@ pub async fn form_export(
     let mut client = Client::connect(cli_sock, st).await?;
     let image_id = client.active_image()?;
     let resp = client.hii_form_export(&image_id, item_id).await?;
-    let refs = refs_from_parent(resp.parent_form_id)?;
+    let refs = refs_from_parent(resp.parent_form_id, &resp.parent_entries)?;
     let envelope = uefi_common::envelope::wrap_export(
         &resp.schema_json,
         Some(uefi_common::envelope::SourceMeta {
@@ -686,11 +696,27 @@ mod tests {
 
     #[test]
     fn refs_from_parent_zero_is_none() {
-        assert!(refs_from_parent(0).unwrap().is_none());
-        let refs = refs_from_parent(10001).unwrap().unwrap();
+        assert!(refs_from_parent(0, &[]).unwrap().is_none());
+        let refs = refs_from_parent(
+            10001,
+            &[uefi_proto::HiiFormExportEntry {
+                prompt: "PCI Subsystem Settings".into(),
+                help: "Open PCI subsystem settings".into(),
+            }],
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(refs.parent_form_id, 10001);
-        assert!(refs.entries.is_empty());
-        assert!(refs_from_parent(u16::MAX as u32 + 1).is_err());
+        assert_eq!(
+            refs.entries,
+            vec![uefi_common::envelope::RefEntry {
+                prompt: Some("PCI Subsystem Settings".into()),
+                help: Some("Open PCI subsystem settings".into()),
+                ..Default::default()
+            }],
+            "entries — prompt/help GOTO родителя из ответа (спека §2)"
+        );
+        assert!(refs_from_parent(u16::MAX as u32 + 1, &[]).is_err());
     }
 
     #[test]

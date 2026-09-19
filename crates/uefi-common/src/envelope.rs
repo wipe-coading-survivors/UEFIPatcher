@@ -20,7 +20,7 @@ pub struct RefsSection {
     pub entries: Vec<RefEntry>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RefEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub form_id: Option<u16>,

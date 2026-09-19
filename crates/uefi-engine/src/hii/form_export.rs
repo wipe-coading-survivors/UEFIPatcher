@@ -5,10 +5,18 @@ use r_efi::hii::IFR_NUMERIC_SIZE;
 use super::{HiiError, form_package_ranges, ifr, parse_item_id, schema, values};
 use crate::types::{FfsNode, FfsType, Image};
 
+/// Запись refs.entries-подсказки (спека hii-form-export §2): prompt/help
+/// одного GOTO родителя, ведущего на экспортируемую форму.
+pub struct ParentEntry {
+    pub prompt: String,
+    pub help: String,
+}
+
 pub struct FormExport {
     pub schema: schema::FormSetSchema,
     pub formset_guid: String,
     pub parent_form_id: u32,
+    pub parent_entries: Vec<ParentEntry>,
     pub lossy: Vec<String>,
 }
 
@@ -32,6 +40,11 @@ pub fn export_form(image: &Image, item_id: &str) -> Result<FormExport, HiiError>
         items,
     };
     let parent_form_id = parent_form_id(image, &formset_guid, form_id);
+    let parent_entries = if parent_form_id != 0 {
+        parent_goto_entries(pkg, parent_form_id, form_id, &texts)
+    } else {
+        Vec::new()
+    };
     Ok(FormExport {
         schema: schema::FormSetSchema {
             formset_guid: formset_guid.clone(),
@@ -46,6 +59,7 @@ pub fn export_form(image: &Image, item_id: &str) -> Result<FormExport, HiiError>
         },
         formset_guid,
         parent_form_id,
+        parent_entries,
         lossy,
     })
 }
@@ -336,6 +350,45 @@ fn parent_form_id(image: &Image, formset_guid: &str, form_id: u16) -> u32 {
     }
 }
 
+/// refs.entries из GOTO родителя (спека hii-form-export §2): REF-стейтменты
+/// родительской формы (семантика `ref_tree::package_edges`: REF с len ≥ 15,
+/// варианты Form/FormQuestion, same-formset), ведущие на form_id
+/// экспортируемой формы; prompt/help — через texts-канал. question_id
+/// сознательно не пишется (коллизия при реимпорте в тот же образ). Несколько
+/// GOTO → по entry на каждый; ноль найдено → пусто (расхождение рёбер/пакета
+/// терпимо).
+fn parent_goto_entries(
+    pkg: &[u8],
+    parent: u32,
+    form_id: u16,
+    texts: &HashMap<u16, String>,
+) -> Vec<ParentEntry> {
+    let Some(parent) = u16::try_from(parent).ok() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    values::walk_statements(pkg, |op, off, len, current| {
+        use r_efi::hii::IFR_REF_OP;
+        if op != IFR_REF_OP || len < 15 || current != Some(parent) {
+            return;
+        }
+        let target = match crate::hii::ref_variant::parse_ref(op, &pkg[off..off + len]) {
+            Some(crate::hii::ref_variant::RefTarget::Form { form_id })
+            | Some(crate::hii::ref_variant::RefTarget::FormQuestion { form_id, .. }) => form_id,
+            _ => return,
+        };
+        if target != form_id {
+            return;
+        }
+        let sid = |pos: usize| u16::from_le_bytes([pkg[off + pos], pkg[off + pos + 1]]);
+        out.push(ParentEntry {
+            prompt: texts.get(&sid(2)).cloned().unwrap_or_default(),
+            help: texts.get(&sid(4)).cloned().unwrap_or_default(),
+        });
+    });
+    out
+}
+
 /// IFR_DISPLAY-флаги (маска 0x30) Flags-байта опкода → DisplayMode:
 /// 0x00=IntDec, 0x10=UintDec, 0x20=UintHex (r-efi/EDK2); default =
 /// UintDec (0x30 — только TIME/DATE). Спека hii-form-export §2.
@@ -539,6 +592,12 @@ mod tests {
         opcode(IFR_REF_OP, false, &p)
     }
 
+    fn ref_op_ph(prompt: u16, help: u16, qid: u16, target: u16) -> Vec<u8> {
+        let mut p = question_header(prompt, help, qid, 0xFFFF, 0);
+        p.extend_from_slice(&target.to_le_bytes());
+        opcode(IFR_REF_OP, false, &p)
+    }
+
     fn ref2_op(prompt: u16, qid: u16, target: u16, target_qid: u16) -> Vec<u8> {
         let mut p = question_header(prompt, 0x01A4, qid, 0xFFFF, 0);
         p.extend_from_slice(&target.to_le_bytes());
@@ -633,13 +692,20 @@ mod tests {
     }
 
     fn image_with(pkg: Vec<u8>) -> Image {
-        let section = mk_node(None, FfsType::Section, 0x19, pkg, vec![]);
+        image_with_sections(vec![pkg])
+    }
+
+    fn image_with_sections(sections: Vec<Vec<u8>>) -> Image {
+        let children = sections
+            .into_iter()
+            .map(|body| mk_node(None, FfsType::Section, 0x19, body, vec![]))
+            .collect();
         let file = mk_node(
             Some(Guid::from_str(FILE_GUID_STR).unwrap()),
             FfsType::File,
             0x07,
             vec![],
-            vec![section],
+            children,
         );
         let volume = mk_node(None, FfsType::Volume, 0, vec![], vec![file]);
         let root = mk_node(None, FfsType::Image, 0, vec![], vec![volume]);
@@ -649,6 +715,32 @@ mod tests {
             root,
             mode: ImageMode::Read,
         }
+    }
+
+    fn string_package(lang: &str, texts: &[&str]) -> Vec<u8> {
+        let hdr_size: u32 = (46 + lang.len() + 1) as u32;
+        let mut b = vec![0, 0, 0, r_efi::hii::PACKAGE_STRINGS];
+        b.extend_from_slice(&hdr_size.to_le_bytes());
+        b.extend_from_slice(&hdr_size.to_le_bytes());
+        while b.len() < 46 {
+            b.push(0);
+        }
+        b.extend_from_slice(lang.as_bytes());
+        b.push(0);
+        while b.len() < hdr_size as usize {
+            b.push(0);
+        }
+        for t in texts {
+            b.push(0x10);
+            b.extend_from_slice(t.as_bytes());
+            b.push(0);
+        }
+        b.push(0x00);
+        let len = b.len() as u32;
+        b[0] = (len & 0xFF) as u8;
+        b[1] = ((len >> 8) & 0xFF) as u8;
+        b[2] = ((len >> 16) & 0xFF) as u8;
+        b
     }
 
     fn item_id(form_id: u16) -> String {
@@ -1133,6 +1225,11 @@ mod tests {
         assert_eq!(ex.formset_guid, FORMSET_GUID);
         assert_eq!(ex.parent_form_id, 10001);
         assert_eq!(
+            ex.parent_entries.len(),
+            1,
+            "единственный GOTO родителя → одна entry (текст без strings-пакета пуст)"
+        );
+        assert_eq!(
             ex.lossy,
             vec![
                 "cross_formset_ref:1".to_string(),
@@ -1173,6 +1270,11 @@ mod tests {
         .concat();
         let ex = export_form(&image_with(package(&duplicated)), &item_id(10019)).unwrap();
         assert_eq!(ex.parent_form_id, 10001, "two GOTOs from one parent dedup");
+        assert_eq!(
+            ex.parent_entries.len(),
+            2,
+            "multi-GOTO: по entry на каждый GOTO"
+        );
 
         let ambiguous = [
             form_set(7),
@@ -1191,6 +1293,7 @@ mod tests {
         .concat();
         let ex = export_form(&image_with(package(&ambiguous)), &item_id(10019)).unwrap();
         assert_eq!(ex.parent_form_id, 0, "two distinct parents → no parent");
+        assert!(ex.parent_entries.is_empty());
 
         let orphan = [
             form_set(7),
@@ -1203,6 +1306,56 @@ mod tests {
         .concat();
         let ex = export_form(&image_with(package(&orphan)), &item_id(10019)).unwrap();
         assert_eq!(ex.parent_form_id, 0, "no inbound refs → no parent");
+        assert!(ex.parent_entries.is_empty());
         assert!(ex.lossy.is_empty());
+    }
+
+    #[test]
+    fn export_form_parent_entries_resolve_prompt_help() {
+        let ifr = [
+            form_set(7),
+            form(10001, 30),
+            ref_op_ph(1, 2, 0x30, 10019),
+            ref_op_ph(3, 4, 0x33, 10019),
+            ref_op_ph(5, 6, 0x34, 10020),
+            end(),
+            form(10019, 21),
+            checkbox(0x0900, 0x0901, 0x91),
+            end(),
+            form(10020, 22),
+            end(),
+            end(),
+            end(),
+        ]
+        .concat();
+        let img = image_with_sections(vec![
+            package(&ifr),
+            string_package(
+                "eng",
+                &[
+                    "PCI Subsystem Settings",
+                    "Open PCI subsystem settings",
+                    "Second entry",
+                    "Second entry help",
+                    "Other target",
+                    "Other target help",
+                ],
+            ),
+        ]);
+        let ex = export_form(&img, &item_id(10019)).unwrap();
+        assert_eq!(ex.parent_form_id, 10001);
+        let entries: Vec<(&str, &str)> = ex
+            .parent_entries
+            .iter()
+            .map(|e| (e.prompt.as_str(), e.help.as_str()))
+            .collect();
+        assert_eq!(
+            entries,
+            vec![
+                ("PCI Subsystem Settings", "Open PCI subsystem settings"),
+                ("Second entry", "Second entry help"),
+            ],
+            "GOTO на 10020 в entries не попадает"
+        );
     }
 }

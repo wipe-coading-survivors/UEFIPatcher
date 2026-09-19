@@ -932,6 +932,14 @@ impl EngineService for EngineServer {
             formset_guid: export.formset_guid,
             parent_form_id: export.parent_form_id,
             lossy: export.lossy,
+            parent_entries: export
+                .parent_entries
+                .into_iter()
+                .map(|e| HiiFormExportEntry {
+                    prompt: e.prompt,
+                    help: e.help,
+                })
+                .collect(),
         }))
     }
 

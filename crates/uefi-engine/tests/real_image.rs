@@ -5816,6 +5816,17 @@ fn real_image_hii_form_export_setup_form() {
         ex.parent_form_id, 10002,
         "10029 открывается REF-рёбрами из Advanced (10002)"
     );
+    assert_eq!(
+        ex.parent_entries
+            .iter()
+            .map(|e| (e.prompt.as_str(), e.help.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(
+            "PCI Subsystem Settings",
+            "PCI, PCI-X and PCI Express Settings."
+        )],
+        "refs.entries-подсказка: GOTO родителя 10002 → 10029 (спека §2)"
+    );
     assert_eq!(ex.schema.forms.len(), 1);
     let form = &ex.schema.forms[0];
     assert_eq!(form.id, EXPORT_SETUP_FORM_ID);
@@ -5889,12 +5900,16 @@ fn real_image_hii_form_export_setup_form() {
     );
 
     eprintln!(
-        "real_image form-export: {item} items={} one_of={} varstores={:?} lossy={:?} parent={}",
+        "real_image form-export: {item} items={} one_of={} varstores={:?} lossy={:?} parent={} parent_entries={:?}",
         form.items.len(),
         one_ofs.len(),
         ex.schema.varstores,
         ex.lossy,
-        ex.parent_form_id
+        ex.parent_form_id,
+        ex.parent_entries
+            .iter()
+            .map(|e| (e.prompt.as_str(), e.help.as_str()))
+            .collect::<Vec<_>>()
     );
 }
 
@@ -6074,6 +6089,7 @@ fn real_image_hii_form_export_add_form_round_trip() {
     .expect("export added form");
     assert_eq!(bp.formset_guid, a.formset_guid);
     assert_eq!(bp.parent_form_id, 0, "на новую форму нет REF-рёбер");
+    assert!(bp.parent_entries.is_empty());
     assert!(
         bp.lossy.is_empty(),
         "вставленная форма состоит из lossless-опкодов: {:?}",
