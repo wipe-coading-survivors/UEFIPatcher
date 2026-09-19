@@ -169,6 +169,23 @@ fn read_schema(file: &str) -> Result<String, String> {
     std::fs::read_to_string(file).map_err(|e| format!("{file}: {e}"))
 }
 
+/// Конверт-маршрутизация `:hii form add` (спека hii-form-export §4/§5,
+/// паритет CLI ensure_bare_schema uefi-cli/src/commands/hii.rs:151): файл
+/// с верхнеуровневой мета/refs — пакет `:hii import`, здесь отвергается.
+/// Признак конверта: bare-файл `split_envelope` пропускает байт-в-байт;
+/// InvalidJson уходит прежним путём — валидирует движок.
+fn ensure_bare_schema(schema_json: &str) -> Result<(), String> {
+    let is_package = match uefi_common::envelope::split_envelope(schema_json) {
+        Ok(env) => env.body != schema_json,
+        Err(uefi_common::envelope::EnvelopeError::InvalidJson(_)) => false,
+        Err(_) => true,
+    };
+    if is_package {
+        return Err("package file: use hii import".to_string());
+    }
+    Ok(())
+}
+
 /// Спека hii-form-export §4: parent_form_id=0 — корневая форма, refs-секции
 /// нет; иначе entries пустые (ссылку синтезирует `hii import`). u32→u16 с
 /// явной ошибкой — значение больше u16 означает битый ответ движка.
@@ -1029,6 +1046,7 @@ pub async fn execute_command(
                         let target = parts.get(3).ok_or("usage: :hii form add TARGET FILE")?;
                         let file = parts.get(4).ok_or("usage: :hii form add TARGET FILE")?;
                         let schema_json = read_schema(file)?;
+                        ensure_bare_schema(&schema_json)?;
                         let r = client
                             .inner
                             .hii_form_add(auth_req(

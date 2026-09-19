@@ -566,11 +566,11 @@ async fn hii_formset_add_sends_schema_and_refreshes() {
     .unwrap();
     assert_eq!(r, "mock-ffs-1");
     let calls = calls.lock().await;
-    assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].rpc, "HiiFormSetAdd");
-    assert_eq!(calls[0].schema_json, body);
+    let formset_adds: Vec<_> = calls.iter().filter(|c| c.rpc == "HiiFormSetAdd").collect();
+    assert_eq!(formset_adds.len(), 1);
+    assert_eq!(formset_adds[0].schema_json, body);
     assert_eq!(
-        calls[0].target, "",
+        formset_adds[0].target, "",
         "без --ffs уходит пустой target_ffs_guid"
     );
     drop(calls);
@@ -823,7 +823,9 @@ async fn hii_hijack_with_and_without_setupdata_guid() {
     .await
     .unwrap();
     let calls = calls.lock().await;
-    assert_eq!(calls[1].extra, "SETUP-GUID");
+    let hijacks: Vec<_> = calls.iter().filter(|c| c.rpc == "HiiFormHijack").collect();
+    assert_eq!(hijacks.len(), 2);
+    assert_eq!(hijacks[1].extra, "SETUP-GUID");
     drop(calls);
     assert!(
         uefi_tui::commands::execute_command(

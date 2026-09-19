@@ -282,8 +282,11 @@ impl EngineService for MockEngine {
     }
     async fn hii_list_forms(
         &self,
-        _req: Request<HiiListFormsRequest>,
+        req: Request<HiiListFormsRequest>,
     ) -> Result<Response<HiiListFormsResponse>, Status> {
+        let r = req.into_inner();
+        self.record_schema("HiiListForms", &r.image_id, "", "", "")
+            .await;
         Ok(Response::new(HiiListFormsResponse {
             forms: vec![
                 FormInfo {
@@ -312,8 +315,11 @@ impl EngineService for MockEngine {
     }
     async fn hii_list_varstores(
         &self,
-        _req: Request<HiiListVarstoresRequest>,
+        req: Request<HiiListVarstoresRequest>,
     ) -> Result<Response<HiiListVarstoresResponse>, Status> {
+        let r = req.into_inner();
+        self.record_schema("HiiListVarstores", &r.image_id, &r.target, "", "")
+            .await;
         Ok(Response::new(HiiListVarstoresResponse {
             varstores: vec![VarStoreInfo {
                 id: 2,
@@ -355,8 +361,11 @@ impl EngineService for MockEngine {
     }
     async fn hii_list_questions(
         &self,
-        _req: Request<HiiListQuestionsRequest>,
+        req: Request<HiiListQuestionsRequest>,
     ) -> Result<Response<HiiListQuestionsResponse>, Status> {
+        let r = req.into_inner();
+        self.record_schema("HiiListQuestions", &r.image_id, &r.target, "", "")
+            .await;
         Ok(Response::new(HiiListQuestionsResponse {
             questions: vec![
                 QuestionSummary {
