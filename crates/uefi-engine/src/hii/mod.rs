@@ -731,6 +731,7 @@ pub struct ValueOutcome {
     pub stores: Vec<String>,
 }
 
+#[derive(Debug)]
 struct StoreHit {
     path: Vec<usize>,
     desc: String,
@@ -764,7 +765,7 @@ fn collect_std_defaults_hits(
     };
     let is_store_body = |n: &FfsNode| {
         matches!(n.node_type, FfsType::File | FfsType::Section)
-            && (n.node_type != FfsType::File || n.children.is_empty())
+            && n.children.is_empty()
             && nvar::is_std_defaults(&n.body)
     };
     if is_store_body(node) {
@@ -3878,6 +3879,38 @@ mod tests {
         assert_eq!(
             image.root.children[0].children[0].children[0].children[0].action,
             Action::NoAction
+        );
+    }
+
+    #[test]
+    fn collect_std_defaults_hits_descends_into_section_with_children() {
+        let leaf_store = mk_node(FfsType::Section, nvar_store_body(), vec![]);
+        let mut parent = mk_node(FfsType::Section, nvar_store_body(), vec![leaf_store]);
+        parent.subtype = 0x19;
+        let mut root = mk_node(FfsType::Volume, vec![], vec![parent]);
+        root.node_type = FfsType::Image;
+        let image = Image {
+            image_id: "i".into(),
+            session_id: "s".into(),
+            root,
+            mode: ImageMode::Write,
+        };
+        let mut hits = Vec::new();
+        collect_std_defaults_hits(
+            &image.root,
+            &mut Vec::new(),
+            false,
+            None,
+            "Setup",
+            6,
+            &mut hits,
+        )
+        .unwrap();
+        assert_eq!(hits.len(), 1, "only the leaf store is a hit, got {hits:?}");
+        assert_eq!(
+            hits[0].path,
+            vec![0, 0],
+            "the hit is the leaf store, not the parent section"
         );
     }
 
