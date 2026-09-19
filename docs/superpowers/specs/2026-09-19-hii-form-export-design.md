@@ -348,7 +348,15 @@ message HiiFormExportResponse {
   `short_guid` удалён); (2) PgUp/PgDn в Forms View не работают на
   List-фокусе (руки PageUp/PageDown в `handle_normal_forms` есть только
   под Details, `forms_page_*` не существует вовсе; strings/varstores —
-  тот же класс) — TODO, Image View работает (`cursor_page_*`).
+  тот же класс) — закрыто в цикле (20ff0de: `forms/strings/varstores_
+  page_*` + руки, TODO 9); (3) V-кэш варсторов не видел смену
+  FormSet-строки (`selected_form_target` → None → стылый кэш) и
+  lowercase FFS-guid в target/item_id — закрыто в цикле (14bbc7a:
+  FormSet-ряды резолвятся таргетом своего формсета; `guid_to_upper_string`
+  в источнике, парсер регистронезависим).
+- **Финальный вердикт владельца (2026-09-20): «все работает, ВЕРИ
+  ПОЛОЖИТЕЛЬНЫЙ»** — с учётом пост-гейт фиксов (1)–(3), проверенных
+  живьём. Цикл закрыт.
 
 ## Скоуп-границы (сознательно вне цикла)
 
