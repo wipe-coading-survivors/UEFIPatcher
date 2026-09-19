@@ -69,6 +69,33 @@ pub async fn question_list(
     Ok(())
 }
 
+/// item_id формсета: `<target>` или `<target>#<form_id>` (суффикс после `#`
+/// допускается и отбрасывается). Грамматика target:
+/// `<ffs-file-guid>:<section-type-hex>:<index>` — из колонки form_id `hii form list`.
+pub async fn varstore_list(
+    item_id: &str,
+    cli_sock: Option<&str>,
+    format: OutputFormat,
+) -> Result<(), AppError> {
+    let st = state::require_state()?;
+    let mut client = Client::connect(cli_sock, st).await?;
+    let image_id = client.active_image()?;
+    let target = item_id.rsplit_once('#').map(|(t, _)| t).unwrap_or(item_id);
+    let stores = client.hii_list_varstores(&image_id, target).await?;
+    if format == OutputFormat::Text {
+        let codes = target_section_codes(std::iter::once(target));
+        eprint!(
+            "{}",
+            uefi_common::format::hii_legend(
+                uefi_common::format::HiiLegendCmd::VarstoreList,
+                &codes
+            )
+        );
+    }
+    crate::output::print_varstores(&stores, format);
+    Ok(())
+}
+
 pub async fn form_set_visibility(
     form_id: &str,
     visible: bool,

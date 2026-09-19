@@ -84,6 +84,7 @@ pub fn format_legend(rows: &[TreeRow]) -> String {
 pub enum HiiLegendCmd {
     FormList,
     QuestionList,
+    VarstoreList,
 }
 
 /// Легенда грамматики item_id и колонок для hii-вывода CLI (в stderr, по
@@ -111,6 +112,9 @@ pub fn hii_legend(cmd: HiiLegendCmd, section_codes: &[u8]) -> String {
         ),
         HiiLegendCmd::QuestionList => out.push_str(
             "  kind: one_of = pick an option · checkbox = 0/1 · numeric = range · other = not settable\n  set-value accepts decimal or 0x-hex values\n  prompt \"-\" = string id not resolved\n",
+        ),
+        HiiLegendCmd::VarstoreList => out.push_str(
+            "  columns: id / guid / size / name\n  guid '-' = name-value declaration (no GUID, no bounds)\n",
         ),
     }
     out
@@ -184,6 +188,14 @@ mod tests {
         assert!(leg.contains("set-value accepts decimal or 0x-hex"));
         assert!(leg.contains("prompt \"-\" = string id not resolved"));
         assert!(!leg.contains("Columns:"));
+    }
+
+    #[test]
+    fn hii_legend_varstore_variant() {
+        let leg = hii_legend(HiiLegendCmd::VarstoreList, &[0x10]);
+        assert!(leg.contains("item_id = <ffs-file-guid>:<section-type>:<index>"));
+        assert!(leg.contains("guid '-' = name-value declaration (no GUID, no bounds)"));
+        assert!(leg.contains("10 = PE32"));
     }
 
     #[test]

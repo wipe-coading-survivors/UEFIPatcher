@@ -151,6 +151,40 @@ async fn hii_question_info_and_set_value_output_content() {
         .success();
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn hii_varstore_list_tsv() {
+    let td = tempfile::TempDir::new().unwrap();
+    let sock = td.path().join("e2e-hii-varstore.sock");
+    let _handle = mock_server::start_mock(&sock).await;
+    let cwd = td.path();
+    let sock = sock.display().to_string();
+
+    cli(&sock, cwd).args(["session", "init"]).assert().success();
+    cli(&sock, cwd)
+        .args(["image", "open", "/dev/null", "--mode", "write"])
+        .assert()
+        .success();
+    cli(&sock, cwd)
+        .args([
+            "--format",
+            "tsv",
+            "hii",
+            "varstore",
+            "list",
+            "899407D7-99FE-43D8-9A21-79EC328CAC21:0x10:0",
+        ])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("id\tguid\tsize\tname"))
+        .stdout(predicates::str::contains(
+            "2\tEC87D643-99DC-4D14-B25D-8AC6D5C7B27A\t148\tSetup",
+        ));
+    cli(&sock, cwd)
+        .args(["session", "destroy"])
+        .assert()
+        .success();
+}
+
 #[test]
 fn node_source_args_are_mutually_exclusive() {
     let td = tempfile::TempDir::new().unwrap();
