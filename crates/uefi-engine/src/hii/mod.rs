@@ -596,6 +596,51 @@ pub fn question_info(image: &Image, item_id: &str) -> Result<uefi_proto::Questio
     Ok(question_info_proto(form_id, &map, &texts))
 }
 
+/// Карта varstore-деклараций формсета (спека varstore-contract §3):
+/// item_id — грамматика `hii form add` (`<target>` или `<target>#<n>`;
+/// карта не зависит от formset-ординала — это пакет формсета).
+/// Read-only, образ в любом режиме. guid="" — name-value декларация.
+pub fn list_varstores(
+    image: &Image,
+    item_id: &str,
+) -> Result<Vec<uefi_proto::VarStoreInfo>, HiiError> {
+    let (target_str, _formset_idx) = match item_id.rsplit_once('#') {
+        Some((t, n)) => match n.parse::<u16>() {
+            Ok(idx) => (t, idx as usize),
+            Err(_) => return Err(HiiError::NotFound),
+        },
+        None => (item_id, 0),
+    };
+    let target = crate::parser::target::parse_target(target_str).map_err(|_| HiiError::NotFound)?;
+    let node =
+        crate::parser::target::find_item(&image.root, &target).map_err(|_| HiiError::NotFound)?;
+    if node.node_type != FfsType::Section {
+        return Err(HiiError::NotASetupItem);
+    }
+    let pkg: &[u8] = if node.subtype == EFI_SECTION_RAW && ifr::is_form_package(&node.body) {
+        &node.body
+    } else if node.subtype == EFI_SECTION_PE32 {
+        let (off, len) =
+            form_add::resource_forms_package(&node.body).ok_or(HiiError::NotASetupItem)?;
+        node.body.get(off..off + len).ok_or(HiiError::InvalidIfr)?
+    } else {
+        return Err(HiiError::NotASetupItem);
+    };
+    Ok(values::varstore_map(pkg)
+        .into_iter()
+        .map(|m| uefi_proto::VarStoreInfo {
+            id: u32::from(m.id),
+            guid: m
+                .guid
+                .as_ref()
+                .map(crate::guid_to_upper_string)
+                .unwrap_or_default(),
+            size: u32::from(m.size),
+            name: m.name,
+        })
+        .collect())
+}
+
 /// Вопросы формы по target-строке (например "GUID:0x19:0") + числовой
 /// form_id. Read-only: работает в любом ImageMode. НЕ проверяет
 /// writability-барьеры — это просмотр (мутации — set_value/unlock).
@@ -5298,6 +5343,43 @@ mod tests {
                 let forms = &img.root.children[0].children[0].children[0];
                 assert_eq!(forms.body, pkg, "the forms package must stay untouched");
                 assert_eq!(forms.action, Action::NoAction);
+            }
+
+            #[test]
+            fn list_varstores_returns_formset_declarations() {
+                let (flash, _, _) = question_add_flash_image();
+                let img = parse_image(&flash, ImageMode::Read, "i", "s").unwrap();
+                let stores = list_varstores(&img, ITEM_FORMSET).unwrap();
+                assert_eq!(
+                    stores,
+                    vec![uefi_proto::VarStoreInfo {
+                        id: 1,
+                        guid: "A1B2C3D4-E5F6-7890-ABCD-EF1234567890".into(),
+                        size: 0x100,
+                        name: "Setup".into(),
+                    }],
+                    "фикстура декларирует ровно один varstore: emit_var_store(1, FORMSET_GUID, 0x100, \"Setup\")"
+                );
+                assert_eq!(
+                    list_varstores(&img, &format!("{ITEM_FORMSET}#0")).unwrap(),
+                    stores,
+                    "карта не зависит от formset-ординала — грамматика form add `#<n>`"
+                );
+                let err = list_varstores(&img, "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x01:0")
+                    .unwrap_err();
+                assert!(
+                    matches!(err, HiiError::NotFound),
+                    "0x01-секции в файле 5C60F367 фикстуры нет — нерезолвируемый target это NotFound, got {err:?}"
+                );
+                let err = list_varstores(&img, "12345678-90AB-CDEF-1234-567890ABCDEF:0x15:0")
+                    .unwrap_err();
+                assert!(
+                    matches!(err, HiiError::NotASetupItem),
+                    "UI-секция $SPF-файла резолвится, но не является setup-каналом, got {err:?}"
+                );
+                let err = list_varstores(&img, "00000000-0000-0000-0000-000000000000:0x10:0")
+                    .unwrap_err();
+                assert!(matches!(err, HiiError::NotFound), "got {err:?}");
             }
         }
     }
