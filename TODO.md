@@ -3992,6 +3992,15 @@ version/eventtrap/ad/ldap. Raw-IPMI и PECI-команд НЕТ (OEM-цели
   есть); (8) мелочи: `display_mode(flags, _size)` мёртвый параметр,
   `resolve_form` двойной обход, dead-ветка `Ok(None)` у plan_ref_step,
   `unknown_op_`-hex не валидируется в real-image гейте, vacuous-имя
-  теста `meta_without_formset_…` + устаревший текст MissingFormsetBody.
+  теста `meta_without_formset_…` + устаревший текст MissingFormsetBody;
+  (9) живой гейт 2026-09-20: PgUp/PgDn в Forms View не работают на
+  List-фокусе — руки PageUp/PageDown в `handle_normal_forms`
+  (main.rs:281-300) есть только под FormsFocus::Details (8ebad8c),
+  методов `forms_page_down/up` на App не существует вовсе (git -S
+  пуст); strings/varstores-попапы — тот же класс (j/k есть, пейджинга
+  нет); Image View работает (`cursor_page_*` + общая ui/scroll-математика
+  d55ed81 — мигрирована математика, но не клавишный диспатч Forms).
+  Фикс: зеркальные `forms_page_*` по forms_rows()/cursor + viewport +
+  руки под FormsFocus::List (+ refresh_form_details, как у j/k).
   Контекст: спека `2026-09-19-hii-form-export-design.md` (§5/§6),
   ledger `.superpowers/sdd/2026-09-19-hii-form-export/progress.md`.
