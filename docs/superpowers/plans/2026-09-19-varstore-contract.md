@@ -1104,6 +1104,7 @@ git commit -m "test(engine): пиннинг find_varstore_record first-match + r
 - Modify: `crates/uefi-engine/src/bin/engine.rs` (:37–39 дефолт сокета), `crates/uefi-gateway/src/config.rs` (:14–17) + `crates/uefi-gateway/Cargo.toml` (+dep `uefi-common`)
 - Modify: `crates/uefi-cli/src/output.rs` (`print_nodes` text-ветка :33–46)
 - Test: uefi-gateway config-тест (если тестового модуля нет — добавить в config.rs)
+- Modify (добор при реализации — унаследованный дефект Task 3/4): `crates/uefi-gateway/tests/mock_server.rs` — мок-метод `hii_list_varstores` (пустой `varstores: vec![]`, по образцу `hii_list_forms`). 6f3b07f добавил RPC `HiiListVarstores` в proto, но обновил только моки cli/tui (Task 5/6); мок gateway не трогался с 0609a09 → `cargo test -p uefi-gateway` не компилируется (E0046) с Task 3/4 и без этого добора гейт Step 4 и Task 11 (`cargo test --all`) не проходят.
 
 **Interfaces:**
 - Consumes: `uefi_common::state::default_sock()` (существует, покрыт state.rs-тестом), `uefi_common::format::format_legend`.
@@ -1152,7 +1153,7 @@ Expected: PASS; e2e node list text — stdout-ассерты не задеты (
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/uefi-engine/src/bin/engine.rs crates/uefi-gateway/src/config.rs crates/uefi-gateway/Cargo.toml crates/uefi-cli/src/output.rs Cargo.lock
+git add crates/uefi-engine/src/bin/engine.rs crates/uefi-gateway/src/config.rs crates/uefi-gateway/Cargo.toml crates/uefi-gateway/tests/mock_server.rs crates/uefi-cli/src/output.rs Cargo.lock
 git commit -m "fix(engine,gateway,cli): дефолт сокета → uefi_common::default_sock (XDG-state, TODO:1353); node list text печатает format_legend в stderr — спека §9"
 ```
 
