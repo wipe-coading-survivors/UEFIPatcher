@@ -1370,6 +1370,19 @@ atomic_write. После первой мутации хранимый файл �
   `uefi_common::state::default_sock()` (XDG-state,
   `~/.local/state/uefipatcher/uefipatcher.sock`, как в AGENTS.md);
   явный `UEFIPATCHER_SOCK` не тронут.
+* [ ] **cli: transport error не сообщает, какой сокет пробовался** — при
+  недоступном сокете клиент падает с голым `transport error (RPC_INTERNAL)`
+  без пути и источника резолва. Актуально после смены дефолта движка
+  (цикл varstore-contract): state-файл `.uefipatcher` продолжает пинить
+  устаревший `sock_path` (приоритет `resolve_sock`: --sock → env → state →
+  default), и клиент молча стучится в мёртвый сокет, пока движок слушит
+  новый дефолт. Найдено при эксплуатации 2026-09-19 (state пинил
+  `~/.local/share/...`, затем `/tmp/...`). Контекст: в текст transport-ошибки
+  добавить резолвнутый путь + источник (`--sock` / `UEFIPATCHER_SOCK` /
+  state-файл / дефолт) — диагностика таких случаев из секунд угадывания
+  становится моментальной; правка в uefi-cli connect-пути,
+  `uefi_common::state::resolve_sock` уже возвращает только PathBuf (нужен
+  вариант, возвращающий и источник).
 
 ### Мини-цикл «value-op» (engine): задать значение настройки — завершён (v1+v5, 2026-09-03)
 
