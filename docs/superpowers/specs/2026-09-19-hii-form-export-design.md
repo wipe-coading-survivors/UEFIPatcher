@@ -41,9 +41,9 @@ grayout-if / кросс-формсетные REF3/REF4 в schema не выраж
 - **Fidelity = round-trip** (вариант 2): полный `ItemSchema` с options /
   defaults / help / display / границами. Экспортированный файл — одновременно
   авторский шаблон и машиночитаемый объект для `form add`.
-- **Конверт вместо поля** (владелец): никакой `ref_into`-правки schema — файл
-  получает обёртку `{"meta": {...}, "formset": {...}}`. Мета — про
-  оркестрацию клиента, schema — про IFR-семантику; не пересекаются ни в
+- **Конверт вместо поля** (владелец): никакой вложенной правки schema — файл
+  получает обёртку `{"meta", "formset", "refs"}`. Мета — про происхождение,
+  schema — про IFR-семантику, refs — про вложение; не пересекаются ни в
   пространстве имён, ни в парсере.
 - **Мета — Rust-only**: единственная реализация в `uefi-common`; потребители
   CLI и TUI сейчас, gateway — третий при WebUI-rework. Браузер мету не парсит
@@ -51,14 +51,16 @@ grayout-if / кросс-формсетные REF3/REF4 в schema не выраж
   и уже-оркестрированные результаты (паттерн `/api/v1/image/upload`).
 - **Движок мету не знает вовсе**: RPC экспорта возвращает голые факты
   (`schema_json` + `formset_guid` + `parent_form_id`), конверт собирает клиент.
-- **Автозаполнение `meta.ref_into`** из рёбер `HiiFormTree`: ровно один
-  same-formset родитель → его form_id в мету; иначе None.
+- **Автозаполнение refs-секции** из рёбер `HiiFormTree`: ровно один
+  same-formset родитель → `refs.parent_form_id` (+ prompt/help его GOTO в
+  `entries`); иначе секция не пишется.
 - **Довески**: клавиша `e` на строке формы → prefill `:hii form export`;
   клавиша `A` (Shift+a) → prefill второго шага `hii question add <t>#<f> `
   (стал осмысленным после cmdline-цикла — completion-меню рендерится).
-- **`ref_into` полиморфный** (ревью спеки, владелец): число-«просто вложить»
-  или объект с авторскими override'ами (prompt/help/question_id GOTO-строки,
-  кейс живого `np_ref.json` с разными prompt/help). Плейсхолдерных id
+- **Refs — отдельная секция конверта** (ревью спеки, два круга: полиморфный
+  `ref_into` отклонён владельцем как замаскированное магическое число):
+  форма (с вопросами) и np_ref-сущность перпендикулярны — не смешиваются;
+  мета — чистая provenance-мета (source/lossy). Плейсхолдерных id
   ещё-не-существующей формы в файле нет — id приходит только из ответа RPC.
 
 ## §1 Конверт: `uefi-common::envelope` (новый модуль)
@@ -67,35 +69,42 @@ grayout-if / кросс-формсетные REF3/REF4 в schema не выраж
 
 ```json
 {
-  "meta": {
-    "ref_into": 10001,
-    "source": { "formset_guid": "EC87D643-..." },
-    "lossy": ["suppress_if:2"]
-  },
-  "formset": { "...": "валидная FormSetSchema (schema.rs)" }
+  "meta": { "source": { "formset_guid": "EC87D643-..." }, "lossy": ["suppress_if:2"] },
+  "formset": { "...": "валидная FormSetSchema (schema.rs)" },
+  "refs": {
+    "parent_form_id": 10001,
+    "entries": [
+      { "prompt": "UEFIPatcher Setup", "help": "UEFIPatcher serial console settings" }
+    ]
+  }
 }
 ```
 
-- `meta` — типизированная структура (не free-form): `ref_into:
-  Option<RefInto>`, `source: Option<SourceMeta { formset_guid: String }>`,
-  `lossy: Vec<String>`. Неизвестные ключи меты игнорируются (forward-compat).
-- `RefInto` полиморфный (serde untagged): bare-число — id родителя, «просто
-  вложить»; либо объект с override'ами авторской GOTO-строки:
-
-```json
-"ref_into": {
-  "form_id": 10001,
-  "prompt": "UEFIPatcher Setup",
-  "help": "UEFIPatcher serial console settings",
-  "question_id": 528
-}
-```
-
-  Объектная форма требует `form_id` (serde); `prompt`/`help`/`question_id`
-  опциональны — недостающее планировщик достраивает дефолтами (§3).
-- **Никаких магических чисел в файле**: id новой формы в конверте не
-  встречается ни в каком виде (плейсхолдеры запрещены) — он становится
-  известен только из `inserted_form_ids[0]` ответа RPC. Единственное
+- `meta` — типизированная структура (не free-form), чистая
+  provenance-мета экспорта: `source: Option<SourceMeta { formset_guid:
+  String }>`, `lossy: Vec<String>`. На импорте читается только для
+  предупреждения о чужом формсете (§3.5). Неизвестные ключи меты
+  игнорируются (forward-compat).
+- `refs` — опциональная секция-директива импорта: вложение формы под
+  родителя. `{ parent_form_id: u16 (обязателен при наличии секции),
+  entries: Vec<RefEntry> (опционален, может быть пуст) }`;
+  `RefEntry { prompt: Option<String>, help: Option<String>,
+  question_id: Option<u16> }` — авторская GOTO-строка по образцу живого
+  `np_ref.json` (разные prompt/help); недостающее планировщик достраивает
+  дефолтами (§3). Форма (с вопросами) и refs — перпендикулярные сущности и
+  живут отдельными секциями: форма вставляется в конец формсета, ref — в
+  родителя; соединяются только планом исполнения.
+- `split_envelope(text) -> Envelope { meta, refs, body }`: снифф ключа
+  `meta`; файл без `meta` = bare — тело возвращается как есть
+  (re-serialize только при наличии конверта), мета/refs пустые. Bare-файлы
+  (нынешние schema, `np_ref.json`, тестовые data) работают байт-в-байт как
+  сегодня — нулевая регрессия.
+- `wrap_export(body, source, refs, lossy) -> String` — сборка конверта на
+  экспорте (чем заполняется `refs` — §2).
+- **Никаких магических чисел в файле**: id новой формы не встречается в
+  конверте ни в каком виде — ни плейсхолдером, ни «полиморфной» формой
+  (вариант отклонён на ревью) — он становится известен только из
+  `inserted_form_ids[0]` ответа RPC и вшивается планировщиком. Единственное
   «магическое» число системы — базис высоких question-id `0x7F00` (конвенция
   до закрытия TODO:490) — и то не вшито в файл, а вычисляется планировщиком.
 - Тело — ключ `formset`, значение — валидная `FormSetSchema`: `hii_form_add`
@@ -114,7 +123,7 @@ grayout-if / кросс-формсетные REF3/REF4 в schema не выраж
   `deny_unknown_fields` (`schema.rs:264-266`), `FormSetSchema` — нет;
   единое поле «где-то работает, где-то нет». Конверт даёт одну семантику для
   всех путей и исключает коллизию имён при гипотетическом варианте C
-  (движковый `ref_into`).
+  (движковая директива вложенности).
 
 ## §2 Экспорт: движок
 
@@ -148,7 +157,10 @@ message HiiFormExportResponse {
   вставляет её одну).
 - `parent_form_id`: из рёбер `HiiFormTree` — `Some` только при ровно одном
   same-formset родителе; кросс-формсетные (`target_formset_guid` непуст) и
-  многородительские → 0.
+  многородительские → 0. На сборке конверта ложится в `refs.parent_form_id`;
+  `refs.entries` экспорт заполняет из существующего GOTO родителя
+  (prompt/help резолвятся walker'ом; `question_id` сознательно не пишется —
+  коллизия при реимпорте в тот же образ, выбор оставлен планировщику).
 - `lossy`-подсчёт: walker считает непокрытые statement-опкоды по видам;
   кросс-формсетный GOTO внутри формы **пропускается** (GOTO не туда в том же
   формсете хуже отсутствия) с записью `cross_formset_ref`.
@@ -157,30 +169,30 @@ message HiiFormExportResponse {
 
 Общий слой — `uefi-common::envelope` (чистые функции, без RPC):
 
-- `plan_ref_step(meta, body, form_add_outcome, busy_qids)
-  -> Option<RefStepPlan>`: при `meta.ref_into = Some(...)` и непустом
+- `plan_ref_step(refs, body, form_add_outcome, busy_qids)
+  -> Option<RefStepPlan>`: при наличии `refs`-секции и непустом
   `inserted_form_ids` строит план — refs-список формата
-  `parse_question_add_schema`:
-  `{form_id: inserted_form_ids[0], prompt, help, question_id}`. Поля
-  достраиваются каскадом: override из объектной `ref_into` → дефолт.
-  Дефолты: `prompt` = `help` = title вставляемой формы (envelope-модуль
-  достаёт его из тела мягким reach-in `forms[0].title` по тому же
-  `serde_json::Value`, что и для re-serialize; жёсткой зависимости
+  `parse_question_add_schema`: записи `{form_id: inserted_form_ids[0],
+  prompt, help, question_id}` — по одной на entry (пустой `entries` → одна
+  синтезированная запись). Поля достраиваются каскадом: авторское значение
+  из entry → дефолт. Дефолты: `prompt` = `help` = title вставляемой формы
+  (envelope-модуль достаёт его из тела мягким reach-in `forms[0].title` по
+  тому же `serde_json::Value`, что и для re-serialize; жёсткой зависимости
   common→engine-schema нет; title недоступен → строка `Form <id>`);
   `question_id` = `max(0x7F00, max(busy_qids)+1)`. Высокие id — конвенция
   до закрытия TODO:490; `busy_qids` — занятые вопрос-id родителя
   (`hii_list_questions` доступен обоим клиентам: TUI — состояние Forms-view,
   CLI — RPC-обёртка; `check_ref_slots` в движке — вторая линия обороны).
-  Пустые `inserted_form_ids` при заданном `ref_into`
+  Пустые `inserted_form_ids` при заданной refs-секции
   → ошибка «форма не вставлена, ref пропущен».
 
 Порядок исполнения (CLI и TUI, каждый своим RPC-клиентом; gateway позже —
 третий исполнитель):
 
-1. **Pre-check до мутации**: `meta.ref_into` сверяется со списком форм
-   целевого формсета (`HiiListForms`; TUI — состояние, CLI — `hii form list`).
-   Родителя
-   нет → fail fast, ноль мутаций.
+1. **Pre-check до мутации**: `refs.parent_form_id` сверяется со списком форм
+   целевого формсета (`HiiListForms`; TUI — состояние, CLI — `hii form
+   list`), авторские `question_id` из `entries` — со свободными id родителя
+   (`busy_qids`). Родителя нет или qid занят → fail fast, ноль мутаций.
 2. `split_envelope` → bare-тело → `HiiFormAdd` как сегодня.
 3. При плане: `HiiQuestionAdd` на родителя с синтезированным refs-списком.
 4. Отчёт двухфазный и честный: «форма вставлена (id X); ref построен» либо
@@ -207,9 +219,10 @@ message HiiFormExportResponse {
 ## §5 Ошибки и граничные случаи
 
 - Bare-файл → поведение байт-в-байт как сегодня (нулевая регрессия).
-- Неизвестные ключи меты → игнор. Объектная `ref_into` без `form_id` →
-  invalid meta (serde), файл целиком отвергается до RPC.
-- `ref_into` на несуществующего родителя → pre-check §3.1, fail fast.
+- Неизвестные ключи меты → игнор. Секция `refs` без `parent_form_id` →
+  invalid envelope (serde), файл целиком отвергается до RPC.
+- `refs.parent_form_id` на несуществующего родителя или авторский
+  `question_id` из `entries` на занятый id → pre-check §3.1, fail fast.
 - Кросс-формсетный GOTO в экспортируемой форме → skip + `meta.lossy`.
 - `meta.lossy` непуст → файл честно помечен; round-tripвер знает, что
   suppress-if и пр. не перенеслись.
@@ -225,8 +238,8 @@ message HiiFormExportResponse {
   тест «schema → build → export → семантически равно исходной schema» ловит
   дырки walker'а автоматически.
 - **uefi-common (unit)**: `split_envelope` — bare-проход насквозь, разбор
-  конверта, unknown-ключи; `plan_ref_step` — план/пустые id/конфликт qid/
-  override объектной формы против дефолтов.
+  конверта, unknown-ключи; `plan_ref_step` — план/пустые id/дефолты против
+  авторских entries/конфликт qid.
 - **Клиенты (integration, mock-server)**: журнал вызовов mock'а ассертит
   последовательность `list_forms → form_add → question_add` на конверт-файле;
   паритет CLI/TUI — равенство RPC-журналов на одном файле (сильнее и дешевле
@@ -237,7 +250,7 @@ message HiiFormExportResponse {
   формы → семантическое равенство (id форм/вопросов различаются).
 - **Живой гейт владельца** (вердикт-аддендум дописывается в эту спеку после
   прогона, паттерн tui-forms V1–V3): в TUI на живом образе — `e` на форме →
-  файл на диск → правка руки → импорт с `ref_into` → форма видна под
+  файл на диск → правка руки → импорт с refs-секцией → форма видна под
   родителем.
 
 ## Скоуп-границы (сознательно вне цикла)
@@ -249,7 +262,7 @@ message HiiFormExportResponse {
   расширяется), мебель завозим по use case.
 - Gateway/WebUI-обвязка (`POST /api/v1/hii/form/add` с multipart и
   конверт-оркестрацией на стороне gateway) — цикл Gateway + WebUI rework.
-- Вариант C (атомарный движковый `ref_into`, одна RPC) — отдельная дуга,
+- Вариант C (атомарная движковая директива вложенности, одна RPC) — отдельная дуга,
   если двухфазность начнёт болеть.
 - Миграция `question add` / `formset add` на конверт — по мере надобности;
   в этом цикле конверт потребляет только `form add`.
