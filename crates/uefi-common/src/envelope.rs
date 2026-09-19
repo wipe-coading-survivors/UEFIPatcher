@@ -93,6 +93,124 @@ pub fn wrap_export(
     serde_json::to_string_pretty(&obj).expect("envelope serializable")
 }
 
+/// Спека §3: резолв refs-секций в wire-формат question add.
+/// Entry с явным form_id — как есть; без — из inserted_form_ids[0].
+/// Дефолты: prompt=help=title формы (reach-in forms[0].title), qid=max(0x7F00, max(busy)+1).
+pub fn plan_ref_step(
+    refs: &RefsSection,
+    body: Option<&str>,
+    inserted: &[u32],
+    busy_qids: &[u16],
+) -> Result<Option<RefStepPlan>, EnvelopeError> {
+    let mut records = Vec::new();
+    let entries: Vec<RefEntry> = if refs.entries.is_empty() {
+        vec![RefEntry::default()]
+    } else {
+        refs.entries.clone()
+    };
+    let default_title = body.and_then(body_form_title).unwrap_or_default();
+    for e in entries {
+        let form_id = match e.form_id {
+            Some(id) => id,
+            None => {
+                let Some(first) = inserted.first() else {
+                    return Err(EnvelopeError::FormNotInserted);
+                };
+                *first as u16
+            }
+        };
+        let fallback = if default_title.is_empty() {
+            format!("Form {form_id}")
+        } else {
+            default_title.clone()
+        };
+        let qid = e.question_id.unwrap_or_else(|| next_qid(busy_qids));
+        records.push(RefRecord {
+            form_id,
+            prompt: e.prompt.unwrap_or_else(|| fallback.clone()),
+            help: e.help.unwrap_or(fallback),
+            question_id: qid,
+            formset_guid: e.formset_guid,
+        });
+    }
+    Ok(Some(RefStepPlan {
+        parent_form_id: refs.parent_form_id,
+        records,
+    }))
+}
+
+/// Мягкий reach-in заголовка формы (спека §3); None → планировщик подставит `Form <id>`.
+pub fn body_form_title(body: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(body).ok()?;
+    v.get("forms")?
+        .get(0)?
+        .get("title")?
+        .as_str()
+        .map(String::from)
+}
+
+fn next_qid(busy: &[u16]) -> u16 {
+    busy.iter()
+        .copied()
+        .max()
+        .map_or(0x7F00, |m| m.saturating_add(1).max(0x7F00))
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RefRecord {
+    pub form_id: u16,
+    pub prompt: String,
+    pub help: String,
+    pub question_id: u16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub formset_guid: Option<String>,
+}
+
+pub struct RefStepPlan {
+    pub parent_form_id: u16,
+    pub records: Vec<RefRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VarstoreBrief {
+    pub id: u16,
+    pub guid: String,
+    pub size: u16,
+    pub name: String,
+}
+
+/// Спека §3.6 / varstore-contract §6. Возвращает bare-тело с отфильтрованными varstores.
+pub fn plan_varstores(body: &str, target: &[VarstoreBrief]) -> Result<String, EnvelopeError> {
+    let mut v: serde_json::Value =
+        serde_json::from_str(body).map_err(|e| EnvelopeError::InvalidJson(e.to_string()))?;
+    let Some(declared) = v.get_mut("varstores").and_then(|x| x.as_array_mut()) else {
+        return Ok(body.to_string());
+    };
+    declared.retain(|d| {
+        let id = d["id"].as_u64().unwrap_or(0) as u16;
+        let guid = d["guid"].as_str().unwrap_or("").to_ascii_uppercase();
+        let size = d["size"].as_u64().unwrap_or(0) as u16;
+        let name = d["name"].as_str().unwrap_or("");
+        match target.iter().find(|t| t.id == id) {
+            None => true,
+            Some(t) => !(t.guid.to_ascii_uppercase() == guid && t.size == size && t.name == name),
+        }
+    });
+    for d in v["varstores"].as_array().unwrap() {
+        let id = d["id"].as_u64().unwrap_or(0) as u16;
+        let guid = d["guid"].as_str().unwrap_or("").to_ascii_uppercase();
+        let size = d["size"].as_u64().unwrap_or(0) as u16;
+        let name = d["name"].as_str().unwrap_or("");
+        if let Some(t) = target.iter().find(|t| t.id == id) {
+            let identical = t.guid.to_ascii_uppercase() == guid && t.size == size && t.name == name;
+            if !identical {
+                return Err(EnvelopeError::VarstoreConflict { id });
+            }
+        }
+    }
+    Ok(serde_json::to_string(&v).expect("body re-serializable"))
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum EnvelopeError {
     #[error("invalid json: {0}")]
@@ -103,6 +221,10 @@ pub enum EnvelopeError {
     InvalidRefs(String),
     #[error("envelope with refs entries has no formset body")]
     MissingFormsetBody,
+    #[error("refs entries reference the inserted form, but no form was inserted")]
+    FormNotInserted,
+    #[error("varstore id {id:#x} already exists with different definition")]
+    VarstoreConflict { id: u16 },
 }
 
 #[cfg(test)]
@@ -181,5 +303,107 @@ mod tests {
         assert_eq!(e.meta.source.unwrap().formset_guid, "G");
         assert_eq!(e.refs.unwrap().parent_form_id, 9);
         assert_eq!(e.meta.lossy.len(), 1);
+    }
+
+    #[test]
+    fn plan_empty_entries_synthesizes_from_inserted() {
+        let refs = RefsSection {
+            parent_form_id: 10001,
+            entries: vec![],
+        };
+        let body = r#"{"forms":[{"title":"Serial"}]}"#;
+        let plan = plan_ref_step(&refs, Some(body), &[10077], &[5])
+            .unwrap()
+            .unwrap();
+        assert_eq!(plan.records.len(), 1);
+        assert_eq!(plan.records[0].form_id, 10077);
+        assert_eq!(plan.records[0].prompt, "Serial");
+        assert_eq!(plan.records[0].help, "Serial");
+        assert_eq!(plan.records[0].question_id, 0x7F00);
+    }
+
+    #[test]
+    fn plan_busy_qids_push_high() {
+        let refs = RefsSection {
+            parent_form_id: 1,
+            entries: vec![],
+        };
+        let plan = plan_ref_step(&refs, None, &[2], &[0x7F10])
+            .unwrap()
+            .unwrap();
+        assert_eq!(plan.records[0].question_id, 0x7F11);
+    }
+
+    #[test]
+    fn plan_explicit_target_passthrough_with_override() {
+        let refs = RefsSection {
+            parent_form_id: 5,
+            entries: vec![RefEntry {
+                form_id: Some(5002),
+                formset_guid: Some("EC87D643-0000-0000-0000-000000000000".into()),
+                prompt: Some("IntelRC".into()),
+                help: Some("rc setup".into()),
+                question_id: Some(528),
+            }],
+        };
+        let plan = plan_ref_step(&refs, None, &[], &[528]).unwrap().unwrap();
+        assert_eq!(plan.records[0].form_id, 5002);
+        assert_eq!(plan.records[0].prompt, "IntelRC");
+        assert_eq!(plan.records[0].question_id, 528);
+    }
+
+    #[test]
+    fn plan_missing_inserted_is_error() {
+        let refs = RefsSection {
+            parent_form_id: 1,
+            entries: vec![RefEntry::default()],
+        };
+        assert!(matches!(
+            plan_ref_step(&refs, Some(r#"{"forms":[]}"#), &[], &[]),
+            Err(EnvelopeError::FormNotInserted)
+        ));
+    }
+
+    #[test]
+    fn plan_title_unavailable_falls_back_to_form_id() {
+        let refs = RefsSection {
+            parent_form_id: 1,
+            entries: vec![],
+        };
+        let plan = plan_ref_step(&refs, Some(r#"{"forms":[]}"#), &[9], &[])
+            .unwrap()
+            .unwrap();
+        assert_eq!(plan.records[0].prompt, "Form 9");
+    }
+
+    #[test]
+    fn plan_varstores_keeps_free_drops_identical_rejects_different() {
+        let body = r#"{"varstores":[{"id":21,"guid":"A","size":8,"name":"V1"},{"id":1,"guid":"EC87D643-","size":114,"name":"Setup"}],"forms":[]}"#;
+        let target = vec![VarstoreBrief {
+            id: 1,
+            guid: "ec87d643-".into(),
+            size: 0x72,
+            name: "Setup".into(),
+        }];
+        let out = plan_varstores(body, &target).unwrap();
+        assert!(out.contains(r#""id":21"#));
+        assert!(!out.contains(r#""id":1,"guid":"EC87D643-""#));
+
+        let conflict = vec![VarstoreBrief {
+            id: 1,
+            guid: "OTHER".into(),
+            size: 4,
+            name: "Setup".into(),
+        }];
+        assert!(matches!(
+            plan_varstores(body, &conflict),
+            Err(EnvelopeError::VarstoreConflict { id: 1 })
+        ));
+    }
+
+    #[test]
+    fn plan_varstores_no_varstores_passthrough() {
+        let body = r#"{"forms":[]}"#;
+        assert_eq!(plan_varstores(body, &[]).unwrap(), body);
     }
 }
