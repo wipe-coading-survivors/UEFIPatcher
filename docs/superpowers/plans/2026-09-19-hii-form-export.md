@@ -957,7 +957,7 @@ git commit -m "feat(cli): hii import — макро pre-check→form add→quest
   - `I` → `enter_insert_mode("hii", "hii import ".into())` (target из FormSet-строки под курсором, если стоит на ней)
   - `A` на Form → `enter_insert_mode("hii", format!("hii question add {target}#{form} "))`
   - `R` на Form → `enter_insert_mode("hii", format!("hii import {target} --file refs.json"))` (import не принимает `#parent` — родитель берётся из `refs.parent_form_id` пакета; target — формсет строки под курсором, автор правит) + в status_msg подсказка цели (`form_id`+`formset_guid` строки под курсором — автор вписывает их в пакет)
-- [ ] **Step 3: Completion** (`complete()`, тесты-образцы :1744-1878): `form export` → item_id-кандидаты (переиспользовать список form add); `import` → target-кандидаты + `--file` → path completion (`complete_path`).
+- [ ] **Step 3: Completion** (`complete()`, тесты-образцы :1744-1878): `form export` → item_id-кандидаты (список question add: `fmt_item target#form_id` — грамматика item_id; список form add — голые target без `#form`, для item_id даёт неполные кандидаты); `import` → target-кандидаты + `--file` → path completion (`complete_path`).
 - [ ] **Step 4: Тесты**: unit — префиллы e/I/R/A (по образцу `add_prefill_formset_form_and_dangling`, :2356); execute-ветки на mock-клиенте невозможны (unit) — покрытие в Task 9.
 - [ ] **Step 5: `cargo test -p uefi-tui` + clippy + коммит**
 
