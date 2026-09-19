@@ -42,6 +42,11 @@ pub struct Envelope {
 
 /// Спека hii-form-export §1: bare-файл проходит насквозь байт-в-байт;
 /// конверт режется на типизированную мету/refs и bare-тело для RPC.
+/// Refs-only пакет (Task 7): объект верхнего уровня с ключом `refs`
+/// (значение-объект) без ключа `formset`, `meta` опциональна — все entries
+/// обязаны нести явный `form_id` (спека §1/§5, invalid package до RPC);
+/// `body` такого пакета — пустая строка (мутации формсета нет). Массивный
+/// np_ref-wire `{"refs":[…]}` — по-прежнему bare для question add.
 pub fn split_envelope(text: &str) -> Result<Envelope, EnvelopeError> {
     let v: serde_json::Value =
         serde_json::from_str(text).map_err(|e| EnvelopeError::InvalidJson(e.to_string()))?;
@@ -53,6 +58,9 @@ pub fn split_envelope(text: &str) -> Result<Envelope, EnvelopeError> {
         });
     };
     if !obj.contains_key("meta") {
+        if let Some(raw) = obj.get("refs").filter(|r| r.is_object()) {
+            return refs_only(Meta::default(), raw.clone());
+        }
         return Ok(Envelope {
             meta: Meta::default(),
             refs: None,
@@ -72,9 +80,29 @@ pub fn split_envelope(text: &str) -> Result<Envelope, EnvelopeError> {
         Some(b) => {
             serde_json::to_string(b).map_err(|e| EnvelopeError::InvalidJson(e.to_string()))?
         }
-        None => return Err(EnvelopeError::MissingFormsetBody),
+        None => {
+            return match refs {
+                Some(_) => refs_only(meta, obj["refs"].clone()),
+                None => Err(EnvelopeError::MissingFormsetBody),
+            };
+        }
     };
     Ok(Envelope { meta, refs, body })
+}
+
+fn refs_only(meta: Meta, raw: serde_json::Value) -> Result<Envelope, EnvelopeError> {
+    let refs: RefsSection =
+        serde_json::from_value(raw).map_err(|e| EnvelopeError::InvalidRefs(e.to_string()))?;
+    if refs.entries.is_empty() || refs.entries.iter().any(|e| e.form_id.is_none()) {
+        return Err(EnvelopeError::InvalidRefs(
+            "refs-only package entries must be non-empty with explicit form_id".to_string(),
+        ));
+    }
+    Ok(Envelope {
+        meta,
+        refs: Some(refs),
+        body: String::new(),
+    })
 }
 
 /// Сборка конверта на экспорте. Body — уже сериализованная FormSetSchema.
@@ -412,5 +440,52 @@ mod tests {
     fn plan_varstores_no_varstores_passthrough() {
         let body = r#"{"forms":[]}"#;
         assert_eq!(plan_varstores(body, &[]).unwrap(), body);
+    }
+
+    #[test]
+    fn refs_only_bare_object_is_refs_package() {
+        let text = r#"{"refs":{"parent_form_id":10001,"entries":[{"form_id":5002,"prompt":"P","help":"H"}]}}"#;
+        let e = split_envelope(text).unwrap();
+        assert!(e.body.is_empty());
+        let r = e.refs.unwrap();
+        assert_eq!(r.parent_form_id, 10001);
+        assert_eq!(r.entries.len(), 1);
+        assert_eq!(r.entries[0].form_id, Some(5002));
+    }
+
+    #[test]
+    fn refs_only_with_meta_and_without_formset() {
+        let text = r#"{"meta":{"source":{"formset_guid":"G"}},"refs":{"parent_form_id":9,"entries":[{"form_id":1}]}}"#;
+        let e = split_envelope(text).unwrap();
+        assert!(e.body.is_empty());
+        assert_eq!(e.refs.unwrap().parent_form_id, 9);
+        assert_eq!(e.meta.source.unwrap().formset_guid, "G");
+    }
+
+    #[test]
+    fn refs_only_entry_without_form_id_rejected() {
+        let no_id = r#"{"refs":{"parent_form_id":1,"entries":[{"prompt":"p"}]}}"#;
+        assert!(matches!(
+            split_envelope(no_id),
+            Err(EnvelopeError::InvalidRefs(_))
+        ));
+        let empty = r#"{"refs":{"parent_form_id":1,"entries":[]}}"#;
+        assert!(matches!(
+            split_envelope(empty),
+            Err(EnvelopeError::InvalidRefs(_))
+        ));
+        let absent = r#"{"refs":{"parent_form_id":1}}"#;
+        assert!(matches!(
+            split_envelope(absent),
+            Err(EnvelopeError::InvalidRefs(_))
+        ));
+    }
+
+    #[test]
+    fn refs_only_np_wire_array_still_bare() {
+        let np = r#"{"refs":[{"form_id":10101,"prompt":"p","help":"h","question_id":528}]}"#;
+        let e = split_envelope(np).unwrap();
+        assert_eq!(e.body, np);
+        assert!(e.refs.is_none());
     }
 }

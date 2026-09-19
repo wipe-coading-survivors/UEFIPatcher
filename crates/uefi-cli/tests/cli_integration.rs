@@ -1,6 +1,7 @@
 mod mock_server;
 
 use std::path::Path;
+use std::sync::Arc;
 
 use assert_cmd::Command;
 use predicates::boolean::PredicateBooleanExt;
@@ -11,6 +12,13 @@ async fn setup_env() -> (TempDir, String) {
     let sock = td.path().join("test.sock");
     let _handle = mock_server::start_mock(&sock).await;
     (td, sock.display().to_string())
+}
+
+async fn setup_env_with_journal() -> (TempDir, String, Arc<tokio::sync::Mutex<Vec<String>>>) {
+    let td = TempDir::new().unwrap();
+    let sock = td.path().join("test.sock");
+    let (_handle, journal) = mock_server::start_mock_with_journal(&sock).await;
+    (td, sock.display().to_string(), journal)
 }
 
 fn cli(sock: &str, cwd: &Path) -> Command {
@@ -462,6 +470,255 @@ async fn form_add_rejects_package_file() {
         .assert()
         .success()
         .stdout(predicates::str::contains("42"));
+
+    cli(&sock, cwd)
+        .args(["session", "destroy"])
+        .assert()
+        .success();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hii_import_full_package_journal() {
+    let (td, sock, journal) = setup_env_with_journal().await;
+    let cwd = td.path();
+
+    cli(&sock, cwd).args(["session", "init"]).assert().success();
+    cli(&sock, cwd)
+        .args(["image", "open", "/dev/null", "--mode", "write"])
+        .assert()
+        .success();
+
+    let pkg = r#"{
+        "meta": {"source": {"formset_guid": "11111111-2222-3333-4444-555555555555"}},
+        "formset": {
+            "formset_guid": "A1B2C3D4-E5F6-7890-ABCD-EF1234567890",
+            "title": "T", "help": "H", "class_guids": [],
+            "varstores": [
+                {"id": 2, "guid": "EC87D643-99DC-4D14-B25D-8AC6D5C7B27A", "size": 148, "name": "Setup"},
+                {"id": 21, "guid": "AABB", "size": 8, "name": "V1"}
+            ],
+            "default_stores": [],
+            "forms": [{"id": 7, "title": "PkgForm", "items": []}]
+        },
+        "refs": {"parent_form_id": 1, "entries": []}
+    }"#;
+    let pkg_path = cwd.join("pkg.json");
+    std::fs::write(&pkg_path, pkg).unwrap();
+
+    cli(&sock, cwd)
+        .args([
+            "hii",
+            "import",
+            "5c60f367-a505-419a-859e-2a4ff6ca6fe5:0x19:0",
+            "--file",
+            pkg_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("inserted_form_ids\t42"))
+        .stdout(predicates::str::contains(
+            "ref\tbuilt\tparent_form_id\t1\tquestion_id\t0x7f00",
+        ))
+        .stderr(predicates::str::contains(
+            "warning: importing into foreign formset: package source 11111111-2222-3333-4444-555555555555, target formset 5C60F367-A505-419A-859E-2A4FF6CA6FE5",
+        ));
+
+    let j = journal.lock().await.clone();
+    assert_eq!(
+        j,
+        vec![
+            "HiiListForms",
+            "HiiListQuestions",
+            "HiiListVarstores",
+            "HiiFormAdd",
+            "HiiQuestionAdd"
+        ]
+    );
+
+    cli(&sock, cwd)
+        .args([
+            "--format",
+            "json",
+            "hii",
+            "import",
+            "5c60f367-a505-419a-859e-2a4ff6ca6fe5:0x19:0",
+            "--file",
+            pkg_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("\"inserted_form_ids\":[42]"))
+        .stdout(predicates::str::contains(
+            "\"ref\":{\"built\":true,\"parent_form_id\":1,\"question_ids\":[32512]}",
+        ));
+
+    cli(&sock, cwd)
+        .args(["session", "destroy"])
+        .assert()
+        .success();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hii_import_refs_only_journal() {
+    let (td, sock, journal) = setup_env_with_journal().await;
+    let cwd = td.path();
+
+    cli(&sock, cwd).args(["session", "init"]).assert().success();
+    cli(&sock, cwd)
+        .args(["image", "open", "/dev/null", "--mode", "write"])
+        .assert()
+        .success();
+
+    let pkg = r#"{
+        "refs": {
+            "parent_form_id": 1,
+            "entries": [
+                {"form_id": 5002, "formset_guid": "899407D7-99FE-43D8-9A21-79EC328CAC21", "prompt": "IntelRC", "help": "rc setup"}
+            ]
+        }
+    }"#;
+    let pkg_path = cwd.join("refs-only.json");
+    std::fs::write(&pkg_path, pkg).unwrap();
+
+    cli(&sock, cwd)
+        .args([
+            "hii",
+            "import",
+            "5c60f367-a505-419a-859e-2a4ff6ca6fe5:0x19:0",
+            "--file",
+            pkg_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("inserted_form_ids\t"))
+        .stdout(predicates::str::contains(
+            "ref\tbuilt\tparent_form_id\t1\tquestion_id\t0x7f00",
+        ));
+
+    let j = journal.lock().await.clone();
+    assert_eq!(
+        j,
+        vec!["HiiListForms", "HiiListQuestions", "HiiQuestionAdd"]
+    );
+    assert!(!j.contains(&"HiiFormAdd".to_string()));
+    assert!(!j.contains(&"HiiListVarstores".to_string()));
+
+    cli(&sock, cwd)
+        .args(["session", "destroy"])
+        .assert()
+        .success();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hii_import_bad_parent_fails_fast() {
+    let (td, sock, journal) = setup_env_with_journal().await;
+    let cwd = td.path();
+
+    cli(&sock, cwd).args(["session", "init"]).assert().success();
+    cli(&sock, cwd)
+        .args(["image", "open", "/dev/null", "--mode", "write"])
+        .assert()
+        .success();
+
+    let pkg = r#"{
+        "meta": {},
+        "formset": {
+            "formset_guid": "A1B2C3D4-E5F6-7890-ABCD-EF1234567890",
+            "title": "T", "help": "H", "class_guids": [],
+            "varstores": [], "default_stores": [],
+            "forms": [{"id": 7, "title": "PkgForm", "items": []}]
+        },
+        "refs": {"parent_form_id": 4242, "entries": []}
+    }"#;
+    let pkg_path = cwd.join("bad-parent.json");
+    std::fs::write(&pkg_path, pkg).unwrap();
+
+    cli(&sock, cwd)
+        .args([
+            "hii",
+            "import",
+            "5c60f367-a505-419a-859e-2a4ff6ca6fe5:0x19:0",
+            "--file",
+            pkg_path.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicates::str::contains(
+            "parent form 4242 not found in target '5c60f367-a505-419a-859e-2a4ff6ca6fe5:0x19:0'",
+        ));
+
+    let j = journal.lock().await.clone();
+    assert_eq!(j, vec!["HiiListForms"]);
+
+    cli(&sock, cwd)
+        .args(["session", "destroy"])
+        .assert()
+        .success();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hii_import_precheck_errors_zero_mutations() {
+    let (td, sock, journal) = setup_env_with_journal().await;
+    let cwd = td.path();
+
+    cli(&sock, cwd).args(["session", "init"]).assert().success();
+    cli(&sock, cwd)
+        .args(["image", "open", "/dev/null", "--mode", "write"])
+        .assert()
+        .success();
+
+    let busy = r#"{
+        "refs": {
+            "parent_form_id": 1,
+            "entries": [
+                {"form_id": 5002, "formset_guid": "899407D7-99FE-43D8-9A21-79EC328CAC21", "question_id": 34}
+            ]
+        }
+    }"#;
+    let busy_path = cwd.join("busy.json");
+    std::fs::write(&busy_path, busy).unwrap();
+
+    cli(&sock, cwd)
+        .args([
+            "hii",
+            "import",
+            "5c60f367-a505-419a-859e-2a4ff6ca6fe5:0x19:0",
+            "--file",
+            busy_path.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicates::str::contains(
+            "question_id 0x0022 already busy in parent form 1",
+        ));
+
+    let dangling = r#"{
+        "refs": {"parent_form_id": 1, "entries": [{"form_id": 6000}]}
+    }"#;
+    let dangling_path = cwd.join("dangling.json");
+    std::fs::write(&dangling_path, dangling).unwrap();
+
+    cli(&sock, cwd)
+        .args([
+            "hii",
+            "import",
+            "5c60f367-a505-419a-859e-2a4ff6ca6fe5:0x19:0",
+            "--file",
+            dangling_path.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicates::str::contains(
+            "refs target form 6000 not found in target '5c60f367-a505-419a-859e-2a4ff6ca6fe5:0x19:0'",
+        ));
+
+    let j = journal.lock().await.clone();
+    assert!(!j.contains(&"HiiFormAdd".to_string()));
+    assert!(!j.contains(&"HiiQuestionAdd".to_string()));
+    assert!(!j.contains(&"HiiListVarstores".to_string()));
 
     cli(&sock, cwd)
         .args(["session", "destroy"])

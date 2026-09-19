@@ -583,6 +583,75 @@ pub fn print_question_add_result(
     }
 }
 
+/// Успешный ref-шаг импорта (спека hii-form-export §3.4): родитель и
+/// запланированные question-id записей.
+pub struct ImportRefBuilt {
+    pub parent_form_id: u16,
+    pub question_ids: Vec<u16>,
+}
+
+/// Двухфазный отчёт `hii import` (спека hii-form-export §3.4): честный
+/// статус обеих фаз — форма (inserted_form_ids/string_ids как у form add)
+/// и ref (built/not built + причина). `ref_outcome` None — пакет без
+/// refs-секции, только form-фаза.
+pub fn print_import(
+    form_ids: &[u32],
+    string_ids: &std::collections::HashMap<String, u32>,
+    ref_outcome: Option<&Result<ImportRefBuilt, String>>,
+    format: OutputFormat,
+) {
+    let ids = form_ids
+        .iter()
+        .map(|i| i.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    match format {
+        OutputFormat::Json => {
+            let sids = serde_json::to_string(string_ids).unwrap_or_else(|_| "{}".into());
+            match ref_outcome {
+                None => println!("{{\"inserted_form_ids\":[{ids}],\"string_ids\":{sids}}}"),
+                Some(Ok(r)) => {
+                    let qids = r
+                        .question_ids
+                        .iter()
+                        .map(|q| q.to_string())
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    println!(
+                        "{{\"inserted_form_ids\":[{ids}],\"string_ids\":{sids},\"ref\":{{\"built\":true,\"parent_form_id\":{},\"question_ids\":[{qids}]}}}}",
+                        r.parent_form_id
+                    )
+                }
+                Some(Err(cause)) => println!(
+                    "{{\"inserted_form_ids\":[{ids}],\"string_ids\":{sids},\"ref\":{{\"built\":false,\"error\":\"{cause}\"}}}}"
+                ),
+            }
+        }
+        _ => {
+            println!("inserted_form_ids\t{ids}");
+            for (name, sid) in string_ids {
+                println!("string_id\t{name}\t{sid}");
+            }
+            match ref_outcome {
+                None => {}
+                Some(Ok(r)) => {
+                    let qids = r
+                        .question_ids
+                        .iter()
+                        .map(|q| format!("{q:#06x}"))
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    println!(
+                        "ref\tbuilt\tparent_form_id\t{}\tquestion_id\t{qids}",
+                        r.parent_form_id
+                    );
+                }
+                Some(Err(cause)) => println!("ref\tnot built\t{cause}"),
+            }
+        }
+    }
+}
+
 pub fn print_page_add(resp: &HiiPageAddResponse, format: OutputFormat) {
     match format {
         OutputFormat::Json => println!(

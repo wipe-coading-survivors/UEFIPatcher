@@ -18,6 +18,7 @@ const MOCK_FORM_EXPORT_SCHEMA_JSON: &str = concat!(
 #[derive(Default)]
 pub struct MockEngine {
     pub sessions: Arc<Mutex<HashMap<String, String>>>,
+    pub journal: Arc<Mutex<Vec<String>>>,
 }
 
 #[tonic::async_trait]
@@ -196,20 +197,31 @@ impl EngineService for MockEngine {
         &self,
         _req: Request<HiiListFormsRequest>,
     ) -> Result<Response<HiiListFormsResponse>, Status> {
+        self.journal.lock().await.push("HiiListForms".into());
         Ok(Response::new(HiiListFormsResponse {
-            forms: vec![FormInfo {
-                form_id: "5c60f367-a505-419a-859e-2a4ff6ca6fe5:0x19:0".into(),
-                formset_guid: "5C60F367-A505-419A-859E-2A4FF6CA6FE5".into(),
-                form_id_ifr: 1,
-                title: "Main".into(),
-                visible: true,
-            }],
+            forms: vec![
+                FormInfo {
+                    form_id: "5c60f367-a505-419a-859e-2a4ff6ca6fe5:0x19:0".into(),
+                    formset_guid: "5C60F367-A505-419A-859E-2A4FF6CA6FE5".into(),
+                    form_id_ifr: 1,
+                    title: "Main".into(),
+                    visible: true,
+                },
+                FormInfo {
+                    form_id: "899407d7-99fe-43d8-9a21-79ec328cac21:0x10:0".into(),
+                    formset_guid: "899407D7-99FE-43D8-9A21-79EC328CAC21".into(),
+                    form_id_ifr: 5002,
+                    title: "IntelRC".into(),
+                    visible: true,
+                },
+            ],
         }))
     }
     async fn hii_list_varstores(
         &self,
         _req: Request<HiiListVarstoresRequest>,
     ) -> Result<Response<HiiListVarstoresResponse>, Status> {
+        self.journal.lock().await.push("HiiListVarstores".into());
         Ok(Response::new(HiiListVarstoresResponse {
             varstores: vec![VarStoreInfo {
                 id: 2,
@@ -251,6 +263,7 @@ impl EngineService for MockEngine {
         &self,
         _req: Request<HiiFormAddRequest>,
     ) -> Result<Response<HiiFormAddResponse>, Status> {
+        self.journal.lock().await.push("HiiFormAdd".into());
         Ok(Response::new(HiiFormAddResponse {
             inserted_form_ids: vec![42],
             string_ids: std::collections::HashMap::from([("mock".into(), 2u32)]),
@@ -343,6 +356,7 @@ impl EngineService for MockEngine {
         &self,
         _req: Request<HiiListQuestionsRequest>,
     ) -> Result<Response<HiiListQuestionsResponse>, Status> {
+        self.journal.lock().await.push("HiiListQuestions".into());
         Ok(Response::new(HiiListQuestionsResponse {
             questions: vec![
                 QuestionSummary {
@@ -384,6 +398,7 @@ impl EngineService for MockEngine {
         &self,
         _req: Request<HiiQuestionAddRequest>,
     ) -> Result<Response<HiiQuestionAddResponse>, Status> {
+        self.journal.lock().await.push("HiiQuestionAdd".into());
         let mut string_ids = std::collections::HashMap::new();
         string_ids.insert("Serial Console".to_string(), 2u32);
         Ok(Response::new(HiiQuestionAddResponse {
@@ -471,10 +486,18 @@ fn mock_question() -> QuestionInfo {
 }
 
 pub async fn start_mock(sock: &Path) -> JoinHandle<()> {
+    start_mock_with_journal(sock).await.0
+}
+
+/// Мок с доступом к журналу rpc-имён (спека hii-form-export §6: журнал
+/// вызовов ассертит порядок импорта); журнал живут в процессе теста —
+/// subprocess CLI ходит по сокету, тест читает после его завершения.
+pub async fn start_mock_with_journal(sock: &Path) -> (JoinHandle<()>, Arc<Mutex<Vec<String>>>) {
     let _ = std::fs::remove_file(sock);
     let listener = tokio::net::UnixListener::bind(sock).unwrap();
     let incoming = UnixListenerStream::new(listener);
     let mock = MockEngine::default();
+    let journal = mock.journal.clone();
     let handle = tokio::spawn(async move {
         Server::builder()
             .add_service(EngineServiceServer::new(mock))
@@ -483,7 +506,7 @@ pub async fn start_mock(sock: &Path) -> JoinHandle<()> {
             .unwrap();
     });
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    handle
+    (handle, journal)
 }
 
 #[cfg(test)]

@@ -232,6 +232,12 @@ enum HiiCmd {
         #[command(subcommand)]
         sub: HiiStringCmd,
     },
+    #[command(about = "import a form package (envelope/refs): pre-check, form add, ref step")]
+    Import {
+        target: String,
+        #[arg(long)]
+        file: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -529,6 +535,9 @@ async fn dispatch(cli: &Cli, format: output::OutputFormat) -> Result<(), error::
             HiiCmd::String { sub } => match sub {
                 HiiStringCmd::List => commands::hii::string_list(sock, format).await,
             },
+            HiiCmd::Import { target, file } => {
+                commands::hii::import(target, file, sock, format).await
+            }
         },
     }
 }
@@ -777,6 +786,28 @@ mod tests {
                 assert_eq!(file, "np_page.json");
             }
             _ => panic!("expected hii page add"),
+        }
+    }
+
+    #[test]
+    fn parse_hii_import_args() {
+        let cli = Cli::try_parse_from([
+            "uefi-cli",
+            "hii",
+            "import",
+            "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:1",
+            "--file",
+            "pkg.json",
+        ])
+        .unwrap();
+        match cli.cmd {
+            Cmd::Hii {
+                sub: HiiCmd::Import { target, file },
+            } => {
+                assert_eq!(target, "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:1");
+                assert_eq!(file, "pkg.json");
+            }
+            _ => panic!("expected hii import"),
         }
     }
 

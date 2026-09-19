@@ -1,5 +1,9 @@
+use std::collections::HashMap;
+
 use crate::client::Client;
+use crate::output::ImportRefBuilt;
 use crate::output::OutputFormat;
+use uefi_common::envelope::RefsSection;
 use uefi_common::error::AppError;
 use uefi_common::error::ErrKind;
 use uefi_common::state;
@@ -232,6 +236,185 @@ pub async fn form_export(
     Ok(())
 }
 
+fn envelope_err(e: uefi_common::envelope::EnvelopeError) -> AppError {
+    AppError::new(ErrKind::RpcInvalidArgument, e.to_string())
+}
+
+fn fit_u16(v: u32, what: &str) -> Result<u16, AppError> {
+    u16::try_from(v)
+        .map_err(|_| AppError::new(ErrKind::RpcInternal, format!("{what} {v} does not fit u16")))
+}
+
+/// Pre-check §3.1: родитель refs-секции существует в целевом формсете.
+/// Target — грамматика колонки form_id `hii form list` (`<guid>:<type>:<index>`).
+fn check_parent(forms: &[uefi_proto::FormInfo], target: &str, parent: u16) -> Result<(), AppError> {
+    if forms
+        .iter()
+        .any(|f| f.form_id.eq_ignore_ascii_case(target) && f.form_id_ifr == parent as u32)
+    {
+        Ok(())
+    } else {
+        Err(AppError::new(
+            ErrKind::RpcInvalidArgument,
+            format!("parent form {parent} not found in target '{target}'; see 'hii form list'"),
+        ))
+    }
+}
+
+/// Pre-check §3.1: авторские question_id из entries не заняты в родителе.
+fn check_qids(refs: &RefsSection, busy: &[u16]) -> Result<(), AppError> {
+    for qid in refs.entries.iter().filter_map(|e| e.question_id) {
+        if busy.contains(&qid) {
+            return Err(AppError::new(
+                ErrKind::RpcInvalidArgument,
+                format!(
+                    "question_id {qid:#06x} already busy in parent form {}",
+                    refs.parent_form_id
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Pre-check §3.1 (анти-dangling): явные form_id-таргеты entries существуют —
+/// с formset_guid в том формсете (кросс-формсетный REF3), без — в целевом.
+/// Существование цели REF движок не валидирует — только клиент.
+fn check_targets(
+    forms: &[uefi_proto::FormInfo],
+    target: &str,
+    refs: &RefsSection,
+) -> Result<(), AppError> {
+    for e in &refs.entries {
+        let Some(id) = e.form_id else { continue };
+        let (found, err) = match e.formset_guid.as_deref() {
+            Some(guid) => (
+                forms.iter().any(|f| {
+                    f.form_id_ifr == id as u32 && f.formset_guid.eq_ignore_ascii_case(guid)
+                }),
+                format!("refs target form {id} not found in formset {guid}"),
+            ),
+            None => (
+                forms
+                    .iter()
+                    .any(|f| f.form_id_ifr == id as u32 && f.form_id.eq_ignore_ascii_case(target)),
+                format!("refs target form {id} not found in target '{target}'"),
+            ),
+        };
+        if !found {
+            return Err(AppError::new(ErrKind::RpcInvalidArgument, err));
+        }
+    }
+    Ok(())
+}
+
+fn busy_qids(questions: &[uefi_proto::QuestionSummary]) -> Result<Vec<u16>, AppError> {
+    questions
+        .iter()
+        .map(|q| fit_u16(q.question_id, "question_id"))
+        .collect()
+}
+
+fn varstore_briefs(
+    stores: &[uefi_proto::VarStoreInfo],
+) -> Result<Vec<uefi_common::envelope::VarstoreBrief>, AppError> {
+    stores
+        .iter()
+        .map(|v| {
+            Ok(uefi_common::envelope::VarstoreBrief {
+                id: fit_u16(v.id, "varstore id")?,
+                guid: v.guid.clone(),
+                size: fit_u16(v.size, "varstore size")?,
+                name: v.name.clone(),
+            })
+        })
+        .collect()
+}
+
+/// Спека hii-form-export §3: макро над `hii form add` + `hii question add`.
+/// Pre-check (родитель/qid/явные таргеты) до мутаций; varstore-конфликт и
+/// invalid refs — fail fast до RPC-мутаций; refs-only пакеты (body пуст)
+/// пропускают form add; ref-фаза после успешной form-фазы не прерывает
+/// команду — падение уходит в двухфазный отчёт (автоотката нет, §3.4);
+/// warn при импорте в чужой формсет (meta.source ≠ целевого).
+pub async fn import(
+    target: &str,
+    file: &str,
+    cli_sock: Option<&str>,
+    format: OutputFormat,
+) -> Result<(), AppError> {
+    let text = std::fs::read_to_string(file)
+        .map_err(|e| AppError::new(ErrKind::IoError, format!("{file}: {e}")))?;
+    let env = uefi_common::envelope::split_envelope(&text).map_err(envelope_err)?;
+    let st = state::require_state()?;
+    let mut client = Client::connect(cli_sock, st).await?;
+    let image_id = client.active_image()?;
+
+    let mut busy: Vec<u16> = Vec::new();
+    if let Some(refs) = env.refs.as_ref() {
+        let forms = client.hii_list_forms(&image_id).await?;
+        check_parent(&forms, target, refs.parent_form_id)?;
+        let questions = client
+            .hii_list_questions(&image_id, target, refs.parent_form_id as u32)
+            .await?;
+        busy = busy_qids(&questions)?;
+        check_qids(refs, &busy)?;
+        check_targets(&forms, target, refs)?;
+        let target_formset = forms
+            .iter()
+            .find(|f| f.form_id.eq_ignore_ascii_case(target))
+            .map(|f| f.formset_guid.clone());
+        if let (Some(src), Some(actual)) = (env.meta.source.as_ref(), target_formset.as_deref())
+            && !src.formset_guid.eq_ignore_ascii_case(actual)
+        {
+            eprintln!(
+                "warning: importing into foreign formset: package source {}, target formset {actual}",
+                src.formset_guid
+            );
+        }
+    }
+
+    let mut body: Option<String> = None;
+    let mut inserted: Vec<u32> = Vec::new();
+    let mut string_ids: HashMap<String, u32> = HashMap::new();
+    if !env.body.is_empty() {
+        let stores = client.hii_list_varstores(&image_id, target).await?;
+        let planned = uefi_common::envelope::plan_varstores(&env.body, &varstore_briefs(&stores)?)
+            .map_err(envelope_err)?;
+        let (ids, sids) = client.hii_form_add(&image_id, target, &planned).await?;
+        inserted = ids;
+        string_ids = sids;
+        body = Some(planned);
+    }
+
+    let ref_outcome = match env.refs.as_ref() {
+        None => None,
+        Some(refs) => Some(
+            match uefi_common::envelope::plan_ref_step(refs, body.as_deref(), &inserted, &busy) {
+                Ok(Some(plan)) => {
+                    let schema =
+                        serde_json::to_string(&serde_json::json!({ "refs": plan.records }))
+                            .map_err(|e| {
+                                AppError::new(ErrKind::RpcInternal, format!("refs plan: {e}"))
+                            })?;
+                    let parent = format!("{}#{}", target, refs.parent_form_id);
+                    match client.hii_question_add(&image_id, &parent, &schema).await {
+                        Ok(_) => Ok(ImportRefBuilt {
+                            parent_form_id: refs.parent_form_id,
+                            question_ids: plan.records.iter().map(|r| r.question_id).collect(),
+                        }),
+                        Err(e) => Err(e.to_string()),
+                    }
+                }
+                Ok(None) => Err("refs plan is empty".to_string()),
+                Err(e) => Err(e.to_string()),
+            },
+        ),
+    };
+    crate::output::print_import(&inserted, &string_ids, ref_outcome.as_ref(), format);
+    Ok(())
+}
+
 pub async fn form_hijack(
     target: &str,
     file: &str,
@@ -386,7 +569,21 @@ pub fn parse_u64_loose(s: &str) -> Result<u64, AppError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ensure_bare_schema, parse_u64_loose, refs_from_parent};
+    use super::{
+        check_parent, check_qids, check_targets, ensure_bare_schema, parse_u64_loose,
+        refs_from_parent,
+    };
+    use uefi_common::envelope::{RefEntry, RefsSection};
+
+    fn form(form_id: &str, formset_guid: &str, form_id_ifr: u32) -> uefi_proto::FormInfo {
+        uefi_proto::FormInfo {
+            form_id: form_id.into(),
+            formset_guid: formset_guid.into(),
+            form_id_ifr,
+            title: String::new(),
+            visible: true,
+        }
+    }
 
     #[test]
     fn parse_u64_loose_hex_and_dec() {
@@ -395,6 +592,96 @@ mod tests {
         assert_eq!(parse_u64_loose("42").unwrap(), 42);
         assert!(parse_u64_loose("0xG").is_err());
         assert!(parse_u64_loose("").is_err());
+    }
+
+    #[test]
+    fn check_parent_target_and_form_must_match() {
+        let forms = vec![
+            form("g:0x19:0", "G-1", 1),
+            form("g:0x19:0", "G-1", 2),
+            form("other:0x10:0", "G-2", 1),
+        ];
+        assert!(check_parent(&forms, "g:0x19:0", 2).is_ok());
+        assert!(check_parent(&forms, "G:0X19:0", 1).is_ok());
+        let miss = check_parent(&forms, "g:0x19:0", 4242).unwrap_err();
+        assert!(
+            miss.to_string()
+                .contains("parent form 4242 not found in target 'g:0x19:0'")
+        );
+        assert!(check_parent(&forms, "other:0x10:0", 1).is_ok());
+    }
+
+    #[test]
+    fn check_parent_form_in_other_formset_is_miss() {
+        let forms = vec![form("other:0x10:0", "G-2", 7)];
+        assert!(check_parent(&forms, "g:0x19:0", 7).is_err());
+    }
+
+    #[test]
+    fn check_qids_rejects_busy_author_id() {
+        let refs = RefsSection {
+            parent_form_id: 1,
+            entries: vec![RefEntry {
+                question_id: Some(0x22),
+                ..Default::default()
+            }],
+        };
+        let err = check_qids(&refs, &[0x20, 0x22]).unwrap_err();
+        assert!(err.to_string().contains("question_id 0x0022 already busy"));
+        assert!(check_qids(&refs, &[0x23]).is_ok());
+    }
+
+    #[test]
+    fn check_targets_cross_formset_and_dangling() {
+        let forms = vec![
+            form("g:0x19:0", "5C60F367-A505-419A-859E-2A4FF6CA6FE5", 1),
+            form(
+                "899407d7-99fe-43d8-9a21-79ec328cac21:0x10:0",
+                "899407D7-99FE-43D8-9A21-79EC328CAC21",
+                5002,
+            ),
+        ];
+        let cross = RefsSection {
+            parent_form_id: 1,
+            entries: vec![RefEntry {
+                form_id: Some(5002),
+                formset_guid: Some("899407d7-99fe-43d8-9a21-79ec328cac21".into()),
+                ..Default::default()
+            }],
+        };
+        assert!(check_targets(&forms, "g:0x19:0", &cross).is_ok());
+        let same_formset = RefsSection {
+            parent_form_id: 1,
+            entries: vec![RefEntry {
+                form_id: Some(1),
+                ..Default::default()
+            }],
+        };
+        assert!(check_targets(&forms, "g:0x19:0", &same_formset).is_ok());
+        let dangling = RefsSection {
+            parent_form_id: 1,
+            entries: vec![RefEntry {
+                form_id: Some(6000),
+                ..Default::default()
+            }],
+        };
+        let err = check_targets(&forms, "g:0x19:0", &dangling).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("refs target form 6000 not found in target 'g:0x19:0'")
+        );
+        let wrong_guid = RefsSection {
+            parent_form_id: 1,
+            entries: vec![RefEntry {
+                form_id: Some(5002),
+                formset_guid: Some("00000000-0000-0000-0000-000000000000".into()),
+                ..Default::default()
+            }],
+        };
+        let err = check_targets(&forms, "g:0x19:0", &wrong_guid).unwrap_err();
+        assert!(err.to_string().contains(
+            "refs target form 5002 not found in formset 00000000-0000-0000-0000-000000000000"
+        ));
     }
 
     #[test]
@@ -417,5 +704,11 @@ mod tests {
         assert!(ensure_bare_schema(empty_meta).is_err());
         let no_body = r#"{"meta":{"lossy":["x"]}}"#;
         assert!(ensure_bare_schema(no_body).is_err());
+    }
+
+    #[test]
+    fn refs_only_package_rejected_by_form_add_router() {
+        let refs_only = r#"{"refs":{"parent_form_id":1,"entries":[{"form_id":2}]}}"#;
+        assert!(ensure_bare_schema(refs_only).is_err());
     }
 }
