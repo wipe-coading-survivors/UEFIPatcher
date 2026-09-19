@@ -4,7 +4,8 @@ use r_efi::hii::{
     IFR_ACTION_OP, IFR_CHECKBOX_OP, IFR_DATE_OP, IFR_DEFAULT_OP, IFR_END_OP, IFR_FORM_OP,
     IFR_GRAY_OUT_IF_OP, IFR_NUMERIC_OP, IFR_NUMERIC_SIZE, IFR_ONE_OF_OP, IFR_ONE_OF_OPTION_OP,
     IFR_ORDERED_LIST_OP, IFR_PASSWORD_OP, IFR_REF_OP, IFR_STRING_OP, IFR_SUBTITLE_OP,
-    IFR_SUPPRESS_IF_OP, IFR_TEXT_OP, IFR_TIME_OP, IFR_VARSTORE_EFI_OP, IFR_VARSTORE_OP,
+    IFR_SUPPRESS_IF_OP, IFR_TEXT_OP, IFR_TIME_OP, IFR_VARSTORE_EFI_OP, IFR_VARSTORE_NAME_VALUE_OP,
+    IFR_VARSTORE_OP,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,6 +86,7 @@ fn is_statement_op(op: u8) -> bool {
             | IFR_DEFAULT_OP
             | IFR_VARSTORE_OP
             | IFR_VARSTORE_EFI_OP
+            | IFR_VARSTORE_NAME_VALUE_OP
     )
 }
 
@@ -202,6 +204,12 @@ pub fn varstore_map(pkg: &[u8]) -> Vec<VarStoreMap> {
                 name: ucs2_strz(&pkg[off + 26..off + len]),
             });
         }
+        IFR_VARSTORE_NAME_VALUE_OP if len >= 6 => out.push(VarStoreMap {
+            id: u16::from_le_bytes([pkg[off + 2], pkg[off + 3]]),
+            guid: None,
+            size: 0,
+            name: ucs2_strz(&pkg[off + 4..off + len]),
+        }),
         _ => {}
     });
     out
@@ -464,6 +472,15 @@ mod tests {
         opcode(IFR_VARSTORE_EFI_OP, false, &p)
     }
 
+    fn varstore_name_value(id: u16, name_ucs2: &str) -> Vec<u8> {
+        let mut p = Vec::new();
+        p.extend_from_slice(&id.to_le_bytes());
+        for u in name_ucs2.encode_utf16().chain(std::iter::once(0)) {
+            p.extend_from_slice(&u.to_le_bytes());
+        }
+        opcode(IFR_VARSTORE_NAME_VALUE_OP, false, &p)
+    }
+
     fn question_header(qid: u16, var_store_id: u16, var_offset: u16, qflags: u8) -> Vec<u8> {
         let mut p = Vec::new();
         p.extend_from_slice(&0x01A3u16.to_le_bytes());
@@ -537,6 +554,19 @@ mod tests {
             map[1].guid,
             Some(Guid::from_str(VARSTORE_GUID_STR).unwrap())
         );
+    }
+
+    #[test]
+    fn varstore_map_reads_name_value_declarations() {
+        let mut ifr = form_set(7);
+        ifr.extend(varstore_name_value(9, "NV"));
+        ifr.extend(end());
+        let map = varstore_map(&package(&ifr));
+        assert_eq!(map.len(), 1);
+        assert_eq!(map[0].id, 9);
+        assert_eq!(map[0].guid, None);
+        assert_eq!(map[0].size, 0);
+        assert_eq!(map[0].name, "NV");
     }
 
     #[test]
