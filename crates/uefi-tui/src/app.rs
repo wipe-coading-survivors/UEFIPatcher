@@ -962,6 +962,7 @@ pub fn details_text(node: &TreeNode) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands;
     use crate::input::AppEvent;
     use crate::theme::ACTION_NO;
 
@@ -1430,6 +1431,38 @@ mod tests {
         app.forms.expanded = ["S".into()].into();
         app.forms_page_down();
         assert_eq!(app.forms.cursor, 10, "fallback page size 10");
+    }
+
+    #[test]
+    fn selected_form_target_resolves_formset_rows() {
+        let mk = |set: &str, target: &str, id: u32| uefi_proto::FormInfo {
+            form_id: target.into(),
+            formset_guid: set.into(),
+            form_id_ifr: id,
+            title: format!("f{id}"),
+            visible: true,
+        };
+        let mut app = App::new();
+        app.forms.forms = vec![mk("SETUP", "t-setup:0x19:0", 1), mk("RC", "t-rc:0x19:0", 9)];
+        app.forms.expanded = ["SETUP".into(), "RC".into()].into();
+        // rows: [FormSet SETUP, Form 1, FormSet RC, Form 9]
+        assert_eq!(
+            commands::selected_form_target(&app).as_deref(),
+            Some("t-setup:0x19:0"),
+            "FormSet-строка резолвится таргетом своего формсета"
+        );
+        app.forms.cursor = 1;
+        assert_eq!(
+            commands::selected_form_target(&app).as_deref(),
+            Some("t-setup:0x19:0"),
+            "Form-строка — таргетом формы"
+        );
+        app.forms.cursor = 2;
+        assert_eq!(
+            commands::selected_form_target(&app).as_deref(),
+            Some("t-rc:0x19:0"),
+            "смена FormSet-строки видна V-кэшу (не стылый формсет)"
+        );
     }
 
     #[test]

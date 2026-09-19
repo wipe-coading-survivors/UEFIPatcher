@@ -1708,7 +1708,18 @@ pub fn selected_form_item_id(app: &App) -> Option<String> {
 /// RPC без form_id (list_varstores). None — если строка не форма.
 /// Спека varstore-contract §5.
 pub fn selected_form_target(app: &App) -> Option<String> {
-    app.selected_form_key().map(|k| k.target)
+    if let Some(k) = app.selected_form_key() {
+        return Some(k.target);
+    }
+    let rows = app.forms_rows();
+    let Some(crate::forms::FormsRow::FormSet { guid, .. }) = rows.get(app.forms.cursor) else {
+        return None;
+    };
+    app.forms
+        .forms
+        .iter()
+        .find(|f| f.formset_guid.eq_ignore_ascii_case(guid))
+        .map(|f| f.form_id.clone())
 }
 
 /// Insert-prefill для Enter на вопросе: вопрос из question_cursor.
