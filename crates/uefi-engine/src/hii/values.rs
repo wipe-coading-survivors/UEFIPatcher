@@ -123,6 +123,9 @@ struct Frame {
     form_id: Option<u16>,
 }
 
+/// Обход IFR-стейтментов с форм-скоупом: визитирует statement-опкоды и
+/// gate-опкоды (SUPPRESS_IF/GRAY_OUT_IF — с current-form охватывающей
+/// формы, без expr_end-маркировки; спека hii-form-export §2 lossy-счёт).
 pub(crate) fn walk_statements(body: &[u8], mut visit: impl FnMut(u8, usize, usize, Option<u16>)) {
     let (start, end) = package_bounds(body);
     let mut stack: Vec<Frame> = Vec::new();
@@ -157,6 +160,9 @@ pub(crate) fn walk_statements(body: &[u8], mut visit: impl FnMut(u8, usize, usiz
             if op == IFR_FORM_OP && length >= 6 {
                 form_id = Some(u16::from_le_bytes([body[i + 2], body[i + 3]]));
             }
+        } else if is_gate_op(op) {
+            let current_form = stack.iter().rev().find_map(|f| f.form_id);
+            visit(op, i, length, current_form);
         }
         if length_and_scope & 0x80 != 0 {
             stack.push(Frame {
@@ -595,6 +601,39 @@ mod tests {
         assert_eq!(map[0].size, 0);
         assert_eq!(map[0].name, "NV");
         assert_eq!(map[0].kind, VarStoreKind::NameValue);
+    }
+
+    #[test]
+    fn walk_statements_visits_gate_ops_with_current_form() {
+        let ifr = [
+            form_set(7),
+            opcode(IFR_SUPPRESS_IF_OP, true, &[]),
+            form(10029, 21),
+            opcode(IFR_GRAY_OUT_IF_OP, true, &[]),
+            checkbox_op(0x66),
+            end(),
+            end(),
+            end(),
+            end(),
+        ]
+        .concat();
+        let mut visits: Vec<(u8, Option<u16>)> = Vec::new();
+        walk_statements(&package(&ifr), |op, _, _, current| {
+            visits.push((op, current))
+        });
+        assert_eq!(
+            visits.first(),
+            Some(&(IFR_SUPPRESS_IF_OP, None)),
+            "form-visibility gate outside any form visited with no current form"
+        );
+        assert!(
+            visits.contains(&(IFR_GRAY_OUT_IF_OP, Some(10029))),
+            "in-form gate visited with the enclosing form id"
+        );
+        assert!(
+            visits.contains(&(IFR_CHECKBOX_OP, Some(10029))),
+            "statement under gate still visited"
+        );
     }
 
     #[test]
