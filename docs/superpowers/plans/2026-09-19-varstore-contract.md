@@ -1018,7 +1018,7 @@ git commit -m "test(engine): покрытие numeric width 2/4/8, DEFAULT types
 **Interfaces:**
 - Consumes: `nvar::tests::{entry, inner_fixture}` (приватные тест-фикстуры nvar.rs), `mk_node` (mod.rs tests).
 
-- [ ] **Step 1: Failing test — пиннинг first-match**
+- [ ] **Step 1: Пиннинг-тест first-match (GREEN на текущем коде по построению — пиннинг контракта, не RED)**
 
 nvar.rs tests:
 
@@ -1062,8 +1062,11 @@ pub fn find_varstore_record<'a>(
         let mut hits = Vec::new();
         collect_std_defaults_hits(&image.root, &mut Vec::new(), false, None, "Setup", 6, &mut hits).unwrap();
         assert_eq!(hits.len(), 1, "only the leaf store is a hit, got {hits:?}");
+        assert_eq!(hits[0].path, vec![0, 0], "the hit is the leaf store, not the parent section");
     }
 ```
+
+(проверка `hits[0].path` обязательна: на старом замыкании родительская секция сама становится единственным хитом с ранним return — `hits.len() == 1` выполняется и без правки, тест не RED; для `{hits:?}` нужен `#[derive(Debug)]` на `StoreHit`)
 
 (mk_node-сигнатуру/сборку образа выровнять по `image_with_nvar_stores` :3573.)
 
