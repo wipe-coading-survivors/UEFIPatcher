@@ -590,6 +590,22 @@ pub struct ImportRefBuilt {
     pub question_ids: Vec<u16>,
 }
 
+/// JSON-отчёт неудачной ref-фазы (спека hii-form-export §3.4): cause —
+/// произвольный текст, сериализуется serde_json (экранирование кавычек/
+/// обратных слэшей/контроля), не format!-интерполяцией.
+fn import_ref_error_json(
+    form_ids: &[u32],
+    string_ids: &std::collections::HashMap<String, u32>,
+    cause: &str,
+) -> String {
+    serde_json::json!({
+        "inserted_form_ids": form_ids,
+        "string_ids": string_ids,
+        "ref": {"built": false, "error": cause}
+    })
+    .to_string()
+}
+
 /// Двухфазный отчёт `hii import` (спека hii-form-export §3.4): честный
 /// статус обеих фаз — форма (inserted_form_ids/string_ids как у form add)
 /// и ref (built/not built + причина). `ref_outcome` None — пакет без
@@ -622,9 +638,9 @@ pub fn print_import(
                         r.parent_form_id
                     )
                 }
-                Some(Err(cause)) => println!(
-                    "{{\"inserted_form_ids\":[{ids}],\"string_ids\":{sids},\"ref\":{{\"built\":false,\"error\":\"{cause}\"}}}}"
-                ),
+                Some(Err(cause)) => {
+                    println!("{}", import_ref_error_json(form_ids, string_ids, cause))
+                }
             }
         }
         _ => {
@@ -697,6 +713,25 @@ mod tests {
     #[test]
     fn session_created_json() {
         print_session_created("s1", "t1", OutputFormat::Json);
+    }
+
+    #[test]
+    fn import_ref_error_json_escapes_cause() {
+        let sids = std::collections::HashMap::from([("title".to_string(), 600u32)]);
+        let doc = import_ref_error_json(
+            &[42],
+            &sids,
+            "question_add failed: rpc \"invalid\" at path C:\\tmp\\x",
+        );
+        let v: serde_json::Value =
+            serde_json::from_str(&doc).expect("валидный JSON при cause с кавычками/слэшами");
+        assert_eq!(v["inserted_form_ids"][0].as_u64(), Some(42));
+        assert_eq!(v["string_ids"]["title"].as_u64(), Some(600));
+        assert_eq!(v["ref"]["built"].as_bool(), Some(false));
+        assert_eq!(
+            v["ref"]["error"].as_str(),
+            Some("question_add failed: rpc \"invalid\" at path C:\\tmp\\x")
+        );
     }
 
     #[test]
