@@ -116,7 +116,8 @@ fn form_title(pkg: &[u8], form_id: u16, texts: &HashMap<u16, String>) -> Option<
 /// `unknown_op_<hex>:N`; REF3/REF4 → skip + `cross_formset_ref:N`,
 /// REF5 Dynamic → skip + `dynamic_ref:N`, REF2 → `ref_question_target:N`
 /// (target-question в RefItem не выражается). ONE_OF_OPTION/DEFAULT
-/// consumed one_of-веткой, FORM — структурный: не считаются.
+/// consumed one_of/numeric-ветками (scan_options), FORM — структурный:
+/// не считаются.
 /// Length-гарды по-веточные (TEXT len 8 / SUBTITLE 6 / вопросы 13).
 pub(crate) fn collect_items(
     pkg: &[u8],
@@ -182,6 +183,8 @@ pub(crate) fn collect_items(
                     0
                 };
                 let (min, max, step) = numeric_min_max_step(pkg, off, len, size);
+                let mut defaults = Vec::new();
+                values::scan_options(pkg, off + len, &mut Vec::new(), &mut defaults);
                 out.push(schema::ItemSchema::Numeric(schema::NumericItem {
                     prompt: get(sid(2)),
                     help: get(sid(4)),
@@ -193,7 +196,7 @@ pub(crate) fn collect_items(
                     max,
                     step,
                     display: op_display(),
-                    defaults: schema::Defaults::default(),
+                    defaults: map_defaults(&defaults),
                 }));
             }
             IFR_CHECKBOX_OP if len >= 13 => {
@@ -841,6 +844,58 @@ mod tests {
     }
 
     #[test]
+    fn numeric_in_scope_defaults_mapped() {
+        let ifr = [
+            form_set(7),
+            form(10029, 21),
+            numeric(
+                0x0201,
+                0x0202,
+                0x0055,
+                r_efi::hii::IFR_NUMERIC_SIZE_1,
+                1,
+                9,
+                1,
+            ),
+            default_op(0, 0, &[7]),
+            default_op(1, 0, &[3]),
+            end(),
+            end(),
+            end(),
+        ]
+        .concat();
+        let texts: HashMap<u16, String> = [
+            (0x0201u16, "Ratio".to_string()),
+            (0x0202, "CPU Core Ratio".to_string()),
+        ]
+        .into();
+        let mut lossy = Vec::new();
+        let items = collect_items(&package(&ifr), 10029, &texts, &mut lossy);
+        assert_eq!(items.len(), 1);
+        match &items[0] {
+            schema::ItemSchema::Numeric(q) => {
+                assert_eq!(q.min, 1);
+                assert_eq!(q.max, 9);
+                assert_eq!(
+                    q.defaults.optimized,
+                    Some(7),
+                    "DEFAULT standard (id 0) → optimized"
+                );
+                assert_eq!(
+                    q.defaults.failsafe,
+                    Some(3),
+                    "DEFAULT manufacturing (id 1) → failsafe"
+                );
+            }
+            _ => panic!("expected Numeric"),
+        }
+        assert!(
+            lossy.is_empty(),
+            "DEFAULT в скоупе numeric не lossy: {lossy:?}"
+        );
+    }
+
+    #[test]
     fn checkbox_resolves_help_text() {
         let ifr = [
             form_set(7),
@@ -1067,8 +1122,8 @@ mod tests {
     #[test]
     fn builder_symmetry_round_trip() {
         use crate::hii::ifr_builder::{
-            DEFAULT_ID_STANDARD, IFR_DISPLAY_UINT_DEC, IFR_DISPLAY_UINT_HEX, IFR_OPTION_DEFAULT,
-            IfrBuilder, TYPE_NUM_SIZE_8,
+            DEFAULT_ID_MANUFACTURING, DEFAULT_ID_STANDARD, IFR_DISPLAY_UINT_DEC,
+            IFR_DISPLAY_UINT_HEX, IFR_OPTION_DEFAULT, IfrBuilder, TYPE_NUM_SIZE_8,
         };
         let g = Guid::from_str(FORMSET_GUID).unwrap();
         let vsg = Guid::from_str(VARSTORE_GUID_STR).unwrap();
@@ -1093,6 +1148,8 @@ mod tests {
             9,
             2,
         );
+        b.emit_default(DEFAULT_ID_STANDARD, TYPE_NUM_SIZE_8, 7, 1);
+        b.emit_default(DEFAULT_ID_MANUFACTURING, TYPE_NUM_SIZE_8, 5, 1);
         b.emit_check_box(0x0300, 0x0301, 0x0060, 1, 0x0020, 0);
         b.emit_ref(0x0400, 0x0401, 0x0070, 0xFFFF, 0, 10030);
         b.emit_end();
@@ -1162,7 +1219,10 @@ mod tests {
                 max: 9,
                 step: 2,
                 display: schema::DisplayMode::UintHex,
-                defaults: schema::Defaults::default(),
+                defaults: schema::Defaults {
+                    optimized: Some(7),
+                    failsafe: Some(5),
+                },
             }),
             schema::ItemSchema::CheckBox(schema::CheckBoxItem {
                 prompt: "Turbo".into(),
