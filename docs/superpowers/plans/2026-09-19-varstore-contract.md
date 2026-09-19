@@ -133,21 +133,33 @@ git commit -m "feat(engine): varstore_map читает IFR_VARSTORE_NAME_VALUE (
         let (flash, _, _) = question_add_flash_image();
         let img = parse_image(&flash, ImageMode::Read, "i", "s").unwrap();
         let stores = list_varstores(&img, ITEM_FORMSET).unwrap();
-        assert!(stores.iter().any(|v| v.id == 1 && v.size > 0),
-            "базовый формсет фикстуры декларирует varstore 1, got {stores:?}");
-        assert!(stores.iter().all(|v| {
-            v.guid.parse::<crate::types::Guid>().is_ok() || v.guid.is_empty()
-        }));
-        assert_eq!(list_varstores(&img, "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x01:0")
-            .unwrap_err(),
-            HiiError::NotASetupItem);
-        assert_eq!(list_varstores(&img, "00000000-0000-0000-0000-000000000000:0x10:0")
-            .unwrap_err(),
-            HiiError::NotFound);
+        assert_eq!(
+            stores,
+            vec![uefi_proto::VarStoreInfo {
+                id: 1,
+                guid: "A1B2C3D4-E5F6-7890-ABCD-EF1234567890".into(),
+                size: 0x100,
+                name: "Setup".into(),
+            }],
+            "фикстура декларирует ровно один varstore: emit_var_store(1, FORMSET_GUID, 0x100, \"Setup\")"
+        );
+        assert_eq!(
+            list_varstores(&img, &format!("{ITEM_FORMSET}#0")).unwrap(),
+            stores,
+            "карта не зависит от formset-ординала — грамматика form add `#<n>`"
+        );
+        let err = list_varstores(&img, "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x01:0").unwrap_err();
+        assert!(matches!(err, HiiError::NotFound),
+            "0x01-секции в файле 5C60F367 фикстуры нет — нерезолвируемый target это NotFound, got {err:?}");
+        let err = list_varstores(&img, "12345678-90AB-CDEF-1234-567890ABCDEF:0x15:0").unwrap_err();
+        assert!(matches!(err, HiiError::NotASetupItem),
+            "UI-секция $SPF-файла резолвится, но не является setup-каналом, got {err:?}");
+        let err = list_varstores(&img, "00000000-0000-0000-0000-000000000000:0x10:0").unwrap_err();
+        assert!(matches!(err, HiiError::NotFound), "got {err:?}");
     }
 ```
 
-Точный набор деклараций фикстуры проверить прогоном (первый запуск теста покажет фактическую карту — ассерт на конкретный id/size уточнить по факту; это пиннинг, не гадание).
+Пиннинг по фикстуре (проверено чтением `question_add_forms_pkg`: `emit_var_store(1, &g, 0x100, "Setup")`, FORMSET_GUID = A1B2C3D4-E5F6-7890-ABCD-EF1234567890 — ровно одна декларация 0x24). Дефекты исходного варианта: (1) `assert_eq!` на `HiiError` не компилируется — у enum нет `PartialEq` (hii/mod.rs:31 `#[derive(Debug, Error)]`; конвенция файла — `matches!`); (2) таргет `5C60F367…:0x01:0` в фикстуре не резолвится (файл 5C60F367 несёт только PE32-секцию) → фактическая ошибка NotFound, а NotASetupItem даёт резолвящийся не-setup таргет — UI-секция $SPF-файла `12345678-90AB-CDEF-1234-567890ABCDEF:0x15:0`.
 
 - [ ] **Step 2: Run — падает**
 
@@ -188,13 +200,15 @@ pub fn list_varstores(image: &Image, item_id: &str) -> Result<Vec<uefi_proto::Va
         .into_iter()
         .map(|m| uefi_proto::VarStoreInfo {
             id: u32::from(m.id),
-            guid: m.guid.map(crate::guid_to_upper_string).unwrap_or_default(),
+            guid: m.guid.as_ref().map(crate::guid_to_upper_string).unwrap_or_default(),
             size: u32::from(m.size),
             name: m.name,
         })
         .collect())
 }
 ```
+
+Дефект исходного сниппета: `m.guid.map(crate::guid_to_upper_string)` не компилируется — `guid_to_upper_string(g: &Guid)` (types.rs:3) принимает по ссылке, а `Option<Guid>::map` передаёт значение; нужен `.as_ref()` (тот же паттерн, что в `question_info_proto`, hii/mod.rs:526).
 
 - [ ] **Step 4: Run — проходит**
 
