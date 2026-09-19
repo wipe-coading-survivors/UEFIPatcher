@@ -179,14 +179,27 @@ message HiiListVarstoresResponse { repeated VarStoreInfo varstores = 1; }
 
 - **HNX99TF** (`#[ignore]`-гейт, образ `refs/fw/HNX99TF_…E5C88C6F.bin`):
   `list_varstores` по таргету `899407D7-99FE-43D8-9A21-79EC328CAC21:0x10:0`
-  — ассерты на известные декларации (Setup id 2, GUID EC87D643…, size 0x94
-  — TODO:1507) и полноту карты (id уникальны, все три вида опкодов покрыты
-  живыми данными).
-- **450x-зонд** (`#[ignore]`, `refs/fw/450x.bin`): для каждого id 21..30 —
-  `check_question_add` с пробной схемой numeric `var_store_id=<id>`,
-  `var_offset=0xFFFE`, size 1; текст ошибки различает
-  «not declared» (id свободен) и «exceeds var store size» (id занят).
-  Результат — таблица занятости 21–30 фиксируется в этой спеке (§7.1)
+  — ассерты на известные декларации (Setup **id 1, GUID EC87D643…, size
+  0x72** — гейт real_image_hii_question_info_4g; «id 2/0x94» из TODO:1507 —
+  это карта корневого Setup **450x**, не HNX) и полноту карты (id 1..=30
+  уникальны; живые данные покрывают buffer- и efi-декларации, name-value
+  в живых пакетах не встречается — юнит-покрытие Task 2).
+- **450x-зонд** (`#[ignore]`, образ `refs/amibcp/450x — копия.bin`,
+  helper `amibcp_path` real-файла): для каждого id 21..30 —
+  `check_question_add(&[], &[VarStoreSchema{ id, ..probe }])` по таргету
+  RC-формсета `ABBCE13D-E25A-4D9F-A1F9-2F7710786892:0x10:0`:
+  Err «varstore id … already exists in the formset» = id занят, Ok(()) =
+  свободен. Исходная схема-проба (numeric, `var_offset=0xFFFE`, size 1,
+  дискриминация «not declared»/«exceeds var store size») на 450x
+  неприменима: $SPF образа содержит 429 question-records и **0
+  string-controls** → `ctrl_template = None` → check с любой схемой падает
+  NotFound до declared-size-проверки; varstores-параметр дубль-проверку
+  деклараций выполняет первой, ctrl-проверка для пустого списка схем не
+  выполняется. Живая карта RC-формсета — ровно две декларации: id 1
+  IntelSetup (EC87D643…, 0x1670), id 2 AmiSetupSupportedFeatures
+  (EC87D643…, 4); форма-таргет — любая форма с $SPF-страницей
+  (подбирается детерминированно, живой прогон = форма 1). Результат —
+  таблица занятости 21–30 фиксируется в этой спеке (§7.1)
   после первого прогона и в TODO при закрытии. Check-режим не мутирует
   образ — прошивка и железо не нужны.
 

@@ -838,62 +838,83 @@ git commit -m "feat(tui): панель 'V' в Forms View — varstore-карта
 
 ```rust
 /// Спека varstore-contract §7: карта деклараций корневого Setup на живом
-/// образе — полнота walker'а по всем трём видам опкодов.
+/// образе — полнота walker'а по видам опкодов живыми данными.
 #[test]
 #[ignore = "real image required"]
 fn real_hii_varstore_map_hnx() {
-    let img = open_hnx_read(); // хелпер-паттерн соседних real-тестов (по образцу real_image_hii_*)
+    let data = load_fw(); // HNX-образ + parse_image Read-режим (паттерн соседних real-тестов)
+    let img = parse_image(&data, ImageMode::Read, "img1", "s1").expect("parse_image");
     let stores = uefi_engine::hii::list_varstores(
         &img,
         "899407D7-99FE-43D8-9A21-79EC328CAC21:0x10:0",
     )
     .unwrap();
-    assert!(stores.iter().any(|v| v.id == 2
+    assert!(stores.iter().any(|v| v.id == 1
         && v.guid.starts_with("EC87D643")
-        && v.size == 0x94
-        && v.name == "Setup"), "HNX Setup varstore 2/EC87D643/0x94, got {stores:?}");
+        && v.size == 0x72
+        && v.name == "Setup"), "HNX Setup varstore 1/EC87D643/0x72, got {stores:?}");
     assert!(stores.iter().map(|v| v.id).collect::<std::collections::BTreeSet<_>>().len() == stores.len(),
         "ids unique");
     println!("HNX Setup varstores: {stores:#?}");
 }
 ```
 
-`open_hnx_read` — если такого хелпера нет, открыть образ напрямую (паттерн строк 28–45: `PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(...)` + parse_image Read-режим).
+Дефект плана (фикс 2026-09-19, живой прогон): «Setup id 2/0x94 (TODO:1507)» —
+это карта корневого Setup **450x** (там id 1 = IntelSetup 0x1670, id 2 =
+Setup 0x94), на HNX живая карта даёт Setup **id 1 / 0x72** (совпадает с гейтом
+`real_image_hii_question_info_4g`: var_store_id 1, size 0x72, EC87D643).
+Name-value деклараций в живых пакетах нет (guid="" не встречается) — живое
+покрытие buffer+efi, name-value остаётся на юнит-тестах Task 2.
 
 - [ ] **Step 2: Зонд 450x 21–30**
 
 ```rust
 /// Спека varstore-contract §7: занятость varstore ids 21–30 на 450x.
-/// Метод TODO:3029 — check_question_add (без мутаций) с var_offset 0xFFFE:
-/// «not declared» = id свободен, «exceeds var store size» = занят.
+/// Метод TODO:3029 (скорректирован по живому образу) — check_question_add
+/// (без мутаций) с пробной декларацией в varstores-параметре:
+/// «already exists in the formset» = id занят, Ok(()) = свободен.
 #[test]
 #[ignore = "real image required"]
 fn real_450x_varstore_ids_21_30_probe() {
-    let img = open_450x_write(); // образ «450x — копия.bin», ImageMode::Write (check требует Write)
-    let target = format!("{RC_SETUP_FFS}:0x10:0"); // RC-формсет: известные 1..20 заняты
-    let mut report = Vec::new();
-    for id in 21u16..=30 {
-        let schema = uefi_engine::hii::schema::QuestionAddSchema {
-            // поля — по фактической структуре (numeric, question_id 0x7F7F,
-            // var_store_id = id, var_offset 0xFFFE, size 1, min 0, max 0xFF, step 1)
-            ..numeric_probe_schema(id)
-        };
-        let err = uefi_engine::hii::check_question_add(&img, &format!("{target}#118"), &[schema], &[])
-            .unwrap_err();
-        let status = if err.to_string().contains("is not declared") {
-            "free"
-        } else if err.to_string().contains("exceeds var store size") {
-            "busy"
-        } else {
-            panic!("id {id}: unexpected error {err:?}")
-        };
-        report.push((id, status));
-    }
-    println!("450x varstore ids 21-30: {report:?}");
+    let data = std::fs::read(amibcp_path()).unwrap(); // refs/amibcp/450x — копия.bin
+    let img = parse_image(&data, ImageMode::Write, "t", "s").unwrap(); // check требует Write
+    let rc_target = format!("{RC_SETUP_FFS}:0x10:0"); // RC-формсет ABBCE13D… (карта: id 1 IntelSetup, id 2 AmiSetupSupportedFeatures)
+    let rc_map = uefi_engine::hii::list_varstores(&img, &rc_target).unwrap();
+    let declared: std::collections::BTreeSet<u16> = rc_map.iter().map(|v| v.id as u16).collect();
+    // …busy_id = declared.first(), free_id = max(declared)+1 — само-валидация веток
+    // …probe_form: первая форма RC-формсета (сортировка по id), где check со
+    //   свободным id проходит весь пайплайн (locate_form + $SPF-страница формы);
+    // …for id in 21..=30: check_question_add(&[], &[VarStoreSchema{ id, ..probe }])
+    //   Err «already exists in the formset» → busy, Ok(()) → free;
+    //   кросс-чек против declared (map §3); println карты + отчёта.
 }
 ```
 
-Детали (форма-таргет `#118`, поля QuestionAddSchema, вспомогательный конструктор `numeric_probe_schema`) — выровнять по фактическим сигнатурам; подходящая форма — та, где check доходит до declared-size-проверки (пустая форма с ctrl-шаблоном; при NotFound ctrl → попробовать соседние формы, список даст `hii`-тестов real-файла). Если check падает раньше по несвязанным причинам ($SPF-страница и пр.) — docs-фикс плана с фактической причиной и корректировкой метода.
+Дефекты плана (фикс 2026-09-19, живой прогон):
+
+1. **Метод-схема с var_offset 0xFFFE неприменим на 450x**: $SPF образа
+   содержит 429 question-records, но **0 string-controls**
+   (`scan_string_controls` пуст) → `plan_spf_append` даёт `ctrl_template =
+   None` → `check_question_add` с любой непустой схемой падает
+   `HiiError::NotFound` ДО declared-size-проверки — для каждой формы.
+   Дискриминация «is not declared»/«exceeds var store size» недостижима.
+   Корректный зонд: `check_question_add(&img, item, &[], &[VarStoreSchema{ id, .. }])`
+   — дубль-проверка деклараций в varstores-параметре срабатывает первой
+   («varstore id {:#x} already exists in the formset» = занят), а
+   ctrl-проверка для пустого списка схем не выполняется → свободный id
+   даёт Ok(()) (пайплайн: resolve → writable → $SPF-контейнер + страница
+   формы). Check-режим, мутаций нет.
+2. **«известные 1..20 заняты» неверно для RC-формсета**: живая карта
+   ABBCE13D…:0x10:0 — ровно две декларации: id 1 IntelSetup
+   (EC87D643…, 5744=0x1670) и id 2 AmiSetupSupportedFeatures (EC87D643…,
+   4). Ids 3+ свободны.
+3. **Форма-таргет `#118`**: подходит любая форма RC-формсета с
+   $SPF-страницей (118 — слот 85; 1 — слот 37); в тесте форма подбирается
+   детерминированно (первая по возрастанию id, где check со свободным id
+   проходит весь пайплайн; на живом образе = форма 1).
+4. **Поля QuestionAddSchema**: numeric min/max/step полей нет — one_of u8
+   семантика (size 1, options непустые); для скорректированного метода
+   схема вообще не нужна (проба в varstores-параметре).
 
 - [ ] **Step 3: Прогон с образами**
 
