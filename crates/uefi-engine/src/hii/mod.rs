@@ -2,6 +2,7 @@ pub mod ami_patcher;
 mod cross_formset;
 pub mod ffs_assembler;
 pub mod form_add;
+pub mod form_export;
 pub mod form_hijack;
 pub mod forms;
 pub mod formset_add;

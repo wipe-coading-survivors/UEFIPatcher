@@ -16,6 +16,7 @@ anyhow.workspace = true
 hyper-util = { version = "0.1", features = ["tokio"] }
 tower = { version = "0.4", features = ["util"] }
 http = "1"
+serde_json.workspace = true
 unicode-segmentation = "1"
 
 [dev-dependencies]

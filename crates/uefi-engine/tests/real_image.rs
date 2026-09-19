@@ -5790,3 +5790,351 @@ fn real_add_form_varstore_validations_450x() {
         "450x add_form §2 gate: busy_id={busy_id} free_id={FREE_ID} new_form_id={new_form_id} map_after={map:?}"
     );
 }
+
+const EXPORT_SETUP_TARGET: &str = "899407D7-99FE-43D8-9A21-79EC328CAC21:0x10:0";
+const EXPORT_SETUP_FORMSET: &str = "7B59104A-C00D-4158-87FF-F04D6396A915";
+const EXPORT_SETUP_FORM_ID: u16 = 10029;
+
+/// Спека hii-form-export §6: экспорт живой формы корневого Setup HNX99TF —
+/// форма 10029 PCI Subsystem Settings (docs:fix 0bbe08b: «Processor
+/// Configuration» — форма 2 формсета IntelRCSetup, под корневым Setup её
+/// нет). lossy-лексика — счётчики `suppress_if`/`grayout_if`/
+/// `cross_formset_ref`/`dynamic_ref`/`ref_question_target`/
+/// `unknown_op_<hex>` + строки name-value varstore.
+#[test]
+#[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
+fn real_image_hii_form_export_setup_form() {
+    use uefi_engine::hii::schema;
+
+    let data = load_fw();
+    let img = parse_image(&data, ImageMode::Read, "img1", "s1").expect("parse_image");
+
+    let item = format!("{EXPORT_SETUP_TARGET}#{EXPORT_SETUP_FORM_ID}");
+    let ex = uefi_engine::hii::form_export::export_form(&img, &item).expect("export_form 10029");
+    assert_eq!(ex.formset_guid, EXPORT_SETUP_FORMSET);
+    assert_eq!(
+        ex.parent_form_id, 10002,
+        "10029 открывается REF-рёбрами из Advanced (10002)"
+    );
+    assert_eq!(
+        ex.parent_entries
+            .iter()
+            .map(|e| (e.prompt.as_str(), e.help.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(
+            "PCI Subsystem Settings",
+            "PCI, PCI-X and PCI Express Settings."
+        )],
+        "refs.entries-подсказка: GOTO родителя 10002 → 10029 (спека §2)"
+    );
+    assert_eq!(ex.schema.forms.len(), 1);
+    let form = &ex.schema.forms[0];
+    assert_eq!(form.id, EXPORT_SETUP_FORM_ID);
+    assert_eq!(form.title, "PCI Subsystem Settings");
+
+    assert_eq!(
+        form.items.len(),
+        15,
+        "5 text + 8 one_of + 2 ref (probe HNX)"
+    );
+    let one_ofs: Vec<_> = form
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            schema::ItemSchema::OneOf(o) => Some(o),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(one_ofs.len(), 8, "8 one_of-вопросов полной fidelity");
+    for o in &one_ofs {
+        assert!(!o.prompt.is_empty(), "prompt решается строковым пакетом");
+        assert!(!o.help.is_empty(), "help решается строковым пакетом");
+        assert!(!o.options.is_empty(), "one_of без опций: {o:?}");
+        for opt in &o.options {
+            assert!(!opt.text.is_empty(), "текст опции решается: {opt:?}");
+        }
+    }
+    let above_4g = one_ofs
+        .iter()
+        .find(|o| o.prompt == "Above 4G Decoding")
+        .expect("q 0x3B Above 4G Decoding (E12-гейт) в экспорте");
+    assert_eq!(above_4g.question_id, 0x3B);
+    let above_4g_texts: Vec<&str> = above_4g.options.iter().map(|o| o.text.as_str()).collect();
+    assert_eq!(above_4g_texts, vec!["Disabled", "Enabled"]);
+
+    assert_eq!(
+        ex.schema.varstores.len(),
+        1,
+        "referenced-only: все вопросы формы на store 1"
+    );
+    let vs = &ex.schema.varstores[0];
+    assert_eq!(vs.id, 1);
+    assert_eq!(vs.guid, "EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9");
+    assert_eq!(vs.size, 0x72);
+    assert_eq!(vs.name, "Setup");
+    assert!(matches!(vs.var_type, schema::VarStoreType::Buffer));
+
+    let known_label = |e: &str| {
+        e.starts_with("suppress_if:")
+            || e.starts_with("grayout_if:")
+            || e.starts_with("cross_formset_ref:")
+            || e.starts_with("dynamic_ref:")
+            || e.starts_with("ref_question_target:")
+            || e.starts_with("unknown_op_")
+            || e.ends_with("is name-value, not exportable")
+    };
+    assert!(
+        ex.lossy.iter().all(|e| known_label(e)),
+        "lossy вне известной лексики: {:?}",
+        ex.lossy
+    );
+    assert!(
+        ex.lossy.iter().any(|e| e == "suppress_if:1"),
+        "реальный счёт suppress_if (probe): {:?}",
+        ex.lossy
+    );
+    assert!(
+        ex.lossy.iter().any(|e| e == "grayout_if:10"),
+        "реальный счёт grayout_if (probe): {:?}",
+        ex.lossy
+    );
+
+    eprintln!(
+        "real_image form-export: {item} items={} one_of={} varstores={:?} lossy={:?} parent={} parent_entries={:?}",
+        form.items.len(),
+        one_ofs.len(),
+        ex.schema.varstores,
+        ex.lossy,
+        ex.parent_form_id,
+        ex.parent_entries
+            .iter()
+            .map(|e| (e.prompt.as_str(), e.help.as_str()))
+            .collect::<Vec<_>>()
+    );
+}
+
+fn export_item_question_id(item: &uefi_engine::hii::schema::ItemSchema) -> Option<u16> {
+    use uefi_engine::hii::schema::ItemSchema;
+    match item {
+        ItemSchema::OneOf(i) => Some(i.question_id),
+        ItemSchema::CheckBox(i) => Some(i.question_id),
+        ItemSchema::Numeric(i) => Some(i.question_id),
+        ItemSchema::Ref(i) => Some(i.question_id),
+        ItemSchema::String(i) => Some(i.question_id),
+        ItemSchema::Action(i) => Some(i.question_id),
+        ItemSchema::OrderedList(i) => Some(i.question_id),
+        ItemSchema::Text(_) => None,
+    }
+}
+
+fn rewrite_question_ids(v: &mut serde_json::Value, back: &std::collections::HashMap<u16, u16>) {
+    match v {
+        serde_json::Value::Object(m) => {
+            for (k, val) in m.iter_mut() {
+                if k == "question_id"
+                    && let Some(old) = val.as_u64().and_then(|x| u16::try_from(x).ok())
+                    && let Some(orig) = back.get(&old)
+                {
+                    *val = serde_json::Value::from(*orig);
+                } else {
+                    rewrite_question_ids(val, back);
+                }
+            }
+        }
+        serde_json::Value::Array(a) => {
+            for val in a.iter_mut() {
+                rewrite_question_ids(val, back);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Спека hii-form-export §6: round-trip гейт — export формы 10029 →
+/// add_form (write-копия, свежие form_id/question_id, без повторной
+/// декларации Setup id 1 — varstore-contract §2) → build → re-parse →
+/// export_form новой формы → семантическое равенство (различаются только
+/// form_id/question_id/string_id).
+#[test]
+#[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
+fn real_image_hii_form_export_add_form_round_trip() {
+    use uefi_engine::builder::build_image;
+    use uefi_engine::hii::form_add::add_form;
+    use uefi_engine::hii::forms::collect_forms;
+    use uefi_engine::hii::schema;
+
+    let data = load_fw();
+    let mut img = parse_image(&data, ImageMode::Write, "img1", "s1").expect("parse_image");
+
+    let item = format!("{EXPORT_SETUP_TARGET}#{EXPORT_SETUP_FORM_ID}");
+    let a = uefi_engine::hii::form_export::export_form(&img, &item).expect("export 10029");
+
+    let setup_forms: Vec<_> = collect_forms(&img)
+        .into_iter()
+        .filter(|f| f.formset_guid == EXPORT_SETUP_FORMSET)
+        .collect();
+    assert!(!setup_forms.is_empty(), "формсет корневого Setup в HNX");
+    let new_form_id =
+        u16::try_from(setup_forms.iter().map(|f| f.form_id_ifr).max().unwrap() + 1).unwrap();
+
+    let mut next_qid: u16 = 0;
+    for f in &setup_forms {
+        let qs = uefi_engine::hii::list_questions(&img, &f.form_id, f.form_id_ifr as u16)
+            .unwrap_or_else(|e| panic!("list_questions {}: {e:?}", f.form_id));
+        for q in &qs {
+            next_qid = next_qid.max(u16::try_from(q.question_id).expect("qid u16"));
+        }
+    }
+    for q in a.schema.forms[0]
+        .items
+        .iter()
+        .filter_map(export_item_question_id)
+    {
+        next_qid = next_qid.max(q);
+    }
+    let qid_count = a.schema.forms[0]
+        .items
+        .iter()
+        .filter(|i| export_item_question_id(i).is_some())
+        .count();
+    assert!(
+        usize::from(next_qid) + qid_count < 0xFFFF,
+        "headroom u16 qid: max={next_qid:#x} count={qid_count}"
+    );
+
+    let mut qmap: Vec<(u16, u16)> = Vec::new();
+    let mut remap = |old: u16| -> u16 {
+        if let Some((_, n)) = qmap.iter().find(|(o, _)| *o == old) {
+            return *n;
+        }
+        next_qid += 1;
+        qmap.push((old, next_qid));
+        next_qid
+    };
+    let b_items: Vec<schema::ItemSchema> = a.schema.forms[0]
+        .items
+        .iter()
+        .map(|it| match it {
+            schema::ItemSchema::OneOf(o) => {
+                let mut o = o.clone();
+                o.question_id = remap(o.question_id);
+                schema::ItemSchema::OneOf(o)
+            }
+            schema::ItemSchema::Numeric(n) => {
+                let mut n = n.clone();
+                n.question_id = remap(n.question_id);
+                schema::ItemSchema::Numeric(n)
+            }
+            schema::ItemSchema::CheckBox(c) => {
+                let mut c = c.clone();
+                c.question_id = remap(c.question_id);
+                schema::ItemSchema::CheckBox(c)
+            }
+            schema::ItemSchema::Ref(r) => {
+                let mut r = r.clone();
+                r.question_id = remap(r.question_id);
+                schema::ItemSchema::Ref(r)
+            }
+            schema::ItemSchema::String(s) => {
+                let mut s = s.clone();
+                s.question_id = remap(s.question_id);
+                schema::ItemSchema::String(s)
+            }
+            schema::ItemSchema::Action(x) => {
+                let mut x = x.clone();
+                x.question_id = remap(x.question_id);
+                schema::ItemSchema::Action(x)
+            }
+            schema::ItemSchema::OrderedList(o) => {
+                let mut o = o.clone();
+                o.question_id = remap(o.question_id);
+                schema::ItemSchema::OrderedList(o)
+            }
+            schema::ItemSchema::Text(t) => schema::ItemSchema::Text(t.clone()),
+        })
+        .collect();
+    let b = schema::FormSetSchema {
+        formset_guid: a.formset_guid.clone(),
+        title: String::new(),
+        help: String::new(),
+        class_guids: vec![],
+        varstores: vec![],
+        default_stores: vec![],
+        forms: vec![schema::FormSchema {
+            id: new_form_id,
+            title: a.schema.forms[0].title.clone(),
+            items: b_items,
+        }],
+        setupdata_guid: None,
+        amitse_guid: None,
+    };
+
+    let res = add_form(&mut img, EXPORT_SETUP_TARGET, &b).expect("add_form round-trip");
+    assert_eq!(res.inserted_form_ids, vec![new_form_id]);
+
+    let built = build_image(&img).expect("build after form add");
+    assert_eq!(built.len(), data.len(), "total flash length preserved");
+    assert_eq!(
+        &built[..0x890000],
+        &data[..0x890000],
+        "before FV1 untouched"
+    );
+    assert_eq!(&built[0xd60000..], &data[0xd60000..], "after FV1 untouched");
+
+    let re = parse_image(&built, ImageMode::Read, "img2", "s2").expect("re-parse");
+    let bp = uefi_engine::hii::form_export::export_form(
+        &re,
+        &format!("{EXPORT_SETUP_TARGET}#{new_form_id}"),
+    )
+    .expect("export added form");
+    assert_eq!(bp.formset_guid, a.formset_guid);
+    assert_eq!(bp.parent_form_id, 0, "на новую форму нет REF-рёбер");
+    assert!(bp.parent_entries.is_empty());
+    assert!(
+        bp.lossy.is_empty(),
+        "вставленная форма состоит из lossless-опкодов: {:?}",
+        bp.lossy
+    );
+    assert_eq!(
+        serde_json::to_value(&a.schema.varstores).unwrap(),
+        serde_json::to_value(&bp.schema.varstores).unwrap(),
+        "referenced-only fill пере-выводит Setup id 1 из существующей декларации"
+    );
+
+    let a_qids: Vec<u16> = a.schema.forms[0]
+        .items
+        .iter()
+        .filter_map(export_item_question_id)
+        .collect();
+    let b_qids: Vec<u16> = bp.schema.forms[0]
+        .items
+        .iter()
+        .filter_map(export_item_question_id)
+        .collect();
+    assert_eq!(a_qids.len(), b_qids.len(), "число вопросов с qid сохранено");
+    assert!(
+        a_qids.iter().all(|q| !b_qids.contains(q)),
+        "question_id обязаны различаться: {a_qids:?} vs {b_qids:?}"
+    );
+
+    let mut va = serde_json::to_value(&a.schema.forms[0]).unwrap();
+    let mut vb = serde_json::to_value(&bp.schema.forms[0]).unwrap();
+    let back: std::collections::HashMap<u16, u16> =
+        qmap.iter().map(|(old, new)| (*new, *old)).collect();
+    let va_id = va.as_object_mut().unwrap().remove("id");
+    let vb_id = vb.as_object_mut().unwrap().remove("id");
+    assert!(va_id.is_some() && vb_id.is_some());
+    assert_ne!(va_id, vb_id, "form_id обязаны различаться");
+    rewrite_question_ids(&mut vb, &back);
+    assert_eq!(
+        va, vb,
+        "семантика формы пережила export → add_form → export (тексты/опции/defaults/var_offset)"
+    );
+
+    eprintln!(
+        "real_image form-export round-trip: {item} → form {new_form_id}, {} итемов, qid {} → {:?}",
+        bp.schema.forms[0].items.len(),
+        EXPORT_SETUP_FORM_ID,
+        b_qids
+    );
+}

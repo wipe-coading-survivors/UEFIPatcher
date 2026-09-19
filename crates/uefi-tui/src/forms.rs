@@ -4,10 +4,6 @@ use uefi_proto::{FormEdge, FormInfo};
 
 use crate::app::FormsData;
 
-pub(crate) fn short_guid(guid: &str) -> &str {
-    &guid[..guid.len().min(13)]
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FormKey {
     pub target: String,
@@ -303,7 +299,7 @@ pub fn form_panel(forms: &FormsData, rows: &[FormsRow], cursor: usize) -> FormPa
     let mut header = vec![
         format!("Form:    {}", key.title),
         format!("Form ID: {}", key.form_id_ifr),
-        format!("FormSet: {}", short_guid(&key.formset_guid)),
+        format!("FormSet: {}", key.formset_guid),
         format!("Target:  {}", key.target),
     ];
     if !path.is_empty() {

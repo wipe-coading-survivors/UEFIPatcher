@@ -21,6 +21,11 @@ pub struct SchemaCall {
     pub extra: String,
 }
 
+const MOCK_FORM_EXPORT_SCHEMA_JSON: &str = concat!(
+    r#"{"formset_guid":"11111111-2222-3333-4444-555555555555","title":"","help":"","class_guids":[],"#,
+    r#""varstores":[],"default_stores":[],"forms":[{"id":10019,"title":"Serial Port 1 Configuration","items":[]}]}"#
+);
+
 #[derive(Default)]
 pub struct MockEngine {
     pub sessions: Arc<Mutex<HashMap<String, String>>>,
@@ -277,8 +282,11 @@ impl EngineService for MockEngine {
     }
     async fn hii_list_forms(
         &self,
-        _req: Request<HiiListFormsRequest>,
+        req: Request<HiiListFormsRequest>,
     ) -> Result<Response<HiiListFormsResponse>, Status> {
+        let r = req.into_inner();
+        self.record_schema("HiiListForms", &r.image_id, "", "", "")
+            .await;
         Ok(Response::new(HiiListFormsResponse {
             forms: vec![
                 FormInfo {
@@ -307,8 +315,11 @@ impl EngineService for MockEngine {
     }
     async fn hii_list_varstores(
         &self,
-        _req: Request<HiiListVarstoresRequest>,
+        req: Request<HiiListVarstoresRequest>,
     ) -> Result<Response<HiiListVarstoresResponse>, Status> {
+        let r = req.into_inner();
+        self.record_schema("HiiListVarstores", &r.image_id, &r.target, "", "")
+            .await;
         Ok(Response::new(HiiListVarstoresResponse {
             varstores: vec![VarStoreInfo {
                 id: 2,
@@ -350,8 +361,11 @@ impl EngineService for MockEngine {
     }
     async fn hii_list_questions(
         &self,
-        _req: Request<HiiListQuestionsRequest>,
+        req: Request<HiiListQuestionsRequest>,
     ) -> Result<Response<HiiListQuestionsResponse>, Status> {
+        let r = req.into_inner();
+        self.record_schema("HiiListQuestions", &r.image_id, &r.target, "", "")
+            .await;
         Ok(Response::new(HiiListQuestionsResponse {
             questions: vec![
                 QuestionSummary {
@@ -415,6 +429,24 @@ impl EngineService for MockEngine {
         Ok(Response::new(HiiFormAddResponse {
             inserted_form_ids: vec![10101],
             string_ids: [("title".to_string(), 600)].into(),
+        }))
+    }
+    async fn hii_form_export(
+        &self,
+        req: Request<HiiFormExportRequest>,
+    ) -> Result<Response<HiiFormExportResponse>, Status> {
+        let r = req.into_inner();
+        self.record_schema("HiiFormExport", &r.image_id, &r.item_id, "", "")
+            .await;
+        Ok(Response::new(HiiFormExportResponse {
+            schema_json: MOCK_FORM_EXPORT_SCHEMA_JSON.into(),
+            formset_guid: "11111111-2222-3333-4444-555555555555".into(),
+            parent_form_id: 10001,
+            lossy: vec!["suppress_if:1".into()],
+            parent_entries: vec![HiiFormExportEntry {
+                prompt: "PCI Subsystem Settings".into(),
+                help: "Open PCI subsystem settings".into(),
+            }],
         }))
     }
     async fn hii_form_hijack(

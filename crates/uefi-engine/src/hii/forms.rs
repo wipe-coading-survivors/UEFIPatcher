@@ -61,7 +61,12 @@ fn walk_sections(
         }
         let idx = *counters.entry(child.subtype).or_insert(0);
         counters.insert(child.subtype, idx + 1);
-        let target = format!("{}:{:#04x}:{}", fg, child.subtype, idx);
+        let target = format!(
+            "{}:{:#04x}:{}",
+            guid_to_upper_string(&fg),
+            child.subtype,
+            idx
+        );
         if child.subtype == EFI_SECTION_RAW {
             if declared_len_sane(&child.body)
                 && let Some(pkg) = parse_string_package(&child.body)
@@ -259,12 +264,18 @@ mod tests {
         let image = mk_image(form_pkg(1));
         let forms = collect_forms(&image);
         assert_eq!(forms.len(), 2);
-        assert_eq!(forms[0].form_id, format!("{FILE_GUID}:0x19:1"));
+        assert_eq!(
+            forms[0].form_id,
+            format!("{}:0x19:1", FILE_GUID.to_ascii_uppercase())
+        );
         assert_eq!(forms[0].formset_guid, FORMSET_GUID);
         assert_eq!(forms[0].form_id_ifr, 1);
         assert_eq!(forms[0].title, "Main");
         assert!(forms[0].visible);
-        assert_eq!(forms[1].form_id, format!("{FILE_GUID}:0x19:1"));
+        assert_eq!(
+            forms[1].form_id,
+            format!("{}:0x19:1", FILE_GUID.to_ascii_uppercase())
+        );
         assert_eq!(forms[1].form_id_ifr, 2);
         assert_eq!(forms[1].title, "Hidden");
         assert!(!forms[1].visible);
@@ -369,11 +380,11 @@ mod tests {
         assert_eq!(forms.len(), 4);
         let main_a = forms.iter().find(|f| f.title == "MainA").unwrap();
         let main_b = forms.iter().find(|f| f.title == "MainB").unwrap();
-        assert!(main_a.form_id.starts_with(FILE_GUID));
+        assert!(main_a.form_id.starts_with(&FILE_GUID.to_ascii_uppercase()));
         assert!(
             main_b
                 .form_id
-                .starts_with("899407d7-92a6-4174-968f-6f0b47f86a99")
+                .starts_with("899407D7-92A6-4174-968F-6F0B47F86A99")
         );
     }
 
@@ -399,7 +410,10 @@ mod tests {
         };
         let forms = collect_forms(&image);
         assert_eq!(forms.len(), 2);
-        assert_eq!(forms[0].form_id, format!("{FILE_GUID}:0x10:0"));
+        assert_eq!(
+            forms[0].form_id,
+            format!("{}:0x10:0", FILE_GUID.to_ascii_uppercase())
+        );
         assert_eq!(forms[0].title, "Main");
         assert_eq!(forms[0].formset_guid, FORMSET_GUID);
     }
@@ -428,7 +442,10 @@ mod tests {
         };
         let forms = collect_forms(&image);
         assert!(!forms.is_empty());
-        assert_eq!(forms[0].form_id, format!("{FILE_GUID}:0x10:0"));
+        assert_eq!(
+            forms[0].form_id,
+            format!("{}:0x10:0", FILE_GUID.to_ascii_uppercase())
+        );
         assert_eq!(
             forms[0].formset_guid,
             "642237C7-35D4-472D-8365-12E0CCF27A22"
@@ -459,7 +476,10 @@ mod tests {
         };
         let forms = collect_forms(&image);
         assert!(!forms.is_empty());
-        assert_eq!(forms[0].form_id, format!("{FILE_GUID}:0x10:0"));
+        assert_eq!(
+            forms[0].form_id,
+            format!("{}:0x10:0", FILE_GUID.to_ascii_uppercase())
+        );
     }
 
     #[test]
@@ -521,7 +541,10 @@ mod tests {
         };
         let forms = collect_forms(&image);
         assert_eq!(forms.len(), 2);
-        assert_eq!(forms[0].form_id, format!("{inner_file_guid}:0x19:1"));
+        assert_eq!(
+            forms[0].form_id,
+            format!("{}:0x19:1", inner_file_guid.to_ascii_uppercase())
+        );
         assert_eq!(forms[0].title, "Main");
         assert!(!forms[1].visible);
         let t = crate::parser::target::parse_target(&forms[1].form_id).unwrap();

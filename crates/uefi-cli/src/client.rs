@@ -502,6 +502,25 @@ impl Client {
         Ok((resp.inserted_form_ids, resp.string_ids))
     }
 
+    /// HiiFormExport RPC (спека hii-form-export §2): движок отдаёт bare-тело
+    /// и факты (formset_guid/parent_form_id/lossy); конверт собирает вызывающий.
+    pub async fn hii_form_export(
+        &mut self,
+        image_id: &str,
+        item_id: &str,
+    ) -> Result<HiiFormExportResponse, AppError> {
+        let req = HiiFormExportRequest {
+            image_id: image_id.into(),
+            item_id: item_id.into(),
+        };
+        let resp = self
+            .inner
+            .hii_form_export(auth_req(&self.state, req))
+            .await?
+            .into_inner();
+        Ok(resp)
+    }
+
     pub async fn hii_form_hijack(
         &mut self,
         image_id: &str,

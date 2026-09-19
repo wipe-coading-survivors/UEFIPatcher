@@ -31,8 +31,9 @@ IFR плоский: `hii form add` вставляет форму в конец �
 - ref-рёбра — `HiiFormTree` (`FormEdge`).
 
 Не собирается: help_sid, display-флаги (IntDec/UintHex), Text/Action-итемы,
-ref-опкоды внутри самой экспортируемой формы, formset-уровневые varstores
-(открытая поз. TODO:490). Lossless-экспорт невозможен в принципе: suppress-if /
+ref-опкоды внутри самой экспортируемой формы. Formset-уровневые varstores,
+напротив, уже покрыты картой цикла varstore-contract (`varstore_map` + RPC
+`HiiListVarstores`). Lossless-экспорт невозможен в принципе: suppress-if /
 grayout-if / кросс-формсетные REF3/REF4 в schema не выражаются — фиксируем
 границу честно (см. §2 `meta.lossy`).
 
@@ -72,13 +73,15 @@ grayout-if / кросс-формсетные REF3/REF4 в schema не выраж
   форму (возможно кросс-формсетную — REF3, движок умеет `emit_ref3`,
   `hii/mod.rs:1740`), кейс IntelRCSetup/rd450x. Клавиша `'R'`. Термин
   «move» в TODO — историческая неточность, правится при закрытии цикла.
-- **Varstore-рулинг** (ревью-3, владелец): `'R'`-путь varstore-free по
-  построению; полный пакет объявляет varstores в теле — движок emit'ит
-  (`form_add.rs:104`); экспорт их не заполняет (TODO:490) — известное
-  ограничение, per-item pre-check — новый пункт TODO (после 490).
-- **Дефолт сокета движка** — вне цикла: уже запарковано в TODO:1344
-  (`engine.rs:38` дефолтит `/run`, клиентский дефолт — XDG-state);
-  отдельный микро-фикс, этот цикл не засоряем.
+- **Varstore-рулинг** (ревью-3 владелец; ревью-4 — контракт
+  varstore-contract §6): `'R'`-путь varstore-free по построению; движковые
+  валидации per-item id + дубли деклараций до мутаций уже в мастере
+  (varstore-contract §2); экспорт заполняет `formset.varstores`
+  (referenced-only, name-value → `meta.lossy`); импорт-планнер — drop
+  идентичных деклараций / fail fast отличающихся. Блок-пометка «TODO:490»
+  снята (ревью-4).
+- **Дефолт сокета движка** — вне цикла и исчерпан: закрыт соседним циклом
+  varstore-contract (`aa3fe19`, XDG-state `default_sock`).
 
 ## §1 Конверт: `uefi-common::envelope` (новый модуль)
 
@@ -141,12 +144,6 @@ grayout-if / кросс-формсетные REF3/REF4 в schema не выраж
   (`rpc/server.rs:875`), значит re-сериализованное тело клиент шлёт в RPC
   как есть. Коррекция брейнсторма («form»): тело называется и типизируется
   по реальному контракту потребителя.
-- `split_envelope(text) -> (Meta, String)`: снифф ключа `meta`; файл без
-  `meta` = bare — тело возвращается как есть (re-serialize только при
-  наличии конверта), мета пустая. Bare-файлы (нынешние schema, `np_ref.json`,
-  тестовые data) работают байт-в-байт как сегодня — нулевая регрессия.
-- `wrap_export(bare_json, formset_guid, parent_form_id, lossy) -> String` —
-  сборка конверта на экспорте.
 - Обоснование конверта против поля-в-схеме (помимо решений владельца):
   парсеры движка асимметричны по строгости — `parse_question_add_schema`
   `deny_unknown_fields` (`schema.rs:264-266`), `FormSetSchema` — нет;
@@ -179,11 +176,20 @@ message HiiFormExportResponse {
 }
 ```
 
-- Тело-минимум: `FormSetSchema { formset_guid, title (из walker'а), help: "",
-  varstores: [], default_stores: [], forms: [экспортируемая] }` — валиден для
-  `parse_schema`; формсет-поля не семантичны для `form add` (дискриминатор
-  `#N` в таргете — ординал формсет-пакета, TODO:499; тело с одной формой
-  вставляет её одну).
+- Тело: `FormSetSchema { formset_guid, title (из walker'а), help: "",
+  varstores: <referenced-декларации>, default_stores: [], forms:
+  [экспортируемая] }` — валиден для `parse_schema`. Из формсет-полей
+  семантичны для `form add` только `varstores` (emit + валидации
+  varstore-contract §2); `help`/`default_stores` не семантичны.
+  Дискриминатор `#N` в таргете — ординал формсет-пакета (открытая поз. про
+  formset-ordinal); тело с одной формой вставляет её одну.
+- **Varstore-заполнение экспорта** (контракт varstore-contract §6): в
+  `formset.varstores` кладутся **только referenced** (`var_store_id != 0`
+  items формы) декларации VARSTORE/VARSTORE_EFI из карты
+  формсета-источника (`varstore_map`); форма без storage-биндингов →
+  пусто. Name-value стор в `VarStoreSchema` не выражается (типы Buffer/Efi)
+  → items, ссылающиеся на name-value id, идут без декларации +
+  `meta.lossy`-строка `varstore {id:#x} is name-value, not exportable`.
 - `parent_form_id`: из рёбер `HiiFormTree` — `Some` только при ровно одном
   same-formset родителе; кросс-формсетные (`target_formset_guid` непуст) и
   многородительские → 0. На сборке конверта ложится в `refs.parent_form_id`;
@@ -235,23 +241,21 @@ message HiiFormExportResponse {
    «форма вставлена (id X), ref не построен: <причина>». Автоотката нет
    (движок атомарность двух RPC не умеет — вариант C вне цикла).
 5. Предупреждение при импорте в чужой формсет: целевой formset_guid ≠
-   `meta.source.formset_guid` → warn (varstore-id могут разойтись, зона
-   TODO:490; полный ремап — после его закрытия).
-6. **Varstore-контракт**: refs-only путь varstore-free по построению (REF-
-   вопрос не имеет storage-биндинга — в `QuestionAddRefSchema` нет
-   varstore-полей). Полный пакет объявляет varstores в теле — движок
-   emit'ит их вместе с формой (`form_add.rs:104`, `build_varstores`);
-   экспорт varstores не заполняет (walker не собирает) — известное
-   ограничение: round-trip пакет в чужой формсет может ссылаться на
-   несуществующие `var_store_id`. Блок-пометка «блокируется TODO:490»
-   снята циклом varstore-contract (2026-09-19): TODO:490 закрыт, карта
-   формсета доступна через RPC `HiiListVarstores` (CLI `hii varstore list`,
-   TUI-панель `V`); правила экспорта/импорта varstores зафиксированы
-   спекой `2026-09-19-varstore-contract-design` §6, валидации §2 её же
-   отвергают мисбиндинг `var_store_id` и дубли деклараций до мутаций
-   независимо от клиентских pre-check'ов (движковая половина TODO:496);
-   warn шага 5 остаётся последней линией обороны до заполнения конверта
-   этим циклом.
+   `meta.source.formset_guid` → warn (информативно; содержательные правила —
+   §3.6).
+6. **Varstore-контракт** (контракт varstore-contract §6, ревью-4): refs-only
+   путь varstore-free по построению (REF-вопрос не имеет storage-биндинга —
+   в `QuestionAddRefSchema` нет varstore-полей). Движковая гарантия уже в
+   мастере: `add_form` валидирует per-item `var_store_id` против карты
+   формсета и деклараций пакета + дубли деклараций **до мутаций**
+   (varstore-contract §2) — работает для любого клиента. Импорт-планнер
+   (`uefi-common`, рядом с `plan_ref_step`) по карте `HiiListVarstores`:
+   id свободен в целевом формсете → декларация остаётся (движок emit'ит,
+   `form_add.rs:104`, `build_varstores`); занят и определение идентично
+   (guid+size+name) → drop из bare-тела (round-trip в тот же формсет без
+   движкового отказа); занят и отличается → fail fast «varstore id {id:#x}
+   already exists with different definition». Экспорт заполняет
+   `formset.varstores` (§2).
 
 ## §4 Клиентские поверхности
 
@@ -287,7 +291,10 @@ message HiiFormExportResponse {
 - Кросс-формсетный GOTO в экспортируемой форме → skip + `meta.lossy`.
 - `meta.lossy` непуст → файл честно помечен; round-tripвер знает, что
   suppress-if и пр. не перенеслись.
-- Varstore-мисматч при реимпорте в чужой формсет → warn §3.5 (не блок).
+- Varstore: занятый id с идентичным определением → планнер drop'ает
+  декларацию (§3.6); с отличающимся → fail fast; per-item ссылки — движковая
+  валидация до мутаций (varstore-contract §2, вторая линия для любого
+  клиента).
 - Движок ни при каком пути не читает и не пишет мету: на экспорте отдаёт
   голые факты, на импорте получает bare-тело.
 
@@ -297,10 +304,12 @@ message HiiFormExportResponse {
   (help_sid, display, Text/Action, ref-опкоды, defaults-маппинг). Главный
   инвариант — **симметрия с билдером**: `ifr_builder` (schema→IFR) уже есть;
   тест «schema → build → export → семантически равно исходной schema» ловит
-  дырки walker'а автоматически.
+  дырки walker'а автоматически. Varstore-заполнение: referenced-only набор +
+  name-value → lossy-строка.
 - **uefi-common (unit)**: `split_envelope` — bare-проход насквозь, разбор
   конверта, unknown-ключи; `plan_ref_step` — план/пустые id/дефолты против
-  авторских entries/явный таргет/refs-only/конфликт qid.
+  авторских entries/явный таргет/refs-only/конфликт qid; varstore-правила
+  планнера — свободен/оставить, идентичен/drop, отличается/fail fast.
 - **Клиенты (integration, mock-server)**: журнал вызовов mock'а ассертит
   последовательность `list_forms → form_add → question_add` на полном
   конверт-пакете; refs-only пакет — `list_forms → question_add` (без
@@ -318,22 +327,49 @@ message HiiFormExportResponse {
   формсета — на HNX99TF IntelRCSetup открыт, кросс-формсетный REF3
   проверяем на живом).
 
+### Вердикт живого гейта (2026-09-20, владелец) — ПРОЙДЕН
+
+- `e` — экспорт формы серийного порта из патченого E30 (хуанан): выгрузка
+  прошла, файл на диске.
+- `I` — импорт экспортированного пакета в оригинальный хуанан-BIOS:
+  префилл + `<Tab>` (таргет текущей формы) + `--<Tab>` (`--file`) + выбор
+  файла; форма появилась в дереве ПОД формой, на которой стоял курсор
+  (refs.parent_form_id приехал из конверта экспорта; id совпал — образы
+  одной семьи).
+- `R` — refs-only пакет, кросс-формсетный REF3 (IntelRCSetup rd450x →
+  корневой Setup): `import: forms (none) · strings (none) · refs built
+  under 10000: 0x7f00` — виден qid-базис планировщика. Entry требует
+  ПОЛНЫЙ formset_guid: обрезанный («EC87D643-EBA4» из панели деталей)
+  pre-check отвергает «refs target form N not found in formset …».
+- `V` на вопросах (панель деталей) — карта варстора живая
+  (id/GUID/size/имя).
+- Паперкаты гейта: (1) обрезанный GUID в копируемых местах — закрыт в
+  цикле (cf9c56c: дерево и панель деталей показывают полный GUID,
+  `short_guid` удалён); (2) PgUp/PgDn в Forms View не работают на
+  List-фокусе (руки PageUp/PageDown в `handle_normal_forms` есть только
+  под Details, `forms_page_*` не существует вовсе; strings/varstores —
+  тот же класс) — закрыто в цикле (20ff0de: `forms/strings/varstores_
+  page_*` + руки, TODO 9); (3) V-кэш варсторов не видел смену
+  FormSet-строки (`selected_form_target` → None → стылый кэш) и
+  lowercase FFS-guid в target/item_id — закрыто в цикле (14bbc7a:
+  FormSet-ряды резолвятся таргетом своего формсета; `guid_to_upper_string`
+  в источнике, парсер регистронезависим).
+- **Финальный вердикт владельца (2026-09-20): «все работает, ВЕРИ
+  ПОЛОЖИТЕЛЬНЫЙ»** — с учётом пост-гейт фиксов (1)–(3), проверенных
+  живьём. Цикл закрыт.
+
 ## Скоуп-границы (сознательно вне цикла)
 
-- Formset-уровневый экспорт (`FormSetSchema` целиком со всеми формами и
-  varstores) — упирается в TODO:490 (walker не собирает formset-varstores).
-- Varstore-ремап id при импорте в чужой формсет.
+- Formset-уровневый экспорт (`FormSetSchema` целиком со всеми формами
+  формсета) — отдельная тема (varstore-карта доступна, масштаб — все формы).
+- Авто-подбор свободного varstore-id при конфликте определений (планнер
+  fail fast'ит; ремап — будущее).
 - `unsuppress` и прочие будущие директивы меты — дом готов (`Meta`
   расширяется), мебель завозим по use case.
 - Gateway/WebUI-обвязка (`POST /api/v1/hii/form/add` с multipart и
   конверт-оркестрацией на стороне gateway) — цикл Gateway + WebUI rework.
 - Вариант C (атомарная движковая директива вложенности, одна RPC) — отдельная дуга,
   если двухфазность начнёт болеть.
-- Per-item varstore-валидация пакета (каждый `var_store_id` из items
-  существует в целевом формсете или объявлен в пакете) — блокируется
-  TODO:490; заведено отдельным пунктом TODO.
-- Дефолт сокета движка (`/run` vs XDG-state, TODO:1344) — отдельный
-  микро-фикс вне цикла.
 - Миграция `question add` / `formset add` на конверт — по мере надобности;
   в этом цикле конверт потребляет только `hii import` (внутри — те же
   низкоуровневые RPC).
