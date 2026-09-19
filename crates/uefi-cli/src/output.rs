@@ -599,6 +599,13 @@ pub fn print_page_add(resp: &HiiPageAddResponse, format: OutputFormat) {
     }
 }
 
+/// Печать конверта-документа (спека hii-form-export §4): stdout — pretty JSON
+/// от `wrap_export` как есть; `--format` не применяется — это файл-артефакт,
+/// не таблица.
+pub fn print_envelope(text: &str) {
+    println!("{text}");
+}
+
 #[allow(dead_code)]
 pub fn print_text(text: &str) {
     print!("{text}");
@@ -734,6 +741,11 @@ mod tests {
         print_page_add(&resp, OutputFormat::Json);
         print_page_add(&resp, OutputFormat::Text);
         print_page_add(&resp, OutputFormat::Tsv);
+    }
+
+    #[test]
+    fn envelope_print_smoke() {
+        print_envelope("{\n  \"formset\": {}\n}");
     }
 
     fn mock_question() -> QuestionInfo {

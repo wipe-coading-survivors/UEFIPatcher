@@ -139,6 +139,26 @@ pub async fn formset_add(
     Ok(())
 }
 
+/// Конверт-маршрутизация `form add` (спека hii-form-export §4/§5): файл
+/// с верхнеуровневым ключом `meta` — пакет `hii import`, здесь отвергается.
+/// Признак конверта: bare-файл `split_envelope` пропускает байт-в-байт (тело
+/// совпадает с файлом), а ошибки разбора meta/refs/formset возможны только
+/// у конверта; InvalidJson уходит прежним путём — валидирует движок.
+fn ensure_bare_schema(schema_json: &str) -> Result<(), AppError> {
+    let is_package = match uefi_common::envelope::split_envelope(schema_json) {
+        Ok(env) => env.body != schema_json,
+        Err(uefi_common::envelope::EnvelopeError::InvalidJson(_)) => false,
+        Err(_) => true,
+    };
+    if is_package {
+        return Err(AppError::new(
+            ErrKind::RpcInvalidArgument,
+            "package file: use hii import",
+        ));
+    }
+    Ok(())
+}
+
 pub async fn form_add(
     target: &str,
     file: &str,
@@ -147,11 +167,68 @@ pub async fn form_add(
 ) -> Result<(), AppError> {
     let schema_json = std::fs::read_to_string(file)
         .map_err(|e| AppError::new(ErrKind::IoError, format!("{file}: {e}")))?;
+    ensure_bare_schema(&schema_json)?;
     let st = state::require_state()?;
     let mut client = Client::connect(cli_sock, st).await?;
     let image_id = client.active_image()?;
     let (form_ids, string_ids) = client.hii_form_add(&image_id, target, &schema_json).await?;
     crate::output::print_form_add(&form_ids, &string_ids, format);
+    Ok(())
+}
+
+/// Спека hii-form-export §4: parent_form_id=0 — корневая форма, refs-секции
+/// нет; иначе entries пустые (ссылку синтезирует `hii import`). u32→u16 с
+/// явной ошибкой — значение больше u16 в IFR-форме означает битый ответ.
+fn refs_from_parent(
+    parent_form_id: u32,
+) -> Result<Option<uefi_common::envelope::RefsSection>, AppError> {
+    if parent_form_id == 0 {
+        return Ok(None);
+    }
+    let id = u16::try_from(parent_form_id).map_err(|_| {
+        AppError::new(
+            ErrKind::RpcInternal,
+            format!("parent_form_id {parent_form_id} does not fit u16"),
+        )
+    })?;
+    Ok(Some(uefi_common::envelope::RefsSection {
+        parent_form_id: id,
+        entries: vec![],
+    }))
+}
+
+/// Экспорт формы в конверт (спека hii-form-export §4): RPC отдаёт bare-тело
+/// и факты, конверт (meta.source/refs/meta.lossy) собирает клиент — движок
+/// мету не видит. stdout — конверт pretty-JSON; при `--out` файл пишется по
+/// absolutization-конвенции `resolve_output_path`, на stdout — подтверждение.
+pub async fn form_export(
+    item_id: &str,
+    out: Option<std::path::PathBuf>,
+    cli_sock: Option<&str>,
+    format: OutputFormat,
+) -> Result<(), AppError> {
+    let st = state::require_state()?;
+    let mut client = Client::connect(cli_sock, st).await?;
+    let image_id = client.active_image()?;
+    let resp = client.hii_form_export(&image_id, item_id).await?;
+    let refs = refs_from_parent(resp.parent_form_id)?;
+    let envelope = uefi_common::envelope::wrap_export(
+        &resp.schema_json,
+        Some(uefi_common::envelope::SourceMeta {
+            formset_guid: resp.formset_guid,
+        }),
+        refs,
+        resp.lossy,
+    );
+    match out {
+        Some(path) => {
+            let p = crate::commands::artifact::resolve_output_path(&path.to_string_lossy())?;
+            std::fs::write(&p, format!("{envelope}\n"))
+                .map_err(|e| AppError::new(ErrKind::IoError, format!("{}: {e}", p.display())))?;
+            crate::output::print_ok(format);
+        }
+        None => crate::output::print_envelope(&envelope),
+    }
     Ok(())
 }
 
@@ -309,7 +386,7 @@ pub fn parse_u64_loose(s: &str) -> Result<u64, AppError> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_u64_loose;
+    use super::{ensure_bare_schema, parse_u64_loose, refs_from_parent};
 
     #[test]
     fn parse_u64_loose_hex_and_dec() {
@@ -318,5 +395,27 @@ mod tests {
         assert_eq!(parse_u64_loose("42").unwrap(), 42);
         assert!(parse_u64_loose("0xG").is_err());
         assert!(parse_u64_loose("").is_err());
+    }
+
+    #[test]
+    fn refs_from_parent_zero_is_none() {
+        assert!(refs_from_parent(0).unwrap().is_none());
+        let refs = refs_from_parent(10001).unwrap().unwrap();
+        assert_eq!(refs.parent_form_id, 10001);
+        assert!(refs.entries.is_empty());
+        assert!(refs_from_parent(u16::MAX as u32 + 1).is_err());
+    }
+
+    #[test]
+    fn bare_schema_passthrough_envelope_rejected() {
+        let bare = r#"{"formset_guid":"G","forms":[]}"#;
+        assert!(ensure_bare_schema(bare).is_ok());
+        assert!(ensure_bare_schema("not json at all").is_ok());
+        let pkg = r#"{"meta":{"source":{"formset_guid":"G"}},"formset":{"forms":[]}}"#;
+        assert!(ensure_bare_schema(pkg).is_err());
+        let empty_meta = r#"{"meta":{},"formset":{"forms":[]}}"#;
+        assert!(ensure_bare_schema(empty_meta).is_err());
+        let no_body = r#"{"meta":{"lossy":["x"]}}"#;
+        assert!(ensure_bare_schema(no_body).is_err());
     }
 }

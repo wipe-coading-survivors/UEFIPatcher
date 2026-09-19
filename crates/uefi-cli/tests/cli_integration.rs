@@ -341,6 +341,135 @@ async fn form_add_flow() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn hii_form_export_writes_envelope() {
+    let (td, sock) = setup_env().await;
+    let cwd = td.path();
+
+    cli(&sock, cwd).args(["session", "init"]).assert().success();
+    cli(&sock, cwd)
+        .args(["image", "open", "/dev/null", "--mode", "read"])
+        .assert()
+        .success();
+
+    cli(&sock, cwd)
+        .args([
+            "hii",
+            "form",
+            "export",
+            "5c60f367-a505-419a-859e-2a4ff6ca6fe5:0x19:0#10019",
+        ])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("\"formset\": {"))
+        .stdout(predicates::str::contains(
+            "\"formset_guid\": \"11111111-2222-3333-4444-555555555555\"",
+        ))
+        .stdout(predicates::str::contains("\"source\": {"))
+        .stdout(predicates::str::contains("\"refs\": {"))
+        .stdout(predicates::str::contains("\"parent_form_id\": 10001"))
+        .stdout(predicates::str::contains("\"suppress_if:1\""));
+
+    cli(&sock, cwd)
+        .args([
+            "hii",
+            "form",
+            "export",
+            "5c60f367-a505-419a-859e-2a4ff6ca6fe5:0x19:0#10019",
+            "--out",
+            "form-export.json",
+        ])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("ok"));
+
+    let written = std::fs::read_to_string(cwd.join("form-export.json")).unwrap();
+    let env = uefi_common::envelope::split_envelope(&written).unwrap();
+    assert_eq!(
+        env.meta.source.unwrap().formset_guid,
+        "11111111-2222-3333-4444-555555555555"
+    );
+    assert_eq!(env.meta.lossy, vec!["suppress_if:1".to_string()]);
+    let refs = env.refs.expect("mock parent_form_id=10001 != 0");
+    assert_eq!(refs.parent_form_id, 10001);
+    assert!(refs.entries.is_empty());
+    let body: serde_json::Value = serde_json::from_str(&env.body).unwrap();
+    assert_eq!(body["forms"][0]["id"], 10019);
+
+    cli(&sock, cwd)
+        .args(["session", "destroy"])
+        .assert()
+        .success();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn form_add_rejects_package_file() {
+    let (td, sock) = setup_env().await;
+    let cwd = td.path();
+
+    cli(&sock, cwd).args(["session", "init"]).assert().success();
+    cli(&sock, cwd)
+        .args(["image", "open", "/dev/null", "--mode", "write"])
+        .assert()
+        .success();
+
+    let pkg = r#"{
+        "meta": {"source": {"formset_guid": "11111111-2222-3333-4444-555555555555"}},
+        "formset": {
+            "formset_guid": "A1B2C3D4-E5F6-7890-ABCD-EF1234567890",
+            "title": "T", "help": "H", "class_guids": [],
+            "varstores": [], "default_stores": [],
+            "forms": [{"id": 7, "title": "PkgForm", "items": []}]
+        },
+        "refs": {"parent_form_id": 10001, "entries": []}
+    }"#;
+    let pkg_path = cwd.join("pkg.json");
+    std::fs::write(&pkg_path, pkg).unwrap();
+
+    cli(&sock, cwd)
+        .args([
+            "hii",
+            "form",
+            "add",
+            "--target",
+            "5c60f367-a505-419a-859e-2a4ff6ca6fe5:0x19:0",
+            "--file",
+            pkg_path.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicates::str::contains("package file: use hii import"));
+
+    let bare = r#"{
+        "formset_guid": "A1B2C3D4-E5F6-7890-ABCD-EF1234567890",
+        "title": "T", "help": "H", "class_guids": [],
+        "varstores": [], "default_stores": [],
+        "forms": [{"id": 42, "title": "BareForm", "items": []}]
+    }"#;
+    let bare_path = cwd.join("bare.json");
+    std::fs::write(&bare_path, bare).unwrap();
+
+    cli(&sock, cwd)
+        .args([
+            "hii",
+            "form",
+            "add",
+            "--target",
+            "5c60f367-a505-419a-859e-2a4ff6ca6fe5:0x19:0",
+            "--file",
+            bare_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("42"));
+
+    cli(&sock, cwd)
+        .args(["session", "destroy"])
+        .assert()
+        .success();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn hii_question_list_outputs_item_ids() {
     let (td, sock) = setup_env().await;
     let cwd = td.path();

@@ -250,6 +250,12 @@ enum HiiFormCmd {
     Gates { item_id: String },
     #[command(about = "flip gates to unlock a form")]
     Unlock { item_id: String },
+    #[command(about = "export a form as a schema envelope (meta/refs assembled client-side)")]
+    Export {
+        item_id: String,
+        #[arg(long, help = "write the envelope to a file instead of stdout")]
+        out: Option<std::path::PathBuf>,
+    },
     #[command(about = "insert a form from a schema file into a live formset")]
     Add {
         #[arg(long)]
@@ -463,6 +469,9 @@ async fn dispatch(cli: &Cli, format: output::OutputFormat) -> Result<(), error::
                 HiiFormCmd::Unlock { item_id } => {
                     commands::hii::form_unlock(item_id, sock, format).await
                 }
+                HiiFormCmd::Export { item_id, out } => {
+                    commands::hii::form_export(item_id, out.clone(), sock, format).await
+                }
                 HiiFormCmd::Add { target, file } => {
                     commands::hii::form_add(target, file, sock, format).await
                 }
@@ -667,6 +676,55 @@ mod tests {
                 assert_eq!(file, "schema.json");
             }
             _ => panic!("expected hii form add"),
+        }
+    }
+
+    #[test]
+    fn parse_hii_form_export_args() {
+        let cli = Cli::try_parse_from([
+            "uefi-cli",
+            "hii",
+            "form",
+            "export",
+            "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:1#10019",
+        ])
+        .unwrap();
+        match cli.cmd {
+            Cmd::Hii {
+                sub:
+                    HiiCmd::Form {
+                        sub: HiiFormCmd::Export { item_id, out },
+                    },
+            } => {
+                assert_eq!(item_id, "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:1#10019");
+                assert!(out.is_none());
+            }
+            _ => panic!("expected hii form export"),
+        }
+        let cli = Cli::try_parse_from([
+            "uefi-cli",
+            "hii",
+            "form",
+            "export",
+            "0#10019",
+            "--out",
+            "form-export.json",
+        ])
+        .unwrap();
+        match cli.cmd {
+            Cmd::Hii {
+                sub:
+                    HiiCmd::Form {
+                        sub: HiiFormCmd::Export { item_id, out },
+                    },
+            } => {
+                assert_eq!(item_id, "0#10019");
+                assert_eq!(
+                    out.as_deref(),
+                    Some(std::path::Path::new("form-export.json"))
+                );
+            }
+            _ => panic!("expected hii form export"),
         }
     }
 

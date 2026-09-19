@@ -42,7 +42,9 @@ pub async fn import(
     Ok(())
 }
 
-fn resolve_output_path(path: &str) -> Result<std::path::PathBuf, AppError> {
+/// Absolutization-конвенция `--out`-аргументов: относительный путь
+/// разворачивается от CWD, абсолютный проходит как есть.
+pub(crate) fn resolve_output_path(path: &str) -> Result<std::path::PathBuf, AppError> {
     let p = std::path::PathBuf::from(path);
     if p.is_absolute() {
         return Ok(p);
