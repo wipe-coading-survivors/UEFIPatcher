@@ -101,10 +101,14 @@ message HiiListVarstoresRequest { string image_id = 1; string target = 2; }
 message HiiListVarstoresResponse { repeated VarStoreInfo varstores = 1; }
 ```
 
-- `target` — формсет-таргет по существующей грамматике HII-команд
-  (`<guid>:<formset_idx>[:<form_id>]`); резолв тем же парсером, что у
-  `form add`; form-часть таргета игнорируется. Неизвестный таргет →
-  NotFound.
+- `target` — item_id по грамматике `hii form add`:
+  `<ffs-file-guid>:<section-type-hex>:<index>` с опциональной `#<n>`
+  formset-ординальной частью (парсится и допускается, карта от него не
+  зависит — ниже); отсутствие `#` = пакет 0. Реuse парсера `add_form`.
+  Карта — `varstore_map` от forms-package таргета (все декларации пакета;
+  multi-formset-пакеты дают объединённую карту — та же семантика, что у
+  `check_question_add`, на живых образах один пакет на формсет-модуль).
+  Неизвестный таргет → NotFound, не-Setup-секция → NotASetupItem.
 - `VarStoreInfo { id, guid, size, name }` переиспользуется без изменений;
   для name-value деклараций `guid` — пустая строка, `size` = 0.
 - `HiiListFormsResponse` не меняется.
@@ -174,9 +178,10 @@ message HiiListVarstoresResponse { repeated VarStoreInfo varstores = 1; }
 ## §7 Real-image: карта HNX + зонд ids 21–30 (закрывает TODO:3029)
 
 - **HNX99TF** (`#[ignore]`-гейт, образ `refs/fw/HNX99TF_…E5C88C6F.bin`):
-  `list_varstores` корневого Setup — ассерты на известные декларации
-  (Setup id 2, GUID EC87D643…, size 0x94 — TODO:1507) и полноту карты
-  (id уникальны, все три вида опкодов покрыты живыми данными).
+  `list_varstores` по таргету `899407D7-99FE-43D8-9A21-79EC328CAC21:0x10:0`
+  — ассерты на известные декларации (Setup id 2, GUID EC87D643…, size 0x94
+  — TODO:1507) и полноту карты (id уникальны, все три вида опкодов покрыты
+  живыми данными).
 - **450x-зонд** (`#[ignore]`, `refs/fw/450x.bin`): для каждого id 21..30 —
   `check_question_add` с пробной схемой numeric `var_store_id=<id>`,
   `var_offset=0xFFFE`, size 1; текст ошибки различает
