@@ -206,7 +206,9 @@ message HiiListVarstoresResponse { repeated VarStoreInfo varstores = 1; }
 - **2681**: `is_store_body` ужесточить до leaf-sections (Section с детьми
   → не стор) + синтетический тест с дочерней секцией.
 
-## §9 Попутный микро-фикс: дефолт сокета (закрывает TODO:1353)
+## §9 Попутные микро-фиксы
+
+**9.1 Дефолт сокета (закрывает TODO:1353):**
 
 - `bin/engine.rs:38`: дефолт `/run/uefipatcher.sock` →
   `uefi_common::state::default_sock()` (XDG-state, уже документирован в
@@ -216,6 +218,16 @@ message HiiListVarstoresResponse { repeated VarStoreInfo varstores = 1; }
 - Явный `UEFIPATCHER_SOCK` (вкл. `/run/...`) не затрагивается — rc-файлы
   владельца и SOL-сессии не ломаются. AGENTS.md правок не требует (код
   выравнивается на документ).
+
+**9.2 `node list` text-легенда (находка ревью-3 владельца, 2026-09-19):**
+плоский `node list --format text` рендерит строки через
+`print_nodes`→`format_tree` с сырыми кодами (`type=66 subtype=01`) без
+легенды, тогда как `node list --tree` в том же text-формате печатает
+`format_legend` в stderr (commands/node.rs:31) — асимметрия одного и того
+же рендера. Фикс: text-ветка `print_nodes` (output.rs) делает `eprint!` с
+`format_legend(&rows)` перед печатью дерева — тем же паттерном, что
+tree-ветка команды. Stdout не меняется (легенда в stderr) — существующие
+e2e-ассерты не задеты.
 
 ## §10 Тестирование и гейты
 
