@@ -511,6 +511,11 @@
   пакета + дубли деклараций до мутаций (зеркалит check_question_add; спека
   §2); клиентский pre-check и заполнение конверта — цикл hii-form-export,
   блок-пометка в его спеке §3.6 снята.
+  Закрыто полностью: цикл hii-form-export (2026-09-19) — экспорт заполняет
+  `formset.varstores` referenced-only (name-value → `meta.lossy`), импорт-
+  планнер `plan_varstores` (uefi-common::envelope) drop'ает идентичные
+  декларации по карте `HiiListVarstores` / fail-fast на отличающиеся
+  (контракт varstore-contract §6).
 * [ ] **TUI/WebUI обёртки над `HiiFormAdd`/`HiiFormsetAdd` RPC** — CLI-обёртки
   есть (`hii form add`, `hii formset add`), интерактивных/WebUI-путей нет;
   отложено планом фазы C (§«Отложенное»).
@@ -3406,7 +3411,7 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   registry & flow polish (2026-09-18, R7): хелпер `fmt_u32_ids`
   (join-дедуп обоих статусов, пустой → `(none)`) + ассерт
   `add_prefill_none_when_no_forms`. Пункт закрыт полностью.
-* [ ] **uefi-tui: «форма под формой» — UX ref-шага** — form add
+* [x] **uefi-tui: «форма под формой» — UX ref-шага** — form add
   вставляет форму в конец формсета (в IFR нет позиции «под формой»);
   вложенность выражается второй операцией — `question add` с refs
   (GOTO из родительской формы, см. np_ref.json). В TUI обе команды
@@ -3421,6 +3426,17 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   чистейший вариант, но отдельная дуга. Контекст:
   `crates/uefi-tui/src/commands.rs` (add_prefill, ветка `"form"`);
   семантика — `uefi_engine::hii::add_ref` (`hii/mod.rs`).
+  Закрыто: цикл hii-form-export (2026-09-19, спека
+  `2026-09-19-hii-form-export-design.md`) — вариант A дословно (клавиша
+  `A`); дух варианта B перерос в конверт `{"meta","formset","refs"}` +
+  макро `hii import` (CLI/TUI, клавиша `I`) — одна команда/один файл,
+  движок видит те же два низкоуровневых RPC, ref-шаг планировщиком
+  (`plan_ref_step`: дефолты/явные таргеты, qid-базис 0x7F00); плюс
+  обратное направление — `hii form export`/клавиша `e` (round-trip
+  JSON полной fidelity + `meta.lossy`), `R` — refs-only пакет (реф,
+  не «move»: ссылка на существующую форму, в т.ч. кросс-формсетная
+  REF3). Вариант C — вне цикла (скоуп-граница спеки: если двухфазность
+  заболит).
 * [x] **uefi-tui: completion-меню не рендерится** — `complete()`
   возвращает `(rep, opts)`, но `ui/cmdline.rs` рисует только строку
   команды: список кандидатов выбрасывается. При множестве кандидатов
@@ -3950,3 +3966,32 @@ version/eventtrap/ad/ldap. Raw-IPMI и PECI-команд НЕТ (OEM-цели
   чек-лист ручного гейта; автогейт «патч→бут→лог» — кандидат в CI позже.
   Контекст: `refs/fw/` (OVMF, edk2-rk3588 + капсула), `hack/solrig.py`
   (паттерн pty-моста), item «Аппаратная валидация reloc-aware роста».
+
+## Отложенное цикла hii-form-export (2026-09-19, финальное ревью ветки)
+
+* [ ] **hii-form-export: отложенные находки финального ревью** — цикл
+  смержен с вердиктом «With fixes» (2 Important + 2 UX-минора закрыты
+  fix-волной); остальное триажировано в DEFER: (1) `hii form hijack`
+  (CLI) без конверт-маршрутизатора — конверт туда доходит до
+  `parse_hijack_schema` и падает с менее внятной ошибкой, чем «use hii
+  import» (`crates/uefi-cli/src/commands/hii.rs`); (2) ~70 строк
+  pre-check-клея продублированы uefi-cli↔uefi-tui (планирование НЕ
+  дублируется — `plan_ref_step`/`plan_varstores` в uefi-common; дрейф
+  прижат тестами с обеих сторон) — кандидат на подъём в uefi-common;
+  (3) чужой-formset warn только на refs-пути импорта (formset-only
+  конверт без refs импортируется молча; guid можно взять из префикса
+  таргета без RPC); (4) form-level gates (SUPPRESS_IF, обёртывающий
+  FORM) не считаются в `meta.lossy` — домен form-visibility-фичи,
+  хватит строки в словаре lossy спеки; (5) литералы паритета CLI/TUI
+  дублируются в двух тест-файлах — механизмской связи нет; (6)
+  `plan_ref_step` не реинвестирует собственные выделения qid —
+  multi-entry пакет без авторских question_id получает коллизию,
+  ловится движковым `check_ref_slots`, но уже после form add (двухфазный
+  отчёт); (7) CLI import exit 0 при упавшем ref-этапе (скриптовой
+  wrapper видит половинный успех как успех; JSON-поле `ref.built:false`
+  есть); (8) мелочи: `display_mode(flags, _size)` мёртвый параметр,
+  `resolve_form` двойной обход, dead-ветка `Ok(None)` у plan_ref_step,
+  `unknown_op_`-hex не валидируется в real-image гейте, vacuous-имя
+  теста `meta_without_formset_…` + устаревший текст MissingFormsetBody.
+  Контекст: спека `2026-09-19-hii-form-export-design.md` (§5/§6),
+  ledger `.superpowers/sdd/2026-09-19-hii-form-export/progress.md`.
