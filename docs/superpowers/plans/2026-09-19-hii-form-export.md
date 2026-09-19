@@ -232,7 +232,7 @@ mod tests {
     }
 }
 ```
-Примечание к тесту `meta_without_formset…`: конверт с `meta` обязан нести `formset` ИЛИ быть refs-only — refs-only не содержит `meta` вообще (это bare для question add), поэтому `meta` без `formset` — ошибка.
+Примечание к тесту `meta_without_formset…`: `meta` без `formset` И без `refs` — ошибка (пустой конверт бессмыслен). Refs-only пакеты (`{"refs":{…}}`, `meta` опциональна) появились в `split_envelope` расширением Task 7 (дефект 1): объект верхнего уровня с ключом `refs` без `formset` → refs-пакет, entries обязаны нести явные `form_id`; массивный np_ref-wire `{"refs":[…]}` остаётся bare для question add.
 
 - [ ] **Step 3: Запустить тесты (упадут — нет файла/модуля, если писать тесты до impl — стандартный цикл уже соблюдён порядком выше; при написании файла целиком убедиться, что `cargo test -p uefi-common envelope` проходит)**
 
@@ -899,27 +899,40 @@ git commit -m "feat(cli): hii form export (конверт на клиенте) +
 ### Task 7: CLI — hii import (макро)
 
 **Files:**
+- Modify: `crates/uefi-common/src/envelope.rs` (split_envelope: refs-only пакеты — см. дефект 1 ниже)
 - Modify: `crates/uefi-cli/src/main.rs` (новый подкомандный узел `HiiCmd::Import { target, file }`)
-- Modify: `crates/uefi-cli/src/commands/hii.rs` (`import`)
-- Modify: `crates/uefi-cli/tests/mock_server.rs` (журнал вызовов — добавить `Arc<Mutex<Vec<String>>>` rpc-имён, если ещё нет)
+- Modify: `crates/uefi-cli/src/commands/hii.rs` (`import` + pre-check-хелперы)
+- Modify: `crates/uefi-cli/src/output.rs` (`print_import` — двухфазный отчёт)
+- Modify: `crates/uefi-cli/tests/mock_server.rs` (журнал вызовов — добавить `Arc<Mutex<Vec<String>>>` rpc-имён, если ещё нет; вторая форма в фикстуре list_forms для кросс-формсетных таргетов)
+- Modify: `crates/uefi-cli/tests/cli_integration.rs` (журнал-тесты)
+
+Дефекты плана vs реальность (rule 11):
+
+1. **refs-only пакеты невыразимы в поставленном Task 1 `split_envelope`**: конверт с `meta` без `formset` всегда Err(MissingFormsetBody), bare-файл `{"refs":{…}}` не разбирается (refs=None) — псевдокоду `refs = env.refs` refs-only недостижим, а журнал Step 2 требует refs-only путь. Решение: расширение `split_envelope` — refs-only = объект верхнего уровня с ключом `refs` (значение-объект) без ключа `formset`; `meta` опциональна (`{"refs":{…}}` и `{"meta":{…},"refs":{…}}` оба валидны); `Envelope.body` для refs-only — пустая строка (путь мутации формсета отсутствует). Все entries обязаны иметь явный `form_id` и entries непусты — иначе Err(InvalidRefs) до RPC (спека §1/§5). Прежние контракты не меняются: bare `{"refs":[…]}` (np_ref wire) — по-прежнему bare; `meta` без `formset` И без `refs` — по-прежнему MissingFormsetBody.
+2. **Порядок псевдокода vs журнал**: busy_qids вычислялся до list_forms, журнал требует `list_forms → list_questions` — псевдокод переставлен (parent-check по одному list_forms-вызову, затем list_questions родителя).
+3. **Файлы**: импорт печатает двухфазный отчёт — нужен `output.rs` (+ план-дефект: файл не был указан); pre-check-хелперы — unit-тесты в `commands/hii.rs`; интеграционные тесты — `cli_integration.rs`.
 
 - [ ] **Step 1: Реализация import (порядок — спека §3)**
 
 ```text
 fn import(target, file):
   text = read(file)
-  env = split_envelope(text)?            // bare без meta → тоже валидный пакет (refs нет)
-  refs = env.refs
-  busy_qids = hii_list_questions(target, refs.parent_form_id)  // при refs
-  pre-check: parent ∈ hii_list_forms(target); явные form_id таргеты ∈ hii_list_forms(image);
-             авторские question_id ∉ busy_qids           // fail fast, ноль мутаций
-  body = refs-only? none : plan_varstores(env.body, hii_list_varstores(target))?
+  env = split_envelope(text)?            // bare без meta и без refs-объекта → тоже валидный пакет (formset-only)
+  refs = env.refs                        // refs-only: refs=Some, body="" (расширение split_envelope)
+  busy_qids = []
+  refs? forms = hii_list_forms(image); parent ∈ forms(target)?          // fail fast, ноль мутаций
+         busy_qids = hii_list_questions(target, refs.parent_form_id)
+         авторские question_id ∉ busy_qids; явные form_id таргеты ∈ forms(image)
+         (formset_guid у entry → форма в том формсете; без → в целевом);
+         warn: formset_guid(target) ≠ meta.source.formset_guid (stderr)
+  body = env.body пуст? none : Some(plan_varstores(env.body, hii_list_varstores(target))?)
   form_add_outcome = body? hii_form_add(target, body)     // шаг пропущен для refs-only
   plan = refs? plan_ref_step(refs, body, inserted, busy_qids)
-  plan? hii_question_add("<target>#<parent>", serialize(plan.records))
-  отчёт: «форма вставлена (id X); ref построен» / «…ref не построен: …» / warn formset≠source
+  plan Ok? hii_question_add("<target>#<parent>", serialize({"refs": plan.records}))
+  отчёт (print_import): «форма вставлена (id X); ref построен» / «…ref не построен: <причина>»
+                        / formset-only → только form-add отчёт
 ```
-`hii_list_forms`/`hii_list_questions`/`hii_list_varstores`-обёртки уже есть (client.rs). `HiiQuestionAddRequest.schema_json` — `serde_json::to_string(&QuestionAddList-совместимый json {"refs":[…]})` (формат `np_ref.json`: записи с form_id/prompt/help/question_id[/formset_guid]).
+`hii_list_forms`/`hii_list_questions`/`hii_list_varstores`-обёртки уже есть (client.rs). `HiiQuestionAddRequest.schema_json` — `serde_json::to_string(&QuestionAddList-совместимый json {"refs":[…]})` (формат `np_ref.json`: записи с form_id/prompt/help/question_id[/formset_guid]). u32→u16 (question_id из QuestionSummary, id/size из VarStoreInfo) — `u16::try_from` с RpcInternal-ошибкой (идиома `refs_from_parent`). Pre-check-ошибки — RpcInvalidArgument (идиома form_add-маршрутизатора).
 - [ ] **Step 2: Integration-тест с журналом mock'а**
 
 Полный пакет (formset+refs): журнал == `[HiiListForms, HiiListQuestions, HiiListVarstores, HiiFormAdd, HiiQuestionAdd]` (HiiListVarstores — карта для `plan_varstores`, до FormAdd; порядок list_forms → list_questions — pre-check §3.1); refs-only: `[HiiListForms, HiiListQuestions, HiiQuestionAdd]` (varstore-free путь, без карты); bad parent: `[HiiListForms]` + ошибка, ноль мутаций.
