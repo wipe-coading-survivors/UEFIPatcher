@@ -41,6 +41,7 @@ pub fn print_nodes(nodes: &[Node], format: OutputFormat) {
                     name: it.name.clone(),
                 })
                 .collect();
+            eprint!("{}", uefi_common::format::format_legend(&rows));
             print!("{}", uefi_common::format::format_tree(&rows));
         }
     }

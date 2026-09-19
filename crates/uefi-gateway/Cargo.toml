@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+uefi-common = { path = "../uefi-common" }
 uefi-proto = { path = "../uefi-proto" }
 axum = { version = "0.7", features = ["multipart"] }
 axum-extra = { version = "0.9", features = ["cookie"] }
