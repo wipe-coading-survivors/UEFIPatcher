@@ -90,6 +90,7 @@ pub fn add_form(
         }
     };
     let owner_file_guid = owner_guid_by_path(&image.root, &path);
+    validate_form_varstores(image, &target, bare_channel, schema)?;
     let mut strings: Vec<String> = Vec::new();
     for vs in &schema.varstores {
         strings.push(vs.name.clone());
@@ -185,6 +186,55 @@ pub(crate) fn owner_guid_by_path(root: &FfsNode, path: &[usize]) -> Option<Guid>
         }
     }
     guid
+}
+
+fn item_var_store_id(item: &schema::ItemSchema) -> Option<u16> {
+    match item {
+        schema::ItemSchema::OneOf(i) => Some(i.var_store_id),
+        schema::ItemSchema::CheckBox(i) => Some(i.var_store_id),
+        schema::ItemSchema::Numeric(i) => Some(i.var_store_id),
+        schema::ItemSchema::String(i) => Some(i.var_store_id),
+        schema::ItemSchema::OrderedList(i) => Some(i.var_store_id),
+        schema::ItemSchema::Text(_)
+        | schema::ItemSchema::Ref(_)
+        | schema::ItemSchema::Action(_) => None,
+    }
+}
+
+/// Спека varstore-contract §2: per-item ссылки и декларации пакета
+/// проверяются против карты формсета ДО первой мутации образа.
+fn validate_form_varstores(
+    image: &Image,
+    target: &crate::types::Target,
+    bare_channel: bool,
+    schema: &schema::FormSetSchema,
+) -> Result<(), HiiError> {
+    let pkg = question_forms_package(&image.root, target, bare_channel)?.to_vec();
+    let existing = super::values::varstore_map(&pkg);
+    let mut seen: Vec<u16> = Vec::new();
+    for vs in &schema.varstores {
+        if existing.iter().any(|m| m.id == vs.id) || seen.contains(&vs.id) {
+            return Err(HiiError::InvalidSchema(format!(
+                "varstore id {:#x} already exists in the formset",
+                vs.id
+            )));
+        }
+        seen.push(vs.id);
+    }
+    for form in &schema.forms {
+        for item in &form.items {
+            let Some(id) = item_var_store_id(item) else {
+                continue;
+            };
+            if id != 0 && !seen.contains(&id) && !existing.iter().any(|m| m.id == id) {
+                return Err(HiiError::InvalidSchema(format!(
+                    "var store id {:#x} is not declared (add it to schema varstores)",
+                    id
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn build_varstores(schema: &schema::FormSetSchema) -> Result<Vec<u8>, HiiError> {

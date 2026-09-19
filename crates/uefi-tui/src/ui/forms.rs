@@ -62,6 +62,10 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
         render_strings(f, area, app);
         return;
     }
+    if app.forms.show_varstores {
+        render_varstores(f, area, app);
+        return;
+    }
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
@@ -183,6 +187,40 @@ fn render_strings(f: &mut Frame, area: Rect, app: &mut App) {
         &mut app.strings_list_state,
         pos,
         total,
+        scroll::SCROLL_PAD,
+    );
+}
+
+/// Панель varstores ('V'): карта деклараций формсета выбранной формы;
+/// строка 0 — target, подсветка смещена на +1. Спека
+/// varstore-contract §5.
+pub fn render_varstores(f: &mut Frame, area: Rect, app: &mut App) {
+    let target = app.forms.varstores_target.clone().unwrap_or_default();
+    let rows: Vec<ListItem> = std::iter::once(ListItem::new(format!("Varstores: {target}")))
+        .chain(app.forms.varstores.iter().map(|v| {
+            ListItem::new(format!(
+                "id={:#06x} guid={} size={:#06x} \"{}\"",
+                v.id,
+                if v.guid.is_empty() {
+                    "-".into()
+                } else {
+                    v.guid.clone()
+                },
+                v.size,
+                v.name
+            ))
+        }))
+        .collect();
+    let list = List::new(rows)
+        .block(Block::default().borders(Borders::ALL).title("Varstores"))
+        .highlight_style(Style::default().bg(Color::DarkGray));
+    scroll::render_scrolled_list(
+        f,
+        list,
+        area,
+        &mut app.varstores_list_state,
+        app.forms.varstores_cursor + 1,
+        app.forms.varstores.len() + 1,
         scroll::SCROLL_PAD,
     );
 }

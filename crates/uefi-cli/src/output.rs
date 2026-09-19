@@ -1,6 +1,6 @@
 use uefi_proto::{
     FormInfo, GateInfo, HiiFormHijackResponse, HiiPageAddResponse, HiiQuestionAddOutcome,
-    ImageInfo, Node, QuestionInfo, QuestionSummary, SessionInfo, StringInfo,
+    ImageInfo, Node, QuestionInfo, QuestionSummary, SessionInfo, StringInfo, VarStoreInfo,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -41,6 +41,7 @@ pub fn print_nodes(nodes: &[Node], format: OutputFormat) {
                     name: it.name.clone(),
                 })
                 .collect();
+            eprint!("{}", uefi_common::format::format_legend(&rows));
             print!("{}", uefi_common::format::format_tree(&rows));
         }
     }
@@ -195,6 +196,36 @@ pub fn print_strings(strings: &[StringInfo], format: OutputFormat) {
         OutputFormat::Text => {
             for s in strings {
                 println!("[{}] {}: {}", s.language, s.string_id, s.text);
+            }
+        }
+    }
+}
+
+pub fn print_varstores(stores: &[VarStoreInfo], format: OutputFormat) {
+    match format {
+        OutputFormat::Json => {
+            let v = serde_json::to_string_pretty(stores).unwrap_or_else(|_| "[]".into());
+            println!("{v}");
+        }
+        OutputFormat::Tsv => {
+            println!("id\tguid\tsize\tname");
+            for s in stores {
+                println!("{}\t{}\t{}\t{}", s.id, s.guid, s.size, s.name);
+            }
+        }
+        OutputFormat::Text => {
+            for s in stores {
+                println!(
+                    "id={:#06x} guid={} size={:#06x} name=\"{}\"",
+                    s.id,
+                    if s.guid.is_empty() {
+                        "-".to_string()
+                    } else {
+                        s.guid.clone()
+                    },
+                    s.size,
+                    s.name
+                );
             }
         }
     }

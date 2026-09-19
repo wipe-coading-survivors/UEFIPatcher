@@ -487,12 +487,30 @@
   сравнивать case-insensitively (тест споткнулся об это на первом запуске).
   Контекст: `hii/forms.rs` `walk_sections`; унифицировать на upper при
   следующем касании (миграция клиентов: CLI/TUI уже выводят как есть).
-* [ ] **add_form: существующие varstore/question id недискаверибельны** —
+* [x] **add_form: существующие varstore/question id недискаверибельны** —
   `FormSetInfo` (ifr.rs) отдаёт только guid/title/forms; автор схемы не может
   динамически выбрать незанятый var-store id / question id и вынужден брать
   высокие «магические» значения (тест: 0x7F00/0x7F01). Контекст: расширить
   IFR-walker сбором varstore-id (и опционально question-id) при подключении
   TUI/WebUI редакторов; до тех пор документировать конвенцию high-id.
+  Закрыто: цикл varstore-contract — id-дискаверибельность: `varstore_map`
+  движка + RPC `HiiListVarstores` + CLI `hii varstore list` + TUI-панель `V`
+  (спека 2026-09-19-varstore-contract-design §1/§3–§5); qid-половина —
+  `hii question list`/`busy_qids`, formset-ordinal — отдельная поз. 508.
+* [x] **import: per-item varstore-валидация пакета** — items пакета могут
+  ссылаться на `var_store_id`, отсутствующий в целевом формсете и не
+  объявленный в `varstores`-блоке пакета → молчаливый мисбиндинг хранилища.
+  Движок emit'ит объявленные varstores (`hii/form_add.rs:104`), но ссылки
+  items не валидирует. Клиентский pre-check «каждый `var_store_id`
+  существует в целевом формсете или объявлен в пакете» — блокируется
+  дискаверибельностью (поз. выше, TODO:490); до закрытия — известное
+  ограничение спеки `2026-09-19-hii-form-export-design.md` (§3: единственная
+  защита — warn о чужом формсете). Экспорт varstores не заполняет.
+  Закрыто: цикл varstore-contract (движковая половина) — `add_form`
+  валидирует per-item `var_store_id` против карты формсета и деклараций
+  пакета + дубли деклараций до мутаций (зеркалит check_question_add; спека
+  §2); клиентский pre-check и заполнение конверта — цикл hii-form-export,
+  блок-пометка в его спеке §3.6 снята.
 * [ ] **TUI/WebUI обёртки над `HiiFormAdd`/`HiiFormsetAdd` RPC** — CLI-обёртки
   есть (`hii form add`, `hii formset add`), интерактивных/WebUI-путей нет;
   отложено планом фазы C (§«Отложенное»).
@@ -1341,13 +1359,30 @@ atomic_write. После первой мутации хранимый файл �
   как «метод RPC не поддерживается». Контекст: hii_error_status /
   отдельный код NotFound для HII-таргетов.
   Закрыто: cli-polish — `hii_error_status_ctx`: «{target} not found», код RPC оставлен.
-* [ ] **engine: дефолт сокета `/run/uefipatcher.sock` недоступен без
+* [x] **engine: дефолт сокета `/run/uefipatcher.sock` недоступен без
   root** — `bin/engine.rs:38` дефолтит на `/run` (требует прав даже на
   bind; без systemd-юнита, создающего сокет/каталог, демон не
   стартует), при этом AGENTS.md документирует дефолт
   `~/.local/state/uefipatcher/uefipatcher.sock`. Найдено при сборке E15
   (§14.1). Контекст: выровнять дефолт на AGENTS.md или
   `$XDG_RUNTIME_DIR/uefipatcher/uefipatcher.sock` с фолбэком.
+  Закрыто: цикл varstore-contract — engine и gateway дефолтят на
+  `uefi_common::state::default_sock()` (XDG-state,
+  `~/.local/state/uefipatcher/uefipatcher.sock`, как в AGENTS.md);
+  явный `UEFIPATCHER_SOCK` не тронут.
+* [ ] **cli: transport error не сообщает, какой сокет пробовался** — при
+  недоступном сокете клиент падает с голым `transport error (RPC_INTERNAL)`
+  без пути и источника резолва. Актуально после смены дефолта движка
+  (цикл varstore-contract): state-файл `.uefipatcher` продолжает пинить
+  устаревший `sock_path` (приоритет `resolve_sock`: --sock → env → state →
+  default), и клиент молча стучится в мёртвый сокет, пока движок слушит
+  новый дефолт. Найдено при эксплуатации 2026-09-19 (state пинил
+  `~/.local/share/...`, затем `/tmp/...`). Контекст: в текст transport-ошибки
+  добавить резолвнутый путь + источник (`--sock` / `UEFIPATCHER_SOCK` /
+  state-файл / дефолт) — диагностика таких случаев из секунд угадывания
+  становится моментальной; правка в uefi-cli connect-пути,
+  `uefi_common::state::resolve_sock` уже возвращает только PathBuf (нужен
+  вариант, возвращающий и источник).
 
 ### Мини-цикл «value-op» (engine): задать значение настройки — завершён (v1+v5, 2026-09-03)
 
@@ -2661,18 +2696,24 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   при следующем касании.
   Закрыто: numeric size-flags @+13 с guard length>=14, фикстура numeric_op
   выровнена по r-efi IfrNumeric — цикл hii-walker-consistency.
-* [ ] **values: покрытие NUMERIC width 2/4/8 и DEFAULT-типов 2..4** —
+* [x] **values: покрытие NUMERIC width 2/4/8 и DEFAULT-типов 2..4** —
   width-вывод тестируется только на SIZE_1/type 1. Контекст: тесты
   `hii/values.rs`.
-* [ ] **set_value: 7 веток `ValueOpUnsupported` без тестов** —
+  Закрыто: цикл varstore-contract — параметризованные тесты width 2/4/8 и
+  DEFAULT types 2..4 (`hii/values.rs`).
+* [x] **set_value: 7 веток `ValueOpUnsupported` без тестов** —
   record-missing-in-store, nameless varstore, var_offset+width>size,
   width 0/>8, CheckBox>1, Numeric вне диапазона, kind Other. Контекст:
   `hii/mod.rs` validate_set_value/collect; параметризованный набор
   закрыл бы дёшево.
-* [ ] **set_value: `is_store_body` принимает Section с детьми** —
+  Закрыто: цикл varstore-contract — 8 параметризованных set_value_refuses_*
+  покрывают все 7 веток + value-not-fit (`hii/mod.rs`).
+* [x] **set_value: `is_store_body` принимает Section с детьми** —
   Section с детьми и телом-стором шорт-кружит обход (не спускается);
   на живых образах сторы — листья. Контекст: `hii/mod.rs`
   collect_std_defaults_hits; ужесточить до leaf-sections при встрече.
+  Закрыто: цикл varstore-contract — ужесточён до leaf-секций/leaf-файлов +
+  синтетический тест (спека §9).
 * [x] **real_image: `decompressed_diff` обрезает zip'ом до короткого
   потока** — нет `assert_eq!(old.len(), new.len())`; регрессия хвоста
   декомпрессата пройдёт. Плюс нет pre-check `data[0x8000C2]==0`
@@ -2718,11 +2759,14 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   UnlockOutcome.applied — pkg-относительные; пиннинг юнит-тестом с
   base>0 и real-image ассертом «байт по напечатанному смещению ==
   from» — цикл hii-walker-consistency.
-* [ ] **nvar: find_varstore_record матчит первую запись по (имя +
+* [x] **nvar: find_varstore_record матчит первую запись по (имя +
   data_len)** — две записи с одинаковым именем И длиной в одном
   сторе молча флипнут только первую. Контекст: спека §3.1/§7
   (осознанный дискриминатор, на живом образе уникален); отметить
   при работе с прошивками других вендоров.
+  Закрыто (пиннинг): цикл varstore-contract — first-match закреплён тестом +
+  rustdoc-контрактом; смена дискриминатора — новая позиция при живом дубле
+  у другого вендора.
 * [ ] **rpc hii_set_value: flush_image (полная сборка) и на no-op** —
   зеркально hii_unlock (унаследованный шаблон). Контекст: кандидат
   в цикл чистки RPC-хендлеров.
@@ -3017,12 +3061,19 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   (гейт проверяет последствия), явный дифф $SPF через стадию form add
   дал бы более раннюю локализацию регрессии. Несрочно: текущие
   инварианты покрывают наблюдаемые поля.
-* [ ] **setup-np: граница занятости varstore ids 21–30** —
+* [x] **setup-np: граница занятости varstore ids 21–30** —
   probe-инвентарь (вердикт E36v2/E37v2 §7.2) проверил ids 1..20
   (заняты) и 31+ (свободны); 21–30 не проверялись. Нужен при
   следующем выборе нового varstore id. Метод: движковый
   `check_question_add` с var_offset 0xFFFE на чистом LIVE — текст
   ошибки различает «not declared» и «exceeds var store size 0xNN».
+  Закрыто: цикл varstore-contract — ids 21–30 ВСЕ СВОБОДНЫ (таблица §7.1
+  спеки 2026-09-19-varstore-contract-design; в формсете заняты только 1–2:
+  IntelSetup 0x1670 + AmiSetupSupportedFeatures 4). Метод скорректирован:
+  var_offset-0xFFFE-зонд неприменим на 450x ($SPF без string-controls);
+  исправленный метод — check_question_add с varstores-параметром
+  («already exists in the formset» = занят, Ok = свободен), тест
+  real_450x_varstore_ids_21_30_probe в tests/real_image.rs.
 * [x] **uefi-engine/add_form: varstore-декларация без $SPF
   ifr-фиксапа** (раунд 11 NP-E, stage-track вердикт §16.2) —
   **ИСПРАВЛЕНО** (`c5a5c09` + two-zone `292c95c`, пост-дуга

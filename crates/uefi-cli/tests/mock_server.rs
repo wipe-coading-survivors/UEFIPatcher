@@ -201,6 +201,19 @@ impl EngineService for MockEngine {
             }],
         }))
     }
+    async fn hii_list_varstores(
+        &self,
+        _req: Request<HiiListVarstoresRequest>,
+    ) -> Result<Response<HiiListVarstoresResponse>, Status> {
+        Ok(Response::new(HiiListVarstoresResponse {
+            varstores: vec![VarStoreInfo {
+                id: 2,
+                guid: "EC87D643-99DC-4D14-B25D-8AC6D5C7B27A".into(),
+                size: 0x94,
+                name: "Setup".into(),
+            }],
+        }))
+    }
     async fn hii_set_form_visibility(
         &self,
         _req: Request<HiiSetFormVisibilityRequest>,

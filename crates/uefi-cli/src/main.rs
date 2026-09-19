@@ -217,6 +217,11 @@ enum HiiCmd {
         #[command(subcommand)]
         sub: HiiQuestionCmd,
     },
+    #[command(about = "varstore-level HII operations")]
+    Varstore {
+        #[command(subcommand)]
+        sub: HiiVarstoreCmd,
+    },
     #[command(about = "$SPF page-table operations")]
     Page {
         #[command(subcommand)]
@@ -294,6 +299,14 @@ enum HiiQuestionCmd {
         #[arg(long)]
         file: String,
     },
+}
+
+#[derive(Subcommand)]
+enum HiiVarstoreCmd {
+    #[command(
+        about = "list varstore declarations of a formset; item_id = TARGET — e.g. `hii varstore list 899407d7-99fe-43d8-9a21-79ec328cac21:0x10:0` (copy TARGET from the form_id column of `hii form list`)"
+    )]
+    List { item_id: String },
 }
 
 #[derive(Subcommand)]
@@ -492,6 +505,11 @@ async fn dispatch(cli: &Cli, format: output::OutputFormat) -> Result<(), error::
                 }
                 HiiQuestionCmd::Add { item_id, file } => {
                     commands::hii::question_add(item_id, file, sock, format).await
+                }
+            },
+            HiiCmd::Varstore { sub } => match sub {
+                HiiVarstoreCmd::List { item_id } => {
+                    commands::hii::varstore_list(item_id, sock, format).await
                 }
             },
             HiiCmd::Page { sub } => match sub {

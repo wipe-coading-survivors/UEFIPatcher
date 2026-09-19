@@ -287,6 +287,23 @@ impl Client {
             .forms)
     }
 
+    pub async fn hii_list_varstores(
+        &mut self,
+        image_id: &str,
+        target: &str,
+    ) -> Result<Vec<VarStoreInfo>, AppError> {
+        let req = HiiListVarstoresRequest {
+            image_id: image_id.into(),
+            target: target.into(),
+        };
+        Ok(self
+            .inner
+            .hii_list_varstores(auth_req(&self.state, req))
+            .await?
+            .into_inner()
+            .varstores)
+    }
+
     pub async fn hii_list_questions(
         &mut self,
         image_id: &str,

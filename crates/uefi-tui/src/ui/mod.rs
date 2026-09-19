@@ -52,10 +52,12 @@ fn render_hint(f: &mut Frame, area: Rect, app: &App) {
         crate::app::Mode::Normal if app.view == crate::app::View::Forms => {
             if app.forms.show_strings {
                 "NORMAL[Forms/Strings]: j/k move · /filter · S/Esc close · Ctrl-hjkl focus · :cmd · ?help · q".into()
+            } else if app.forms.show_varstores {
+                "NORMAL[Forms/Varstores]: j/k move · V/Esc close · Ctrl-hjkl focus · :cmd · ?help · q".into()
             } else if app.forms.focus == FormsFocus::Details {
                 "NORMAL[Forms/Details]: j/k вопрос · PgUp/PgDn страница · Enter set-value · Tab image-view · :cmd · ?help · q".into()
             } else {
-                "NORMAL[Forms]: j/k move · h/l collapse/expand · v show hidden (unsuppress) · u unlock · a add · T tree/flat · S strings · Tab image-view · :cmd · ?help · q".into()
+                "NORMAL[Forms]: j/k move · h/l collapse/expand · v show hidden (unsuppress) · u unlock · a add · T tree/flat · S strings · V varstores · Tab image-view · :cmd · ?help · q".into()
             }
         }
         crate::app::Mode::Normal => match app.focus {

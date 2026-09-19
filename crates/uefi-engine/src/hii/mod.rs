@@ -596,6 +596,51 @@ pub fn question_info(image: &Image, item_id: &str) -> Result<uefi_proto::Questio
     Ok(question_info_proto(form_id, &map, &texts))
 }
 
+/// Карта varstore-деклараций формсета (спека varstore-contract §3):
+/// item_id — грамматика `hii form add` (`<target>` или `<target>#<n>`;
+/// карта не зависит от formset-ординала — это пакет формсета).
+/// Read-only, образ в любом режиме. guid="" — name-value декларация.
+pub fn list_varstores(
+    image: &Image,
+    item_id: &str,
+) -> Result<Vec<uefi_proto::VarStoreInfo>, HiiError> {
+    let (target_str, _formset_idx) = match item_id.rsplit_once('#') {
+        Some((t, n)) => match n.parse::<u16>() {
+            Ok(idx) => (t, idx as usize),
+            Err(_) => return Err(HiiError::NotFound),
+        },
+        None => (item_id, 0),
+    };
+    let target = crate::parser::target::parse_target(target_str).map_err(|_| HiiError::NotFound)?;
+    let node =
+        crate::parser::target::find_item(&image.root, &target).map_err(|_| HiiError::NotFound)?;
+    if node.node_type != FfsType::Section {
+        return Err(HiiError::NotASetupItem);
+    }
+    let pkg: &[u8] = if node.subtype == EFI_SECTION_RAW && ifr::is_form_package(&node.body) {
+        &node.body
+    } else if node.subtype == EFI_SECTION_PE32 {
+        let (off, len) =
+            form_add::resource_forms_package(&node.body).ok_or(HiiError::NotASetupItem)?;
+        node.body.get(off..off + len).ok_or(HiiError::InvalidIfr)?
+    } else {
+        return Err(HiiError::NotASetupItem);
+    };
+    Ok(values::varstore_map(pkg)
+        .into_iter()
+        .map(|m| uefi_proto::VarStoreInfo {
+            id: u32::from(m.id),
+            guid: m
+                .guid
+                .as_ref()
+                .map(crate::guid_to_upper_string)
+                .unwrap_or_default(),
+            size: u32::from(m.size),
+            name: m.name,
+        })
+        .collect())
+}
+
 /// Вопросы формы по target-строке (например "GUID:0x19:0") + числовой
 /// form_id. Read-only: работает в любом ImageMode. НЕ проверяет
 /// writability-барьеры — это просмотр (мутации — set_value/unlock).
@@ -686,6 +731,7 @@ pub struct ValueOutcome {
     pub stores: Vec<String>,
 }
 
+#[derive(Debug)]
 struct StoreHit {
     path: Vec<usize>,
     desc: String,
@@ -719,7 +765,7 @@ fn collect_std_defaults_hits(
     };
     let is_store_body = |n: &FfsNode| {
         matches!(n.node_type, FfsType::File | FfsType::Section)
-            && (n.node_type != FfsType::File || n.children.is_empty())
+            && n.children.is_empty()
             && nvar::is_std_defaults(&n.body)
     };
     if is_store_body(node) {
@@ -949,7 +995,7 @@ fn validate_question_add(
     Ok((optimized, failsafe))
 }
 
-fn question_forms_package<'a>(
+pub(crate) fn question_forms_package<'a>(
     root: &'a FfsNode,
     target: &crate::types::Target,
     bare_channel: bool,
@@ -3837,6 +3883,185 @@ mod tests {
     }
 
     #[test]
+    fn collect_std_defaults_hits_descends_into_section_with_children() {
+        let leaf_store = mk_node(FfsType::Section, nvar_store_body(), vec![]);
+        let mut parent = mk_node(FfsType::Section, nvar_store_body(), vec![leaf_store]);
+        parent.subtype = 0x19;
+        let mut root = mk_node(FfsType::Volume, vec![], vec![parent]);
+        root.node_type = FfsType::Image;
+        let image = Image {
+            image_id: "i".into(),
+            session_id: "s".into(),
+            root,
+            mode: ImageMode::Write,
+        };
+        let mut hits = Vec::new();
+        collect_std_defaults_hits(
+            &image.root,
+            &mut Vec::new(),
+            false,
+            None,
+            "Setup",
+            6,
+            &mut hits,
+        )
+        .unwrap();
+        assert_eq!(hits.len(), 1, "only the leaf store is a hit, got {hits:?}");
+        assert_eq!(
+            hits[0].path,
+            vec![0, 0],
+            "the hit is the leaf store, not the parent section"
+        );
+    }
+
+    fn value_op_map(
+        kind: values::QuestionKind,
+        width: u8,
+        min: u64,
+        max: u64,
+    ) -> values::QuestionMap {
+        values::QuestionMap {
+            question_id: 0x3B,
+            kind,
+            var_store_id: 1,
+            var_offset: 0,
+            width,
+            varstore: None,
+            options: Vec::new(),
+            defaults: Vec::new(),
+            min,
+            max,
+            step: 0,
+        }
+    }
+
+    #[test]
+    fn set_value_refuses_other_question_kind() {
+        let err = validate_set_value(
+            &value_op_map(values::QuestionKind::Other, 1, 0, u64::MAX),
+            0,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, HiiError::ValueOpUnsupported(ref m) if m.contains("question kind is not value-settable"))
+        );
+    }
+
+    #[test]
+    fn set_value_refuses_zero_width() {
+        let err = validate_set_value(
+            &value_op_map(values::QuestionKind::OneOf, 0, 0, u64::MAX),
+            1,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, HiiError::ValueOpUnsupported(ref m) if m.contains("question width 0 is not settable"))
+        );
+    }
+
+    #[test]
+    fn set_value_refuses_width_over_8() {
+        let err = validate_set_value(
+            &value_op_map(values::QuestionKind::OneOf, 9, 0, u64::MAX),
+            1,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, HiiError::ValueOpUnsupported(ref m) if m.contains("question width 9 is not settable"))
+        );
+    }
+
+    #[test]
+    fn set_value_refuses_value_not_fit_width() {
+        let err = validate_set_value(
+            &value_op_map(values::QuestionKind::OneOf, 1, 0, u64::MAX),
+            0x100,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, HiiError::ValueOpUnsupported(ref m) if m.contains("value 256 does not fit in 8 bits"))
+        );
+    }
+
+    #[test]
+    fn set_value_refuses_checkbox_not_boolean() {
+        let err = validate_set_value(
+            &value_op_map(values::QuestionKind::CheckBox, 1, 0, u64::MAX),
+            2,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, HiiError::ValueOpUnsupported(ref m) if m.contains("checkbox accepts only 0 or 1"))
+        );
+    }
+
+    #[test]
+    fn set_value_refuses_numeric_out_of_range() {
+        let err = validate_set_value(&value_op_map(values::QuestionKind::Numeric, 1, 0, 1), 5)
+            .unwrap_err();
+        assert!(
+            matches!(err, HiiError::ValueOpUnsupported(ref m) if m.contains("value 5 is outside numeric range 0..=1"))
+        );
+    }
+
+    #[test]
+    fn set_value_refuses_nameless_varstore() {
+        let pkg = forms_pkg(
+            [
+                g_varstore(1, 4, ""),
+                g_form(10029),
+                g_one_of_varstore(0x3B, 1, 0x3A),
+                g_option(4, 0x30, 0),
+                g_option(3, 0x00, 1),
+                g_end(),
+                g_end(),
+                g_end(),
+            ]
+            .concat(),
+        );
+        let mut image = vendor_image_with(0x19, pkg);
+        let err = set_value(&mut image, VENDOR_QUESTION_ITEM, 1).unwrap_err();
+        assert!(matches!(err, HiiError::ValueOpUnsupported(ref m) if m.contains("has no name")));
+    }
+
+    #[test]
+    fn set_value_refuses_var_offset_exceeds_store() {
+        let pkg = forms_pkg(
+            [
+                g_varstore(1, 4, "Setup"),
+                g_form(10029),
+                g_one_of_varstore(0x3B, 1, 4),
+                g_option(4, 0x30, 0),
+                g_option(3, 0x00, 1),
+                g_end(),
+                g_end(),
+                g_end(),
+            ]
+            .concat(),
+        );
+        let mut image = vendor_image_with(0x19, pkg);
+        let err = set_value(&mut image, VENDOR_QUESTION_ITEM, 1).unwrap_err();
+        assert!(
+            matches!(err, HiiError::ValueOpUnsupported(ref m) if m.contains("exceeds varstore size"))
+        );
+    }
+
+    #[test]
+    fn set_value_refuses_missing_record_in_store() {
+        let mut image = image_with_nvar_stores();
+        let inner = [
+            nvar_entry(Some("Other"), &[0x11u8; 6], 0x82, Some(0)),
+            nvar_entry(Some("Other"), &[0u8; 114], 0x82, Some(0)),
+        ]
+        .concat();
+        let body = nvar_entry(Some("StdDefaults"), &inner, 0x82, Some(0));
+        image.root.children[0].children[0].body = body.clone();
+        image.root.children[1].children[0].children[0].children[0].body = body;
+        let err = set_value(&mut image, VENDOR_QUESTION_ITEM, 1).unwrap_err();
+        assert!(matches!(err, HiiError::ValueOpUnsupported(ref m) if m.contains("has no record")));
+    }
+
+    #[test]
     fn set_value_repeated_is_noop_report() {
         let mut image = image_with_nvar_stores();
         set_value(&mut image, VENDOR_QUESTION_ITEM, 1).unwrap();
@@ -5058,6 +5283,31 @@ mod tests {
                 }
             }
 
+            fn one_of_item(var_store_id: u16) -> schema::ItemSchema {
+                schema::ItemSchema::OneOf(schema::OneOfItem {
+                    prompt: "P".into(),
+                    help: "H".into(),
+                    question_id: 0x7F01,
+                    var_store_id,
+                    var_offset: 0,
+                    size: 1,
+                    display: schema::DisplayMode::UintDec,
+                    options: vec![
+                        schema::OptionSchema {
+                            text: "Off".into(),
+                            value: 0,
+                            default: None,
+                        },
+                        schema::OptionSchema {
+                            text: "On".into(),
+                            value: 1,
+                            default: None,
+                        },
+                    ],
+                    defaults: schema::Defaults::default(),
+                })
+            }
+
             fn varstore_op_len(pkg: &[u8]) -> usize {
                 let at = pkg
                     .windows(6)
@@ -5298,6 +5548,123 @@ mod tests {
                 let forms = &img.root.children[0].children[0].children[0];
                 assert_eq!(forms.body, pkg, "the forms package must stay untouched");
                 assert_eq!(forms.action, Action::NoAction);
+            }
+
+            #[test]
+            fn list_varstores_returns_formset_declarations() {
+                let (flash, _, _) = question_add_flash_image();
+                let img = parse_image(&flash, ImageMode::Read, "i", "s").unwrap();
+                let stores = list_varstores(&img, ITEM_FORMSET).unwrap();
+                assert_eq!(
+                    stores,
+                    vec![uefi_proto::VarStoreInfo {
+                        id: 1,
+                        guid: "A1B2C3D4-E5F6-7890-ABCD-EF1234567890".into(),
+                        size: 0x100,
+                        name: "Setup".into(),
+                    }],
+                    "фикстура декларирует ровно один varstore: emit_var_store(1, FORMSET_GUID, 0x100, \"Setup\")"
+                );
+                assert_eq!(
+                    list_varstores(&img, &format!("{ITEM_FORMSET}#0")).unwrap(),
+                    stores,
+                    "карта не зависит от formset-ординала — грамматика form add `#<n>`"
+                );
+                let err = list_varstores(&img, "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x01:0")
+                    .unwrap_err();
+                assert!(
+                    matches!(err, HiiError::NotFound),
+                    "0x01-секции в файле 5C60F367 фикстуры нет — нерезолвируемый target это NotFound, got {err:?}"
+                );
+                let err = list_varstores(&img, "12345678-90AB-CDEF-1234-567890ABCDEF:0x15:0")
+                    .unwrap_err();
+                assert!(
+                    matches!(err, HiiError::NotASetupItem),
+                    "UI-секция $SPF-файла резолвится, но не является setup-каналом, got {err:?}"
+                );
+                let err = list_varstores(&img, "00000000-0000-0000-0000-000000000000:0x10:0")
+                    .unwrap_err();
+                assert!(matches!(err, HiiError::NotFound), "got {err:?}");
+            }
+
+            #[test]
+            fn add_form_rejects_item_on_undeclared_varstore_without_mutation() {
+                let (flash, _, _) = question_add_flash_image();
+                let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+                let mut schema = varstore_form_schema();
+                schema.forms[0].items.push(one_of_item(0x7F7F)); // не в формсете и не в пакете
+                let err = add_form(&mut img, ITEM_FORMSET, &schema).unwrap_err();
+                assert!(
+                    matches!(err, HiiError::InvalidSchema(ref m)
+                        if m.contains("var store id 0x7f7f is not declared")),
+                    "got {err:?}"
+                );
+                assert_eq!(
+                    build_image(&img).unwrap(),
+                    flash,
+                    "rejection must not mutate"
+                );
+            }
+
+            #[test]
+            fn add_form_rejects_duplicate_declared_varstore_id() {
+                // id 7 уже декларирован пакетом varstore_form_schema; второй раз = дубль внутри пакета
+                let (flash, _, _) = question_add_flash_image();
+                let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+                let mut schema = varstore_form_schema();
+                schema.varstores.push(schema.varstores[0].clone());
+                let err = add_form(&mut img, ITEM_FORMSET, &schema).unwrap_err();
+                assert!(
+                    matches!(err, HiiError::InvalidSchema(ref m)
+                        if m.contains("varstore id 0x7 already exists")),
+                    "got {err:?}"
+                );
+                assert_eq!(build_image(&img).unwrap(), flash);
+            }
+
+            #[test]
+            fn add_form_rejects_declared_id_existing_in_formset() {
+                // выяснить фактический занятый id базового формсета фикстуры (см. Step 2),
+                // объявить его же в пакете → дубль с формсетом
+                let (flash, _, _) = question_add_flash_image();
+                let img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+                let busy = list_varstores(&img, ITEM_FORMSET).unwrap()[0].id as u16;
+                drop(img);
+                let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+                let mut schema = varstore_form_schema();
+                schema.varstores[0].id = busy; // теперь конфликтует с формсетом
+                let err = add_form(&mut img, ITEM_FORMSET, &schema).unwrap_err();
+                assert!(
+                    matches!(err, HiiError::InvalidSchema(ref m)
+                        if m.contains("already exists in the formset")),
+                    "got {err:?}"
+                );
+                assert_eq!(build_image(&img).unwrap(), flash);
+            }
+
+            #[test]
+            fn add_form_accepts_item_on_package_declared_varstore() {
+                let (flash, _, _) = question_add_flash_image();
+                let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+                let mut schema = varstore_form_schema();
+                schema.varstores[0].id = 7;
+                schema.forms[0].items.push(one_of_item(7)); // объявлен пакетом
+                let res = add_form(&mut img, ITEM_FORMSET, &schema);
+                assert!(res.is_ok(), "got {:?}", res.unwrap_err());
+            }
+
+            #[test]
+            fn add_form_accepts_item_on_existing_formset_varstore() {
+                let (flash, _, _) = question_add_flash_image();
+                let img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+                let busy = list_varstores(&img, ITEM_FORMSET).unwrap()[0].id as u16;
+                drop(img);
+                let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+                let mut schema = varstore_form_schema();
+                schema.varstores.clear(); // не декларируем ничего — item на существующий id
+                schema.forms[0].items.push(one_of_item(busy));
+                let res = add_form(&mut img, ITEM_FORMSET, &schema);
+                assert!(res.is_ok(), "got {:?}", res.unwrap_err());
             }
         }
     }

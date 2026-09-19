@@ -5527,3 +5527,266 @@ fn real_image_flash_regions_layout() {
         "real_image flash-layout: descriptor path, regions={kinds:?}, $FPT partitions={me_children:?}, {volumes} volumes, round-trip byte-identical, DXE files={HNX_DXE_FV_FILES}, PEI files={HNX_PEI_FV_FILES}"
     );
 }
+
+/// Спека varstore-contract §7: карта деклараций корневого Setup HNX99TF на
+/// живом образе — известная декларация Setup id 1/EC87D643…/0x72 (гейт
+/// real_image_hii_question_info_4g; id 2/0x94 из TODO:1507 — это 450x, не
+/// HNX) и уникальность ids (полнота walker'а по видам опкодов живыми данными).
+#[test]
+#[ignore = "real image required"]
+fn real_hii_varstore_map_hnx() {
+    let data = load_fw();
+    let img = parse_image(&data, ImageMode::Read, "img1", "s1").expect("parse_image");
+    let stores =
+        uefi_engine::hii::list_varstores(&img, "899407D7-99FE-43D8-9A21-79EC328CAC21:0x10:0")
+            .unwrap();
+    assert!(
+        stores.iter().any(|v| v.id == 1
+            && v.guid.starts_with("EC87D643")
+            && v.size == 0x72
+            && v.name == "Setup"),
+        "HNX Setup varstore 1/EC87D643/0x72, got {stores:?}"
+    );
+    assert_eq!(
+        stores
+            .iter()
+            .map(|v| v.id)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        stores.len(),
+        "ids unique"
+    );
+    println!("HNX Setup varstores: {stores:#?}");
+}
+
+/// Спека varstore-contract §7: занятость varstore ids 21–30 на 450x (метод
+/// TODO:3029, скорректирован по живому образу). Check-режим
+/// `check_question_add` (без мутаций): проба через varstores-параметр —
+/// «varstore id … already exists in the formset» = id занят, Ok(()) = id
+/// свободен. Схема-проба с var_offset 0xFFFE на 450x неприменима: $SPF
+/// образа не содержит string-controls (scan_string_controls = 0), check с
+/// любой схемой падает NotFound (ctrl_template) до declared-size-проверки.
+/// Форма-таргет подбирается по живому образу: первая форма RC-формсета,
+/// где check со свободным id проходит весь пайплайн (включая $SPF-страницу
+/// формы в plan_spf_append); результат зонда сверяется с картой §3.
+#[test]
+#[ignore = "real image required"]
+fn real_450x_varstore_ids_21_30_probe() {
+    let data = std::fs::read(amibcp_path()).unwrap();
+    let img = parse_image(&data, ImageMode::Write, "t", "s").unwrap();
+    let rc_target = format!("{RC_SETUP_FFS}:0x10:0");
+
+    let rc_map = uefi_engine::hii::list_varstores(&img, &rc_target).unwrap();
+    let declared: std::collections::BTreeSet<u16> = rc_map.iter().map(|v| v.id as u16).collect();
+    let busy_id = *declared
+        .first()
+        .expect("RC formset declares at least one varstore");
+    let free_id = declared
+        .iter()
+        .copied()
+        .max()
+        .unwrap_or(0)
+        .saturating_add(1)
+        .max(busy_id.saturating_add(1));
+
+    let check_probe = |form_id: u16, id: u16| {
+        uefi_engine::hii::check_question_add(
+            &img,
+            &format!("{rc_target}#{form_id}"),
+            &[],
+            &[uefi_engine::hii::schema::VarStoreSchema {
+                id,
+                guid: "12345678-1234-1234-1234-123456789ABC".into(),
+                size: 1,
+                name: "PatcherProbe".into(),
+                var_type: uefi_engine::hii::schema::VarStoreType::Buffer,
+                attributes: 0,
+            }],
+        )
+    };
+
+    let mut rc_forms: Vec<u16> = uefi_engine::hii::forms::collect_forms(&img)
+        .iter()
+        .filter(|f| f.form_id.eq_ignore_ascii_case(&rc_target))
+        .map(|f| f.form_id_ifr as u16)
+        .collect();
+    rc_forms.sort_unstable();
+    rc_forms.dedup();
+    let probe_form = rc_forms
+        .iter()
+        .copied()
+        .find(|&fid| check_probe(fid, free_id).is_ok())
+        .unwrap_or_else(|| {
+            panic!("no RC form passes the whole check pipeline, forms: {rc_forms:?}")
+        });
+    assert!(
+        check_probe(probe_form, busy_id)
+            .unwrap_err()
+            .to_string()
+            .contains("already exists in the formset"),
+        "busy id {busy_id} must be reported as already existing"
+    );
+
+    let mut report = Vec::new();
+    for id in 21u16..=30 {
+        let status = match check_probe(probe_form, id) {
+            Ok(()) => "free",
+            Err(e) if e.to_string().contains("already exists in the formset") => "busy",
+            Err(e) => panic!("id {id}: unexpected error {e:?}"),
+        };
+        assert_eq!(
+            status == "busy",
+            declared.contains(&id),
+            "id {id}: probe says {status}, map says declared={}",
+            declared.contains(&id)
+        );
+        report.push((id, status));
+    }
+    println!("450x RC varstore map: {rc_map:#?}");
+    println!("450x varstore ids 21-30 (RC form {probe_form}): {report:?}");
+}
+
+/// Спека varstore-contract §10 (final review F1): live-гейт §2-валидаций
+/// add_form на 450x. (а) item на несуществующий var_store_id и (б) дубль
+/// декларации с формсетом → оба InvalidSchema, дифф образа пустой (отказ
+/// до мутаций); (в) happy-path пакет с varstores → одна декларация на id,
+/// ре-парс собранного образа читает её картой list_varstores.
+#[test]
+#[ignore = "real image required"]
+fn real_add_form_varstore_validations_450x() {
+    use uefi_engine::builder::build_image;
+    use uefi_engine::hii::HiiError;
+    use uefi_engine::hii::form_add::add_form;
+    use uefi_engine::hii::forms::collect_forms;
+    use uefi_engine::hii::schema;
+
+    const FORM_TITLE: &str = "PATCHER GATE FORM";
+    const NUM_PROMPT: &str = "PATCHER GATE PROMPT";
+    const NUM_HELP: &str = "PATCHER GATE HELP";
+    const QUESTION_ID: u16 = 0x7F01;
+    const VARSTORE_GUID: &str = "89ABCDEF-0123-4DEF-8ABC-0123456789AB";
+    const VARSTORE_NAME: &str = "PatcherGateVar";
+    const VARSTORE_SIZE: u16 = 16;
+    const FREE_ID: u16 = 21;
+
+    let data = std::fs::read(amibcp_path()).unwrap();
+    let rc_target = format!("{RC_SETUP_FFS}:0x10:0");
+
+    let busy_id = {
+        let img = parse_image(&data, ImageMode::Read, "t0", "s0").unwrap();
+        uefi_engine::hii::list_varstores(&img, &rc_target).unwrap()[0].id as u16
+    };
+    let new_form_id = collect_forms(&parse_image(&data, ImageMode::Read, "t1", "s1").unwrap())
+        .iter()
+        .filter(|f| f.form_id.eq_ignore_ascii_case(&rc_target))
+        .map(|f| f.form_id_ifr as u16)
+        .max()
+        .unwrap()
+        + 1;
+
+    let varstore = |id: u16| schema::VarStoreSchema {
+        id,
+        guid: VARSTORE_GUID.into(),
+        size: VARSTORE_SIZE,
+        name: VARSTORE_NAME.into(),
+        var_type: schema::VarStoreType::Buffer,
+        attributes: 7,
+    };
+    let package =
+        |varstores: Vec<schema::VarStoreSchema>, var_store_id: u16| schema::FormSetSchema {
+            formset_guid: RC_FORMSET_GUID.into(),
+            title: FORM_TITLE.into(),
+            help: NUM_HELP.into(),
+            class_guids: vec![],
+            varstores,
+            default_stores: vec![],
+            forms: vec![schema::FormSchema {
+                id: new_form_id,
+                title: FORM_TITLE.into(),
+                items: vec![schema::ItemSchema::Numeric(schema::NumericItem {
+                    prompt: NUM_PROMPT.into(),
+                    help: NUM_HELP.into(),
+                    question_id: QUESTION_ID,
+                    var_store_id,
+                    var_offset: 0,
+                    size: 1,
+                    min: 0,
+                    max: 255,
+                    step: 1,
+                    display: schema::DisplayMode::UintDec,
+                    defaults: schema::Defaults::default(),
+                })],
+            }],
+            setupdata_guid: None,
+            amitse_guid: None,
+        };
+
+    let mut img = parse_image(&data, ImageMode::Write, "ta", "sa").unwrap();
+    let err = add_form(
+        &mut img,
+        &rc_target,
+        &package(vec![varstore(FREE_ID)], 0x7F7F),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, HiiError::InvalidSchema(ref m)
+            if m.contains("var store id 0x7f7f is not declared")),
+        "(а) got {err:?}"
+    );
+    assert_eq!(
+        build_image(&img).unwrap(),
+        data,
+        "(а) rejection must not mutate the image"
+    );
+
+    let mut img = parse_image(&data, ImageMode::Write, "tb", "sb").unwrap();
+    let err = add_form(
+        &mut img,
+        &rc_target,
+        &package(vec![varstore(busy_id)], busy_id),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, HiiError::InvalidSchema(ref m)
+            if m.contains(&format!("varstore id {busy_id:#x} already exists in the formset"))),
+        "(б) got {err:?}"
+    );
+    assert_eq!(
+        build_image(&img).unwrap(),
+        data,
+        "(б) rejection must not mutate the image"
+    );
+
+    let mut img = parse_image(&data, ImageMode::Write, "tc", "sc").unwrap();
+    let res = add_form(
+        &mut img,
+        &rc_target,
+        &package(vec![varstore(FREE_ID)], FREE_ID),
+    )
+    .expect("(в) add_form");
+    assert_eq!(res.inserted_form_ids, vec![new_form_id]);
+    let built = build_image(&img).expect("(в) build_image after form add");
+    assert_eq!(
+        built.len(),
+        data.len(),
+        "(в) total flash length must be preserved"
+    );
+    let re = parse_image(&built, ImageMode::Read, "tc2", "sc2").unwrap();
+    let map = uefi_engine::hii::list_varstores(&re, &rc_target).unwrap();
+    assert!(
+        map.iter().any(|v| v.id == u32::from(FREE_ID)
+            && v.guid.eq_ignore_ascii_case(VARSTORE_GUID)
+            && v.size == u32::from(VARSTORE_SIZE)
+            && v.name == VARSTORE_NAME),
+        "(в) re-parse must read the added declaration via the map, got {map:?}"
+    );
+    assert_eq!(
+        map.iter().filter(|v| v.id == u32::from(FREE_ID)).count(),
+        1,
+        "(в) exactly one declaration per id"
+    );
+
+    println!(
+        "450x add_form §2 gate: busy_id={busy_id} free_id={FREE_ID} new_form_id={new_form_id} map_after={map:?}"
+    );
+}

@@ -258,6 +258,14 @@ impl EngineService for MockEngine {
     ) -> Result<Response<HiiFormTreeResponse>, Status> {
         Ok(Response::new(HiiFormTreeResponse { edges: vec![] }))
     }
+    async fn hii_list_varstores(
+        &self,
+        _req: Request<HiiListVarstoresRequest>,
+    ) -> Result<Response<HiiListVarstoresResponse>, Status> {
+        Ok(Response::new(HiiListVarstoresResponse {
+            varstores: vec![],
+        }))
+    }
     async fn hii_set_value(
         &self,
         _req: Request<HiiSetValueRequest>,

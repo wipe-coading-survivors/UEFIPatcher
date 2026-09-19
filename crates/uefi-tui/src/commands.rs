@@ -1286,6 +1286,13 @@ pub fn selected_form_item_id(app: &App) -> Option<String> {
     Some(fmt_item(&key.target, key.form_id_ifr))
 }
 
+/// target-часть выделенной формы ("<ffs>:<type>:<idx>" без `#`), для
+/// RPC без form_id (list_varstores). None — если строка не форма.
+/// Спека varstore-contract §5.
+pub fn selected_form_target(app: &App) -> Option<String> {
+    app.selected_form_key().map(|k| k.target)
+}
+
 /// Insert-prefill для Enter на вопросе: вопрос из question_cursor.
 /// item_id-контракт: form_id — ДЕСЯТИЧНОЕ (parse_item_id), qid — hex.
 /// Спека tui-forms-view §4 V2, решение D6.
@@ -1593,12 +1600,17 @@ pub async fn refresh_forms(app: &mut App, client: &mut Client) -> Result<(), Str
     app.forms.strings_filter.clear();
     app.forms.strings_cursor = 0;
     app.forms.show_strings = false;
+    app.forms.varstores.clear();
+    app.forms.varstores_target = None;
+    app.forms.varstores_cursor = 0;
+    app.forms.show_varstores = false;
     Ok(())
 }
 
 /// Re-fetch форм И рёбер после мутации: сохраняет flat_mode,
 /// развёрнутость, выделение (по formset+form_id), strings-браузер;
-/// сбрасывает per-form кэши (questions, gates, question_info).
+/// сбрасывает per-form кэши (questions, gates, question_info) и
+/// varstores-кэш (target — панель остаётся, 'V' re-fetch'ит).
 /// Вход во view — refresh_forms (сброс), не эта функция.
 /// Спека tui-forms-view §3.3.
 pub async fn reload_forms(app: &mut App, client: &mut Client) -> Result<(), String> {
@@ -1637,6 +1649,7 @@ pub async fn reload_forms(app: &mut App, client: &mut Client) -> Result<(), Stri
     app.forms.question_cursor = 0;
     app.forms.question_info = None;
     app.forms.question_info_key = None;
+    app.forms.varstores_target = None;
     match sel {
         Some((guid, fid)) => {
             let rows = app.forms_rows();
@@ -1764,6 +1777,36 @@ pub async fn refresh_strings(app: &mut App, client: &mut Client) -> Result<(), S
         .into_inner();
     app.forms.strings = resp.strings;
     app.forms.strings_cursor = 0;
+    Ok(())
+}
+
+/// Карта varstore-деклараций формсета под курсором — лениво, кэш на
+/// один target. Спека varstore-contract §5.
+pub async fn refresh_varstores(
+    app: &mut App,
+    client: &mut Client,
+    target: &str,
+) -> Result<(), String> {
+    let image_id = app
+        .active_image_id
+        .clone()
+        .or_else(|| client.state.active_image_id.clone())
+        .ok_or("no active image")?;
+    let resp = client
+        .inner
+        .hii_list_varstores(auth_req(
+            &client.state,
+            HiiListVarstoresRequest {
+                image_id,
+                target: target.into(),
+            },
+        ))
+        .await
+        .map_err(|e| e.message().to_string())?
+        .into_inner();
+    app.forms.varstores = resp.varstores;
+    app.forms.varstores_target = Some(target.to_string());
+    app.forms.varstores_cursor = 0;
     Ok(())
 }
 

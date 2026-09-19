@@ -26,6 +26,7 @@ service EngineService {
   rpc ArtifactExport(ArtifactExportRequest) returns (Empty);
 
   rpc HiiListForms(HiiListFormsRequest)                 returns (HiiListFormsResponse);
+  rpc HiiListVarstores(HiiListVarstoresRequest)         returns (HiiListVarstoresResponse);
   rpc HiiFormTree(HiiFormTreeRequest)                   returns (HiiFormTreeResponse);
   rpc HiiSetFormVisibility(HiiSetFormVisibilityRequest) returns (Empty);
   rpc HiiListStrings(HiiListStringsRequest)             returns (HiiListStringsResponse);
@@ -173,6 +174,8 @@ message FormInfo {
   bool visible = 5;
 }
 message HiiListFormsResponse { repeated FormInfo forms = 1; }
+message HiiListVarstoresRequest { string image_id = 1; string target = 2; }
+message HiiListVarstoresResponse { repeated VarStoreInfo varstores = 1; }
 
 message FormEdge {
   string formset_guid = 1;

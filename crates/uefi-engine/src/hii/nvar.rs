@@ -99,6 +99,9 @@ pub fn is_std_defaults(body: &[u8]) -> bool {
     std_defaults_data(body).is_some()
 }
 
+/// Первая NVAR-запись, совпавшая по (имя, data_len). Дубликаты имени и
+/// длины в одном сторе не дискриминируются (осознанный контракт; на
+/// живых образах AMI уникальны — спека varstore-contract §8).
 pub fn find_varstore_record<'a>(
     body: &'a [u8],
     name: &str,
@@ -145,6 +148,12 @@ mod tests {
         inner.extend_from_slice(&entry(Some("Setup"), &[0u8; 114], 0x82, Some(0)));
         inner.extend_from_slice(&entry(Some("Timeout"), &[0, 0], 0x83, Some(1)));
         inner.extend_from_slice(&entry(Some("Setup"), &[0x11; 6], 0x82, Some(4))); // вторая Setup
+        inner
+    }
+
+    fn nvar_dup_records_fixture() -> Vec<u8> {
+        let mut inner = entry(Some("Setup"), &[0x11u8; 6], 0x82, Some(0));
+        inner.extend_from_slice(&entry(Some("Setup"), &[0x22u8; 6], 0x82, Some(0)));
         inner
     }
 
@@ -230,6 +239,15 @@ mod tests {
     fn find_varstore_record_missing_is_none() {
         let store = store_fixture();
         assert_eq!(find_varstore_record(&store, "Missing", 114), None);
+    }
+
+    #[test]
+    fn find_varstore_record_pins_first_match_on_duplicate_name_and_len() {
+        let inner = nvar_dup_records_fixture();
+        let store = entry(Some("StdDefaults"), &inner, 0x82, Some(0));
+        let (off, data) = find_varstore_record(&store, "Setup", 6).unwrap();
+        assert_eq!(data, &[0x11u8; 6], "first record wins");
+        assert_eq!(&store[off..off + 6], &[0x11u8; 6]);
     }
 
     #[test]

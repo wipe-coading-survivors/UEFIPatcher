@@ -33,10 +33,11 @@ fn main() -> anyhow::Result<()> {
             .map(|d| d.data_dir().to_path_buf())
             .unwrap_or_else(|| PathBuf::from("./data"))
     });
-    let sock = args
-        .sock
-        .unwrap_or_else(|| PathBuf::from("/run/uefipatcher.sock"));
+    let sock = args.sock.unwrap_or_else(uefi_common::state::default_sock);
     std::fs::create_dir_all(&data_dir)?;
+    if let Some(parent) = sock.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     if sock.parent().is_some() {
         let _ = std::fs::remove_file(&sock);
     }

@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use ratatui::widgets::ListState;
 use uefi_proto::{
     ArtifactInfo, FormEdge, FormInfo, GateInfo, ImageInfo, QuestionInfo, QuestionSummary,
-    StringInfo,
+    StringInfo, VarStoreInfo,
 };
 
 use crate::input::AppEvent;
@@ -84,6 +84,10 @@ pub struct FormsData {
     pub strings: Vec<StringInfo>,
     pub strings_filter: String,
     pub strings_cursor: usize,
+    pub show_varstores: bool,
+    pub varstores: Vec<VarStoreInfo>,
+    pub varstores_target: Option<String>,
+    pub varstores_cursor: usize,
     pub questions_state: ratatui::widgets::ListState,
 }
 
@@ -215,6 +219,7 @@ pub struct App {
     pub registry_state: ListState,
     pub forms_list_state: ListState,
     pub strings_list_state: ListState,
+    pub varstores_list_state: ListState,
     pub tree_viewport_rows: usize,
 }
 
@@ -246,6 +251,7 @@ impl App {
             registry_state: ListState::default(),
             forms_list_state: ListState::default(),
             strings_list_state: ListState::default(),
+            varstores_list_state: ListState::default(),
             tree_viewport_rows: 0,
         }
     }
@@ -601,6 +607,20 @@ impl App {
         {
             self.forms.strings_cursor = prev;
         }
+    }
+
+    /// Курсор varstores-панели: без фильтра — список мал. Спека
+    /// varstore-contract §5.
+    pub fn varstores_cursor_down(&mut self) {
+        if self.forms.varstores.is_empty() {
+            return;
+        }
+        self.forms.varstores_cursor =
+            (self.forms.varstores_cursor + 1).min(self.forms.varstores.len() - 1);
+    }
+
+    pub fn varstores_cursor_up(&mut self) {
+        self.forms.varstores_cursor = self.forms.varstores_cursor.saturating_sub(1);
     }
 
     pub fn enter_command_mode(&mut self) {
@@ -1212,6 +1232,33 @@ mod tests {
         assert_eq!(app.forms.strings_cursor, 1);
         app.strings_cursor_down();
         assert_eq!(app.forms.strings_cursor, 1, "clamp at last visible");
+    }
+
+    #[test]
+    fn varstores_panel_toggles_and_clamps_cursor() {
+        let mut app = App::default();
+        app.forms.varstores = vec![
+            VarStoreInfo {
+                id: 1,
+                guid: "A".into(),
+                size: 4,
+                name: "One".into(),
+            },
+            VarStoreInfo {
+                id: 2,
+                guid: "B".into(),
+                size: 8,
+                name: "Two".into(),
+            },
+        ];
+        assert!(!app.forms.show_varstores);
+        app.forms.show_varstores = true;
+        app.varstores_cursor_down();
+        assert_eq!(app.forms.varstores_cursor, 1);
+        app.varstores_cursor_down();
+        assert_eq!(app.forms.varstores_cursor, 1, "clamp at last");
+        app.varstores_cursor_up();
+        assert_eq!(app.forms.varstores_cursor, 0);
     }
 
     #[test]
