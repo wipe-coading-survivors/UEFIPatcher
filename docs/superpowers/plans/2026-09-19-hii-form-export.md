@@ -971,14 +971,15 @@ git commit -m "feat(tui): :hii form export/:hii import + клавиши e/I/R/A 
 ### Task 9: TUI integration — журнал, refs-only, паритет CLI/TUI
 
 **Files:**
-- Modify: `crates/uefi-tui/tests/tui_integration.rs` (или новый `hii_import.rs`)
+- Modify: `crates/uefi-tui/tests/tui_integration.rs` (или новый `hii_import.rs`; мок `mock_server.rs` — вести в SchemaCall-журнал и list-RPC: HiiListForms/HiiListQuestions/HiiListVarstores)
+- Modify: `crates/uefi-tui/src/commands.rs` (роутер конвертов в `:hii form add` — зеркало CLI `ensure_bare_schema` (uefi-cli commands/hii.rs:151): конверт → ошибка «package file: use hii import», bare-файлы байт-в-байт; Task 8 файлово не покрывал)
 
 - [ ] **Step 1: Тесты через `start_mock` + `SchemaCall`-журнал (:16-39, :575)**: полный пакет → журнал `["HiiListForms","HiiListQuestions","HiiListVarstores","HiiFormAdd","HiiQuestionAdd"]`, schema_json question add содержит form_id из ответа form add; refs-only → без HiiFormAdd; конверт в `:hii form add` → ошибка-маршрутизатор.
 - [ ] **Step 2: Паритет**: один и тот же файл пакета прогоняется через CLI-команду (Task 7 integration) и через TUI `execute_command` — ассерт: последовательности rpc-имён журналов идентичны (спека §6).
-- [ ] **Step 3: `cargo test -p uefi-tui --test tui_integration` + коммит**
+- [ ] **Step 3: `cargo test -p uefi-tui` (полный, включая integration) + коммит**
 
 ```bash
-git add crates/uefi-tui/tests/
+git add crates/uefi-tui/tests/ crates/uefi-tui/src/commands.rs
 git commit -m "test(tui): import-журналы (полный/refs-only/маршрутизация) + паритет CLI/TUI"
 ```
 
