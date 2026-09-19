@@ -14,6 +14,18 @@ pub struct VarStoreMap {
     pub guid: Option<Guid>,
     pub size: u16,
     pub name: String,
+    pub kind: VarStoreKind,
+    pub attributes: u32,
+}
+
+/// Тип varstore-декларации по опкоду (VARSTORE/VARSTORE_EFI/
+/// VARSTORE_NAME_VALUE). NameValue в VarStoreSchema не выражается —
+/// спека hii-form-export §2 / контракт varstore-contract §6.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VarStoreKind {
+    Buffer,
+    Efi,
+    NameValue,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -192,6 +204,8 @@ pub fn varstore_map(pkg: &[u8]) -> Vec<VarStoreMap> {
                 guid: Some(Guid::from_bytes(guid_bytes)),
                 size: u16::from_le_bytes([pkg[off + 20], pkg[off + 21]]),
                 name: ascii_strz(&pkg[off + 22..off + len]),
+                kind: VarStoreKind::Buffer,
+                attributes: 0,
             });
         }
         IFR_VARSTORE_EFI_OP if len >= 26 => {
@@ -202,6 +216,13 @@ pub fn varstore_map(pkg: &[u8]) -> Vec<VarStoreMap> {
                 guid: Some(Guid::from_bytes(guid_bytes)),
                 size: u16::from_le_bytes([pkg[off + 24], pkg[off + 25]]),
                 name: ucs2_strz(&pkg[off + 26..off + len]),
+                kind: VarStoreKind::Efi,
+                attributes: u32::from_le_bytes([
+                    pkg[off + 20],
+                    pkg[off + 21],
+                    pkg[off + 22],
+                    pkg[off + 23],
+                ]),
             });
         }
         IFR_VARSTORE_NAME_VALUE_OP if len >= 6 => out.push(VarStoreMap {
@@ -209,6 +230,8 @@ pub fn varstore_map(pkg: &[u8]) -> Vec<VarStoreMap> {
             guid: None,
             size: 0,
             name: ucs2_strz(&pkg[off + 4..off + len]),
+            kind: VarStoreKind::NameValue,
+            attributes: 0,
         }),
         _ => {}
     });
@@ -464,7 +487,7 @@ mod tests {
         let mut p = Vec::new();
         p.extend_from_slice(&id.to_le_bytes());
         p.extend_from_slice(&g.to_bytes());
-        p.extend_from_slice(&0u32.to_le_bytes());
+        p.extend_from_slice(&7u32.to_le_bytes());
         p.extend_from_slice(&size.to_le_bytes());
         for u in name_ucs2.encode_utf16().chain(std::iter::once(0)) {
             p.extend_from_slice(&u.to_le_bytes());
@@ -543,6 +566,8 @@ mod tests {
         assert_eq!(map[0].id, 1);
         assert_eq!(map[0].size, 0x72);
         assert_eq!(map[0].name, "Setup");
+        assert_eq!(map[0].kind, VarStoreKind::Buffer);
+        assert_eq!(map[0].attributes, 0);
         assert_eq!(
             map[0].guid,
             Some(Guid::from_str(VARSTORE_GUID_STR).unwrap())
@@ -550,6 +575,8 @@ mod tests {
         assert_eq!(map[1].id, 2);
         assert_eq!(map[1].size, 4);
         assert_eq!(map[1].name, "EfVar");
+        assert_eq!(map[1].kind, VarStoreKind::Efi);
+        assert_eq!(map[1].attributes, 7);
         assert_eq!(
             map[1].guid,
             Some(Guid::from_str(VARSTORE_GUID_STR).unwrap())
@@ -567,6 +594,7 @@ mod tests {
         assert_eq!(map[0].guid, None);
         assert_eq!(map[0].size, 0);
         assert_eq!(map[0].name, "NV");
+        assert_eq!(map[0].kind, VarStoreKind::NameValue);
     }
 
     #[test]
