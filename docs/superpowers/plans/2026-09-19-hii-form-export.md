@@ -877,7 +877,7 @@ git commit -m "feat(proto,rpc): HiiFormExport RPC + хендлер + моки (�
 
 ```rust
     pub async fn hii_form_export(
-        &self,
+        &mut self,
         image_id: &str,
         item_id: &str,
     ) -> Result<HiiFormExportResponse, AppError> { … }
