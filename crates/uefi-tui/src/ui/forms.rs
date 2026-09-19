@@ -20,7 +20,7 @@ fn row_text(row: &FormsRow) -> String {
     match row {
         FormsRow::FormSet { guid, expanded } => {
             let marker = if *expanded { "▾" } else { "▸" };
-            format!("{marker} FormSet {}", crate::forms::short_guid(guid))
+            format!("{marker} FormSet {guid}")
         }
         FormsRow::Form {
             key,
