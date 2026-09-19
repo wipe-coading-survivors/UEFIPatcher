@@ -80,14 +80,17 @@ pub struct FormsData {
     pub question_info: Option<QuestionInfo>,
     pub question_info_key: Option<(crate::forms::FormKey, u32)>,
     pub questions_viewport: usize,
+    pub list_viewport: usize,
     pub show_strings: bool,
     pub strings: Vec<StringInfo>,
     pub strings_filter: String,
     pub strings_cursor: usize,
+    pub strings_viewport: usize,
     pub show_varstores: bool,
     pub varstores: Vec<VarStoreInfo>,
     pub varstores_target: Option<String>,
     pub varstores_cursor: usize,
+    pub varstores_viewport: usize,
     pub questions_state: ratatui::widgets::ListState,
 }
 
@@ -437,6 +440,27 @@ impl App {
         }
     }
 
+    fn forms_page_size(&self) -> usize {
+        if self.forms.list_viewport == 0 {
+            10
+        } else {
+            self.forms.list_viewport
+        }
+    }
+
+    pub fn forms_page_down(&mut self) {
+        let n = self.forms_rows().len();
+        if n == 0 {
+            return;
+        }
+        self.forms.cursor =
+            crate::ui::scroll::page_down(self.forms.cursor, n, self.forms_page_size());
+    }
+
+    pub fn forms_page_up(&mut self) {
+        self.forms.cursor = crate::ui::scroll::page_up(self.forms.cursor, self.forms_page_size());
+    }
+
     pub fn forms_question_cursor_down(&mut self) {
         let n = self.forms.questions.len();
         if n > 0 && self.forms.question_cursor + 1 < n {
@@ -609,6 +633,32 @@ impl App {
         }
     }
 
+    fn strings_page_size(&self) -> usize {
+        if self.forms.strings_viewport == 0 {
+            10
+        } else {
+            self.forms.strings_viewport
+        }
+    }
+
+    pub fn strings_page_down(&mut self) {
+        let vis = self.strings_visible();
+        let Some(pos) = vis.iter().position(|&i| i == self.forms.strings_cursor) else {
+            return;
+        };
+        let target = crate::ui::scroll::page_down(pos, vis.len(), self.strings_page_size());
+        self.forms.strings_cursor = vis[target];
+    }
+
+    pub fn strings_page_up(&mut self) {
+        let vis = self.strings_visible();
+        let Some(pos) = vis.iter().position(|&i| i == self.forms.strings_cursor) else {
+            return;
+        };
+        let target = crate::ui::scroll::page_up(pos, self.strings_page_size());
+        self.forms.strings_cursor = vis[target];
+    }
+
     /// Курсор varstores-панели: без фильтра — список мал. Спека
     /// varstore-contract §5.
     pub fn varstores_cursor_down(&mut self) {
@@ -621,6 +671,31 @@ impl App {
 
     pub fn varstores_cursor_up(&mut self) {
         self.forms.varstores_cursor = self.forms.varstores_cursor.saturating_sub(1);
+    }
+
+    fn varstores_page_size(&self) -> usize {
+        if self.forms.varstores_viewport == 0 {
+            10
+        } else {
+            self.forms.varstores_viewport
+        }
+    }
+
+    pub fn varstores_page_down(&mut self) {
+        let n = self.forms.varstores.len();
+        if n == 0 {
+            return;
+        }
+        self.forms.varstores_cursor = crate::ui::scroll::page_down(
+            self.forms.varstores_cursor,
+            n,
+            self.varstores_page_size(),
+        );
+    }
+
+    pub fn varstores_page_up(&mut self) {
+        self.forms.varstores_cursor =
+            crate::ui::scroll::page_up(self.forms.varstores_cursor, self.varstores_page_size());
     }
 
     pub fn enter_command_mode(&mut self) {
@@ -1324,6 +1399,86 @@ mod tests {
     fn forms_question_page_size_defaults_to_10() {
         let app = App::new();
         assert_eq!(app.forms_question_page_size(), 10);
+    }
+
+    #[test]
+    fn forms_page_down_advances_by_viewport_and_clamps() {
+        let mut app = App::new();
+        app.forms.forms = (0..30).map(|i| form_info("S", i)).collect();
+        app.forms.expanded = ["S".into()].into();
+        app.forms.list_viewport = 10;
+        app.forms_page_down();
+        assert_eq!(app.forms.cursor, 10);
+        app.forms_page_down();
+        assert_eq!(app.forms.cursor, 20);
+        app.forms_page_down();
+        assert_eq!(
+            app.forms.cursor, 30,
+            "clamp по последней строке (formset + 30 форм)"
+        );
+        app.forms_page_up();
+        assert_eq!(app.forms.cursor, 20);
+        app.forms.cursor = 3;
+        app.forms_page_up();
+        assert_eq!(app.forms.cursor, 0, "saturating");
+    }
+
+    #[test]
+    fn forms_page_uses_default_when_viewport_unknown() {
+        let mut app = App::new();
+        app.forms.forms = (0..30).map(|i| form_info("S", i)).collect();
+        app.forms.expanded = ["S".into()].into();
+        app.forms_page_down();
+        assert_eq!(app.forms.cursor, 10, "fallback page size 10");
+    }
+
+    #[test]
+    fn strings_page_moves_across_visible_only() {
+        let mut app = App::new();
+        app.forms.strings = (0..40)
+            .map(|i| uefi_proto::StringInfo {
+                string_id: i,
+                language: "en".into(),
+                text: if i % 2 == 0 {
+                    format!("s{i}")
+                } else {
+                    format!("x{i}")
+                },
+            })
+            .collect();
+        app.forms.strings_filter = "s".into();
+        app.forms.strings_viewport = 10;
+        app.forms.strings_cursor = 2;
+        app.strings_page_down();
+        assert_eq!(app.forms.strings_cursor, 22, "+10 видимых (все чётные)");
+        app.strings_page_down();
+        app.strings_page_down();
+        assert_eq!(app.forms.strings_cursor, 38, "clamp по последнему видимому");
+        app.strings_page_up();
+        assert_eq!(app.forms.strings_cursor, 18);
+    }
+
+    #[test]
+    fn varstores_page_clamps_and_saturates() {
+        let mut app = App::new();
+        app.forms.varstores = (0..25)
+            .map(|i| uefi_proto::VarStoreInfo {
+                id: i,
+                ..Default::default()
+            })
+            .collect();
+        app.forms.varstores_viewport = 10;
+        app.varstores_page_down();
+        assert_eq!(app.forms.varstores_cursor, 10);
+        app.varstores_page_down();
+        assert_eq!(app.forms.varstores_cursor, 20);
+        app.varstores_page_down();
+        assert_eq!(app.forms.varstores_cursor, 24, "clamp по последнему");
+        app.varstores_page_up();
+        assert_eq!(app.forms.varstores_cursor, 14);
+        app.forms.varstores_cursor = 3;
+        app.varstores_page_up();
+        assert_eq!(app.forms.varstores_cursor, 0, "saturating");
     }
 
     #[test]

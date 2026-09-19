@@ -279,6 +279,26 @@ async fn handle_normal_forms(app: &mut App, ev: &AppEvent, client: &mut Option<c
             }
         }
         AppEvent::PageDown
+            if app.forms.focus == FormsFocus::List
+                && !app.forms.show_strings
+                && !app.forms.show_varstores =>
+        {
+            app.forms_page_down();
+            if let Some(c) = client.as_mut() {
+                let _ = commands::refresh_form_details_if_needed(app, c).await;
+            }
+        }
+        AppEvent::PageUp
+            if app.forms.focus == FormsFocus::List
+                && !app.forms.show_strings
+                && !app.forms.show_varstores =>
+        {
+            app.forms_page_up();
+            if let Some(c) = client.as_mut() {
+                let _ = commands::refresh_form_details_if_needed(app, c).await;
+            }
+        }
+        AppEvent::PageDown
             if app.forms.focus == FormsFocus::Details
                 && !app.forms.show_strings
                 && !app.forms.show_varstores =>
@@ -321,6 +341,14 @@ async fn handle_normal_forms(app: &mut App, ev: &AppEvent, client: &mut Option<c
             app.varstores_cursor_down()
         }
         AppEvent::Key('k') | AppEvent::Up if app.forms.show_varstores => app.varstores_cursor_up(),
+        AppEvent::PageDown if app.forms.show_strings && !app.forms.show_varstores => {
+            app.strings_page_down()
+        }
+        AppEvent::PageUp if app.forms.show_strings && !app.forms.show_varstores => {
+            app.strings_page_up()
+        }
+        AppEvent::PageDown if app.forms.show_varstores => app.varstores_page_down(),
+        AppEvent::PageUp if app.forms.show_varstores => app.varstores_page_up(),
         AppEvent::Key('h')
             if !app.forms.show_strings
                 && !app.forms.show_varstores

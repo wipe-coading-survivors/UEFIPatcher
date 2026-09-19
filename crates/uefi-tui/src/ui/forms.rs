@@ -81,6 +81,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
                 .border_style(focus_style(list_focus)),
         )
         .highlight_style(Style::default().bg(Color::DarkGray));
+    app.forms.list_viewport = cols[0].height.saturating_sub(2) as usize;
     scroll::render_scrolled_list(
         f,
         list,
@@ -180,6 +181,7 @@ fn render_strings(f: &mut Frame, area: Rect, app: &mut App) {
         .iter()
         .position(|&i| i == app.forms.strings_cursor)
         .unwrap_or(0);
+    app.forms.strings_viewport = area.height.saturating_sub(2) as usize;
     scroll::render_scrolled_list(
         f,
         list,
@@ -214,6 +216,7 @@ pub fn render_varstores(f: &mut Frame, area: Rect, app: &mut App) {
     let list = List::new(rows)
         .block(Block::default().borders(Borders::ALL).title("Varstores"))
         .highlight_style(Style::default().bg(Color::DarkGray));
+    app.forms.varstores_viewport = area.height.saturating_sub(2) as usize;
     scroll::render_scrolled_list(
         f,
         list,

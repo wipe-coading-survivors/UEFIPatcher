@@ -4002,5 +4002,11 @@ version/eventtrap/ad/ldap. Raw-IPMI и PECI-команд НЕТ (OEM-цели
   d55ed81 — мигрирована математика, но не клавишный диспатч Forms).
   Фикс: зеркальные `forms_page_*` по forms_rows()/cursor + viewport +
   руки под FormsFocus::List (+ refresh_form_details, как у j/k).
+  Закрыто (2026-09-20): `forms/strings/varstores_page_{down,up}` на App
+  (общая ui/scroll-математика, viewport пишут рендеры: список форм
+  cols[0].height-2, попапы area.height-2, фолбэк 10) + руки
+  PageUp/PageDown в handle_normal_forms под List-фокус и оба попапа;
+  строки-попап листает по ВИДИМЫМ позициям (фильтр), varstores — по
+  списку с +1-хедером. 4 юнит-теста (клэмп/saturating/фолбэк/видимые).
   Контекст: спека `2026-09-19-hii-form-export-design.md` (§5/§6),
   ledger `.superpowers/sdd/2026-09-19-hii-form-export/progress.md`.
