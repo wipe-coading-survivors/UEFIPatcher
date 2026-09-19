@@ -32,6 +32,7 @@ service EngineService {
   rpc HiiListStrings(HiiListStringsRequest)             returns (HiiListStringsResponse);
   rpc HiiFormSetAdd(HiiFormSetAddRequest)               returns (HiiFormSetAddResponse);
   rpc HiiFormAdd(HiiFormAddRequest)                     returns (HiiFormAddResponse);
+  rpc HiiFormExport(HiiFormExportRequest)               returns (HiiFormExportResponse);
   rpc HiiFormHijack(HiiFormHijackRequest)               returns (HiiFormHijackResponse);
   rpc HiiGatesList(HiiGatesListRequest)                 returns (HiiGatesListResponse);
   rpc HiiUnlock(HiiUnlockRequest)                       returns (HiiUnlockResponse);
@@ -219,6 +220,14 @@ message HiiFormAddRequest {
 message HiiFormAddResponse {
   repeated uint32 inserted_form_ids = 1;
   map<string, uint32> string_ids = 2;
+}
+
+message HiiFormExportRequest  { string image_id = 1; string item_id = 2; }
+message HiiFormExportResponse {
+  string schema_json = 1;
+  string formset_guid = 2;
+  uint32 parent_form_id = 3;
+  repeated string lossy = 4;
 }
 
 message HiiHelpControlEdit {

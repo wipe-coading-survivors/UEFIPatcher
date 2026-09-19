@@ -21,6 +21,11 @@ pub struct SchemaCall {
     pub extra: String,
 }
 
+const MOCK_FORM_EXPORT_SCHEMA_JSON: &str = concat!(
+    r#"{"formset_guid":"11111111-2222-3333-4444-555555555555","title":"","help":"","class_guids":[],"#,
+    r#""varstores":[],"default_stores":[],"forms":[{"id":10019,"title":"Serial Port 1 Configuration","items":[]}]}"#
+);
+
 #[derive(Default)]
 pub struct MockEngine {
     pub sessions: Arc<Mutex<HashMap<String, String>>>,
@@ -415,6 +420,20 @@ impl EngineService for MockEngine {
         Ok(Response::new(HiiFormAddResponse {
             inserted_form_ids: vec![10101],
             string_ids: [("title".to_string(), 600)].into(),
+        }))
+    }
+    async fn hii_form_export(
+        &self,
+        req: Request<HiiFormExportRequest>,
+    ) -> Result<Response<HiiFormExportResponse>, Status> {
+        let r = req.into_inner();
+        self.record_schema("HiiFormExport", &r.image_id, &r.item_id, "", "")
+            .await;
+        Ok(Response::new(HiiFormExportResponse {
+            schema_json: MOCK_FORM_EXPORT_SCHEMA_JSON.into(),
+            formset_guid: "11111111-2222-3333-4444-555555555555".into(),
+            parent_form_id: 10001,
+            lossy: vec!["suppress_if:1".into()],
         }))
     }
     async fn hii_form_hijack(

@@ -915,6 +915,27 @@ impl EngineService for EngineServer {
     }
 
     #[tracing::instrument(skip(self, req), err)]
+    async fn hii_form_export(
+        &self,
+        req: Request<HiiFormExportRequest>,
+    ) -> RpcResult<HiiFormExportResponse> {
+        let r = req.into_inner();
+        let img = self.get_or_load_image(&r.image_id).await?;
+        let export = crate::hii::form_export::export_form(&img, &r.item_id)
+            .map_err(|e| hii_error_status_ctx(e, &r.item_id))?;
+        let schema_json =
+            serde_json::to_string(&export.schema).map_err(|e| Status::internal(e.to_string()))?;
+        let _ = self.sm.touch(&img.session_id);
+        tracing::info!(image_id = %r.image_id, item_id = %r.item_id, "hii form export");
+        Ok(Response::new(HiiFormExportResponse {
+            schema_json,
+            formset_guid: export.formset_guid,
+            parent_form_id: export.parent_form_id,
+            lossy: export.lossy,
+        }))
+    }
+
+    #[tracing::instrument(skip(self, req), err)]
     async fn hii_form_hijack(
         &self,
         req: Request<HiiFormHijackRequest>,
@@ -1873,6 +1894,62 @@ mod tests {
         let img = crate::parser::image::parse_image(&data, ImageMode::Write, "i", "s").unwrap();
         let st = form_add_status(img, "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:1", "{bad").await;
         assert_eq!(st.code(), tonic::Code::InvalidArgument);
+    }
+
+    async fn form_export_call(img: Image, item_id: &str) -> Result<HiiFormExportResponse, Status> {
+        let td = TempDir::new().unwrap();
+        let db = crate::storage::open_db(&td.path().join("db.sqlite")).unwrap();
+        let sm = Arc::new(SessionManager::new(
+            db,
+            td.path().to_path_buf(),
+            Duration::from_secs(864000),
+            Duration::from_secs(3600),
+            false,
+        ));
+        let server = EngineServer {
+            sm,
+            images: Arc::new(Mutex::new(HashMap::from([("i".to_string(), img)]))),
+            data_dir: td.path().to_path_buf(),
+        };
+        match server
+            .hii_form_export(Request::new(HiiFormExportRequest {
+                image_id: "i".into(),
+                item_id: item_id.into(),
+            }))
+            .await
+        {
+            Ok(resp) => Ok(resp.into_inner()),
+            Err(st) => Err(st),
+        }
+    }
+
+    #[tokio::test]
+    async fn hii_form_export_returns_schema_and_metadata() {
+        let data = form_add_bare_flash();
+        let img = crate::parser::image::parse_image(&data, ImageMode::Write, "i", "s").unwrap();
+        let resp = form_export_call(img, "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:1#1")
+            .await
+            .unwrap();
+        assert_eq!(resp.formset_guid, "A1B2C3D4-E5F6-7890-ABCD-EF1234567890");
+        assert_eq!(resp.parent_form_id, 0);
+        assert!(resp.lossy.is_empty());
+        let schema: crate::hii::schema::FormSetSchema =
+            serde_json::from_str(&resp.schema_json).unwrap();
+        assert_eq!(schema.formset_guid, "A1B2C3D4-E5F6-7890-ABCD-EF1234567890");
+        assert_eq!(schema.forms.len(), 1);
+        assert_eq!(schema.forms[0].id, 1);
+        assert!(schema.forms[0].items.is_empty());
+    }
+
+    #[tokio::test]
+    async fn hii_form_export_maps_unknown_form_to_not_found() {
+        let data = form_add_bare_flash();
+        let img = crate::parser::image::parse_image(&data, ImageMode::Write, "i", "s").unwrap();
+        let st = form_export_call(img, "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:1#999")
+            .await
+            .unwrap_err();
+        assert_eq!(st.code(), tonic::Code::NotFound);
+        assert!(st.message().contains("#999"));
     }
 
     async fn form_hijack_status(
