@@ -67,7 +67,9 @@ pub fn decompress(data: &[u8], pbit: Pbit) -> Result<Vec<u8>, DecompressError>
 
 - вход — payload секции целиком: заголовок `EFI_TIANO_HEADER`
   (u32 comp_size, u32 orig_size LE) + сжатый поток; ожидаемый размер выхода
-  берётся из orig_size (несовпадение размеров/границы → `Corrupted`);
+  берётся из orig_size (orig_size=0 → успех с пустым выходом, как C-эталон
+  EfiTianoDecompress.c:906; прочие несовпадения размеров/границы →
+  `Corrupted`);
 - любой выход за границы входа/выхода и любая неконсистентность таблиц
   Huffman — `Err(DecompressError::Corrupted)`, без паник: битовый ридер и
   построитель таблиц возвращают `Result`, `unwrap()` запрещён (владельческое
@@ -122,8 +124,10 @@ pub fn decompress(data: &[u8], pbit: Pbit) -> Result<Vec<u8>, DecompressError>
 ## §4 Тесты
 
 - **Unit (коммитимые)**: `tiano.rs` — decode каждой фикстуры §3 ==
-  `.expected` байт-в-байт; негативные (обрезанный поток, мусорный заголовок,
-  orig_size=0) → `Corrupted`, без паник; чтение за концом входа → `Corrupted`.
+  `.expected` байт-в-байт; orig_size=0 → успех с пустым выходом (как
+  C-эталон EfiTianoDecompress.c:906); негативные (обрезанный поток, мусорный
+  заголовок, ложный comp_size/завышенный orig_size) → `Corrupted`, без паник;
+  чтение за концом входа → `Corrupted`.
   `decompress.rs` — `decompress(data, 1)` на фикстуре == expected
   (замена заглушечного теста).
 - **Real-image гейт** `tests/real_image_asrock.rs` (`#[ignore]`, по образцу
