@@ -31,9 +31,13 @@ Decoding) на ASRock без AMIBCP.
 Каналы интеграции уже разведаны и сходятся в одну точку:
 `parse_section` Compressed (algo 1 → `decompress::decompress(body[5..], 1)`,
 parser/section.rs:41) и guided-секция с GUID `A3128AD8-…`
-(`is_tiano_guid` → Standard, parser/section.rs:90–117). Оба вызова идут на
-pbit=4 (GUID `A3128AD8` — EFI standard compression GUID; отдельного
-5-битного Tiano-GUID в живых образах нет).
+(`is_tiano_guid` → Standard, parser/section.rs:90–117). Корпус C275 целиком
+pbit=4 (GUID `A3128AD8` — EFI standard compression GUID), но algo-1 поток
+не несёт pbit-различителя: живой гейт показал, что 226D2IL3.x содержит
+algo-1 секции Tiano pbit=5. Поэтому `decompress_tiano` пробует варианты по
+очереди — EFI (pbit=4), при отказе Tiano (pbit=5), как UEFITool
+(` ref: UEFITool-ai-fork/utility.cpp:243`); preparse-различение «оба
+декодируются» не делаем (` ref: ffsparser.cpp:3292`).
 
 ## Решения владельца (брейншторм 2026-09-20)
 
@@ -82,8 +86,10 @@ pub fn decompress(data: &[u8], pbit: Pbit) -> Result<Vec<u8>, DecompressError>
 ## §2 Интеграция: `decompress.rs` + парсер
 
 - `decompress_tiano(data)` (`decompress.rs:23`) перестаёт быть заглушкой:
-  вызывает `tiano::decompress(data, Pbit::Efi)`, ошибки пробрасываются как
-  есть (`Corrupted`/`Unsupported` уже в `DecompressError`);
+  вызывает `tiano::decompress(data, Pbit::Efi)`, при отказе —
+  `tiano::decompress(data, Pbit::Tiano)` (порядок как у UEFITool, см.
+  «Контекст»), итоговая ошибка пробрасывается как есть
+  (`Corrupted`/`Unsupported` уже в `DecompressError`);
 - парсер, билдер, TUI, RPC — **без правок**: оба канала уже вызывают
   `decompress::decompress(payload, 1)`; поведение при отказе не меняется
   (`tracing::warn` + пустые children);
