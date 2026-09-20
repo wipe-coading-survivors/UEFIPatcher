@@ -1557,10 +1557,12 @@ atomic_write. После первой мутации хранимый файл �
   обеих версий). Путь записи: ин-плейс 2 байта в raw-теле FFS + FFS-checksum
   rebuild (движок уже умеет); компрессор не нужен, размер стора не меняется.
   После прошивки — сброс NVRAM/Load Defaults для пересева.
-* [ ] **Цикл реализации: NVAR-правки в UEFIPatcher** — парсер NVAR-стора
-  (outer+nested, ref ksy/ami_nvar.ksy) + правка байтов переменных в raw
-  FFS + метки («NVRAM store», переменные в дереве). Мотивация: испечь
-  дефолты SOL/4G на 226D2IL; попутно закрывает TODO «Метка NVRAM store».
+* [x] **Цикл реализации: NVAR-правки в UEFIPatcher** — закрыто: цикл
+  nvar-op 2026-09-20 (см. docs/reports/2026-09-20-nvar-op-report.md) —
+  парсер NVAR-стора (outer+nested, ref ksy/ami_nvar.ksy) + правка байтов
+  переменных в raw FFS + метки («NVRAM store», переменные в дереве).
+  Мотивация: испечь дефолты SOL/4G на 226D2IL; попутно закрывает TODO
+  «Метка NVRAM store».
 * [ ] **SOL-мостики к asr1**: спам-детект F2 (окно ~2–3 с), стрелки
   поштучно ≥0.4 с; CR[Disabled] глушит SOL-ввод целиком; efivar-флип из
   Linux восстанавливает без Setup. Зафиксировано в отчёте для будущих
@@ -3244,7 +3246,8 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   сессию через `uefi-cli`, затем работать в TUI. Контекст: живое
   использование 2026-09-11; надо звать `session_create` при первом
   `:open`/`:upload` (или на старте) в `commands.rs`.
-* [ ] **Метка «NVRAM store» для RAW-файла AMI NVRAM** — первый том
+* [x] **Метка «NVRAM store» для RAW-файла AMI NVRAM** — закрыто: body-проб
+  + Node.is_nvar, флоппи-глиф (цикл nvar-op) — первый том
   BIOS-окна на Huananzhi/AMI-образах (FFS2 @0x800000, 256KB) содержит
   единственный RAW-файл `CEF5B9A3-476D-497F-9FDC-E98143E0422C` (AMI
   NVRAM-стор, тело начинается с «NVAR», внутри `StdDefaults`/`Setup`).
@@ -3252,6 +3255,15 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   TODO «Том ME показывает только одну секцию» был ровно про него — это не
   ME). Контекст: распознавать по GUID в `node_label`/`node_name` и
   подписывать «NVRAM store»; живое использование 2026-09-11.
+* [ ] **seed-суффикс `= v` в списке вопросов TUI невидим на 80-колоночном
+  терминале** (цикл nvar-op, Task 8) — строка 48 клеток > inner 46 при
+  60% правой панели; fixed-padding `{prompt:<28}` из спеки — adaptive
+  layout/сокращение паддинга на решение владельца.
+* [ ] **Унаследованные clippy `--all-targets` падения** (найдены в цикле
+  nvar-op) — collapsible_if x2 в real_image_asrock.rs:17-18 (детали:
+  секция «Найдено в Task 3 nvar-op» ниже) + field_reassign_with_default
+  x13 и Buffer::get deprecated в uefi-tui тестах; не блокируют цикл:
+  `clippy --all` без --all-targets зелёный.
 * [x] **Смещения дескриптора были неверны — исправлено по живому
   использованию (2026-09-11)** — FLVALSIG канонически лежит за 16-байтовым
   reserved vector (offset 0x10), FLMAP0 сразу за сигнатурой (0x14), секции

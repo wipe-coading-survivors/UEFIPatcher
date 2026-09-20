@@ -116,7 +116,10 @@ fn real_asrock_226d2il_nvar_listing_geometry() {
             .find(|r| r.name == "Setup" && r.size == second_size)
             .unwrap_or_else(|| panic!("{name}: second Setup"));
         assert_eq!(
-            second.guid.map(|g| g.to_string().to_ascii_uppercase()).as_deref(),
+            second
+                .guid
+                .map(|g| g.to_string().to_ascii_uppercase())
+                .as_deref(),
             Some("01239999-FC0E-4B6E-9E79-D54D5DB6CD20"),
             "{name}"
         );
@@ -127,10 +130,7 @@ fn real_asrock_226d2il_nvar_listing_geometry() {
             2,
             "{name}: живой стор + запечённая копия за Tiano"
         );
-        assert!(
-            nvar_nodes.iter().all(|n| n.name == "NVRAM store"),
-            "{name}"
-        );
+        assert!(nvar_nodes.iter().all(|n| n.name == "NVRAM store"), "{name}");
     }
 }
 
@@ -165,7 +165,11 @@ fn real_asrock_226d2il_nvar_bake_sol_4g() {
         let built = uefi_engine::builder::build_image(&img).unwrap();
         assert_eq!(built.len(), data.len(), "{name}: длина образа сохранена");
         let diff: Vec<usize> = (0..data.len()).filter(|&i| data[i] != built[i]).collect();
-        assert_eq!(diff, vec![0x500089, 0x5004FD], "{name}: дифф ровно два байта");
+        assert_eq!(
+            diff,
+            vec![0x500089, 0x5004FD],
+            "{name}: дифф ровно два байта"
+        );
         let re = parse_image(&built, ImageMode::Read, "t2", "s2").unwrap();
         let built2 = uefi_engine::builder::build_image(&re).unwrap();
         assert_eq!(built, built2, "{name}: round-trip байт-точен (FFS валиден)");
@@ -195,5 +199,41 @@ fn real_asrock_c275_nvar_listing() {
                 .any(|r| r.name == name && r.size == size),
             "C275: {name} {size}b отсутствует"
         );
+    }
+}
+
+#[test]
+#[ignore = "requires external ASRock images under refs/amibcp/ (gitignored); bakes deliverable artifacts"]
+fn real_asrock_bake_sol4g_artifacts() {
+    for (name, out_name) in [
+        ("226D2IL3.30", "asr1-330-sol4g-on.bin"),
+        ("226D2IL3.50", "asr1-350-sol4g-on.bin"),
+    ] {
+        let data = std::fs::read(asrock_path(name)).unwrap();
+        let mut img = parse_image(&data, ImageMode::Write, "t", "s").unwrap();
+        uefi_engine::nvar::nvar_set(
+            &mut img,
+            "Setup",
+            Some("EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9"),
+            1,
+            1,
+            1,
+        )
+        .unwrap();
+        uefi_engine::nvar::nvar_set(
+            &mut img,
+            "Setup",
+            Some("EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9"),
+            1141,
+            1,
+            1,
+        )
+        .unwrap();
+        let built = uefi_engine::builder::build_image(&img).unwrap();
+        let diff: Vec<usize> = (0..data.len()).filter(|&i| data[i] != built[i]).collect();
+        assert_eq!(diff, vec![0x500089, 0x5004FD], "{name}");
+        let out_path = asrock_path(out_name);
+        std::fs::write(&out_path, &built).unwrap();
+        println!("{out_name}: {}", out_path.display());
     }
 }
