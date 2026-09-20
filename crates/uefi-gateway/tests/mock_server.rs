@@ -291,6 +291,21 @@ impl EngineService for MockEngine {
     ) -> Result<Response<HiiPageAddResponse>, Status> {
         Ok(Response::new(HiiPageAddResponse::default()))
     }
+    async fn nvar_list(
+        &self,
+        _req: Request<NvarListRequest>,
+    ) -> Result<Response<NvarListResponse>, Status> {
+        Ok(Response::new(NvarListResponse { stores: vec![] }))
+    }
+    async fn nvar_set(
+        &self,
+        _req: Request<NvarSetRequest>,
+    ) -> Result<Response<NvarSetResponse>, Status> {
+        Ok(Response::new(NvarSetResponse {
+            applied: vec![],
+            stores: vec![],
+        }))
+    }
     async fn image_snapshot_create(
         &self,
         _req: Request<ImageSnapshotCreateRequest>,
