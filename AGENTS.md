@@ -112,7 +112,7 @@ cd webui && npm run check           # svelte-check (цикл 5+7)
 - **Ориентир входа в Setup — промпт `Press <F1> ...`** (F1 = вход в Setup). Промпт `Press Ctrl+S` — это OptROM сетевух, после F9 он исчезает, по нему не ориентироваться.
 - F9 (Optimal Defaults) после флеша обязателен: пересева печёных дефолтов самим флешем не наблюдается.
 - power cycle рвёт SOL — перезапустить мост; если сессия закрыта («SOL session closed by BMC») — смело сначала `ipmitool ... sol deactivate`, потом всё остальное (перезапуск моста). Зомби-payload («already active on another session») лечится `sol deactivate`, упорные — `mc reset warm` (BMC ~1 мин, хост не трогается).
-- Хост рига: `ssh root@172.16.15.155`. ECAM-пробы из ОС — поштучные dword (python mmap /dev/mem r+b, `iomem=relaxed` уже в ostree-конфиге).
+- Хост рига: `ssh root-rd450x`. ECAM-пробы из ОС — поштучные dword (python mmap /dev/mem r+b, `iomem=relaxed` уже в ostree-конфиге).
 
 ## Старт
 

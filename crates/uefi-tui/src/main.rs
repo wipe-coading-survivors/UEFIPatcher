@@ -89,8 +89,24 @@ async fn handle_normal(app: &mut App, ev: &AppEvent, client: &mut Option<command
         return;
     }
     match ev {
-        AppEvent::Ctrl('h') | AppEvent::Ctrl('k') => app.focus_prev(),
-        AppEvent::Ctrl('l') | AppEvent::Ctrl('j') => app.focus_next(),
+        AppEvent::Ctrl('h') | AppEvent::Ctrl('k') => {
+            app.focus_prev();
+            if app.view == View::Image
+                && app.focus == Focus::Details
+                && let Some(c) = client.as_mut()
+            {
+                let _ = commands::refresh_nvars_if_needed(app, c).await;
+            }
+        }
+        AppEvent::Ctrl('l') | AppEvent::Ctrl('j') => {
+            app.focus_next();
+            if app.view == View::Image
+                && app.focus == Focus::Details
+                && let Some(c) = client.as_mut()
+            {
+                let _ = commands::refresh_nvars_if_needed(app, c).await;
+            }
+        }
         AppEvent::Key('?') => app.toggle_help(),
         AppEvent::Key('q') | AppEvent::Quit => app.quit = true,
         AppEvent::Key(':') => app.enter_command_mode(),
@@ -125,22 +141,66 @@ async fn handle_normal(app: &mut App, ev: &AppEvent, client: &mut Option<command
         },
         AppEvent::Key('j') | AppEvent::Down => match app.focus {
             Focus::Registry => app.registry_cursor_down(),
-            Focus::Tree => app.cursor_down(),
-            Focus::Details => app.details_scroll_by(1),
+            Focus::Tree => {
+                app.cursor_down();
+                if let Some(c) = client.as_mut() {
+                    let _ = commands::refresh_nvars_if_needed(app, c).await;
+                }
+            }
+            Focus::Details => {
+                if app.selected_is_nvar() {
+                    app.nvar_cursor_down();
+                } else {
+                    app.details_scroll_by(1);
+                }
+            }
         },
         AppEvent::Key('k') | AppEvent::Up => match app.focus {
             Focus::Registry => app.registry_cursor_up(),
-            Focus::Tree => app.cursor_up(),
-            Focus::Details => app.details_scroll_by(-1),
+            Focus::Tree => {
+                app.cursor_up();
+                if let Some(c) = client.as_mut() {
+                    let _ = commands::refresh_nvars_if_needed(app, c).await;
+                }
+            }
+            Focus::Details => {
+                if app.selected_is_nvar() {
+                    app.nvar_cursor_up();
+                } else {
+                    app.details_scroll_by(-1);
+                }
+            }
         },
         AppEvent::PageDown => match app.focus {
-            Focus::Tree => app.cursor_page_down(),
-            Focus::Details => app.details_scroll_by(10),
+            Focus::Tree => {
+                app.cursor_page_down();
+                if let Some(c) = client.as_mut() {
+                    let _ = commands::refresh_nvars_if_needed(app, c).await;
+                }
+            }
+            Focus::Details => {
+                if app.selected_is_nvar() {
+                    app.nvar_hex_scroll_by(app.nvar.hex_viewport as i32);
+                } else {
+                    app.details_scroll_by(10);
+                }
+            }
             Focus::Registry => {}
         },
         AppEvent::PageUp => match app.focus {
-            Focus::Tree => app.cursor_page_up(),
-            Focus::Details => app.details_scroll_by(-10),
+            Focus::Tree => {
+                app.cursor_page_up();
+                if let Some(c) = client.as_mut() {
+                    let _ = commands::refresh_nvars_if_needed(app, c).await;
+                }
+            }
+            Focus::Details => {
+                if app.selected_is_nvar() {
+                    app.nvar_hex_scroll_by(-(app.nvar.hex_viewport as i32));
+                } else {
+                    app.details_scroll_by(-10);
+                }
+            }
             Focus::Registry => {}
         },
         AppEvent::Key('h') => {
@@ -227,6 +287,9 @@ async fn switch_view(app: &mut App, client: &mut Option<commands::Client>) {
         }
         View::Forms => {
             app.view = View::Image;
+            if let Some(c) = client.as_mut() {
+                let _ = commands::refresh_nvars_if_needed(app, c).await;
+            }
         }
     }
 }

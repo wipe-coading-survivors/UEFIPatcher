@@ -7,6 +7,7 @@ use r_efi::hii::{
     IFR_SUPPRESS_IF_OP, IFR_TEXT_OP, IFR_TIME_OP, IFR_VARSTORE_EFI_OP, IFR_VARSTORE_NAME_VALUE_OP,
     IFR_VARSTORE_OP,
 };
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VarStoreMap {
@@ -371,6 +372,55 @@ pub fn find_question(pkg: &[u8], form_id: u16, question_id: u16) -> Option<Quest
         }
     });
     let (q_off, q_len) = found?;
+    let var_store_id = u16::from_le_bytes([pkg[q_off + 8], pkg[q_off + 9]]);
+    let varstore = if var_store_id != 0 {
+        varstore_map(pkg).into_iter().find(|v| v.id == var_store_id)
+    } else {
+        None
+    };
+    Some(build_question_map(pkg, q_off, q_len, varstore))
+}
+
+/// Все QuestionMap пакета одним проходом walk_statements: ключ
+/// (form_id, question_id), первый выигрывает (семантика find_question).
+/// varstore_map вычисляется один раз на пакет. Для O(Q) потребителей
+/// (list_questions) вместо O(Q) вызовов find_question (каждый — полный
+/// проход по пакету).
+pub fn question_maps(pkg: &[u8]) -> HashMap<(u16, u16), QuestionMap> {
+    let mut hits: Vec<(u16, usize, usize)> = Vec::new();
+    walk_statements(pkg, |op, off, len, current_form| {
+        if is_question_op(op)
+            && len >= 13
+            && let Some(form_id) = current_form
+        {
+            hits.push((form_id, off, len));
+        }
+    });
+    let varstores = varstore_map(pkg);
+    let mut out: HashMap<(u16, u16), QuestionMap> = HashMap::with_capacity(hits.len());
+    for (form_id, q_off, q_len) in hits {
+        let question_id = u16::from_le_bytes([pkg[q_off + 6], pkg[q_off + 7]]);
+        let key = (form_id, question_id);
+        if out.contains_key(&key) {
+            continue;
+        }
+        let var_store_id = u16::from_le_bytes([pkg[q_off + 8], pkg[q_off + 9]]);
+        let varstore = if var_store_id != 0 {
+            varstores.iter().find(|v| v.id == var_store_id).cloned()
+        } else {
+            None
+        };
+        out.insert(key, build_question_map(pkg, q_off, q_len, varstore));
+    }
+    out
+}
+
+fn build_question_map(
+    pkg: &[u8],
+    q_off: usize,
+    q_len: usize,
+    varstore: Option<VarStoreMap>,
+) -> QuestionMap {
     let op = pkg[q_off];
     let kind = match op {
         IFR_ONE_OF_OP => QuestionKind::OneOf,
@@ -378,6 +428,7 @@ pub fn find_question(pkg: &[u8], form_id: u16, question_id: u16) -> Option<Quest
         IFR_NUMERIC_OP => QuestionKind::Numeric,
         _ => QuestionKind::Other,
     };
+    let question_id = u16::from_le_bytes([pkg[q_off + 6], pkg[q_off + 7]]);
     let var_store_id = u16::from_le_bytes([pkg[q_off + 8], pkg[q_off + 9]]);
     let var_offset = u16::from_le_bytes([pkg[q_off + 10], pkg[q_off + 11]]);
     let mut options = Vec::new();
@@ -406,12 +457,7 @@ pub fn find_question(pkg: &[u8], form_id: u16, question_id: u16) -> Option<Quest
         }
         QuestionKind::Numeric | QuestionKind::Other => {}
     }
-    let varstore = if var_store_id != 0 {
-        varstore_map(pkg).into_iter().find(|v| v.id == var_store_id)
-    } else {
-        None
-    };
-    Some(QuestionMap {
+    QuestionMap {
         question_id,
         kind,
         var_store_id,
@@ -423,7 +469,7 @@ pub fn find_question(pkg: &[u8], form_id: u16, question_id: u16) -> Option<Quest
         min,
         max,
         step,
-    })
+    }
 }
 
 #[cfg(test)]
@@ -857,6 +903,63 @@ mod tests {
         let pkg = package(&ifr);
         let q = find_question(&pkg, 10029, 0x003B).expect("question found");
         assert!(q.varstore.is_none());
+    }
+
+    #[test]
+    fn question_maps_duplicate_qid_first_wins() {
+        let ifr = [
+            form_set(7),
+            form(10029, 21),
+            checkbox_op(0x0044),
+            checkbox_op(0x0044),
+            end(),
+            end(),
+        ]
+        .concat();
+        let pkg = package(&ifr);
+        let maps = question_maps(&pkg);
+        assert_eq!(maps.len(), 1, "дубль (form, qid) не добавляет ключ");
+        assert_eq!(
+            maps.get(&(10029, 0x0044)),
+            find_question(&pkg, 10029, 0x0044).as_ref(),
+            "первое вхождение выигрывает — семантика find_question"
+        );
+    }
+
+    #[test]
+    fn question_maps_matches_find_question_across_forms_and_kinds() {
+        let ifr = [
+            form_set(7),
+            varstore_buffer(1, 0x72, "Setup"),
+            form(10029, 21),
+            one_of_4g(),
+            option(4, 0x30, &[0]),
+            option(5, 0x10, &[1]),
+            default_op(0, 1, &[1]),
+            end(),
+            checkbox_op(0x0044),
+            end(),
+            form(10030, 22),
+            numeric_op(0x0055, 1, 0, 200, 5),
+            end(),
+            end(),
+        ]
+        .concat();
+        let pkg = package(&ifr);
+        let maps = question_maps(&pkg);
+        assert_eq!(maps.len(), 3, "три вопроса в двух формах");
+        for (form_id, qid) in [(10029u16, 0x003Bu16), (10029, 0x0044), (10030, 0x0055)] {
+            assert_eq!(
+                maps.get(&(form_id, qid)),
+                find_question(&pkg, form_id, qid).as_ref(),
+                "form {form_id} q {qid:#06x}: collect == find"
+            );
+        }
+        assert!(
+            maps.get(&(10029, 0x003B))
+                .is_some_and(|m| m.varstore.is_some()),
+            "varstore резолвится и в collect-пути"
+        );
     }
 
     #[test]

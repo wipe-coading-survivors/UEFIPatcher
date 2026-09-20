@@ -15,7 +15,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
         .map(|&idx| {
             let node = &app.tree[idx];
             let indent = "  ".repeat(node.depth);
-            let icon = type_icon(node.node_type, node.subtype);
+            let icon = store_icon(node.is_nvar, node.node_type, node.subtype);
             let expand = if !node.has_children {
                 " "
             } else if node.expanded {

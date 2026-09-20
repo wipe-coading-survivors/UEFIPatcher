@@ -1543,6 +1543,30 @@ atomic_write. После первой мутации хранимый файл �
 * [ ] **open-вопрос: почему AMIBCP не читает 226D2IL3.50** — формат
   идентичен читаемому C275 (те же заголовки, что и у 226D2IL3.30);
   наш парсер оба переваривает. Не блокирует нас, просто маркер
+
+### Разведка 226D2IL (E3C226D2I): где Setup SOL/4G и путь записи (2026-09-20)
+
+* [x] **Разведcycle завершен** (детали: docs/reports/2026-09-20-asr1-226d2il-setup-recon.md).
+  HII пуст → конфигурация в AMI NVAR-сторе: FV@0x500000 → FFS Raw
+  CEF5B9A3 (NVRAM_NVAR_STORE_FILE_GUID) → var `StdDefaults` (4599D26F) →
+  вложенный стор → **var `Setup` EC87D643, 1217 байт дефолтов @ image
+  0x500088**. Живые диффы (Setup-UI по SOL + efivar-флипы, live1==live3
+  байт-в-байт): **SOL Console Redirection = data[1] (0x500089),
+  Above 4G Decoding = data[1141] (0x5004FD)**, значения 00/01. Дефолты
+  вендора обеих — Disabled; 3.30↔3.50 блоб идентичен (офсеты валидны для
+  обеих версий). Путь записи: ин-плейс 2 байта в raw-теле FFS + FFS-checksum
+  rebuild (движок уже умеет); компрессор не нужен, размер стора не меняется.
+  После прошивки — сброс NVRAM/Load Defaults для пересева.
+* [x] **Цикл реализации: NVAR-правки в UEFIPatcher** — закрыто: цикл
+  nvar-op 2026-09-20 (см. docs/reports/2026-09-20-nvar-op-report.md) —
+  парсер NVAR-стора (outer+nested, ref ksy/ami_nvar.ksy) + правка байтов
+  переменных в raw FFS + метки («NVRAM store», переменные в дереве).
+  Мотивация: испечь дефолты SOL/4G на 226D2IL; попутно закрывает TODO
+  «Метка NVRAM store».
+* [ ] **SOL-мостики к asr1**: спам-детект F2 (окно ~2–3 с), стрелки
+  поштучно ≥0.4 с; CR[Disabled] глушит SOL-ввод целиком; efivar-флип из
+  Linux восстанавливает без Setup. Зафиксировано в отчёте для будущих
+  сессий с этой платой.
   «движок читает то, что AMIBCP не может» №2 (после StdDefaults-write).
 
 ### Первичный осмотр Lenovo RD450x «450x — копия.bin» (2026-09-03): ПОЛНАЯ поддержка из коробки
@@ -2350,7 +2374,7 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   потребителя cfg+0x248, строки L"IntelSetup" уже не главный след);
   живой дамп +0x531 после бута discriminate «стор переписывается на
   буте» vs «guard вниз по потоку». Доступы владельца подтверждены:
-  IPMI lanplus (mc info ок), ssh root@172.16.15.155, SOL enabled.
+  IPMI lanplus (mc info ок), ssh root-rd450x, SOL enabled.
   **v11 вердикт (2026-09-15, прошит+бутнут):** регистр 0004; вход
   в Setup через SOL (F1-спам) — свежий бут показывает IOU0=[x16] —
   переменная пересеяна фабрикой ПОСТ-ФЛЕШОМ (однократно; поправка
@@ -2406,7 +2430,7 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   Starting...», «Socket[0] is socketValid=1», «IIO=%d, IOUx=%d»
   (ждём IOU0=0), `setpci -s 00:02.0 0x190.w` — 0008=сага закрыта;
   зависание = TMM-рекавери на v13. Доступы: IPMI `source
-  ../IPMI-rd450x.txt`, ssh root@172.16.15.155, движок
+  ../IPMI-rd450x.txt`, ssh root-rd450x, движок
   `UEFIPATCHER_SOCK=/tmp/uefipatcher.sock ./target/debug/engine`
   + `uefi-cli`.
   **РЕЗУЛЬТАТ v14 (2026-09-15 ночь, отчёт §J, коммит 6f2dd64):
@@ -3222,7 +3246,8 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   сессию через `uefi-cli`, затем работать в TUI. Контекст: живое
   использование 2026-09-11; надо звать `session_create` при первом
   `:open`/`:upload` (или на старте) в `commands.rs`.
-* [ ] **Метка «NVRAM store» для RAW-файла AMI NVRAM** — первый том
+* [x] **Метка «NVRAM store» для RAW-файла AMI NVRAM** — закрыто: body-проб
+  + Node.is_nvar, флоппи-глиф (цикл nvar-op) — первый том
   BIOS-окна на Huananzhi/AMI-образах (FFS2 @0x800000, 256KB) содержит
   единственный RAW-файл `CEF5B9A3-476D-497F-9FDC-E98143E0422C` (AMI
   NVRAM-стор, тело начинается с «NVAR», внутри `StdDefaults`/`Setup`).
@@ -3230,6 +3255,38 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   TODO «Том ME показывает только одну секцию» был ровно про него — это не
   ME). Контекст: распознавать по GUID в `node_label`/`node_name` и
   подписывать «NVRAM store»; живое использование 2026-09-11.
+* [ ] **seed-суффикс `= v` в списке вопросов TUI невидим на 80-колоночном
+  терминале** (цикл nvar-op, Task 8) — строка 48 клеток > inner 46 при
+  60% правой панели; fixed-padding `{prompt:<28}` из спеки — adaptive
+  layout/сокращение паддинга на решение владельца.
+* [ ] **Унаследованные clippy `--all-targets` падения** (найдены в цикле
+  nvar-op) — collapsible_if x2 в real_image_asrock.rs:17-18 (детали:
+  секция «Найдено в Task 3 nvar-op» ниже) + field_reassign_with_default
+  x13 и Buffer::get deprecated в uefi-tui тестах; не блокируют цикл:
+  `clippy --all` без --all-targets зелёный.
+* [ ] **nvar listing_of сводка миксует уровни** — records считается по
+  flatten-строкам (вложенные включены), guid_store_size/free_tail — по
+  top-level walk верхнего блоба; косметика — считать по уровню
+  переменных или документировать.
+* [ ] **walk NVAR-стора строго континуален** — next-линки (фрагментация)
+  не traversed, листинг молча обрежется на разрыве; поле next парсится
+  с Task 1, не потребляется.
+* [ ] **Легенда nvar list «offset = absolute data offset in the image»
+  неточна для сторов за recompressable-LZMA** — офсеты относительно
+  распакованного буфера (совместимо с конвенцией дерева Node.offset);
+  уточнить формулировку format.rs (uefi-common/src/format.rs:132).
+* [ ] **Запечённая NVAR-копия 226D2IL невидима в голом `nvar list`**
+  (находка живой проверки цикла nvar-op) — второй узел «NVRAM store»
+  лежит на глубине 8: путь `6/3/0/0/0/11/0/0` (Volume @0x570000 →
+  FV_MAIN_NESTED → COMPRESSION → GUID_DEFINED Tiano → вложенный FV →
+  freeform `9221315B-30BB-46B5-813E-1B1BF4712BD3` → COMPRESSION →
+  RAW 2011b, 15 записей дефолтов). Полный листинг пропускает её по
+  дизайну барьера (Task 12, non-recompressable); целевой режим
+  (`nvar list --path 6/3/0/0/0/11/0/0`) барьер обходит — работает,
+  проверено живьём. В TUI-дереве узел виден только после разворачивания
+  всех 8 уровней. Кандидат: показывать запечённые копии в полном
+  листинге с пометкой «behind barrier, read-only». Нюанс: офсеты внутри
+  копии относительны распакованному буферу, не образу.
 * [x] **Смещения дескриптора были неверны — исправлено по живому
   использованию (2026-09-11)** — FLVALSIG канонически лежит за 16-байтовым
   reserved vector (offset 0x10), FLMAP0 сразу за сигнатурой (0x14), секции
@@ -3760,7 +3817,7 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   0xffe70ec0+0x448), значение 2 = «порт выключен политикой».
 - После TMM v21: BMC power cycle → SOL (solrig.py, спам ESC+1 раз в
   0.3с) → F9 (ESC+9+Enter) → F10 (ESC+0+Enter) → ОС → ssh
-  root@172.16.15.155: lspci|grep 00:02 + сырой ECAM 1B/2B/2C/2D +
+  root-rd450x: lspci|grep 00:02 + сырой ECAM 1B/2B/2C/2D +
   UBOX+0x80 + NVMe. Развилки: 2B есть → охота закрыта (минимизировать
   патч); нет → писец DEVHIDE в pre-mem MRC-части nat-uncore (искать
   вычисляемые записи в QPI-пространство, донор-дифф sm по.writer'ам).
@@ -4029,3 +4086,13 @@ version/eventtrap/ad/ldap. Raw-IPMI и PECI-команд НЕТ (OEM-цели
   списку с +1-хедером. 4 юнит-теста (клэмп/saturating/фолбэк/видимые).
   Контекст: спека `2026-09-19-hii-form-export-design.md` (§5/§6),
   ledger `.superpowers/sdd/2026-09-19-hii-form-export/progress.md`.
+
+## Найдено в Task 3 nvar-op (2026-09-20): clippy --all-targets падает на real_image_asrock
+
+`cargo clippy -p uefi-engine --all-targets -- -D warnings` — 2 ошибки
+`collapsible_if` в `crates/uefi-engine/tests/real_image_asrock.rs:17,18`
+(вложенные if при подсчёте tiano-секций). Дефект унаследован из цикла
+tiano-op (коммит 66cad9a), воспроизводится на чистом HEAD до правок
+Task 3 (проверено git stash). Штатная команда цикла (без --all-targets)
+зелёная, поэтому не блокирует nvar-op; поправить свёрткой условий при
+ближайшем проходе по clippy.

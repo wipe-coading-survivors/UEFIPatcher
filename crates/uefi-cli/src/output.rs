@@ -125,17 +125,27 @@ pub fn print_questions(
             println!("{v}");
         }
         OutputFormat::Tsv => {
-            println!("item_id\tquestion_id\tkind\tprompt\tvar_store_id\tvar_offset\twidth");
+            println!(
+                "item_id\tquestion_id\tkind\tprompt\tvar_store_id\tvar_offset\twidth\tseed\tifr_default"
+            );
             for q in questions {
                 println!(
-                    "{target}#{form_id}:{:#x}\t{:#x}\t{}\t{}\t{}\t{:#x}\t{}",
+                    "{target}#{form_id}:{:#x}\t{:#x}\t{}\t{}\t{}\t{:#x}\t{}\t{}\t{}",
                     q.question_id,
                     q.question_id,
                     q.kind,
                     q.prompt,
                     q.var_store_id,
                     q.var_offset,
-                    q.width
+                    q.width,
+                    match q.seed_value {
+                        Some(v) => v.to_string(),
+                        None => "-".into(),
+                    },
+                    match q.ifr_default {
+                        Some(v) => v.to_string(),
+                        None => "-".into(),
+                    },
                 );
             }
         }
@@ -146,8 +156,9 @@ pub fn print_questions(
                 } else {
                     format!("\"{}\"", q.prompt)
                 };
+                let seed_part = q.seed_value.map(|v| format!(" = {v}")).unwrap_or_default();
                 println!(
-                    "{target}#{form_id}:{:#x}  {}  {prompt}",
+                    "{target}#{form_id}:{:#x}  {}  {prompt}{seed_part}",
                     q.question_id, q.kind
                 );
             }
@@ -313,10 +324,10 @@ pub fn print_question_info(q: &QuestionInfo, format: OutputFormat) {
         }
         OutputFormat::Tsv => {
             println!(
-                "form_id\tquestion_id\tkind\tvar_store_id\tvarstore\tvar_offset\twidth\tmin\tmax\tstep"
+                "form_id\tquestion_id\tkind\tvar_store_id\tvarstore\tvar_offset\twidth\tmin\tmax\tstep\tseed"
             );
             println!(
-                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                 q.form_id,
                 q.question_id,
                 q.kind,
@@ -326,7 +337,10 @@ pub fn print_question_info(q: &QuestionInfo, format: OutputFormat) {
                 q.width,
                 q.min,
                 q.max,
-                q.step
+                q.step,
+                q.seed_value
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "-".into())
             );
             for o in &q.options {
                 println!(
@@ -354,6 +368,13 @@ fn question_info_text(q: &QuestionInfo) -> String {
         "width {}, offset {:#x} ({})\n",
         q.width, q.var_offset, q.var_offset
     ));
+    match (q.seed_value, q.seed_option.as_deref()) {
+        (Some(v), opt) => s.push_str(&format!(
+            "value (NVAR seed) = {v}{}\n",
+            opt.map(|o| format!(" ({o})")).unwrap_or_default()
+        )),
+        (None, _) => s.push_str("value (NVAR seed) = -\n"),
+    }
     if q.options.is_empty() {
         s.push_str("no options\n");
     }
@@ -396,6 +417,93 @@ pub fn print_set_value(
         }
         _ => {
             print_question_info(q, format);
+            for f in applied {
+                println!("applied {f}");
+            }
+            if matches!(format, OutputFormat::Text) {
+                println!("stores: {}", stores.len());
+            }
+        }
+    }
+}
+
+pub fn print_nvar_list(
+    stores: &[uefi_proto::NvarStoreInfo],
+    format: OutputFormat,
+    var: Option<&str>,
+) {
+    let filtered: Vec<uefi_proto::NvarStoreInfo> = match var {
+        None => stores.to_vec(),
+        Some(name) => stores
+            .iter()
+            .map(|s| uefi_proto::NvarStoreInfo {
+                vars: s.vars.iter().filter(|v| v.name == name).cloned().collect(),
+                ..s.clone()
+            })
+            .filter(|s| !s.vars.is_empty())
+            .collect(),
+    };
+    match format {
+        OutputFormat::Json => {
+            let v = serde_json::to_string_pretty(&filtered).unwrap_or_else(|_| "[]".into());
+            println!("{v}");
+        }
+        OutputFormat::Tsv => {
+            println!("path\tdepth\tname\tguid\toffset\tsize\tattrs");
+            for s in &filtered {
+                for v in &s.vars {
+                    println!(
+                        "{}\t{}\t{}\t{}\t{:#x}\t{}\t{:#04x}",
+                        s.path,
+                        v.depth,
+                        v.name,
+                        if v.guid.is_empty() {
+                            "-".to_string()
+                        } else {
+                            v.guid.clone()
+                        },
+                        v.offset,
+                        v.size,
+                        v.attributes
+                    );
+                }
+            }
+        }
+        OutputFormat::Text => {
+            for s in &filtered {
+                println!("store {} — {}", s.path, s.desc);
+                println!(
+                    "  records {} · guid store {}B · free {}B",
+                    s.records, s.guid_store_size, s.free_tail
+                );
+                for v in &s.vars {
+                    println!(
+                        "  {}{:<20} {:<36} {:#010x} {:>6} {:#04x}",
+                        "  ".repeat(v.depth as usize),
+                        v.name,
+                        if v.guid.is_empty() {
+                            "-".to_string()
+                        } else {
+                            v.guid.clone()
+                        },
+                        v.offset,
+                        format!("{:#x}", v.size),
+                        v.attributes
+                    );
+                }
+            }
+        }
+    }
+}
+
+pub fn print_nvar_set(applied: &[String], stores: &[String], format: OutputFormat) {
+    match format {
+        OutputFormat::Json => {
+            let a = serde_json::to_string(applied).unwrap_or_else(|_| "[]".into());
+            let s = serde_json::to_string(stores).unwrap_or_else(|_| "[]".into());
+            println!("{{\"applied\":{a},\"stores\":{s}}}");
+        }
+        _ => {
             for f in applied {
                 println!("applied {f}");
             }
@@ -884,6 +992,8 @@ mod tests {
                 },
             ],
             defaults: vec![],
+            seed_value: None,
+            seed_option: None,
         }
     }
 
@@ -933,6 +1043,8 @@ mod tests {
                 r#type: 0,
                 value: 1,
             }],
+            seed_value: None,
+            seed_option: None,
         };
         let text = question_info_text(&q);
         assert!(
@@ -966,6 +1078,8 @@ mod tests {
                 ..Default::default()
             }],
             defaults: vec![],
+            seed_value: None,
+            seed_option: None,
         };
         let text = question_info_text(&q);
         assert!(text.contains("value = 2 (string 9, flags 0x0)"));
@@ -981,6 +1095,58 @@ mod tests {
         print_set_value(&q, &applied, &stores, OutputFormat::Text);
     }
 
+    fn nvar_store_fixture() -> uefi_proto::NvarStoreInfo {
+        uefi_proto::NvarStoreInfo {
+            path: "0/2".into(),
+            desc: "file CEF5B9A3-… (raw body)".into(),
+            records: 2,
+            free_tail: 4,
+            guid_store_size: 16,
+            vars: vec![
+                uefi_proto::NvarVarInfo {
+                    name: "Setup".into(),
+                    guid: "EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9".into(),
+                    offset: 0x500088,
+                    size: 1217,
+                    attributes: 0x82,
+                    depth: 1,
+                    data: vec![1, 0],
+                },
+                uefi_proto::NvarVarInfo {
+                    name: "(data-only)".into(),
+                    guid: String::new(),
+                    offset: 0x500560,
+                    size: 2,
+                    attributes: 0x88,
+                    depth: 1,
+                    data: vec![],
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn print_nvar_list_text_groups_by_store() {
+        let stores = vec![nvar_store_fixture()];
+        print_nvar_list(&stores, OutputFormat::Text, None);
+    }
+
+    #[test]
+    fn print_nvar_list_tsv_header_and_rows() {
+        let stores = vec![nvar_store_fixture()];
+        print_nvar_list(&stores, OutputFormat::Tsv, None);
+    }
+
+    #[test]
+    fn print_nvar_set_text_like_set_value() {
+        print_nvar_set(
+            &["f store+0x2: 00 -> 01".into()],
+            &["f".to_string(), "g".to_string()],
+            OutputFormat::Text,
+        );
+        print_nvar_set(&[], &[], OutputFormat::Json);
+    }
+
     #[test]
     fn node_serializes_type_field() {
         let it = Node {
@@ -993,6 +1159,7 @@ mod tests {
             name: String::new(),
             action: 0,
             region: String::new(),
+            is_nvar: false,
         };
         let j = serde_json::to_string(&it).unwrap();
         assert!(

@@ -13,6 +13,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .message_attribute("engine.QuestionInfo", "#[derive(serde::Serialize)]")
         .message_attribute("engine.QuestionSummary", "#[derive(serde::Serialize)]")
         .message_attribute("engine.ImageSnapshotInfo", "#[derive(serde::Serialize)]")
+        .message_attribute("engine.NvarStoreInfo", "#[derive(serde::Serialize)]")
+        .message_attribute("engine.NvarVarInfo", "#[derive(serde::Serialize)]")
         .compile_protos(&["proto/engine.proto"], &["proto"])?;
     Ok(())
 }

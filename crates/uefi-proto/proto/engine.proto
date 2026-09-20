@@ -42,6 +42,9 @@ service EngineService {
   rpc HiiQuestionAdd(HiiQuestionAddRequest)             returns (HiiQuestionAddResponse);
   rpc HiiPageAdd(HiiPageAddRequest)                     returns (HiiPageAddResponse);
 
+  rpc NvarList(NvarListRequest) returns (NvarListResponse);
+  rpc NvarSet(NvarSetRequest)   returns (NvarSetResponse);
+
   rpc ImageSnapshotCreate(ImageSnapshotCreateRequest)   returns (ImageSnapshotCreateResponse);
   rpc ImageSnapshotsList(ImageSnapshotsListRequest)     returns (ImageSnapshotsListResponse);
   rpc ImageSnapshotRestore(ImageSnapshotRestoreRequest) returns (Empty);
@@ -107,6 +110,7 @@ message Node {
   string name = 7;
   uint32 action = 8;
   string region = 9;
+  bool is_nvar = 10;
 }
 message ImageNodesResponse { repeated Node nodes = 1; }
 
@@ -296,6 +300,8 @@ message QuestionInfo {
   uint64 step = 10;
   repeated OptionEntry options = 11;
   repeated DefaultEntry defaults = 12;
+  optional uint64 seed_value = 13;
+  optional string seed_option = 14;
 }
 message HiiQuestionInfoRequest  { string image_id = 1; string item_id = 2; }
 message HiiQuestionInfoResponse { QuestionInfo question = 1; }
@@ -309,6 +315,8 @@ message QuestionSummary {
   uint32 var_store_id = 4;
   uint32 var_offset = 5;
   uint32 width = 6;
+  optional uint64 seed_value = 7;
+  optional uint64 ifr_default = 8;
 }
 message HiiListQuestionsRequest  { string image_id = 1; string target = 2; uint32 form_id = 3; }
 message HiiListQuestionsResponse { repeated QuestionSummary questions = 1; }
@@ -339,6 +347,28 @@ message HiiPageAddResponse {
   uint32 page_offset = 3;
   uint32 title_string_id = 4;
 }
+
+message NvarVarInfo {
+  string name = 1;
+  string guid = 2;
+  uint64 offset = 3;
+  uint32 size = 4;
+  uint32 attributes = 5;
+  uint32 depth = 6;
+  bytes data = 7;
+}
+message NvarStoreInfo {
+  string path = 1;
+  string desc = 2;
+  repeated NvarVarInfo vars = 3;
+  uint32 records = 4;
+  uint32 free_tail = 5;
+  uint32 guid_store_size = 6;
+}
+message NvarListRequest  { string image_id = 1; optional string path = 2; bool include_data = 3; }
+message NvarListResponse { repeated NvarStoreInfo stores = 1; }
+message NvarSetRequest   { string image_id = 1; string name = 2; optional string guid = 3; uint64 offset = 4; uint64 value = 5; uint32 width = 6; }
+message NvarSetResponse  { repeated string applied = 1; repeated string stores = 2; }
 
 message ImageSnapshotCreateRequest  { string image_id = 1; string name = 2; }
 message ImageSnapshotCreateResponse { string snapshot_id = 1; int64 created_at = 2; }

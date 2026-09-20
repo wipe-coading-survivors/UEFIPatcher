@@ -137,7 +137,7 @@ fn render_middle(f: &mut Frame, mid: Rect, app: &mut App, panel: &crate::forms::
     let mut items: Vec<ListItem> = panel
         .questions
         .iter()
-        .map(|s| ListItem::new(s.clone()))
+        .map(|l| ListItem::new(l.clone()))
         .collect();
     items.extend(panel.gates.iter().map(|s| {
         ListItem::new(Line::styled(
@@ -501,5 +501,23 @@ mod tests {
             .draw(|f| super::render(f, f.area(), &mut app))
             .unwrap();
         assert!(app.strings_list_state.offset() > 0);
+    }
+
+    #[test]
+    fn middle_zone_renders_styled_seed_row() {
+        let mut app = app_with_form(2);
+        app.forms.questions[0].kind = "one_of".into();
+        app.forms.questions[0].seed_value = Some(1);
+        let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(96, 24)).unwrap();
+        t.draw(|f| render(f, f.area(), &mut app)).unwrap();
+        let text: String = (0..24)
+            .map(|y| {
+                (0..96)
+                    .map(|x| t.backend().buffer().get(x, y).symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("= 1"), "seed-суффикс виден");
     }
 }

@@ -1,5 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
+use ratatui::style::{Color, Style};
+use ratatui::text::{Line, Span};
 use uefi_proto::{FormEdge, FormInfo};
 
 use crate::app::FormsData;
@@ -276,7 +278,7 @@ pub fn selected_key(rows: &[FormsRow], cursor: usize) -> Option<FormKey> {
 
 pub struct FormPanel {
     pub header: Vec<String>,
-    pub questions: Vec<String>,
+    pub questions: Vec<Line<'static>>,
     pub gates: Vec<String>,
     pub bottom: Vec<String>,
     pub questions_ready: bool,
@@ -313,20 +315,8 @@ pub fn form_panel(forms: &FormsData, rows: &[FormsRow], cursor: usize) -> FormPa
         "Questions: loading…".into()
     });
 
-    let questions: Vec<String> = if ready {
-        forms
-            .questions
-            .iter()
-            .map(|q| {
-                let prompt = if q.prompt.is_empty() { "-" } else { &q.prompt };
-                format!(
-                    "{} {prompt:<28} q{:#x} {}",
-                    crate::theme::question_icon(&q.kind),
-                    q.question_id,
-                    q.kind
-                )
-            })
-            .collect()
+    let questions: Vec<Line<'static>> = if ready {
+        forms.questions.iter().map(question_line).collect()
     } else {
         vec![]
     };
@@ -372,6 +362,51 @@ pub fn form_panel(forms: &FormsData, rows: &[FormsRow], cursor: usize) -> FormPa
     }
 }
 
+/// Цветной глиф вопроса по типу: one_of Yellow / checkbox Green /
+/// numeric Cyan / fallback Gray. Цвет сам отделяет вопросы от шапки и
+/// gates — строка-разделитель не нужна (спека nvar-op §7).
+fn question_color(kind: &str) -> Color {
+    match kind {
+        "one_of" => Color::Yellow,
+        "checkbox" => Color::Green,
+        "numeric" => Color::Cyan,
+        _ => Color::Gray,
+    }
+}
+
+/// Строка вопроса: цветной глиф + prompt/qid/kind + seed-суффикс
+/// `= <seed>` (≠ при расхождении с IFR-default). Спека nvar-op §4/§7.
+fn question_line(q: &uefi_proto::QuestionSummary) -> Line<'static> {
+    let color = question_color(&q.kind);
+    let prompt = if q.prompt.is_empty() { "-" } else { &q.prompt };
+    let mut spans = vec![
+        Span::styled(
+            format!("{} ", crate::theme::question_icon(&q.kind)),
+            Style::default().fg(color),
+        ),
+        Span::raw(format!("{prompt:<28} q{:#x} {} ", q.question_id, q.kind)),
+    ];
+    if let Some(sv) = q.seed_value {
+        let mismatch = q.ifr_default.is_some_and(|d| d != sv);
+        let fg = if mismatch {
+            Color::Yellow
+        } else if sv == 0 {
+            Color::DarkGray
+        } else {
+            Color::Green
+        };
+        let marker = if mismatch { " ≠" } else { "" };
+        spans.push(Span::styled(
+            format!("= {sv}{marker}"),
+            Style::default().fg(fg),
+        ));
+    }
+    Line {
+        spans,
+        ..Default::default()
+    }
+}
+
 fn question_bottom(qi: &uefi_proto::QuestionInfo) -> Vec<String> {
     let icon = crate::theme::question_icon(&qi.kind);
     let mut lines = vec![
@@ -405,6 +440,23 @@ fn question_bottom(qi: &uefi_proto::QuestionInfo) -> Vec<String> {
         }
         _ => {}
     }
+    match qi.seed_value {
+        Some(v) => {
+            let opt = qi
+                .seed_option
+                .as_deref()
+                .map(|o| format!(" ({o})"))
+                .unwrap_or_default();
+            lines.push(format!("  Value (NVAR seed): {v}{opt}"));
+        }
+        None => lines.push("  Value (NVAR seed): —".into()),
+    }
+    let ifr = qi
+        .defaults
+        .first()
+        .map(|d| d.value.to_string())
+        .unwrap_or_else(|| "—".into());
+    lines.push(format!("  IFR default: {ifr}"));
     lines
 }
 
@@ -726,9 +778,12 @@ mod tests {
             "Questions (2): prompt · qid · kind"
         );
         assert_eq!(p.questions.len(), 2);
-        assert!(p.questions[0].contains("Cores"));
-        assert!(p.questions[0].contains("q0x210"));
-        assert!(p.questions[1].contains('-'), "пустой промпт — дефис");
+        assert!(p.questions[0].to_string().contains("Cores"));
+        assert!(p.questions[0].to_string().contains("q0x210"));
+        assert!(
+            p.questions[1].to_string().contains('-'),
+            "пустой промпт — дефис"
+        );
         assert_eq!(p.gates[1], "Gates (1):");
         assert!(p.bottom[0].contains("Question q0x210"));
         assert!(p.bottom.iter().any(|l| l.contains("range 1..=8 step 1")));
@@ -811,7 +866,11 @@ mod tests {
             ..Default::default()
         });
         let p = form_panel(&forms, &rows, 0);
-        assert_eq!(p.bottom.len(), 2, "заголовок + store-строка, без доп-строк");
+        assert_eq!(
+            p.bottom.len(),
+            4,
+            "заголовок + store + Value (NVAR seed) + IFR default"
+        );
     }
 
     #[test]
@@ -835,5 +894,91 @@ mod tests {
         let p0 = form_panel(&app.forms, &rows, 0);
         assert_eq!(p0.header, vec!["no form selected".to_string()]);
         assert!(!p0.questions_ready);
+    }
+
+    fn qs(kind: &str, seed: Option<u64>, ifr: Option<u64>) -> uefi_proto::QuestionSummary {
+        uefi_proto::QuestionSummary {
+            question_id: 0x22d,
+            kind: kind.into(),
+            prompt: "4G".into(),
+            var_store_id: 1,
+            var_offset: 0x3A,
+            width: 1,
+            seed_value: seed,
+            ifr_default: ifr,
+        }
+    }
+
+    #[test]
+    fn question_line_glyph_color_by_kind() {
+        let line = question_line(&qs("one_of", None, None));
+        assert_eq!(line.spans[0].style.fg, Some(ratatui::style::Color::Yellow));
+        assert_eq!(
+            question_line(&qs("checkbox", None, None)).spans[0].style.fg,
+            Some(ratatui::style::Color::Green)
+        );
+        assert_eq!(
+            question_line(&qs("numeric", None, None)).spans[0].style.fg,
+            Some(ratatui::style::Color::Cyan)
+        );
+        assert_eq!(
+            question_line(&qs("other", None, None)).spans[0].style.fg,
+            Some(ratatui::style::Color::Gray)
+        );
+    }
+
+    #[test]
+    fn question_line_seed_suffix_and_mismatch_marker() {
+        let zero = question_line(&qs("numeric", Some(0), None));
+        assert!(zero.spans.last().unwrap().content.contains("= 0"));
+        assert_eq!(
+            zero.spans.last().unwrap().style.fg,
+            Some(ratatui::style::Color::DarkGray)
+        );
+        let one = question_line(&qs("numeric", Some(1), None));
+        assert_eq!(
+            one.spans.last().unwrap().style.fg,
+            Some(ratatui::style::Color::Green)
+        );
+        let diff = question_line(&qs("numeric", Some(1), Some(0)));
+        assert!(diff.spans.last().unwrap().content.contains("≠"));
+        assert_eq!(
+            diff.spans.last().unwrap().style.fg,
+            Some(ratatui::style::Color::Yellow)
+        );
+        let none = question_line(&qs("numeric", None, None));
+        assert!(!none.spans.last().unwrap().content.contains("="));
+    }
+
+    #[test]
+    fn question_bottom_seed_and_ifr_lines() {
+        let qi = uefi_proto::QuestionInfo {
+            question_id: 0x22d,
+            kind: "checkbox".into(),
+            var_store_id: 1,
+            var_offset: 0x3A,
+            width: 1,
+            seed_value: Some(1),
+            seed_option: Some("Enabled".into()),
+            defaults: vec![uefi_proto::DefaultEntry {
+                default_id: 0,
+                r#type: 1,
+                value: 0,
+            }],
+            ..Default::default()
+        };
+        let lines = question_bottom(&qi);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("Value (NVAR seed): 1 (Enabled)"))
+        );
+        assert!(lines.iter().any(|l| l.contains("IFR default: 0")));
+        let empty = question_bottom(&uefi_proto::QuestionInfo {
+            kind: "numeric".into(),
+            ..Default::default()
+        });
+        assert!(empty.iter().any(|l| l.contains("Value (NVAR seed): —")));
+        assert!(empty.iter().any(|l| l.contains("IFR default: —")));
     }
 }

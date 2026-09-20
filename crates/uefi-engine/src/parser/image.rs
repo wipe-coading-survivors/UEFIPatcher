@@ -234,6 +234,7 @@ fn list_recursive(node: &FfsNode, path: &str, items: &mut Vec<Node>, filter: Opt
                 ParsingData::FptPartition(_) => "ME".to_string(),
                 _ => String::new(),
             },
+            is_nvar: crate::nvar::is_nvar_body(node),
         });
     }
     for (i, child) in node.children.iter().enumerate() {
@@ -292,6 +293,7 @@ fn search_recursive(
                 ParsingData::FptPartition(_) => "ME".to_string(),
                 _ => String::new(),
             },
+            is_nvar: crate::nvar::is_nvar_body(node),
         });
         if out.len() >= limit {
             return;
@@ -340,7 +342,14 @@ fn node_name(node: &FfsNode) -> String {
         {
             decode_utf16le_body(&node.body)
         }
-        FfsType::File => find_lifted_name(&node.children, 0).unwrap_or_default(),
+        FfsType::Section if crate::nvar::is_nvar_body(node) => "NVRAM store".to_string(),
+        FfsType::File => {
+            if crate::nvar::is_nvar_body(node) {
+                "NVRAM store".to_string()
+            } else {
+                find_lifted_name(&node.children, 0).unwrap_or_default()
+            }
+        }
         FfsType::Region => match &node.parsing_data {
             ParsingData::Region(rd) => format!("{} region", rd.kind.label()),
             ParsingData::FptPartition(pd) => pd.name.clone(),
@@ -581,6 +590,55 @@ mod tests {
             alignment_bytes: vec![],
         };
         assert_eq!(node_name(&file), "");
+    }
+
+    fn nvar_store_entry_bytes() -> Vec<u8> {
+        let mut body = Vec::new();
+        body.push(0); // guid_index
+        body.extend_from_slice(b"StdDefaults");
+        body.push(0);
+        body.extend_from_slice(&[0xAA, 0xBB]);
+        let mut e = Vec::new();
+        e.extend_from_slice(b"NVAR");
+        e.extend_from_slice(&((10 + body.len()) as u16).to_le_bytes());
+        e.extend_from_slice(&[0xFF, 0xFF, 0xFF]);
+        e.push(0x82);
+        e.extend_from_slice(&body);
+        e
+    }
+
+    fn store_file_node(body: Vec<u8>) -> FfsNode {
+        FfsNode {
+            guid: Some(Guid::try_parse("CEF5B9A3-476D-497F-9FDC-E98143E0422C").unwrap()),
+            node_type: FfsType::File,
+            subtype: 0x01,
+            offset: 0x1000,
+            header: vec![0x11; 4],
+            body,
+            tail: vec![],
+            children: vec![],
+            action: Action::NoAction,
+            parsing_data: ParsingData::None,
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        }
+    }
+
+    #[test]
+    fn nvar_store_file_gets_label_and_flag() {
+        let file = store_file_node(nvar_store_entry_bytes());
+        let items = list_items(&file, None);
+        assert_eq!(items[0].name, "NVRAM store");
+        assert!(items[0].is_nvar);
+    }
+
+    #[test]
+    fn plain_raw_file_keeps_old_name() {
+        let file = store_file_node(vec![0xDE, 0xAD]);
+        let items = list_items(&file, None);
+        assert_eq!(items[0].name, "");
+        assert!(!items[0].is_nvar);
     }
 
     #[test]

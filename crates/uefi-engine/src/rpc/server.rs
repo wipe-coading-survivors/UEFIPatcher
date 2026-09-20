@@ -76,6 +76,43 @@ fn hii_error_status_ctx(e: crate::hii::HiiError, ctx: &str) -> Status {
     }
 }
 
+fn nvar_error_status(e: crate::nvar::NvarError) -> Status {
+    use crate::nvar::NvarError as E;
+    match e {
+        E::NotFound => Status::not_found(e.to_string()),
+        E::AmbiguousName(_) | E::InvalidStore(_) => Status::invalid_argument(e.to_string()),
+        E::NotWritable | E::MutationBehindCompression | E::ValueOpUnsupported(_) => {
+            Status::failed_precondition(e.to_string())
+        }
+    }
+}
+
+fn nvar_store_proto(l: crate::nvar::NvarStoreListing) -> NvarStoreInfo {
+    NvarStoreInfo {
+        path: l.path,
+        desc: l.desc,
+        records: l.records as u32,
+        free_tail: l.free_tail as u32,
+        guid_store_size: l.guid_store_size as u32,
+        vars: l
+            .rows
+            .into_iter()
+            .map(|r| NvarVarInfo {
+                name: r.name,
+                guid: r
+                    .guid
+                    .map(|g| crate::guid_to_upper_string(&g))
+                    .unwrap_or_default(),
+                offset: r.offset as u64,
+                size: r.size as u32,
+                attributes: r.attributes as u32,
+                depth: r.depth,
+                data: r.data,
+            })
+            .collect(),
+    }
+}
+
 fn artifact_output_path_is_relative(p: &str) -> bool {
     std::path::Path::new(p).is_relative()
 }
@@ -1194,6 +1231,47 @@ impl EngineService for EngineServer {
     }
 
     #[tracing::instrument(skip(self, req), err)]
+    async fn nvar_list(&self, req: Request<NvarListRequest>) -> RpcResult<NvarListResponse> {
+        let r = req.into_inner();
+        let img = self.get_or_load_image(&r.image_id).await?;
+        let listings = crate::nvar::nvar_list(&img, r.path.as_deref(), r.include_data)
+            .map_err(nvar_error_status)?;
+        let _ = self.sm.touch(&img.session_id);
+        tracing::info!(image_id = %r.image_id, stores = listings.len(), "nvar list");
+        Ok(Response::new(NvarListResponse {
+            stores: listings.into_iter().map(nvar_store_proto).collect(),
+        }))
+    }
+
+    #[tracing::instrument(skip(self, req), err)]
+    async fn nvar_set(&self, req: Request<NvarSetRequest>) -> RpcResult<NvarSetResponse> {
+        let r = req.into_inner();
+        let img = self.get_or_load_image(&r.image_id).await?;
+        let outcome = {
+            let mut images = self.images.lock().await;
+            let img_slot = images
+                .get_mut(&r.image_id)
+                .ok_or_else(|| Status::not_found("image not found"))?;
+            crate::nvar::nvar_set(
+                img_slot,
+                &r.name,
+                r.guid.as_deref(),
+                r.offset,
+                r.value,
+                r.width,
+            )
+            .map_err(nvar_error_status)?
+        };
+        self.flush_image(&r.image_id).await?;
+        let _ = self.sm.touch(&img.session_id);
+        tracing::info!(image_id = %r.image_id, name = %r.name, flips = outcome.applied.len(), "nvar set");
+        Ok(Response::new(NvarSetResponse {
+            applied: outcome.applied,
+            stores: outcome.stores,
+        }))
+    }
+
+    #[tracing::instrument(skip(self, req), err)]
     async fn image_snapshot_create(
         &self,
         req: Request<ImageSnapshotCreateRequest>,
@@ -1501,6 +1579,34 @@ mod tests {
         let st = hii_error_status_ctx(crate::hii::HiiError::NotWritable, "0#99");
         assert_eq!(st.code(), tonic::Code::FailedPrecondition);
         assert_eq!(st.message(), crate::hii::HiiError::NotWritable.to_string());
+    }
+
+    #[test]
+    fn nvar_error_status_mapping() {
+        assert_eq!(
+            nvar_error_status(crate::nvar::NvarError::NotFound).code(),
+            tonic::Code::NotFound
+        );
+        assert_eq!(
+            nvar_error_status(crate::nvar::NvarError::AmbiguousName("x".into())).code(),
+            tonic::Code::InvalidArgument
+        );
+        assert_eq!(
+            nvar_error_status(crate::nvar::NvarError::InvalidStore("x".into())).code(),
+            tonic::Code::InvalidArgument
+        );
+        assert_eq!(
+            nvar_error_status(crate::nvar::NvarError::MutationBehindCompression).code(),
+            tonic::Code::FailedPrecondition
+        );
+        assert_eq!(
+            nvar_error_status(crate::nvar::NvarError::ValueOpUnsupported("x".into())).code(),
+            tonic::Code::FailedPrecondition
+        );
+        assert_eq!(
+            nvar_error_status(crate::nvar::NvarError::NotWritable).code(),
+            tonic::Code::FailedPrecondition
+        );
     }
 
     #[test]

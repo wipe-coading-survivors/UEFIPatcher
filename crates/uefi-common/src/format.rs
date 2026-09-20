@@ -120,6 +120,23 @@ pub fn hii_legend(cmd: HiiLegendCmd, section_codes: &[u8]) -> String {
     out
 }
 
+/// Какая nvar-команда печатает легенду (спека nvar-op §6).
+pub enum NvarLegendCmd {
+    VarList,
+}
+
+/// Легенда nvar-вывода CLI (в stderr, по образцу hii_legend).
+pub fn nvar_legend(_cmd: NvarLegendCmd) -> String {
+    let mut out = String::from("Legend:\n");
+    out.push_str("  columns: name / guid / offset / size / attrs\n");
+    out.push_str("  offset = absolute data offset in the image\n");
+    out.push_str("  guid '-' = unresolved (data-only record or guid-store tail exhausted)\n");
+    out.push_str(
+        "  attrs bits: 80 valid · 10 ext-header · 08 data-only · 04 local-guid · 02 ascii-name · 01 runtime\n",
+    );
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -196,6 +213,21 @@ mod tests {
         assert!(leg.contains("item_id = <ffs-file-guid>:<section-type>:<index>"));
         assert!(leg.contains("guid '-' = name-value declaration (no GUID, no bounds)"));
         assert!(leg.contains("10 = PE32"));
+    }
+
+    #[test]
+    fn nvar_legend_varlist_columns_and_bits() {
+        let leg = nvar_legend(NvarLegendCmd::VarList);
+        assert!(leg.starts_with("Legend:\n"));
+        assert!(leg.contains("columns: name / guid / offset / size / attrs"));
+        assert!(leg.contains("offset = absolute data offset in the image"));
+        assert!(leg.contains("guid '-' = unresolved"));
+        assert!(leg.contains("80 valid"));
+        assert!(leg.contains("10 ext-header"));
+        assert!(leg.contains("08 data-only"));
+        assert!(leg.contains("04 local-guid"));
+        assert!(leg.contains("02 ascii-name"));
+        assert!(leg.contains("01 runtime"));
     }
 
     #[test]

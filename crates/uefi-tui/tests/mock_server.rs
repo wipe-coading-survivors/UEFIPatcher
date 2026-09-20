@@ -162,6 +162,7 @@ impl EngineService for MockEngine {
                     name: "Image".into(),
                     action: 0,
                     region: String::new(),
+                    is_nvar: false,
                 },
                 Node {
                     path: "0".into(),
@@ -173,6 +174,7 @@ impl EngineService for MockEngine {
                     name: "ME".into(),
                     action: 0,
                     region: String::new(),
+                    is_nvar: false,
                 },
                 Node {
                     path: "1".into(),
@@ -184,6 +186,7 @@ impl EngineService for MockEngine {
                     name: "DXE".into(),
                     action: 0,
                     region: String::new(),
+                    is_nvar: false,
                 },
                 Node {
                     path: "1/0".into(),
@@ -195,6 +198,7 @@ impl EngineService for MockEngine {
                     name: "Setup".into(),
                     action: 0,
                     region: String::new(),
+                    is_nvar: false,
                 },
                 Node {
                     path: "1/0/0".into(),
@@ -206,6 +210,7 @@ impl EngineService for MockEngine {
                     name: String::new(),
                     action: 0,
                     region: String::new(),
+                    is_nvar: false,
                 },
             ],
         }))
@@ -375,6 +380,8 @@ impl EngineService for MockEngine {
                     var_store_id: 1,
                     var_offset: 95,
                     width: 1,
+                    seed_value: None,
+                    ifr_default: None,
                 },
                 QuestionSummary {
                     question_id: 0x211,
@@ -383,6 +390,8 @@ impl EngineService for MockEngine {
                     var_store_id: 1,
                     var_offset: 96,
                     width: 1,
+                    seed_value: None,
+                    ifr_default: None,
                 },
             ],
         }))
@@ -572,6 +581,21 @@ impl EngineService for MockEngine {
             slot: 1,
             page_offset: 42,
             title_string_id: 600,
+        }))
+    }
+    async fn nvar_list(
+        &self,
+        _req: Request<NvarListRequest>,
+    ) -> Result<Response<NvarListResponse>, Status> {
+        Ok(Response::new(NvarListResponse { stores: vec![] }))
+    }
+    async fn nvar_set(
+        &self,
+        _req: Request<NvarSetRequest>,
+    ) -> Result<Response<NvarSetResponse>, Status> {
+        Ok(Response::new(NvarSetResponse {
+            applied: vec![],
+            stores: vec![],
         }))
     }
     async fn image_snapshot_create(

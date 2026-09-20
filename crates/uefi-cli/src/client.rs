@@ -542,6 +542,50 @@ impl Client {
         Ok(resp)
     }
 
+    pub async fn nvar_list(
+        &mut self,
+        image_id: &str,
+        path: Option<&str>,
+        include_data: bool,
+    ) -> Result<Vec<uefi_proto::NvarStoreInfo>, AppError> {
+        let req = NvarListRequest {
+            image_id: image_id.into(),
+            path: path.map(Into::into),
+            include_data,
+        };
+        let resp = self
+            .inner
+            .nvar_list(auth_req(&self.state, req))
+            .await?
+            .into_inner();
+        Ok(resp.stores)
+    }
+
+    pub async fn nvar_set(
+        &mut self,
+        image_id: &str,
+        name: &str,
+        guid: Option<&str>,
+        offset: u64,
+        value: u64,
+        width: u32,
+    ) -> Result<(Vec<String>, Vec<String>), AppError> {
+        let req = NvarSetRequest {
+            image_id: image_id.into(),
+            name: name.into(),
+            guid: guid.map(Into::into),
+            offset,
+            value,
+            width,
+        };
+        let resp = self
+            .inner
+            .nvar_set(auth_req(&self.state, req))
+            .await?
+            .into_inner();
+        Ok((resp.applied, resp.stores))
+    }
+
     pub async fn image_save(&mut self, image_id: &str, output_path: &str) -> Result<(), AppError> {
         let req = ImageSaveRequest {
             image_id: image_id.into(),

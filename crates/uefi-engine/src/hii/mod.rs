@@ -9,7 +9,7 @@ pub mod formset_add;
 pub mod gates;
 pub mod ifr;
 pub mod ifr_builder;
-pub mod nvar;
+use crate::nvar;
 pub mod package_list;
 pub mod pe_resource;
 pub mod questions;
@@ -511,11 +511,71 @@ fn question_kind_str(kind: values::QuestionKind) -> &'static str {
     }
 }
 
+/// Seed-значение вопроса: байты той же StdDefaults-записи, которую адресует
+/// set_value (find_varstore_record по имя+размер варстора). Read-only,
+/// первый стор с записью; стора нет → None — это не ошибка. Спека nvar-op §4.
+fn seed_lookup(node: &FfsNode, name: &str, size: u16, off: usize, w: usize) -> Option<u64> {
+    if name.is_empty() || w == 0 || w > 8 || off + w > size as usize {
+        return None;
+    }
+    if matches!(node.node_type, FfsType::File | FfsType::Section)
+        && node.children.is_empty()
+        && nvar::is_std_defaults(&node.body)
+    {
+        let (_, data) = nvar::find_varstore_record(&node.body, name, size as usize)?;
+        let b = data.get(off..off + w)?;
+        let mut le = [0u8; 8];
+        le[..w].copy_from_slice(b);
+        return Some(u64::from_le_bytes(le));
+    }
+    for child in &node.children {
+        if let Some(v) = seed_lookup(child, name, size, off, w) {
+            return Some(v);
+        }
+    }
+    None
+}
+
+/// Метка seed-значения по типу вопроса: checkbox — Enabled/Disabled,
+/// one_of — текст опции с этим значением, numeric — число. Спека nvar-op §4.
+fn seed_option_of(
+    kind: values::QuestionKind,
+    seed: Option<u64>,
+    options: &[values::OptionEntry],
+    texts: &HashMap<u16, String>,
+) -> Option<String> {
+    let v = seed?;
+    match kind {
+        values::QuestionKind::CheckBox => {
+            Some((if v == 0 { "Disabled" } else { "Enabled" }).into())
+        }
+        values::QuestionKind::OneOf => options
+            .iter()
+            .find(|o| o.value == v)
+            .and_then(|o| texts.get(&o.string_id))
+            .filter(|t| !t.is_empty())
+            .cloned(),
+        values::QuestionKind::Numeric => Some(v.to_string()),
+        values::QuestionKind::Other => None,
+    }
+}
+
 fn question_info_proto(
+    image: &Image,
     form_id: u16,
     map: &values::QuestionMap,
     texts: &HashMap<u16, String>,
 ) -> uefi_proto::QuestionInfo {
+    let seed = map.varstore.as_ref().and_then(|vs| {
+        seed_lookup(
+            &image.root,
+            &vs.name,
+            vs.size,
+            map.var_offset as usize,
+            map.width as usize,
+        )
+    });
+    let seed_option = seed_option_of(map.kind, seed, &map.options, texts);
     uefi_proto::QuestionInfo {
         form_id: form_id as u32,
         question_id: map.question_id as u32,
@@ -555,6 +615,8 @@ fn question_info_proto(
                 value: d.value,
             })
             .collect(),
+        seed_value: seed,
+        seed_option,
     }
 }
 
@@ -594,7 +656,7 @@ pub fn question_info(image: &Image, item_id: &str) -> Result<uefi_proto::Questio
         return Err(HiiError::NotFound);
     };
     let (map, texts) = find_question_map(image, &target, form_id, question_id)?;
-    Ok(question_info_proto(form_id, &map, &texts))
+    Ok(question_info_proto(image, form_id, &map, &texts))
 }
 
 /// Карта varstore-деклараций формсета (спека varstore-contract §3):
@@ -668,7 +730,23 @@ pub fn list_questions(
     let titles = questions::prompt_texts(file);
     let mut out = Vec::new();
     for (start, len) in form_package_ranges(node) {
+        let maps = values::question_maps(&node.body[start..start + len]);
         for q in questions::questions(&node.body[start..start + len], form_id) {
+            let (seed_value, ifr_default) = match maps.get(&(form_id, q.question_id)) {
+                Some(m) => (
+                    m.varstore.as_ref().and_then(|vs| {
+                        seed_lookup(
+                            &image.root,
+                            &vs.name,
+                            vs.size,
+                            m.var_offset as usize,
+                            m.width as usize,
+                        )
+                    }),
+                    m.defaults.first().map(|d| d.value),
+                ),
+                None => (None, None),
+            };
             out.push(uefi_proto::QuestionSummary {
                 question_id: q.question_id as u32,
                 kind: question_kind_str(q.kind).to_string(),
@@ -676,6 +754,8 @@ pub fn list_questions(
                 var_store_id: q.var_store_id as u32,
                 var_offset: q.var_offset as u32,
                 width: q.width as u32,
+                seed_value,
+                ifr_default,
             });
         }
     }
@@ -739,17 +819,6 @@ struct StoreHit {
     body_offset: usize,
 }
 
-fn store_desc(node: &FfsNode, file_guid: Option<&Guid>) -> String {
-    let guid_text = file_guid
-        .map(crate::guid_to_upper_string)
-        .unwrap_or_else(|| "unknown".into());
-    if node.node_type == FfsType::File {
-        format!("file {guid_text} (raw body)")
-    } else {
-        format!("file {guid_text} section {:#04x} raw body", node.subtype)
-    }
-}
-
 fn collect_std_defaults_hits(
     node: &FfsNode,
     path: &mut Vec<usize>,
@@ -776,28 +845,20 @@ fn collect_std_defaults_hits(
         if let Some((off, _)) = nvar::find_varstore_record(&node.body, name, data_len) {
             out.push(StoreHit {
                 path: path.clone(),
-                desc: store_desc(node, own_file_guid),
+                desc: crate::nvar::store_desc(node, own_file_guid),
                 body_offset: off,
             });
         } else {
             return Err(HiiError::ValueOpUnsupported(format!(
                 "StdDefaults store {} has no record {:?} of {} bytes",
-                store_desc(node, own_file_guid),
+                crate::nvar::store_desc(node, own_file_guid),
                 name,
                 data_len
             )));
         }
         return Ok(());
     }
-    let child_barrier = barrier
-        || (node.node_type == FfsType::Section
-            && (node.subtype == EFI_SECTION_COMPRESSION
-                || node.subtype == EFI_SECTION_GUID_DEFINED)
-            && !matches!(
-                &node.parsing_data,
-                crate::types::ParsingData::GuidedSection(d)
-                    if crate::ffs::is_recompressable_lzma_guid(&d.guid)
-            ));
+    let child_barrier = barrier || crate::nvar::section_blocks_mutation(node);
     for (i, child) in node.children.iter().enumerate() {
         path.push(i);
         collect_std_defaults_hits(
@@ -840,7 +901,7 @@ pub fn set_value(image: &mut Image, item_id: &str, value: u64) -> Result<ValueOu
         return Err(HiiError::NotFound);
     };
     let (map, texts) = find_question_map(image, &target, form_id, question_id)?;
-    let info = question_info_proto(form_id, &map, &texts);
+    let info = question_info_proto(image, form_id, &map, &texts);
     let width = validate_set_value(&map, value)?;
     let varstore = map.varstore.as_ref().ok_or_else(|| {
         HiiError::ValueOpUnsupported("question varstore is not declared in the form package".into())
@@ -3660,6 +3721,83 @@ mod tests {
     fn marked_count(node: &FfsNode) -> usize {
         node.children.iter().map(marked_count).sum::<usize>()
             + usize::from(node.action != Action::NoAction)
+    }
+
+    fn store_with_var_data(v: u8) -> Vec<u8> {
+        let inner = nvar_entry(Some("Setup"), &[v; 114], 0x82, Some(0));
+        nvar_entry(Some("StdDefaults"), &inner, 0x82, Some(0))
+    }
+
+    fn image_with_std_defaults(body: Vec<u8>) -> Image {
+        let mut file = mk_node(FfsType::File, vec![], vec![]);
+        file.subtype = 0x01;
+        file.body = body;
+        Image {
+            image_id: "img".into(),
+            session_id: "s".into(),
+            root: mk_node(
+                FfsType::Image,
+                vec![],
+                vec![mk_node(FfsType::Volume, vec![], vec![file])],
+            ),
+            mode: ImageMode::Read,
+        }
+    }
+
+    #[test]
+    fn seed_lookup_reads_varstore_record_bytes() {
+        let img = image_with_std_defaults(store_with_var_data(0x01));
+        assert_eq!(seed_lookup(&img.root, "Setup", 114, 1, 1), Some(1));
+        assert_eq!(
+            seed_lookup(&img.root, "Setup", 114, 113, 2),
+            None,
+            "off+w > size"
+        );
+        assert_eq!(seed_lookup(&img.root, "Wrong", 114, 1, 1), None);
+        assert_eq!(
+            seed_lookup(&image_with_std_defaults(vec![]).root, "Setup", 114, 1, 1),
+            None,
+            "стора в образе нет — None, не ошибка"
+        );
+    }
+
+    #[test]
+    fn seed_option_kind_semantics() {
+        let mut texts = HashMap::new();
+        texts.insert(7u16, "Enabled label".to_string());
+        let opts = vec![values::OptionEntry {
+            string_id: 7,
+            flags: 0,
+            value: 1,
+        }];
+        assert_eq!(
+            seed_option_of(values::QuestionKind::CheckBox, Some(1), &opts, &texts),
+            Some("Enabled".into())
+        );
+        assert_eq!(
+            seed_option_of(values::QuestionKind::CheckBox, Some(0), &opts, &texts),
+            Some("Disabled".into())
+        );
+        assert_eq!(
+            seed_option_of(values::QuestionKind::OneOf, Some(1), &opts, &texts),
+            Some("Enabled label".into())
+        );
+        assert_eq!(
+            seed_option_of(values::QuestionKind::OneOf, Some(2), &opts, &texts),
+            None
+        );
+        assert_eq!(
+            seed_option_of(values::QuestionKind::Numeric, Some(5), &[], &texts),
+            Some("5".into())
+        );
+        assert_eq!(
+            seed_option_of(values::QuestionKind::Other, Some(5), &[], &texts),
+            None
+        );
+        assert_eq!(
+            seed_option_of(values::QuestionKind::Numeric, None, &[], &texts),
+            None
+        );
     }
 
     #[test]

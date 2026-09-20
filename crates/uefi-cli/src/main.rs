@@ -83,6 +83,11 @@ enum Cmd {
         #[command(subcommand)]
         sub: HiiCmd,
     },
+    #[command(about = "AMI NVAR store operations")]
+    Nvar {
+        #[command(subcommand)]
+        sub: NvarCmd,
+    },
 }
 
 #[derive(Subcommand)]
@@ -197,6 +202,31 @@ enum ArtifactCmd {
     Export {
         artifact_id: String,
         output_path: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum NvarCmd {
+    #[command(about = "list NVAR variables; --path = tree path from 'node list' (e.g. 0/2)")]
+    List {
+        #[arg(long)]
+        path: Option<String>,
+        #[arg(long, help = "filter rows by variable name")]
+        var: Option<String>,
+    },
+    #[command(
+        about = "set a variable value in all NVAR store copies; --guid required when the name is ambiguous"
+    )]
+    Set {
+        name: String,
+        #[arg(long)]
+        guid: Option<String>,
+        #[arg(long)]
+        offset: String,
+        #[arg(long)]
+        value: String,
+        #[arg(long, default_value_t = 1)]
+        width: u32,
     },
 }
 
@@ -539,6 +569,22 @@ async fn dispatch(cli: &Cli, format: output::OutputFormat) -> Result<(), error::
                 commands::hii::import(target, file, sock, format).await
             }
         },
+        Cmd::Nvar { sub } => match sub {
+            NvarCmd::List { path, var } => {
+                commands::nvar::list(path.as_deref(), var.as_deref(), sock, format).await
+            }
+            NvarCmd::Set {
+                name,
+                guid,
+                offset,
+                value,
+                width,
+            } => {
+                let off = commands::hii::parse_u64_loose(offset)?;
+                let val = commands::hii::parse_u64_loose(value)?;
+                commands::nvar::set(name, guid.as_deref(), off, val, *width, sock, format).await
+            }
+        },
     }
 }
 
@@ -846,6 +892,58 @@ mod tests {
                 );
             }
             _ => panic!("expected hii form hijack"),
+        }
+    }
+
+    #[test]
+    fn parse_nvar_list_and_set_args() {
+        let cli = Cli::try_parse_from([
+            "uefi-cli", "nvar", "list", "--path", "0/2", "--var", "Setup",
+        ])
+        .unwrap();
+        match cli.cmd {
+            Cmd::Nvar {
+                sub: NvarCmd::List { path, var },
+            } => {
+                assert_eq!(path.as_deref(), Some("0/2"));
+                assert_eq!(var.as_deref(), Some("Setup"));
+            }
+            _ => panic!("expected nvar list"),
+        }
+        let cli = Cli::try_parse_from([
+            "uefi-cli",
+            "nvar",
+            "set",
+            "Setup",
+            "--guid",
+            "EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9",
+            "--offset",
+            "0x3A",
+            "--value",
+            "1",
+        ])
+        .unwrap();
+        match cli.cmd {
+            Cmd::Nvar {
+                sub:
+                    NvarCmd::Set {
+                        name,
+                        guid,
+                        offset,
+                        value,
+                        width,
+                    },
+            } => {
+                assert_eq!(name, "Setup");
+                assert_eq!(
+                    guid.as_deref(),
+                    Some("EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9")
+                );
+                assert_eq!(commands::hii::parse_u64_loose(&offset).unwrap(), 0x3A);
+                assert_eq!(commands::hii::parse_u64_loose(&value).unwrap(), 1);
+                assert_eq!(width, 1, "width default 1");
+            }
+            _ => panic!("expected nvar set"),
         }
     }
 }
