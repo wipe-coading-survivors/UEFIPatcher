@@ -1501,7 +1501,7 @@ atomic_write. После первой мутации хранимый файл �
   вторая малая «Setup» 195b. Механизм v5 (маппинг по имени varstore)
   переносим. Капсулы нет ни в одном (первые байты 0xFF, заголовка
   капсулы нет).
-* [ ] **BLOCKER: Tiano-декомпрессия — заглушка** — 228 Compressed-секций
+* [x] **BLOCKER: Tiano-декомпрессия — заглушка** — 228 Compressed-секций
   (алгоритм 1) не разворачиваются (`decompress_tiano` -> Unsupported,
   `decompress.rs:23`), весь DXE-контент включая Setup/HII непрозрачен
   → `hii form list` пуст, вопросы/гейты/set-value недоступны на
@@ -1521,6 +1521,25 @@ atomic_write. После первой мутации хранимый файл �
   Фикстуры для TDD: `/tmp/c275_secs/` + оракул. Для записи на ASRock
   ещё нужен компрессор (`EfiTianoCompress.c` там же в refs; риск —
   слот-фит, EDK2-поток может выйти крупнее AMI-шного).
+  *Закрыто этапом 1 мини-цикла tiano-op (2026-09-20, спека
+  `docs/superpowers/specs/2026-09-20-tiano-op-design.md`, план
+  `docs/superpowers/plans/2026-09-20-tiano-op.md`): порт
+  EfiTianoDecompress на чистом Rust (`uefi-engine/src/tiano.rs`,
+  pbit 4/5, без unwrap). Гейт: C275D4I3.20 algo1=228, forms=96;
+  226D2IL3.30 algo1=6, forms=16; 226D2IL3.50 algo1=6, forms=16
+  (real_image_asrock.rs, round-trip байт-точен). CLI (C275): Above
+  4G — строка 865 «Above 4G Decoding» (+ help 866); SOL — строки
+  «SOL Configuration» (13), «Serial Port Console Redirection»
+  (977), формы «Serial Port 1 Configuration» (10015), «Serial Port
+  Console Redirection» (10031), «Console Redirection Settings»
+  (10032); 226D2IL3.30 — 16 форм, SOL/4G-контента нет, строк 0.
+  StdDefaults копий в дереве: 1 (только raw у обоих; второй копии
+  в развёрнутом контенте нет). Примечание: при „оба pbit
+  декодируются" наш fallback выбирает Efi-first, UEFITool preparse —
+  Tiano-first (ffsparser.cpp:3298); живых случаев в корпусе нет —
+  пересмотреть перед компрессором этапа 2. Этап 2 (компрессор
+  EfiTianoCompress + слот-фит) — отдельная спека по этим
+  результатам.*
 * [ ] **open-вопрос: почему AMIBCP не читает 226D2IL3.50** — формат
   идентичен читаемому C275 (те же заголовки, что и у 226D2IL3.30);
   наш парсер оба переваривает. Не блокирует нас, просто маркер
