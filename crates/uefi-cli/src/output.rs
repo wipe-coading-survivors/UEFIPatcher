@@ -884,6 +884,8 @@ mod tests {
                 },
             ],
             defaults: vec![],
+            seed_value: None,
+            seed_option: None,
         }
     }
 
@@ -933,6 +935,8 @@ mod tests {
                 r#type: 0,
                 value: 1,
             }],
+            seed_value: None,
+            seed_option: None,
         };
         let text = question_info_text(&q);
         assert!(
@@ -966,6 +970,8 @@ mod tests {
                 ..Default::default()
             }],
             defaults: vec![],
+            seed_value: None,
+            seed_option: None,
         };
         let text = question_info_text(&q);
         assert!(text.contains("value = 2 (string 9, flags 0x0)"));

@@ -371,6 +371,8 @@ impl EngineService for MockEngine {
                     var_store_id: 21,
                     var_offset: 0x0,
                     width: 1,
+                    seed_value: None,
+                    ifr_default: None,
                 },
                 QuestionSummary {
                     question_id: 0x23,
@@ -379,6 +381,8 @@ impl EngineService for MockEngine {
                     var_store_id: 21,
                     var_offset: 0x1,
                     width: 1,
+                    seed_value: None,
+                    ifr_default: None,
                 },
             ],
         }))
@@ -502,6 +506,8 @@ fn mock_question() -> QuestionInfo {
             r#type: 0,
             value: 1,
         }],
+        seed_value: None,
+        seed_option: None,
     }
 }
 

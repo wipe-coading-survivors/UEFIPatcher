@@ -380,6 +380,8 @@ impl EngineService for MockEngine {
                     var_store_id: 1,
                     var_offset: 95,
                     width: 1,
+                    seed_value: None,
+                    ifr_default: None,
                 },
                 QuestionSummary {
                     question_id: 0x211,
@@ -388,6 +390,8 @@ impl EngineService for MockEngine {
                     var_store_id: 1,
                     var_offset: 96,
                     width: 1,
+                    seed_value: None,
+                    ifr_default: None,
                 },
             ],
         }))
