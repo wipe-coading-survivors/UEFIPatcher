@@ -836,14 +836,23 @@ struct StoreHit {
     body_offset: usize,
 }
 
+/// Барьерная семантика v5 (спека nvar-op §3, аддендум 2026-09-21):
+/// StdDefaults-копии за non-recompressable секциями — запечённые слепки,
+/// пропускаются (skipped_behind_barrier) без анализа записей;
+/// MutationBehindCompression — только если доступных копий ноль.
+struct StdDefaultsScan {
+    path: Vec<usize>,
+    hits: Vec<StoreHit>,
+    skipped_behind_barrier: bool,
+}
+
 fn collect_std_defaults_hits(
     node: &FfsNode,
-    path: &mut Vec<usize>,
     barrier: bool,
     file_guid: Option<&Guid>,
     name: &str,
     data_len: usize,
-    out: &mut Vec<StoreHit>,
+    scan: &mut StdDefaultsScan,
 ) -> Result<(), HiiError> {
     let own_file_guid = if node.node_type == FfsType::File {
         node.guid.as_ref()
@@ -857,11 +866,12 @@ fn collect_std_defaults_hits(
     };
     if is_store_body(node) {
         if barrier {
-            return Err(HiiError::MutationBehindCompression);
+            scan.skipped_behind_barrier = true;
+            return Ok(());
         }
         if let Some((off, _)) = nvar::find_varstore_record(&node.body, name, data_len) {
-            out.push(StoreHit {
-                path: path.clone(),
+            scan.hits.push(StoreHit {
+                path: scan.path.clone(),
                 desc: crate::nvar::store_desc(node, own_file_guid),
                 body_offset: off,
             });
@@ -877,17 +887,9 @@ fn collect_std_defaults_hits(
     }
     let child_barrier = barrier || crate::nvar::section_blocks_mutation(node);
     for (i, child) in node.children.iter().enumerate() {
-        path.push(i);
-        collect_std_defaults_hits(
-            child,
-            path,
-            child_barrier,
-            own_file_guid,
-            name,
-            data_len,
-            out,
-        )?;
-        path.pop();
+        scan.path.push(i);
+        collect_std_defaults_hits(child, child_barrier, own_file_guid, name, data_len, scan)?;
+        scan.path.pop();
     }
     Ok(())
 }
@@ -934,18 +936,23 @@ pub fn set_value(image: &mut Image, item_id: &str, value: u64) -> Result<ValueOu
             map.var_offset, width, varstore.size
         )));
     }
-    let mut hits = Vec::new();
-    let mut path = Vec::new();
+    let mut scan = StdDefaultsScan {
+        path: Vec::new(),
+        hits: Vec::new(),
+        skipped_behind_barrier: false,
+    };
     collect_std_defaults_hits(
         &image.root,
-        &mut path,
         false,
         None,
         &varstore.name,
         varstore.size as usize,
-        &mut hits,
+        &mut scan,
     )?;
-    if hits.is_empty() {
+    if scan.hits.is_empty() {
+        if scan.skipped_behind_barrier {
+            return Err(HiiError::MutationBehindCompression);
+        }
         return Err(HiiError::ValueOpUnsupported(
             "no NVAR StdDefaults stores found in the image".into(),
         ));
@@ -955,6 +962,7 @@ pub fn set_value(image: &mut Image, item_id: &str, value: u64) -> Result<ValueOu
         from: Vec<u8>,
         to: Vec<u8>,
     }
+    let hits = scan.hits;
     let mut plans = Vec::new();
     for (i, hit) in hits.iter().enumerate() {
         let node = node_at(&image.root, &hit.path);
@@ -3978,6 +3986,25 @@ mod tests {
     }
 
     #[test]
+    fn set_value_skips_baked_copy_behind_non_recompressable() {
+        let mut image = image_with_nvar_stores();
+        image.root.children[1].children[0].children[0].parsing_data =
+            ParsingData::GuidedSection(crate::types::GuidedSectionParsingData {
+                guid: crate::ffs::crc32_guid(),
+                dictionary_size: 0,
+            });
+        let baked = image.root.children[1].children[0].children[0].children[0].body.clone();
+
+        let outcome = set_value(&mut image, VENDOR_QUESTION_ITEM, 1).unwrap();
+        assert_eq!(outcome.applied.len(), 1, "пишется только живая raw-копия");
+
+        let live = &image.root.children[0].children[0];
+        assert_ne!(live.body, nvar_store_body(), "raw-стор изменён");
+        let baked_now = &image.root.children[1].children[0].children[0].children[0].body;
+        assert_eq!(&baked_now[..], &baked[..], "запечённый слепок нетронут");
+    }
+
+    #[test]
     fn set_value_refuses_read_only() {
         let mut image = image_with_nvar_stores();
         image.mode = ImageMode::Read;
@@ -4085,17 +4112,14 @@ mod tests {
             root,
             mode: ImageMode::Write,
         };
-        let mut hits = Vec::new();
-        collect_std_defaults_hits(
-            &image.root,
-            &mut Vec::new(),
-            false,
-            None,
-            "Setup",
-            6,
-            &mut hits,
-        )
-        .unwrap();
+        let mut scan = StdDefaultsScan {
+            path: Vec::new(),
+            hits: Vec::new(),
+            skipped_behind_barrier: false,
+        };
+        collect_std_defaults_hits(&image.root, false, None, "Setup", 6, &mut scan).unwrap();
+        assert!(!scan.skipped_behind_barrier);
+        let hits = scan.hits;
         assert_eq!(hits.len(), 1, "only the leaf store is a hit, got {hits:?}");
         assert_eq!(
             hits[0].path,
