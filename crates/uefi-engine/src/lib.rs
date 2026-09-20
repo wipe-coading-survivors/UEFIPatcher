@@ -4,6 +4,7 @@ pub mod decompress;
 pub mod ffs;
 pub mod hii;
 pub mod logging;
+pub mod nvar;
 pub mod ops;
 pub mod parser;
 pub mod rpc;

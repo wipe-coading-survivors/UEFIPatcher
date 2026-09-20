@@ -1,5 +1,8 @@
+use crate::types::Guid;
+
 const SIG: [u8; 4] = *b"NVAR";
 pub const ATTR_VALID: u8 = 0x80;
+pub const ATTR_EXTENDED_HEADER: u8 = 0x10;
 pub const ATTR_DATA_ONLY: u8 = 0x08;
 pub const ATTR_LOCAL_GUID: u8 = 0x04;
 pub const ATTR_ASCII_NAME: u8 = 0x02;
@@ -10,6 +13,9 @@ pub struct NvarRecord {
     pub size: usize,
     pub attributes: u8,
     pub guid_index: Option<u8>,
+    pub guid: Option<Guid>,
+    pub next: Option<u32>,
+    pub extended_size: u16,
     pub name: Option<String>,
     pub data_offset: usize,
     pub data_len: usize,
@@ -24,6 +30,13 @@ pub fn parse_entry(buf: &[u8], off: usize) -> Option<NvarRecord> {
         return None;
     }
     let attributes = buf[off + 9];
+    let next_raw =
+        (buf[off + 6] as u32) | ((buf[off + 7] as u32) << 8) | ((buf[off + 8] as u32) << 16);
+    let next = if next_raw == 0xFF_FFFF {
+        None
+    } else {
+        Some(next_raw)
+    };
     let entry_end = off + size;
     let mut p = off + 10;
     let mut guid_index = None;
@@ -63,14 +76,29 @@ pub fn parse_entry(buf: &[u8], off: usize) -> Option<NvarRecord> {
             return None;
         }
     }
+    let mut data_end = entry_end;
+    let mut extended_size = 0u16;
+    if attributes & ATTR_EXTENDED_HEADER != 0 && size > 14 {
+        let esz = u16::from_le_bytes([buf[entry_end - 2], buf[entry_end - 1]]);
+        if esz >= 3 && (esz as usize) <= size - 10 {
+            extended_size = esz;
+            data_end -= esz as usize;
+        }
+    }
+    if p > data_end {
+        return None;
+    }
     Some(NvarRecord {
         offset: off,
         size,
         attributes,
         guid_index,
+        guid: None,
+        next,
+        extended_size,
         name,
         data_offset: p,
-        data_len: entry_end - p,
+        data_len: data_end - p,
     })
 }
 
@@ -329,5 +357,57 @@ mod tests {
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].name.as_deref(), Some("StdDefaults"));
         assert_eq!(records[0].size, store.len() - 8);
+    }
+
+    #[test]
+    fn parse_entry_reads_next_link() {
+        let mut e = entry(Some("Boot"), &[0x01], ATTR_VALID | ATTR_ASCII_NAME, Some(0));
+        e[6] = 0x34;
+        e[7] = 0x12;
+        e[8] = 0x00;
+        let r = parse_entry(&e, 0).expect("entry parses");
+        assert_eq!(r.next, Some(0x1234));
+        let r2 = parse_entry(&entry(Some("Boot"), &[0x01], 0x82, Some(0)), 0).unwrap();
+        assert_eq!(r2.next, None, "0xFFFFFF = нет ссылки");
+    }
+
+    #[test]
+    fn parse_entry_extended_header_shrinks_data() {
+        let data = vec![0xAA, 0xBB, 0xCC];
+        let ext = vec![0x00, 0x03, 0x00]; // attrs u8 + size u16 = 3 (поле size считает весь ext-хвост)
+        let mut body = Vec::new();
+        body.push(0);
+        body.extend_from_slice(b"Boot");
+        body.push(0);
+        body.extend_from_slice(&data);
+        body.extend_from_slice(&ext);
+        let mut e = Vec::new();
+        e.extend_from_slice(b"NVAR");
+        e.extend_from_slice(&((10 + body.len()) as u16).to_le_bytes());
+        e.extend_from_slice(&[0xFF, 0xFF, 0xFF]);
+        e.push(ATTR_VALID | ATTR_ASCII_NAME | ATTR_EXTENDED_HEADER);
+        e.extend_from_slice(&body);
+        let r = parse_entry(&e, 0).expect("ext-header entry parses");
+        assert_eq!(r.extended_size, 3);
+        assert_eq!(r.data_len, 3, "данные не включают ext-хвост");
+    }
+
+    #[test]
+    fn parse_entry_extended_header_garbage_size_treated_as_absent() {
+        let mut body = Vec::new();
+        body.push(0);
+        body.extend_from_slice(b"Boot");
+        body.push(0);
+        body.extend_from_slice(&[0xAA]);
+        body.extend_from_slice(&[0x00, 0x02, 0x00]); // size=2 < 3 → невалиден
+        let mut e = Vec::new();
+        e.extend_from_slice(b"NVAR");
+        e.extend_from_slice(&((10 + body.len()) as u16).to_le_bytes());
+        e.extend_from_slice(&[0xFF, 0xFF, 0xFF]);
+        e.push(ATTR_VALID | ATTR_ASCII_NAME | ATTR_EXTENDED_HEADER);
+        e.extend_from_slice(&body);
+        let r = parse_entry(&e, 0).expect("entry parses");
+        assert_eq!(r.extended_size, 0);
+        assert_eq!(r.data_len, 4, "хвост считается данными");
     }
 }
