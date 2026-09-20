@@ -3344,6 +3344,7 @@ mod tests {
             action: crate::theme::ACTION_NO,
             expanded: true,
             has_children: false,
+            is_nvar: false,
         };
         app.tree = vec![mk("1", 65), mk("1/28", 66)];
         let c = complete(&app, "remove 1/2");

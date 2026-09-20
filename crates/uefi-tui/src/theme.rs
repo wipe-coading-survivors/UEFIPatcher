@@ -40,6 +40,16 @@ pub fn type_icon(node_type: u8, subtype: u8) -> &'static str {
     }
 }
 
+/// Иконка узла дерева: NVAR-стор — флоппи (цвет наследует тип узла),
+/// остальное — type_icon. Спека nvar-op §2/§7.
+pub fn store_icon(is_nvar: bool, node_type: u8, subtype: u8) -> &'static str {
+    if is_nvar {
+        "\u{F0C7}"
+    } else {
+        type_icon(node_type, subtype)
+    }
+}
+
 /// Nerd Font-пиктограмма типа HII-вопроса (аналог type_icon для Image View);
 /// неизвестный kind — тот же глиф-фолбэк, что у нераспознанных секций.
 pub fn question_icon(kind: &str) -> &'static str {
@@ -163,5 +173,24 @@ mod tests {
         assert_eq!(question_icon("other"), "\u{F016}");
         assert_eq!(question_icon(""), "\u{F016}");
         assert_eq!(question_icon("whatever"), type_icon(TYPE_SECTION, 0xFF));
+    }
+
+    #[test]
+    fn store_icon_floppy_overrides_and_stays_distinct() {
+        assert_eq!(store_icon(true, TYPE_FILE, 0x01), "\u{F0C7}");
+        assert_eq!(
+            store_icon(false, TYPE_FILE, 0x01),
+            type_icon(TYPE_FILE, 0x01)
+        );
+        assert_eq!(store_icon(true, TYPE_SECTION, SECTION_RAW), "\u{F0C7}");
+        for other in [
+            TYPE_IMAGE,
+            TYPE_VOLUME,
+            TYPE_FILE,
+            TYPE_SECTION,
+            TYPE_PADDING,
+        ] {
+            assert_ne!("\u{F0C7}", type_icon(other, 0));
+        }
     }
 }

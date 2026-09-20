@@ -32,6 +32,7 @@ pub fn build_tree(nodes: &[Node]) -> Vec<TreeNode> {
                 action: nd.action as u8,
                 expanded: depth == 0,
                 has_children,
+                is_nvar: nd.is_nvar,
             }
         })
         .collect()
@@ -152,6 +153,19 @@ mod tests {
         let tree = build_tree(&[nd("", 62, 0), me]);
         assert_eq!(tree[0].region, "");
         assert_eq!(tree[1].region, "ME");
+    }
+
+    #[test]
+    fn build_tree_transfers_is_nvar() {
+        let mk = |path: &str, is_nvar: bool| uefi_proto::Node {
+            path: path.into(),
+            r#type: 66,
+            is_nvar,
+            ..Default::default()
+        };
+        let tree = build_tree(&[mk("0", false), mk("0/0", true)]);
+        assert!(!tree[0].is_nvar);
+        assert!(tree[1].is_nvar);
     }
 
     #[test]

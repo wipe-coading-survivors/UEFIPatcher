@@ -106,6 +106,7 @@ pub struct TreeNode {
     pub action: u8,
     pub expanded: bool,
     pub has_children: bool,
+    pub is_nvar: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -978,6 +979,7 @@ mod tests {
             action: ACTION_NO,
             expanded: true,
             has_children: depth == 0,
+            is_nvar: false,
         }
     }
 
@@ -1096,6 +1098,7 @@ mod tests {
             action: ACTION_NO,
             expanded: false,
             has_children: true,
+            is_nvar: false,
         };
         let t = details_text(&f);
         assert!(t.contains("Type:     File (66 / 0x42)"));
@@ -1117,6 +1120,7 @@ mod tests {
             expanded: true,
             has_children: true,
             region: String::new(),
+            is_nvar: false,
         };
         let t = details_text(&v);
         assert!(t.contains("Type:     Volume (65 / 0x41)"));
@@ -1137,6 +1141,7 @@ mod tests {
             expanded: false,
             has_children: true,
             region: "ME".into(),
+            is_nvar: false,
         };
         let t = details_text(&r);
         assert!(t.contains("Region:   ME (read-only)"));
