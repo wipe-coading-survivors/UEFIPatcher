@@ -91,6 +91,7 @@ mod tests {
             name: String::new(),
             action: 0,
             region: String::new(),
+            is_nvar: false,
         }
     }
 

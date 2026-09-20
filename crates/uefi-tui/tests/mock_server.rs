@@ -162,6 +162,7 @@ impl EngineService for MockEngine {
                     name: "Image".into(),
                     action: 0,
                     region: String::new(),
+                    is_nvar: false,
                 },
                 Node {
                     path: "0".into(),
@@ -173,6 +174,7 @@ impl EngineService for MockEngine {
                     name: "ME".into(),
                     action: 0,
                     region: String::new(),
+                    is_nvar: false,
                 },
                 Node {
                     path: "1".into(),
@@ -184,6 +186,7 @@ impl EngineService for MockEngine {
                     name: "DXE".into(),
                     action: 0,
                     region: String::new(),
+                    is_nvar: false,
                 },
                 Node {
                     path: "1/0".into(),
@@ -195,6 +198,7 @@ impl EngineService for MockEngine {
                     name: "Setup".into(),
                     action: 0,
                     region: String::new(),
+                    is_nvar: false,
                 },
                 Node {
                     path: "1/0/0".into(),
@@ -206,6 +210,7 @@ impl EngineService for MockEngine {
                     name: String::new(),
                     action: 0,
                     region: String::new(),
+                    is_nvar: false,
                 },
             ],
         }))
