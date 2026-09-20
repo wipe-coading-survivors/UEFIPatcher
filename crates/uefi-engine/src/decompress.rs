@@ -20,8 +20,8 @@ pub fn decompress(data: &[u8], algorithm: u8) -> Result<Vec<u8>, DecompressError
     }
 }
 
-fn decompress_tiano(_data: &[u8]) -> Result<Vec<u8>, DecompressError> {
-    Err(DecompressError::Unsupported)
+fn decompress_tiano(data: &[u8]) -> Result<Vec<u8>, DecompressError> {
+    crate::tiano::decompress(data, crate::tiano::Pbit::Efi)
 }
 
 fn decompress_lzma(data: &[u8]) -> Result<Vec<u8>, DecompressError> {
@@ -58,11 +58,17 @@ mod tests {
     }
 
     #[test]
-    fn decompress_tiano_unsupported_in_cycle1() {
-        assert!(matches!(
-            decompress(&[0; 16], 1),
-            Err(DecompressError::Unsupported)
-        ));
+    fn decompress_tiano_empty_stream_ok() {
+        // comp_size=0, orig_size=0: успех с пустым выходом, не Unsupported
+        assert_eq!(decompress(&[0; 16], 1).unwrap(), Vec::<u8>::new());
+    }
+
+    #[test]
+    fn decompress_tiano_real_section() {
+        let data = include_bytes!("../tests/fixtures/tiano/c275-min.in");
+        let expected = include_bytes!("../tests/fixtures/tiano/c275-min.expected");
+        let out = decompress(data, 1).expect("tiano decode");
+        assert_eq!(out.as_slice(), &expected[..]);
     }
 
     #[test]
