@@ -290,38 +290,36 @@ pub(crate) struct StoreNodeHit {
 }
 
 /// Сбор NVAR-сторов: File/Section-лист с NVAR-телом; спуск через развёрнутое
-/// содержимое (LZMA-копии включаются). barrier=true — семантика
-/// collect_std_defaults_hits: стор за non-recompressable секцией → отказ
-/// (спека nvar-op §3; барьер для мутаций, листинг зовёт с false).
+/// содержимое (LZMA-копии включаются). Стор за non-recompressable секцией —
+/// запечённый слепок дефолтов (226D2IL/C275: StdDefaults-копия за Tiano),
+/// вне листинга/правок: пропускается (спека nvar-op §3).
 pub(crate) fn collect_stores(
     node: &FfsNode,
     path: &mut Vec<usize>,
     barrier: bool,
     file_guid: Option<&Guid>,
     out: &mut Vec<StoreNodeHit>,
-) -> Result<(), NvarError> {
+) {
     let own_file_guid = if node.node_type == FfsType::File {
         node.guid.as_ref()
     } else {
         file_guid
     };
     if is_nvar_body(node) {
-        if barrier {
-            return Err(NvarError::MutationBehindCompression);
+        if !barrier {
+            out.push(StoreNodeHit {
+                path: path.clone(),
+                desc: store_desc(node, own_file_guid),
+            });
         }
-        out.push(StoreNodeHit {
-            path: path.clone(),
-            desc: store_desc(node, own_file_guid),
-        });
-        return Ok(());
+        return;
     }
     let child_barrier = barrier || section_blocks_mutation(node);
     for (i, child) in node.children.iter().enumerate() {
         path.push(i);
-        collect_stores(child, path, child_barrier, own_file_guid, out)?;
+        collect_stores(child, path, child_barrier, own_file_guid, out);
         path.pop();
     }
-    Ok(())
 }
 
 /// Section-барьер мутаций v5: COMPRESSION/GUID_DEFINED без гарантированного
@@ -372,7 +370,7 @@ pub fn nvar_list(
         None => {
             let mut hits = Vec::new();
             let mut p = Vec::new();
-            collect_stores(&image.root, &mut p, false, None, &mut hits)?;
+            collect_stores(&image.root, &mut p, false, None, &mut hits);
             for h in hits {
                 let node = crate::hii::node_at(&image.root, &h.path);
                 let path_str = h
@@ -473,6 +471,11 @@ struct VarHit {
     data_off: usize,
 }
 
+struct VarHits {
+    hits: Vec<VarHit>,
+    var_behind_barrier: bool,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn collect_var_hits(
     node: &FfsNode,
@@ -483,7 +486,7 @@ fn collect_var_hits(
     guid: Option<Guid>,
     offset: usize,
     width: usize,
-    out: &mut Vec<VarHit>,
+    out: &mut VarHits,
 ) -> Result<(), NvarError> {
     let own_file_guid = if node.node_type == FfsType::File {
         node.guid.as_ref()
@@ -492,7 +495,10 @@ fn collect_var_hits(
     };
     if is_nvar_body(node) {
         if barrier {
-            return Err(NvarError::MutationBehindCompression);
+            if find_var(&node.body, name, guid).ok().flatten().is_some() {
+                out.var_behind_barrier = true;
+            }
+            return Ok(());
         }
         if let Some(f) = find_var(&node.body, name, guid)? {
             if f.record.extended_size > 0 {
@@ -506,7 +512,7 @@ fn collect_var_hits(
                     f.record.data_len
                 )));
             }
-            out.push(VarHit {
+            out.hits.push(VarHit {
                 path: path.clone(),
                 desc: store_desc(node, own_file_guid),
                 data_off: f.data_off,
@@ -535,7 +541,9 @@ fn collect_var_hits(
 
 /// Правка данных переменной во ВСЕХ копиях во всех сторах образа (философия
 /// согласованного флипа v5). Адресация: имя; GUID обязателен при
-/// неоднозначности имени в сторе. Мутация in-place +
+/// неоднозначности имени в сторе. Запечённые копии за non-recompressable
+/// секциями пропускаются; отказ MutationBehindCompression — только если
+/// переменная найдена лишь за барьером. Мутация in-place +
 /// ops::mark_rebuild_to_root_by_path (LZMA-копии пересобираются билдером,
 /// как у set_value). Спека nvar-op §3.
 pub fn nvar_set(
@@ -568,7 +576,10 @@ pub fn nvar_set(
         None => None,
     };
     let offset = offset as usize;
-    let mut hits = Vec::new();
+    let mut found = VarHits {
+        hits: Vec::new(),
+        var_behind_barrier: false,
+    };
     let mut path = Vec::new();
     collect_var_hits(
         &image.root,
@@ -579,13 +590,17 @@ pub fn nvar_set(
         guid,
         offset,
         width,
-        &mut hits,
+        &mut found,
     )?;
-    if hits.is_empty() {
+    if found.hits.is_empty() {
+        if found.var_behind_barrier {
+            return Err(NvarError::MutationBehindCompression);
+        }
         return Err(NvarError::ValueOpUnsupported(format!(
             "no NVAR store in the image has a variable named '{name}'"
         )));
     }
+    let hits = found.hits;
     struct Plan {
         hit_index: usize,
         off: usize,
@@ -1138,6 +1153,86 @@ mod tests {
             nvar_list(&empty, Some("0"), false),
             Err(NvarError::InvalidStore(_))
         ));
+    }
+
+    fn image_live_store_plus_blocked_copy() -> Image {
+        let mk_store = |seed: u8| {
+            let inner = entry(Some("Setup"), &[seed; 8], 0x82, Some(0));
+            entry(Some("StdDefaults"), &inner, 0x82, Some(0))
+        };
+        let mk_file = |offset: u32, seed: u8| FfsNode {
+            guid: Some(Guid::try_parse("CEF5B9A3-476D-497F-9FDC-E98143E0422C").unwrap()),
+            node_type: FfsType::File,
+            subtype: 0x01,
+            offset,
+            header: vec![0x11; 4],
+            body: mk_store(seed),
+            tail: vec![],
+            children: vec![],
+            action: Action::NoAction,
+            parsing_data: ParsingData::None,
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        };
+        let guided = FfsNode {
+            guid: None,
+            node_type: FfsType::Section,
+            subtype: crate::ffs::EFI_SECTION_GUID_DEFINED,
+            offset: 0,
+            header: vec![],
+            body: vec![],
+            tail: vec![],
+            children: vec![mk_file(0x3000, 0x00)],
+            action: Action::NoAction,
+            parsing_data: ParsingData::GuidedSection(crate::types::GuidedSectionParsingData {
+                guid: Guid::try_parse("00000000-0000-0000-0000-000000000000").unwrap(),
+                dictionary_size: 0,
+            }),
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        };
+        let mut img = empty_image();
+        img.root.children = vec![
+            zero_node(FfsType::Volume, vec![mk_file(0x1000, 0x00)]),
+            guided,
+        ];
+        img
+    }
+
+    #[test]
+    fn nvar_list_skips_store_behind_hard_compression() {
+        let mut img = image_live_store_plus_blocked_copy();
+        img.mode = ImageMode::Read;
+        let out = nvar_list(&img, None, false).unwrap();
+        assert_eq!(
+            out.len(),
+            1,
+            "запечённая копия за non-recompressable секцией не листится"
+        );
+        assert_eq!(out[0].path, "0/0");
+    }
+
+    #[test]
+    fn nvar_set_skips_blocked_copy_when_live_store_exists() {
+        let mut img = image_live_store_plus_blocked_copy();
+        img.mode = ImageMode::Write;
+        let out = nvar_set(&mut img, "Setup", None, 0, 1, 1).unwrap();
+        assert_eq!(out.applied.len(), 1, "только живой стор");
+        let live = flatten(&img.root.children[0].children[0].body)
+            .into_iter()
+            .find(|x| x.record.name.as_deref() == Some("Setup"))
+            .unwrap();
+        assert_eq!(img.root.children[0].children[0].body[live.data_off], 1);
+        let blocked = flatten(&img.root.children[1].children[0].body)
+            .into_iter()
+            .find(|x| x.record.name.as_deref() == Some("Setup"))
+            .unwrap();
+        assert_eq!(
+            img.root.children[1].children[0].body[blocked.data_off], 0,
+            "запечённая копия не тронута"
+        );
     }
 
     fn image_two_stores_write() -> Image {
