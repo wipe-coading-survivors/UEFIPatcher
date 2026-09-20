@@ -656,7 +656,7 @@ fn find_question_map(
     for &i in &path[..path.len() - 1] {
         file = &file.children[i];
     }
-    let texts = questions::prompt_texts(file);
+    let texts = questions::prompt_texts(file, &questions::image_string_fallback(&image.root));
     for (start, len) in form_package_ranges(node) {
         if let Some(map) =
             values::find_question(&node.body[start..start + len], form_id, question_id)
@@ -744,7 +744,7 @@ pub fn list_questions(
     for &i in &path[..path.len() - 1] {
         file = &file.children[i];
     }
-    let titles = questions::prompt_texts(file);
+    let titles = questions::prompt_texts(file, &questions::image_string_fallback(&image.root));
     let mut out = Vec::new();
     for (start, len) in form_package_ranges(node) {
         let maps = values::question_maps(&node.body[start..start + len]);
@@ -3381,6 +3381,62 @@ mod tests {
             list_questions(&image, "5c60f367-a505-419a-859e-2a4ff6ca6fe5:0x18:0", 10029).unwrap();
         assert_eq!(qs.len(), 1);
         assert_eq!(qs[0].prompt, "Main", "промпт из строкового пакета 0x18");
+    }
+
+    #[test]
+    fn list_questions_prompt_falls_back_to_largest_image_pool() {
+        let one_of_payload = {
+            let mut p = Vec::new();
+            p.extend_from_slice(&1u16.to_le_bytes());
+            p.extend_from_slice(&2u16.to_le_bytes());
+            p.extend_from_slice(&0x003Bu16.to_le_bytes());
+            p.extend_from_slice(&1u16.to_le_bytes());
+            p.extend_from_slice(&0x003Au16.to_le_bytes());
+            p.extend_from_slice(&[0x10, 0x10, 0x00, 0x01, 0x00]);
+            p
+        };
+        let pkg = forms_pkg(
+            [
+                g_varstore(1, 0x72, "Setup"),
+                g_form(10029),
+                g_opcode(r_efi::hii::IFR_ONE_OF_OP, true, &one_of_payload),
+                g_end(),
+                g_end(),
+                g_end(),
+            ]
+            .concat(),
+        );
+        let mut forms_section = mk_node(FfsType::Section, pkg, vec![]);
+        forms_section.subtype = 0x19;
+        let mut forms_file = mk_node(FfsType::File, vec![], vec![forms_section]);
+        forms_file.guid = Some(Guid::from_str("91B4D9C1-141C-4824-8D02-3C298E36EB3F").unwrap());
+
+        let mut pool_body = Guid::from_str(VENDOR_FORMSET_GUID_STR)
+            .unwrap()
+            .to_bytes()
+            .to_vec();
+        pool_body.extend_from_slice(&1u32.to_le_bytes());
+        pool_body.extend_from_slice(&test_string_pkg());
+        let mut pool_section = mk_node(FfsType::Section, pool_body, vec![]);
+        pool_section.subtype = 0x18;
+        let mut pool_file = mk_node(FfsType::File, vec![], vec![pool_section]);
+        pool_file.guid = Some(Guid::from_str(VENDOR_FORMSET_GUID_STR).unwrap());
+
+        let volume = mk_node(FfsType::Volume, vec![], vec![forms_file, pool_file]);
+        let root = mk_node(FfsType::Image, vec![], vec![volume]);
+        let image = Image {
+            image_id: "img".into(),
+            session_id: "s".into(),
+            root,
+            mode: ImageMode::Read,
+        };
+        let qs =
+            list_questions(&image, "91b4d9c1-141c-4824-8d02-3c298e36eb3f:0x19:0", 10029).unwrap();
+        assert_eq!(qs.len(), 1);
+        assert_eq!(
+            qs[0].prompt, "Main",
+            "промпт из крупнейшего пула другого файла (централизованные AMI-строки)"
+        );
     }
 
     #[test]

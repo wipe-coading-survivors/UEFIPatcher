@@ -15,20 +15,21 @@ use crate::types::{FfsNode, FfsType, Guid, Image, guid_to_upper_string};
 
 pub fn collect_forms(image: &Image) -> Vec<FormInfo> {
     let mut out = Vec::new();
-    walk_files(&image.root, &mut out);
+    let fallback = crate::hii::questions::image_string_fallback(&image.root);
+    walk_files(&image.root, &fallback, &mut out);
     out
 }
 
-fn walk_files(node: &FfsNode, out: &mut Vec<FormInfo>) {
+fn walk_files(node: &FfsNode, fallback: &HashMap<u16, String>, out: &mut Vec<FormInfo>) {
     for child in &node.children {
         if child.node_type == FfsType::File {
-            collect_file_forms(child, out);
+            collect_file_forms(child, fallback, out);
         }
-        walk_files(child, out);
+        walk_files(child, fallback, out);
     }
 }
 
-fn collect_file_forms(file: &FfsNode, out: &mut Vec<FormInfo>) {
+fn collect_file_forms(file: &FfsNode, fallback: &HashMap<u16, String>, out: &mut Vec<FormInfo>) {
     let Some(fg) = file.guid else {
         return;
     };
@@ -36,6 +37,9 @@ fn collect_file_forms(file: &FfsNode, out: &mut Vec<FormInfo>) {
     let mut found: Vec<(String, FormSetInfo)> = Vec::new();
     let mut counters: HashMap<u8, usize> = HashMap::new();
     walk_sections(file, fg, &mut titles, &mut found, &mut counters);
+    for (sid, text) in fallback {
+        titles.entry(*sid).or_insert_with(|| text.clone());
+    }
     for (target, fs) in found {
         for raw in &fs.forms {
             out.push(FormInfo {
@@ -604,6 +608,72 @@ mod tests {
         let node = crate::parser::target::find_item(&image.root, &t).unwrap();
         assert_eq!(node.subtype, 0x18);
         assert_eq!(node.node_type, FfsType::Section);
+    }
+
+    fn mk_pool_image(file_a_sections: Vec<FfsNode>) -> Image {
+        let file_a = mk_node(
+            Some(Guid::from_str("91B4D9C1-141C-4824-8D02-3C298E36EB3F").unwrap()),
+            FfsType::File,
+            0x07,
+            vec![],
+            file_a_sections,
+        );
+        let mut pool_body = Guid::from_str(FILE_GUID).unwrap().to_bytes().to_vec();
+        pool_body.extend_from_slice(&2u32.to_le_bytes());
+        pool_body.extend_from_slice(&string_pkg());
+        pool_body.extend_from_slice(&form_pkg(1));
+        let sec18 = mk_node(None, FfsType::Section, 0x18, pool_body, vec![]);
+        let file_b = mk_node(
+            Some(Guid::from_str(FILE_GUID).unwrap()),
+            FfsType::File,
+            0x07,
+            vec![],
+            vec![sec18],
+        );
+        let volume = mk_node(None, FfsType::Volume, 0, vec![], vec![file_a, file_b]);
+        let root = mk_node(None, FfsType::Image, 0, vec![], vec![volume]);
+        Image {
+            image_id: "img".into(),
+            session_id: "s".into(),
+            root,
+            mode: ImageMode::Read,
+        }
+    }
+
+    #[test]
+    fn collect_forms_titles_fallback_to_largest_image_pool() {
+        let form_sec = mk_node(None, FfsType::Section, 0x19, form_pkg(1), vec![]);
+        let image = mk_pool_image(vec![form_sec]);
+        let forms = collect_forms(&image);
+        let from_a: Vec<_> = forms
+            .iter()
+            .filter(|f| f.form_id.starts_with("91B4D9C1"))
+            .collect();
+        assert_eq!(from_a.len(), 2);
+        assert_eq!(from_a[0].title, "Main", "титул из крупнейшего пула образа");
+        assert_eq!(from_a[1].title, "Hidden");
+    }
+
+    #[test]
+    fn collect_forms_per_file_pool_wins_over_fallback() {
+        let str_sec = mk_node(
+            None,
+            FfsType::Section,
+            0x19,
+            string_pkg_with(b"OwnTitle"),
+            vec![],
+        );
+        let form_sec = mk_node(None, FfsType::Section, 0x19, form_pkg(1), vec![]);
+        let image = mk_pool_image(vec![str_sec, form_sec]);
+        let forms = collect_forms(&image);
+        let from_a: Vec<_> = forms
+            .iter()
+            .filter(|f| f.form_id.starts_with("91B4D9C1"))
+            .collect();
+        assert_eq!(
+            from_a[0].title, "OwnTitle",
+            "per-file пул приоритетнее fallback"
+        );
     }
 
     #[test]

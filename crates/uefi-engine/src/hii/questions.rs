@@ -63,13 +63,41 @@ pub fn questions(pkg: &[u8], form_id: u16) -> Vec<RawQuestion> {
     out
 }
 
-/// string_id → text для файла formset'а: string-пакеты обоих каналов
-/// (RAW-секция + PE-resource), рекурсивно через compression/GUIDED.
-/// Та же схема, что у титулов форм (forms.rs). Спека tui-forms-view §3.4.
-pub fn prompt_texts(file: &FfsNode) -> HashMap<u16, String> {
+/// string_id → text для файла formset'а: string-пакеты всех каналов
+/// (RAW-секция + PE-resource + 0x18-список), рекурсивно через
+/// compression/GUIDED; сиды, не найденные в файле, добираются из
+/// fallback-пула. Та же схема, что у титулов форм (forms.rs).
+/// Спека tui-forms-view §3.4, аддендум hii-walker 2026-09-21.
+pub fn prompt_texts(file: &FfsNode, fallback: &HashMap<u16, String>) -> HashMap<u16, String> {
     let mut titles = HashMap::new();
     collect_string_sections(file, &mut titles);
+    for (sid, text) in fallback {
+        titles.entry(*sid).or_insert_with(|| text.clone());
+    }
     titles
+}
+
+/// Крупнейший строковый пул образа — fallback для формсетов без родных
+/// строк (AMI централизует setup-строки в одном пакете; сиды уникальны
+/// только внутри списка, поэтому пулы не мёржатся — берётся самый
+/// большой). Аддендум hii-walker 2026-09-21.
+pub(crate) fn image_string_fallback(root: &FfsNode) -> HashMap<u16, String> {
+    let mut best: HashMap<u16, String> = HashMap::new();
+    collect_file_pools(root, &mut best);
+    best
+}
+
+fn collect_file_pools(node: &FfsNode, best: &mut HashMap<u16, String>) {
+    if node.node_type == FfsType::File {
+        let mut pool = HashMap::new();
+        collect_string_sections(node, &mut pool);
+        if pool.len() > best.len() {
+            *best = pool;
+        }
+    }
+    for child in &node.children {
+        collect_file_pools(child, best);
+    }
 }
 
 fn collect_string_sections(node: &FfsNode, titles: &mut HashMap<u16, String>) {

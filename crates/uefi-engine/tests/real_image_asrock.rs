@@ -281,6 +281,25 @@ fn real_asrock_226d2il_forms_in_freeform_subtype_guid() {
             "{name}: промпт SOL-вопроса из строкового пакета 0x18, got {:?}",
             sol_q.prompt
         );
+        let d37: Vec<_> = forms
+            .iter()
+            .filter(|f| f.formset_guid == "D37BCD57-ABA1-44E6-A92C-898B158F2F59")
+            .collect();
+        assert_eq!(d37.len(), 9, "{name}: security-формсет 91B4D9C1");
+        let d37_titled = d37.iter().filter(|f| !f.title.is_empty()).count();
+        assert!(
+            d37_titled >= 5,
+            "{name}: титулы D37BCD57 из крупнейшего пула (fallback), titled={d37_titled}"
+        );
+        let edges = uefi_engine::hii::ref_tree::collect_edges(&image);
+        let e14_edges = edges
+            .iter()
+            .filter(|e| e.formset_guid == "E14F04FA-8706-4353-92F2-9C2424746F9F")
+            .count();
+        assert!(
+            e14_edges >= 10,
+            "{name}: REF-иерархия E14F04FA из 0x18-канала, edges={e14_edges}"
+        );
     }
     let data = std::fs::read(asrock_path("C275D4I3.20")).unwrap();
     let image = parse_image(&data, ImageMode::Read, "t", "s").unwrap();
