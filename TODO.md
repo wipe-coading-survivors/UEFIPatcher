@@ -4051,3 +4051,13 @@ version/eventtrap/ad/ldap. Raw-IPMI и PECI-команд НЕТ (OEM-цели
   списку с +1-хедером. 4 юнит-теста (клэмп/saturating/фолбэк/видимые).
   Контекст: спека `2026-09-19-hii-form-export-design.md` (§5/§6),
   ledger `.superpowers/sdd/2026-09-19-hii-form-export/progress.md`.
+
+## Найдено в Task 3 nvar-op (2026-09-20): clippy --all-targets падает на real_image_asrock
+
+`cargo clippy -p uefi-engine --all-targets -- -D warnings` — 2 ошибки
+`collapsible_if` в `crates/uefi-engine/tests/real_image_asrock.rs:17,18`
+(вложенные if при подсчёте tiano-секций). Дефект унаследован из цикла
+tiano-op (коммит 66cad9a), воспроизводится на чистом HEAD до правок
+Task 3 (проверено git stash). Штатная команда цикла (без --all-targets)
+зелёная, поэтому не блокирует nvar-op; поправить свёрткой условий при
+ближайшем проходе по clippy.
