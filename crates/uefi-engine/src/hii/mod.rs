@@ -3291,16 +3291,22 @@ mod tests {
         let node = &image.root.children[0].children[0].children[0];
         let ranges = form_package_ranges(node);
         assert_eq!(ranges.len(), 2, "обе 0x18-формы видны, got {ranges:?}");
-        assert_eq!(&node.body[ranges[0].0..ranges[0].0 + ranges[0].1], &pkg1[..]);
-        assert_eq!(&node.body[ranges[1].0..ranges[1].0 + ranges[1].1], &pkg2[..]);
+        assert_eq!(
+            &node.body[ranges[0].0..ranges[0].0 + ranges[0].1],
+            &pkg1[..]
+        );
+        assert_eq!(
+            &node.body[ranges[1].0..ranges[1].0 + ranges[1].1],
+            &pkg2[..]
+        );
 
-        let questions = list_questions(
-            &image,
-            "5c60f367-a505-419a-859e-2a4ff6ca6fe5:0x18:0",
-            10029,
-        )
-        .unwrap();
-        assert_eq!(questions.len(), 1, "каскад list_questions работает через 0x18");
+        let questions =
+            list_questions(&image, "5c60f367-a505-419a-859e-2a4ff6ca6fe5:0x18:0", 10029).unwrap();
+        assert_eq!(
+            questions.len(),
+            1,
+            "каскад list_questions работает через 0x18"
+        );
     }
 
     #[test]
@@ -3993,7 +3999,9 @@ mod tests {
                 guid: crate::ffs::crc32_guid(),
                 dictionary_size: 0,
             });
-        let baked = image.root.children[1].children[0].children[0].children[0].body.clone();
+        let baked = image.root.children[1].children[0].children[0].children[0]
+            .body
+            .clone();
 
         let outcome = set_value(&mut image, VENDOR_QUESTION_ITEM, 1).unwrap();
         assert_eq!(outcome.applied.len(), 1, "пишется только живая raw-копия");

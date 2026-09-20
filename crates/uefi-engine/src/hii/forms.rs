@@ -533,7 +533,13 @@ mod tests {
     }
 
     fn mk_0x18_image(list: Vec<u8>, extra_junk_0x18: bool) -> Image {
-        let pe_sec = mk_node(None, FfsType::Section, 0x10, vec![0x4Du8, 0x5A, 0x00, 0x00], vec![]);
+        let pe_sec = mk_node(
+            None,
+            FfsType::Section,
+            0x10,
+            vec![0x4Du8, 0x5A, 0x00, 0x00],
+            vec![],
+        );
         let mut sections = vec![pe_sec, mk_node(None, FfsType::Section, 0x18, list, vec![])];
         if extra_junk_0x18 {
             sections.push(mk_node(
