@@ -2043,6 +2043,86 @@ fn real_image_hii_set_value_matches_e14() {
     assert_eq!(built2.len(), built.len());
 }
 
+#[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
+#[test]
+fn real_image_nvar_set_matches_set_value_e14() {
+    let data = load_fw();
+    assert_eq!(data[0x8000C2], 0, "fixture must be the E14-original image");
+    let mut img_a = parse_image(&data, ImageMode::Write, "a", "s").unwrap();
+    let mut img_b = parse_image(&data, ImageMode::Write, "b", "s").unwrap();
+    let item = format!("{PCI_SETUP_MODULE_GUID}:0x10:0#10029:0x3B");
+    uefi_engine::hii::set_value(&mut img_a, &item, 1).expect("set_value");
+    let out = uefi_engine::nvar::nvar_set(
+        &mut img_b,
+        "Setup",
+        Some("EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9"),
+        0x3A,
+        1,
+        1,
+    )
+    .expect("nvar_set");
+    assert_eq!(out.stores.len(), 2, "FV0 raw + FV2 LZMA");
+    assert_eq!(out.applied.len(), 2);
+    let a = uefi_engine::builder::build_image(&img_a).unwrap();
+    let b = uefi_engine::builder::build_image(&img_b).unwrap();
+    assert_eq!(a, b, "nvar set и set_value дают побайтово равные образы");
+    assert_eq!(b[0x8000C2], 1, "FV0 StdDefaults 4G byte 0 -> 1");
+    let lzma_diff = decompressed_diff(&data, &b, 0xa77d40);
+    assert_eq!(lzma_diff, vec![(0x66, 0, 1)]);
+}
+
+#[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
+#[test]
+fn real_image_nvar_set_ambiguous_setup_requires_guid() {
+    let data = load_fw();
+    let mut img = parse_image(&data, ImageMode::Write, "c", "s").unwrap();
+    let err = uefi_engine::nvar::nvar_set(&mut img, "Setup", None, 0x3A, 1, 1)
+        .expect_err("имя Setup в сторе HNX неоднозначно");
+    assert!(matches!(
+        err,
+        uefi_engine::nvar::NvarError::AmbiguousName(_)
+    ));
+    let msg = err.to_string();
+    assert!(
+        msg.contains("EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9"),
+        "{msg}"
+    );
+    assert!(
+        msg.contains("80E1202E-2697-4264-9CC9-80762C3E5863"),
+        "{msg}"
+    );
+}
+
+#[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
+#[test]
+fn real_image_nvar_seed_join_4g() {
+    let data = load_fw();
+    let item = format!("{PCI_SETUP_MODULE_GUID}:0x10:0#10029:0x3B");
+    let img = parse_image(&data, ImageMode::Read, "i", "s").unwrap();
+    let q = uefi_engine::hii::question_info(&img, &item).unwrap();
+    assert_eq!(q.seed_value, Some(0), "E14-original: seed 4G == 0");
+
+    let mut img2 = parse_image(&data, ImageMode::Write, "i2", "s").unwrap();
+    uefi_engine::nvar::nvar_set(
+        &mut img2,
+        "Setup",
+        Some("EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9"),
+        0x3A,
+        1,
+        1,
+    )
+    .unwrap();
+    let built = uefi_engine::builder::build_image(&img2).unwrap();
+    let re = parse_image(&built, ImageMode::Read, "i3", "s").unwrap();
+    let q2 = uefi_engine::hii::question_info(&re, &item).unwrap();
+    assert_eq!(q2.seed_value, Some(1), "seed читает правку nvar_set");
+    let summaries =
+        uefi_engine::hii::list_questions(&re, &format!("{PCI_SETUP_MODULE_GUID}:0x10:0"), 10029)
+            .unwrap();
+    let q4g = summaries.iter().find(|q| q.question_id == 0x3B).unwrap();
+    assert_eq!(q4g.seed_value, Some(1));
+}
+
 fn find_file_bytes(img: &Image, guid: &str) -> Vec<u8> {
     let g = Guid::try_parse(guid).unwrap();
     let node = find_file_node(&img.root, g).unwrap_or_else(|| panic!("file {guid} in tree"));
