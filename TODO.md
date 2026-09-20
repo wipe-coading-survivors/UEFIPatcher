@@ -2350,7 +2350,7 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   потребителя cfg+0x248, строки L"IntelSetup" уже не главный след);
   живой дамп +0x531 после бута discriminate «стор переписывается на
   буте» vs «guard вниз по потоку». Доступы владельца подтверждены:
-  IPMI lanplus (mc info ок), ssh root@<rig-ip: см. AGENTS.md/IPMI-rd450x.txt>, SOL enabled.
+  IPMI lanplus (mc info ок), ssh root-rd450x, SOL enabled.
   **v11 вердикт (2026-09-15, прошит+бутнут):** регистр 0004; вход
   в Setup через SOL (F1-спам) — свежий бут показывает IOU0=[x16] —
   переменная пересеяна фабрикой ПОСТ-ФЛЕШОМ (однократно; поправка
@@ -2406,7 +2406,7 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   Starting...», «Socket[0] is socketValid=1», «IIO=%d, IOUx=%d»
   (ждём IOU0=0), `setpci -s 00:02.0 0x190.w` — 0008=сага закрыта;
   зависание = TMM-рекавери на v13. Доступы: IPMI `source
-  ../IPMI-rd450x.txt`, ssh root@<rig-ip: см. AGENTS.md/IPMI-rd450x.txt>, движок
+  ../IPMI-rd450x.txt`, ssh root-rd450x, движок
   `UEFIPATCHER_SOCK=/tmp/uefipatcher.sock ./target/debug/engine`
   + `uefi-cli`.
   **РЕЗУЛЬТАТ v14 (2026-09-15 ночь, отчёт §J, коммит 6f2dd64):
@@ -3760,7 +3760,7 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   0xffe70ec0+0x448), значение 2 = «порт выключен политикой».
 - После TMM v21: BMC power cycle → SOL (solrig.py, спам ESC+1 раз в
   0.3с) → F9 (ESC+9+Enter) → F10 (ESC+0+Enter) → ОС → ssh
-  root@<rig-ip: см. AGENTS.md/IPMI-rd450x.txt>: lspci|grep 00:02 + сырой ECAM 1B/2B/2C/2D +
+  root-rd450x: lspci|grep 00:02 + сырой ECAM 1B/2B/2C/2D +
   UBOX+0x80 + NVMe. Развилки: 2B есть → охота закрыта (минимизировать
   патч); нет → писец DEVHIDE в pre-mem MRC-части nat-uncore (искать
   вычисляемые записи в QPI-пространство, донор-дифф sm по.writer'ам).
