@@ -1,4 +1,5 @@
 use crate::types::Guid;
+use thiserror::Error;
 
 const SIG: [u8; 4] = *b"NVAR";
 pub const ATTR_VALID: u8 = 0x80;
@@ -145,6 +146,112 @@ pub fn find_varstore_record<'a>(
         }
     }
     None
+}
+
+#[derive(Debug, Error)]
+pub enum NvarError {
+    #[error("not found")]
+    NotFound,
+    #[error("image is not writable (open in Write mode first)")]
+    NotWritable,
+    #[error("target is behind a compressed/guided section that cannot be recompressed")]
+    MutationBehindCompression,
+    #[error("value operation not supported: {0}")]
+    ValueOpUnsupported(String),
+    #[error("ambiguous variable name '{0}'")]
+    AmbiguousName(String),
+    #[error("invalid NVAR store: {0}")]
+    InvalidStore(String),
+}
+
+/// Резолв guid_index по хвосту блоба: k → [len−16·(k+1) .. len−16·k]
+/// (UEFITool nvramparser.cpp:209). Выход за хвост → None — деградация
+/// косметическая, правка по имени остаётся рабочей (спека nvar-op §1).
+pub fn resolve_guid(buf: &[u8], guid_index: u8) -> Option<Guid> {
+    let idx = guid_index as usize;
+    let start = buf.len().checked_sub(16 * (idx + 1))?;
+    let end = buf.len() - 16 * idx;
+    let mut arr = [0u8; 16];
+    arr.copy_from_slice(buf.get(start..end)?);
+    Some(Guid::from_bytes(arr))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FlatRecord {
+    pub record: NvarRecord,
+    pub depth: u32,
+    pub data_off: usize,
+}
+
+pub const MAX_DEPTH: u32 = 4;
+
+/// Pre-order обход записей с рекурсией во вложенные сторы (данные записи
+/// начинаются с валидного NVAR-заголовка) и резолвом GUID по хвосту буфера
+/// каждого уровня. Глубина ≤ MAX_DEPTH (спека nvar-op §1).
+pub fn flatten(buf: &[u8]) -> Vec<FlatRecord> {
+    let mut out = Vec::new();
+    flatten_inner(buf, 0, 0, &mut out);
+    out
+}
+
+fn flatten_inner(buf: &[u8], base: usize, depth: u32, out: &mut Vec<FlatRecord>) {
+    for r in walk(buf) {
+        let mut r = r;
+        if let Some(gi) = r.guid_index {
+            r.guid = resolve_guid(buf, gi);
+        }
+        let (data_offset, data_len) = (r.data_offset, r.data_len);
+        out.push(FlatRecord {
+            data_off: base + data_offset,
+            depth,
+            record: r,
+        });
+        if depth >= MAX_DEPTH || data_len < 10 {
+            continue;
+        }
+        let inner = &buf[data_offset..data_offset + data_len];
+        if parse_entry(inner, 0).is_some() {
+            flatten_inner(inner, base + data_offset, depth + 1, out);
+        }
+    }
+}
+
+/// Поиск записи по имени (GUID опционален). Неоднозначность имени без GUID —
+/// Err с перечнем кандидатов «имя GUID (N bytes)» (спека nvar-op §1/§3).
+pub fn find_var(
+    buf: &[u8],
+    name: &str,
+    guid: Option<Guid>,
+) -> Result<Option<FlatRecord>, NvarError> {
+    let mut hits: Vec<FlatRecord> = flatten(buf)
+        .into_iter()
+        .filter(|f| f.record.name.as_deref() == Some(name))
+        .filter(|f| guid.is_none_or(|g| f.record.guid == Some(g)))
+        .collect();
+    match hits.len() {
+        0 => Ok(None),
+        1 => Ok(Some(hits.swap_remove(0))),
+        _ => {
+            let cands = hits
+                .iter()
+                .map(|f| {
+                    let g = f
+                        .record
+                        .guid
+                        .map(|g| crate::guid_to_upper_string(&g))
+                        .unwrap_or_else(|| "-".into());
+                    format!(
+                        "{} {} ({} bytes)",
+                        f.record.name.clone().unwrap_or_default(),
+                        g,
+                        f.record.data_len
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            Err(NvarError::AmbiguousName(format!("{name}: {cands}")))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -409,5 +516,111 @@ mod tests {
         let r = parse_entry(&e, 0).expect("entry parses");
         assert_eq!(r.extended_size, 0);
         assert_eq!(r.data_len, 4, "хвост считается данными");
+    }
+
+    /// Внутренний стор: записи + свободный хвост + GUID-стор в хвосте
+    /// ВНУТРЕННЕГО блоба (как на живых образах: GUID-резолв записей — по
+    /// хвосту буфера своего уровня).
+    fn guids_inner_fixture() -> Vec<u8> {
+        let ec87 = Guid::try_parse("ec87d643-eba4-4bb5-a1e5-3f3e36b20da9").unwrap();
+        let g80e1 = Guid::try_parse("80e1202e-2697-4264-9cc9-80762c3e5863").unwrap();
+        let lu = Guid::try_parse("8be4df61-93ca-11d2-aa0d-00e098032b8c").unwrap();
+        let mut inner = Vec::new();
+        inner.extend_from_slice(&entry(Some("Setup"), &[0x11; 4], 0x82, Some(0)));
+        inner.extend_from_slice(&entry(Some("Lang"), &[0x22; 2], 0x83, Some(1)));
+        inner.extend_from_slice(&entry(Some("Setup"), &[0x33; 2], 0x82, Some(2)));
+        inner.extend_from_slice(&[0xFF; 4]);
+        inner.extend_from_slice(&ec87.to_bytes()); // gi=2
+        inner.extend_from_slice(&g80e1.to_bytes()); // gi=1
+        inner.extend_from_slice(&lu.to_bytes()); // gi=0
+        inner
+    }
+
+    fn guids_fixture() -> Vec<u8> {
+        entry(Some("StdDefaults"), &guids_inner_fixture(), 0x82, Some(0))
+    }
+
+    #[test]
+    fn resolve_guid_maps_index_to_tail() {
+        let buf = guids_inner_fixture();
+        let ec87 = Guid::try_parse("EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9").unwrap();
+        let lu = Guid::try_parse("8be4df61-93ca-11d2-aa0d-00e098032b8c").unwrap();
+        assert_eq!(resolve_guid(&buf, 0), Some(lu), "gi=0 — последние 16 байт");
+        assert_eq!(resolve_guid(&buf, 2), Some(ec87));
+        assert_eq!(
+            resolve_guid(&buf, 6),
+            None,
+            "индекс за хвостом (16·7=112 > 110 байт фикстуры)"
+        );
+    }
+
+    #[test]
+    fn flatten_recurses_nested_store_and_resolves_guids() {
+        let buf = guids_fixture();
+        let flats = flatten(&buf);
+        assert_eq!(flats.len(), 4, "StdDefaults + 3 вложенных");
+        assert_eq!(flats[0].depth, 0);
+        assert_eq!(flats[0].record.name.as_deref(), Some("StdDefaults"));
+        assert_eq!(flats[1].depth, 1);
+        assert_eq!(flats[1].record.name.as_deref(), Some("Setup"));
+        let lu = Guid::try_parse("8be4df61-93ca-11d2-aa0d-00e098032b8c").unwrap();
+        let ec87 = Guid::try_parse("ec87d643-eba4-4bb5-a1e5-3f3e36b20da9").unwrap();
+        assert_eq!(
+            flats[1].record.guid,
+            Some(lu),
+            "gi=0 → последний GUID хвоста"
+        );
+        assert_eq!(
+            flats[1].data_off,
+            flats[0].record.data_offset + 17,
+            "data_off — в координатах топ-буфера"
+        );
+        assert_eq!(flats[3].record.name.as_deref(), Some("Setup"));
+        assert_ne!(
+            flats[1].record.guid, flats[3].record.guid,
+            "две Setup различимы GUID'ом"
+        );
+        assert_eq!(flats[3].record.guid, Some(ec87), "gi=2 → EC87D643");
+    }
+
+    #[test]
+    fn flatten_depth_is_capped_at_four() {
+        let mut leaf = entry(Some("V"), &[0x00], 0x82, Some(0));
+        for _ in 0..8 {
+            leaf = entry(Some("V"), &leaf, 0x82, Some(0));
+        }
+        let flats = flatten(&leaf);
+        assert!(flats.iter().all(|f| f.depth <= 4));
+        assert!(
+            flats.iter().any(|f| f.depth == 4),
+            "кап не раньше 4 уровней"
+        );
+    }
+
+    #[test]
+    fn find_var_name_and_guid_is_unique() {
+        let buf = guids_fixture();
+        let ec87 = Guid::try_parse("EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9").unwrap();
+        let hit = find_var(&buf, "Setup", Some(ec87)).unwrap().expect("hit");
+        assert_eq!(hit.record.data_len, 2, "GUID выбирает вторую Setup");
+        let miss = find_var(&buf, "Nope", None).unwrap();
+        assert!(miss.is_none());
+    }
+
+    #[test]
+    fn find_var_duplicate_name_without_guid_is_error_with_candidates() {
+        let buf = guids_fixture();
+        let err = find_var(&buf, "Setup", None).unwrap_err();
+        assert!(matches!(err, NvarError::AmbiguousName(_)));
+        let msg = err.to_string();
+        assert!(
+            msg.contains("8BE4DF61-93CA-11D2-AA0D-00E098032B8C"),
+            "{msg}"
+        );
+        assert!(
+            msg.contains("EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9"),
+            "{msg}"
+        );
+        assert!(msg.contains("bytes"), "{msg}");
     }
 }
