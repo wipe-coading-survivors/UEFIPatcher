@@ -14,14 +14,15 @@ fn asrock_path(name: &str) -> PathBuf {
 }
 
 fn count_algo1(node: &FfsNode, total: &mut usize, expanded: &mut usize) {
-    if node.node_type == FfsType::Section && node.subtype == EFI_SECTION_COMPRESSION {
-        if let ParsingData::CompressedSection(cd) = &node.parsing_data {
-            if cd.compression_type == 1 && node.body.len() > 5 {
-                *total += 1;
-                if !node.children.is_empty() {
-                    *expanded += 1;
-                }
-            }
+    if node.node_type == FfsType::Section
+        && node.subtype == EFI_SECTION_COMPRESSION
+        && let ParsingData::CompressedSection(cd) = &node.parsing_data
+        && cd.compression_type == 1
+        && node.body.len() > 5
+    {
+        *total += 1;
+        if !node.children.is_empty() {
+            *expanded += 1;
         }
     }
     for child in &node.children {
