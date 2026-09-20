@@ -238,3 +238,80 @@ fn real_asrock_bake_sol4g_artifacts() {
         println!("{out_name}: {}", out_path.display());
     }
 }
+
+const ASR1_SETUP_FILE: &str = "899407D7-99FE-43D8-9A21-79EC328CAC21";
+const ASR1_4G_ITEM: &str = "899407D7-99FE-43D8-9A21-79EC328CAC21:0x18:0#1158:0x010D";
+
+#[test]
+#[ignore = "requires external ASRock images under refs/amibcp/ (gitignored)"]
+fn real_asrock_226d2il_forms_in_freeform_subtype_guid() {
+    for name in ["226D2IL3.30", "226D2IL3.50"] {
+        let data = std::fs::read(asrock_path(name)).unwrap();
+        let image = parse_image(&data, ImageMode::Read, "t", "s").unwrap();
+        let forms = uefi_engine::hii::forms::collect_forms(&image);
+        let target_prefix = format!("{ASR1_SETUP_FILE}:0x18:0");
+        let from_0x18: Vec<_> = forms
+            .iter()
+            .filter(|f| f.form_id.starts_with(&target_prefix))
+            .collect();
+        assert_eq!(
+            from_0x18.len(),
+            85,
+            "{name}: 85 форм из 0x18-канала (7 форм-пакетов probe 2026-09-21)"
+        );
+        let titled = from_0x18.iter().filter(|f| !f.title.is_empty()).count();
+        assert!(
+            titled >= 60,
+            "{name}: титулы из строкового пакета, titled={titled}"
+        );
+        assert_eq!(
+            from_0x18[0].formset_guid, "985EEE91-BCAC-4238-8778-57EFDC93F24E",
+            "{name}"
+        );
+        let sol =
+            uefi_engine::hii::list_questions(&image, &format!("{ASR1_SETUP_FILE}:0x18:0"), 1025)
+                .unwrap();
+        assert!(
+            sol.iter().any(|q| q.question_id == 5 && q.width == 1),
+            "{name}: SOL-вопрос (form 0x0401 qid 0x0005) виден"
+        );
+    }
+    let data = std::fs::read(asrock_path("C275D4I3.20")).unwrap();
+    let image = parse_image(&data, ImageMode::Read, "t", "s").unwrap();
+    let forms = uefi_engine::hii::forms::collect_forms(&image);
+    assert!(!forms.is_empty(), "C275: формы из .rsrc как раньше");
+    assert!(
+        forms.iter().all(|f| !f.form_id.contains(":0x18:")),
+        "C275: канал 0x18 не добавляет задвоений"
+    );
+}
+
+#[test]
+#[ignore = "requires external ASRock images under refs/amibcp/ (gitignored)"]
+fn real_asrock_226d2il_set_value_bakes_4g_default() {
+    for name in ["226D2IL3.30", "226D2IL3.50"] {
+        let data = std::fs::read(asrock_path(name)).unwrap();
+        assert_eq!(data[0x5004FD], 0, "{name}: 4G-байт до правки");
+        let mut img = parse_image(&data, ImageMode::Write, "t", "s").unwrap();
+        let out = uefi_engine::hii::set_value(&mut img, ASR1_4G_ITEM, 1).unwrap();
+        assert_eq!(out.applied.len(), 1, "{name}: только живая raw-копия");
+        let built = uefi_engine::builder::build_image(&img).unwrap();
+        let diff: Vec<usize> = (0..data.len()).filter(|&i| data[i] != built[i]).collect();
+        assert_eq!(
+            diff,
+            vec![0x5004FD],
+            "{name}: дифф ровно один байт — совпадает с nvar-путём"
+        );
+        assert_eq!(built[0x5004FD], 1, "{name}");
+        let re = parse_image(&built, ImageMode::Read, "t2", "s2").unwrap();
+        let forms = uefi_engine::hii::forms::collect_forms(&re);
+        assert_eq!(
+            forms
+                .iter()
+                .filter(|f| f.form_id.starts_with(&format!("{ASR1_SETUP_FILE}:0x18:0")))
+                .count(),
+            85,
+            "{name}: формы живы после round-trip"
+        );
+    }
+}
