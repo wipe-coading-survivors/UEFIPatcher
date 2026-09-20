@@ -69,35 +69,112 @@ pub fn questions(pkg: &[u8], form_id: u16) -> Vec<RawQuestion> {
 /// fallback-пула. Та же схема, что у титулов форм (forms.rs).
 /// Спека tui-forms-view §3.4, аддендум hii-walker 2026-09-21.
 pub fn prompt_texts(file: &FfsNode, fallback: &HashMap<u16, String>) -> HashMap<u16, String> {
-    let mut titles = HashMap::new();
-    collect_string_sections(file, &mut titles);
+    let mut titles = prompt_texts_own(file);
     for (sid, text) in fallback {
         titles.entry(*sid).or_insert_with(|| text.clone());
     }
     titles
 }
 
+/// Только родные строки файла, без fallback-мёржа (горячий путь
+/// list_questions: fallback резолвится лениво на промах).
+pub(crate) fn prompt_texts_own(file: &FfsNode) -> HashMap<u16, String> {
+    let mut titles = HashMap::new();
+    collect_string_sections(file, &mut titles);
+    titles
+}
+
 /// Крупнейший строковый пул образа — fallback для формсетов без родных
 /// строк (AMI централизует setup-строки в одном пакете; сиды уникальны
 /// только внутри списка, поэтому пулы не мёржатся — берётся самый
-/// большой). Аддендум hii-walker 2026-09-21.
+/// большой). Кандидаты сравниваются по длине пакетов из заголовков
+/// (без парсинга строк); парсится только файл-победитель — fallback
+/// собирается на каждый list_questions/find_question_map, полный
+/// парсинг всех пулов недопустим (замер 2026-09-21: collect_forms
+/// 546мс → мёрж+полный парсинг). Аддендум hii-walker 2026-09-21.
 pub(crate) fn image_string_fallback(root: &FfsNode) -> HashMap<u16, String> {
-    let mut best: HashMap<u16, String> = HashMap::new();
-    collect_file_pools(root, &mut best);
+    let mut best_len = 0usize;
+    let mut best_file: Option<&FfsNode> = None;
+    find_largest_pool_file(root, &mut best_len, &mut best_file);
+    let mut best = HashMap::new();
+    if let Some(file) = best_file {
+        collect_string_sections(file, &mut best);
+    }
     best
 }
 
-fn collect_file_pools(node: &FfsNode, best: &mut HashMap<u16, String>) {
+fn find_largest_pool_file<'a>(
+    node: &'a FfsNode,
+    best_len: &mut usize,
+    best_file: &mut Option<&'a FfsNode>,
+) {
     if node.node_type == FfsType::File {
-        let mut pool = HashMap::new();
-        collect_string_sections(node, &mut pool);
-        if pool.len() > best.len() {
-            *best = pool;
+        let len = max_string_pkg_len(node);
+        if len > *best_len {
+            *best_len = len;
+            *best_file = Some(node);
         }
     }
     for child in &node.children {
-        collect_file_pools(child, best);
+        find_largest_pool_file(child, best_len, best_file);
     }
+}
+
+fn max_string_pkg_len(node: &FfsNode) -> usize {
+    let mut best = 0usize;
+    for child in &node.children {
+        if child.node_type != FfsType::Section {
+            continue;
+        }
+        let cand = match child.subtype {
+            EFI_SECTION_RAW => {
+                if child.body.len() > 4
+                    && child.body[3] == PACKAGE_STRINGS
+                    && declared_len_sane(&child.body)
+                {
+                    u24_at(&child.body, 0)
+                } else {
+                    0
+                }
+            }
+            EFI_SECTION_PE32 => hii_resource_blobs(&child.body)
+                .into_iter()
+                .filter_map(parse_package_list)
+                .flat_map(|list| list.packages.into_iter())
+                .filter(|p| p.kind == PACKAGE_STRINGS)
+                .map(|p| p.bytes.len())
+                .max()
+                .unwrap_or(0),
+            EFI_SECTION_FREEFORM_SUBTYPE_GUID => parse_package_list_exact(&child.body)
+                .map(|list| {
+                    list.packages
+                        .iter()
+                        .filter(|p| p.kind == PACKAGE_STRINGS)
+                        .map(|p| p.bytes.len())
+                        .max()
+                        .unwrap_or(0)
+                })
+                .unwrap_or(0),
+            _ => 0,
+        };
+        if cand > best {
+            best = cand;
+        }
+        if matches!(
+            child.subtype,
+            EFI_SECTION_COMPRESSION | EFI_SECTION_GUID_DEFINED
+        ) {
+            best = best.max(max_string_pkg_len(child));
+        }
+    }
+    best
+}
+
+fn u24_at(bytes: &[u8], off: usize) -> usize {
+    if off + 3 > bytes.len() {
+        return 0;
+    }
+    bytes[off] as usize | ((bytes[off + 1] as usize) << 8) | ((bytes[off + 2] as usize) << 16)
 }
 
 fn collect_string_sections(node: &FfsNode, titles: &mut HashMap<u16, String>) {

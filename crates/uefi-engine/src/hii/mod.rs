@@ -744,7 +744,8 @@ pub fn list_questions(
     for &i in &path[..path.len() - 1] {
         file = &file.children[i];
     }
-    let titles = questions::prompt_texts(file, &questions::image_string_fallback(&image.root));
+    let titles = questions::prompt_texts_own(file);
+    let fallback = questions::image_string_fallback(&image.root);
     let mut out = Vec::new();
     for (start, len) in form_package_ranges(node) {
         let maps = values::question_maps(&node.body[start..start + len]);
@@ -767,7 +768,11 @@ pub fn list_questions(
             out.push(uefi_proto::QuestionSummary {
                 question_id: q.question_id as u32,
                 kind: question_kind_str(q.kind).to_string(),
-                prompt: titles.get(&q.prompt_sid).cloned().unwrap_or_default(),
+                prompt: titles
+                    .get(&q.prompt_sid)
+                    .or_else(|| fallback.get(&q.prompt_sid))
+                    .cloned()
+                    .unwrap_or_default(),
                 var_store_id: q.var_store_id as u32,
                 var_offset: q.var_offset as u32,
                 width: q.width as u32,

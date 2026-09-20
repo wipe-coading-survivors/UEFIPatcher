@@ -37,16 +37,17 @@ fn collect_file_forms(file: &FfsNode, fallback: &HashMap<u16, String>, out: &mut
     let mut found: Vec<(String, FormSetInfo)> = Vec::new();
     let mut counters: HashMap<u8, usize> = HashMap::new();
     walk_sections(file, fg, &mut titles, &mut found, &mut counters);
-    for (sid, text) in fallback {
-        titles.entry(*sid).or_insert_with(|| text.clone());
-    }
     for (target, fs) in found {
         for raw in &fs.forms {
             out.push(FormInfo {
                 form_id: target.clone(),
                 formset_guid: guid_to_upper_string(&fs.guid),
                 form_id_ifr: raw.form_id as u32,
-                title: titles.get(&raw.title).cloned().unwrap_or_default(),
+                title: titles
+                    .get(&raw.title)
+                    .or_else(|| fallback.get(&raw.title))
+                    .cloned()
+                    .unwrap_or_default(),
                 visible: !raw.suppressed,
             });
         }
