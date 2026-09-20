@@ -778,15 +778,7 @@ fn collect_std_defaults_hits(
         }
         return Ok(());
     }
-    let child_barrier = barrier
-        || (node.node_type == FfsType::Section
-            && (node.subtype == EFI_SECTION_COMPRESSION
-                || node.subtype == EFI_SECTION_GUID_DEFINED)
-            && !matches!(
-                &node.parsing_data,
-                crate::types::ParsingData::GuidedSection(d)
-                    if crate::ffs::is_recompressable_lzma_guid(&d.guid)
-            ));
+    let child_barrier = barrier || crate::nvar::section_blocks_mutation(node);
     for (i, child) in node.children.iter().enumerate() {
         path.push(i);
         collect_std_defaults_hits(
