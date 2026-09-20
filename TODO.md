@@ -3264,6 +3264,17 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   секция «Найдено в Task 3 nvar-op» ниже) + field_reassign_with_default
   x13 и Buffer::get deprecated в uefi-tui тестах; не блокируют цикл:
   `clippy --all` без --all-targets зелёный.
+* [ ] **nvar listing_of сводка миксует уровни** — records считается по
+  flatten-строкам (вложенные включены), guid_store_size/free_tail — по
+  top-level walk верхнего блоба; косметика — считать по уровню
+  переменных или документировать.
+* [ ] **walk NVAR-стора строго континуален** — next-линки (фрагментация)
+  не traversed, листинг молча обрежется на разрыве; поле next парсится
+  с Task 1, не потребляется.
+* [ ] **Легенда nvar list «offset = absolute data offset in the image»
+  неточна для сторов за recompressable-LZMA** — офсеты относительно
+  распакованного буфера (совместимо с конвенцией дерева Node.offset);
+  уточнить формулировку format.rs (uefi-common/src/format.rs:132).
 * [x] **Смещения дескриптора были неверны — исправлено по живому
   использованию (2026-09-11)** — FLVALSIG канонически лежит за 16-байтовым
   reserved vector (offset 0x10), FLMAP0 сразу за сигнатурой (0x14), секции
