@@ -3300,11 +3300,22 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   form_export/gates) + `collect_std_defaults_hits` на барьерную v5 (skip
   за-Tiano слепка). Аддендумы hii-walker/nvar-op 2026-09-21; реал-гейты:
   `real_asrock_226d2il_forms_in_freeform_subtype_guid`,
-  `..._set_value_bakes_4g_default` (Above 4G = form 0x0486 qid 0x010D, дифф
-  ровно 0x5004FD — совпадает с nvar-путём). SOL-вопрос виден: form 0x0401
-  qid 0x0005 (OneOf off=1); псевдоним off=1 в form 0x040b qid 0x0023 —
-  тот же байт, другой вопрос. IFR-дефолты не трогаем: у SOL/4G вопросы без
+  `..._set_value_bakes_two_setup_bytes` (два байта off=1/off=1141 —
+  совпадает с nvar-путём). IFR-дефолты не трогаем: вопросы без
   DEFAULT-опкодов, дефолты живут только в StdDefaults.
+  **Коррекция атрибуции (юзер + probe 2026-09-21):** Above 4G Decoding =
+  off=1, ДВЕ копии вопроса — form 1025 (0x401) qid 5 и form 1035 (0x40B)
+  qid 0x23, обе varstore Setup (промпт «Above 4G Decoding» резолвится из
+  0x18-строк). Форма 1158 (0x486, формсет E14F04FA) «Serial Port Console
+  Redirection»: 3 CheckBox «Console Redirection» (qid 0x10B off=1140 /
+  0x10D off=1141 / 0x10F off=1156, seed 0/0/1) + 3 REF-подформы — 0x487
+  «Console Redirection Settings», 0x488 «COM1», 0x489 «SOL» (все есть в
+  collect_forms/collect_edges; юзер видит 2 из 3 — уточнить где: TUI или
+  живой Setup). Live-разведка 2026-09-20, похоже, переставила метки
+  байтов ([1]↔[1141]); финальная атрибуция — живой сессией диффов NVRAM
+  (план: по одному переключению → дамп efivar Setup-EC87D643, шаг за
+  шагом; возврат efivar-restore из отчёта 2026-09-20). SOL-вопрос ожидаемо
+  = 0x10D (off=1141) либо в подформе 0x489.
 * [x] **Смещения дескриптора были неверны — исправлено по живому
   использованию (2026-09-11)** — FLVALSIG канонически лежит за 16-байтовым
   reserved vector (offset 0x10), FLMAP0 сразу за сигнатурой (0x14), секции
