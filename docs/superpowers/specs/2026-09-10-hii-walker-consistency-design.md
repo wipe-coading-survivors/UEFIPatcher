@@ -186,3 +186,42 @@ Real-image (`#[ignore]`, HNX99TF):
   игнорирует заявленную длину», `question_storage_width`, «смещения ±4»,
   `scope_balance`, edge-тесты, «один мусорный байт» — с формулировками пересмотра
   из §2; добавить кандидат «пересадка set_item_visibility на gates-слой» (§4).
+
+## Аддендум (2026-09-21): третий канал форм — FREEFORM_SUBTYPE_GUID (0x18)
+
+Контекст: TODO «Setup-формы 226D2IL лежат в FREEFORM_SUBTYPE_GUID» (находка
+разбора 2026-09-21). AMI Setup-файл 899407D7-99FE-43D8-9A21-79EC328CAC21 на
+226D2IL3.30/.50 разложен иначе, чем на C275: COMPRESSION ctype=0 → PE32 без
+ресурсов + секция 0x18 (subTypeGuid `97E409E6-4CC1-11D9-81F6-…`, 382 483 б),
+тело которой — HII-список: `[GUID 16][u32 = счётчик пакетов][пакеты]` **без
+END-терминатора, ровно до последнего байта** (probe 2026-09-21 на 226D2IL3.30:
+1 строковый пакет на 3833 строки + 7 форм-пакетов = 85 форм; титулы «Main»,
+«Above 4G Decoding» резолвятся из него же — кросс-файловый резолв не нужен).
+Строгий `parse_package_list` (PE32-ресурсы) требует END — на этом блобе
+возвращает None; его контракт не меняется.
+
+Решения:
+
+1. `package_list::parse_package_list_exact(bytes)` — tolerant-вариант: цепочка
+   пакетов обязана потребить буфер ровно до конца, END-терминатор не требуется
+   (если есть — допустим последним пакетом). Exact-конец и есть защита от
+   false-positive на нерелевантных 0x18-секциях.
+2. `forms::walk_sections` — ветка 0x18: exact-список → PACKAGE_FORMS в found,
+   PACKAGE_STRINGS в titles; цикл дрейняет общий с PE32-веткой (хелпер, без
+   дублирования).
+3. `form_package_ranges` — ветка 0x18: диапазоны форм-пакетов exact-списка.
+   Каскад без правок потребителей: `list_questions`, `find_question_map`
+   (`set_value`, `question_info`), `form_export`, `cross_formset`, gates.
+
+Таргет-грамматика: `{file-guid}:0x18:{idx}` — `find_item` generic по
+subtype+index, round-trip фиксируется тестом. Пользовательский эффект: Forms
+View / `hii questions` / `hii set-value` на asr1 (226D2IL) — контракт
+tui-forms-view не меняется, TUI-код не трогается.
+
+Не-цели: мутации 0x18-списка (`hii form add`), правка строгого парсера,
+кросс-файловый резолв титулов.
+
+Гейты: unit (exact-парсер: exact-end без END → Some, обрыв/мусор → None,
+END последним → Some; walk 0x18 c титулами; ranges 0x18; таргет round-trip);
+real-image 226D2IL3.30/.50: 85 форм от `899407D7…:0x18:0`, титулы непустые;
+C275-регресс: формы из .rsrc без задвоения (0x18 там нет).
