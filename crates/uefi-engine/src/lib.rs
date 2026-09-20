@@ -9,5 +9,6 @@ pub mod parser;
 pub mod rpc;
 pub mod session;
 pub mod storage;
+pub mod tiano;
 pub mod types;
 pub use types::*;
