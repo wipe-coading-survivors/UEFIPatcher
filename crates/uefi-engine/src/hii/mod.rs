@@ -739,17 +739,6 @@ struct StoreHit {
     body_offset: usize,
 }
 
-fn store_desc(node: &FfsNode, file_guid: Option<&Guid>) -> String {
-    let guid_text = file_guid
-        .map(crate::guid_to_upper_string)
-        .unwrap_or_else(|| "unknown".into());
-    if node.node_type == FfsType::File {
-        format!("file {guid_text} (raw body)")
-    } else {
-        format!("file {guid_text} section {:#04x} raw body", node.subtype)
-    }
-}
-
 fn collect_std_defaults_hits(
     node: &FfsNode,
     path: &mut Vec<usize>,
@@ -776,13 +765,13 @@ fn collect_std_defaults_hits(
         if let Some((off, _)) = nvar::find_varstore_record(&node.body, name, data_len) {
             out.push(StoreHit {
                 path: path.clone(),
-                desc: store_desc(node, own_file_guid),
+                desc: crate::nvar::store_desc(node, own_file_guid),
                 body_offset: off,
             });
         } else {
             return Err(HiiError::ValueOpUnsupported(format!(
                 "StdDefaults store {} has no record {:?} of {} bytes",
-                store_desc(node, own_file_guid),
+                crate::nvar::store_desc(node, own_file_guid),
                 name,
                 data_len
             )));

@@ -1,4 +1,4 @@
-use crate::types::Guid;
+use crate::types::{FfsNode, FfsType, Guid, Image};
 use thiserror::Error;
 
 const SIG: [u8; 4] = *b"NVAR";
@@ -265,9 +265,206 @@ pub fn find_var(
     }
 }
 
+pub struct NvarVarRow {
+    pub name: String,
+    pub guid: Option<Guid>,
+    pub offset: usize,
+    pub size: usize,
+    pub attributes: u8,
+    pub depth: u32,
+    pub data: Vec<u8>,
+}
+
+pub struct NvarStoreListing {
+    pub path: String,
+    pub desc: String,
+    pub rows: Vec<NvarVarRow>,
+    pub records: usize,
+    pub free_tail: usize,
+    pub guid_store_size: usize,
+}
+
+pub(crate) struct StoreNodeHit {
+    pub path: Vec<usize>,
+    pub desc: String,
+}
+
+/// Сбор NVAR-сторов: File/Section-лист с NVAR-телом; спуск через развёрнутое
+/// содержимое (LZMA-копии включаются). barrier=true — семантика
+/// collect_std_defaults_hits: стор за non-recompressable секцией → отказ
+/// (спека nvar-op §3; барьер для мутаций, листинг зовёт с false).
+pub(crate) fn collect_stores(
+    node: &FfsNode,
+    path: &mut Vec<usize>,
+    barrier: bool,
+    file_guid: Option<&Guid>,
+    out: &mut Vec<StoreNodeHit>,
+) -> Result<(), NvarError> {
+    let own_file_guid = if node.node_type == FfsType::File {
+        node.guid.as_ref()
+    } else {
+        file_guid
+    };
+    if is_nvar_body(node) {
+        if barrier {
+            return Err(NvarError::MutationBehindCompression);
+        }
+        out.push(StoreNodeHit {
+            path: path.clone(),
+            desc: store_desc(node, own_file_guid),
+        });
+        return Ok(());
+    }
+    let child_barrier = barrier || section_blocks_mutation(node);
+    for (i, child) in node.children.iter().enumerate() {
+        path.push(i);
+        collect_stores(child, path, child_barrier, own_file_guid, out)?;
+        path.pop();
+    }
+    Ok(())
+}
+
+/// Section-барьер мутаций v5: COMPRESSION/GUID_DEFINED без гарантированного
+/// пересжатия (не recompressable-LZMA). Единая точка для nvar_set и
+/// collect_std_defaults_hits (hii/mod.rs) — спека nvar-op §3.
+pub(crate) fn section_blocks_mutation(node: &FfsNode) -> bool {
+    node.node_type == FfsType::Section
+        && (node.subtype == crate::ffs::EFI_SECTION_COMPRESSION
+            || node.subtype == crate::ffs::EFI_SECTION_GUID_DEFINED)
+        && !matches!(
+            &node.parsing_data,
+            crate::types::ParsingData::GuidedSection(d)
+                if crate::ffs::is_recompressable_lzma_guid(&d.guid)
+        )
+}
+
+/// Листинг NVAR-сторов образа: без path — все сторы; с path — один
+/// (грамматика target: tree-path «0/2» или GUID-форма, parse_target).
+/// offset строки = абсолютный офсет данных в образе
+/// node.offset + header.len() + data_off (спека nvar-op §3).
+pub fn nvar_list(
+    image: &Image,
+    path: Option<&str>,
+    include_data: bool,
+) -> Result<Vec<NvarStoreListing>, NvarError> {
+    let mut out = Vec::new();
+    match path {
+        Some(p) => {
+            let target = crate::parser::target::parse_target(p)
+                .map_err(|_| NvarError::InvalidStore(format!("bad path: {p}")))?;
+            let node = crate::parser::target::find_item(&image.root, &target)
+                .map_err(|_| NvarError::InvalidStore(format!("path {p} not found")))?;
+            if !is_nvar_body(node) {
+                return Err(NvarError::InvalidStore(format!(
+                    "node {p} is not an NVAR store"
+                )));
+            }
+            let indices =
+                crate::parser::target::find_item_path(&image.root, &target).unwrap_or_default();
+            let path_str = indices
+                .iter()
+                .map(usize::to_string)
+                .collect::<Vec<_>>()
+                .join("/");
+            let desc = store_desc(node, owning_file_guid(&image.root, &indices).as_ref());
+            out.push(listing_of(node, &path_str, desc, include_data));
+        }
+        None => {
+            let mut hits = Vec::new();
+            let mut p = Vec::new();
+            collect_stores(&image.root, &mut p, false, None, &mut hits)?;
+            for h in hits {
+                let node = crate::hii::node_at(&image.root, &h.path);
+                let path_str = h
+                    .path
+                    .iter()
+                    .map(usize::to_string)
+                    .collect::<Vec<_>>()
+                    .join("/");
+                out.push(listing_of(node, &path_str, h.desc.clone(), include_data));
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn owning_file_guid(root: &FfsNode, indices: &[usize]) -> Option<Guid> {
+    let mut node = root;
+    let mut guid = None;
+    for &i in indices {
+        node = node.children.get(i)?;
+        if node.node_type == FfsType::File {
+            guid = node.guid;
+        }
+    }
+    guid
+}
+
+fn listing_of(
+    node: &FfsNode,
+    path_str: &str,
+    desc: String,
+    include_data: bool,
+) -> NvarStoreListing {
+    let buf = &node.body;
+    let flats = flatten(buf);
+    let body_base = node.offset as usize + node.header.len();
+    let rows: Vec<NvarVarRow> = flats
+        .iter()
+        .map(|f| NvarVarRow {
+            name: f
+                .record
+                .name
+                .clone()
+                .unwrap_or_else(|| "(data-only)".into()),
+            guid: f.record.guid,
+            offset: body_base + f.data_off,
+            size: f.record.data_len,
+            attributes: f.record.attributes,
+            depth: f.depth,
+            data: if include_data {
+                buf[f.data_off..f.data_off + f.record.data_len].to_vec()
+            } else {
+                Vec::new()
+            },
+        })
+        .collect();
+    let top = walk(buf);
+    let consumed = top.last().map(|r| r.offset + r.size).unwrap_or(0);
+    let guid_count = top
+        .iter()
+        .filter_map(|r| r.guid_index)
+        .map(|g| g as usize + 1)
+        .max()
+        .unwrap_or(0);
+    let guid_store_size = 16 * guid_count;
+    NvarStoreListing {
+        path: path_str.to_string(),
+        desc,
+        records: rows.len(),
+        free_tail: buf.len().saturating_sub(consumed + guid_store_size),
+        guid_store_size,
+        rows,
+    }
+}
+
+/// Описание стора для диагностик: «file <GUID> (raw body)» либо
+/// «file <GUID> section <type> raw body» (перенесена из hii/mod.rs:742).
+pub(crate) fn store_desc(node: &FfsNode, file_guid: Option<&Guid>) -> String {
+    let guid_text = file_guid
+        .map(crate::guid_to_upper_string)
+        .unwrap_or_else(|| "unknown".into());
+    if node.node_type == FfsType::File {
+        format!("file {guid_text} (raw body)")
+    } else {
+        format!("file {guid_text} section {:#04x} raw body", node.subtype)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::{Action, FfsNode, FfsType, Image, ImageMode, ParsingData};
 
     fn entry(name: Option<&str>, data: &[u8], attributes: u8, guid_index: Option<u8>) -> Vec<u8> {
         let mut e = Vec::new();
@@ -633,5 +830,132 @@ mod tests {
             "{msg}"
         );
         assert!(msg.contains("bytes"), "{msg}");
+    }
+
+    fn zero_node(node_type: FfsType, children: Vec<FfsNode>) -> FfsNode {
+        FfsNode {
+            guid: None,
+            node_type,
+            subtype: 0,
+            offset: 0,
+            header: vec![],
+            body: vec![],
+            tail: vec![],
+            children,
+            action: Action::NoAction,
+            parsing_data: ParsingData::None,
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        }
+    }
+
+    fn empty_image() -> Image {
+        Image {
+            image_id: "i1".into(),
+            session_id: "s1".into(),
+            root: zero_node(FfsType::Image, vec![]),
+            mode: ImageMode::Read,
+        }
+    }
+
+    fn image_with_store(offset: u32, header_len: usize, body: Vec<u8>) -> Image {
+        let mut file = zero_node(FfsType::File, vec![]);
+        file.guid = Some(Guid::try_parse("CEF5B9A3-476D-497F-9FDC-E98143E0422C").unwrap());
+        file.subtype = 0x01;
+        file.offset = offset;
+        file.header = vec![0x11; header_len];
+        file.body = body;
+        let mut img = empty_image();
+        img.root.children = vec![zero_node(FfsType::Volume, vec![file])];
+        img
+    }
+
+    #[test]
+    fn nvar_list_reports_rows_offsets_and_summary() {
+        let store = guids_fixture();
+        let img = image_with_store(0x1000, 4, store.clone());
+        let out = nvar_list(&img, None, true).unwrap();
+        assert_eq!(out.len(), 1);
+        let s = &out[0];
+        assert_eq!(s.records, 4, "StdDefaults + 3 вложенных");
+        assert_eq!(
+            s.guid_store_size, 16,
+            "сводка — по верхнему уровню (gi=0 у StdDefaults)"
+        );
+        assert_eq!(s.free_tail, 0, "внешний блоб занят записью целиком");
+        assert_eq!(s.path, "0/0");
+        assert!(s.desc.contains("CEF5B9A3"), "{}", s.desc);
+        let setup_main = s
+            .rows
+            .iter()
+            .find(|r| r.name == "Setup" && r.size == 4)
+            .unwrap();
+        let lu = Guid::try_parse("8be4df61-93ca-11d2-aa0d-00e098032b8c").unwrap();
+        assert_eq!(setup_main.guid, Some(lu), "gi=0 → GUID из хвоста");
+        assert_eq!(setup_main.depth, 1);
+        assert_eq!(setup_main.data, vec![0x11; 4]);
+        assert_eq!(
+            setup_main.offset,
+            0x1000 + 4 + s_body_setup_abs(&store),
+            "абсолютный офсет = node.offset + header + data_off"
+        );
+        let ec87 = Guid::try_parse("ec87d643-eba4-4bb5-a1e5-3f3e36b20da9").unwrap();
+        let setup_second = s
+            .rows
+            .iter()
+            .find(|r| r.name == "Setup" && r.size == 2)
+            .unwrap();
+        assert_eq!(setup_second.guid, Some(ec87), "gi=2 → EC87D643");
+    }
+
+    fn s_body_setup_abs(store: &[u8]) -> usize {
+        flatten(store)
+            .into_iter()
+            .find(|f| f.record.name.as_deref() == Some("Setup") && f.record.data_len == 4)
+            .unwrap()
+            .data_off
+    }
+
+    #[test]
+    fn nvar_list_data_only_row_and_no_data_mode() {
+        let mut inner = entry(Some("Setup"), &[0x11; 4], 0x82, Some(0));
+        inner.extend_from_slice(&raw_entry(
+            (10 + 2) as u16,
+            ATTR_VALID | ATTR_DATA_ONLY,
+            &[0xAA, 0xBB],
+        ));
+        let store = entry(Some("StdDefaults"), &inner, 0x82, Some(0));
+        let img = image_with_store(0x100, 4, store);
+        let out = nvar_list(&img, None, false).unwrap();
+        let data_only = out[0]
+            .rows
+            .iter()
+            .find(|r| r.name == "(data-only)")
+            .unwrap();
+        assert_eq!(data_only.size, 2);
+        assert!(data_only.guid.is_none());
+        assert!(
+            out[0].rows.iter().all(|r| r.data.is_empty()),
+            "include_data=false"
+        );
+    }
+
+    #[test]
+    fn nvar_list_targeted_path_and_rejections() {
+        let store = guids_fixture();
+        let img = image_with_store(0x1000, 4, store);
+        let one = nvar_list(&img, Some("0/0"), false).unwrap();
+        assert_eq!(one.len(), 1);
+        assert_eq!(one[0].path, "0/0");
+        assert!(matches!(
+            nvar_list(&img, Some("0/9"), false),
+            Err(NvarError::InvalidStore(_))
+        ));
+        let empty = empty_image();
+        assert!(matches!(
+            nvar_list(&empty, Some("0"), false),
+            Err(NvarError::InvalidStore(_))
+        ));
     }
 }
