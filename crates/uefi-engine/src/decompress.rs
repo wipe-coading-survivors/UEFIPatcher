@@ -20,8 +20,13 @@ pub fn decompress(data: &[u8], algorithm: u8) -> Result<Vec<u8>, DecompressError
     }
 }
 
+/// Algo-1 payload: сначала EFI 1.1 (pbit=4), при ошибке — Tiano (pbit=5),
+/// как в UEFITool ( ref: utility.cpp:243 — оба варианта, выбор по успеху).
+/// Не разрешает «оба декодируются» preparse'ом ( ref: ffsparser.cpp:3292):
+/// Efi приоритетен, корпус C275 целиком pbit=4.
 fn decompress_tiano(data: &[u8]) -> Result<Vec<u8>, DecompressError> {
     crate::tiano::decompress(data, crate::tiano::Pbit::Efi)
+        .or_else(|_| crate::tiano::decompress(data, crate::tiano::Pbit::Tiano))
 }
 
 fn decompress_lzma(data: &[u8]) -> Result<Vec<u8>, DecompressError> {
@@ -68,6 +73,14 @@ mod tests {
         let data = include_bytes!("../tests/fixtures/tiano/c275-min.in");
         let expected = include_bytes!("../tests/fixtures/tiano/c275-min.expected");
         let out = decompress(data, 1).expect("tiano decode");
+        assert_eq!(out.as_slice(), &expected[..]);
+    }
+
+    #[test]
+    fn decompress_tiano_variant_fallback() {
+        let data = include_bytes!("../tests/fixtures/tiano/226d2-min.in");
+        let expected = include_bytes!("../tests/fixtures/tiano/226d2-min.expected");
+        let out = decompress(data, 1).expect("tiano-variant (pbit 5) section decodes via fallback");
         assert_eq!(out.as_slice(), &expected[..]);
     }
 
