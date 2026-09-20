@@ -730,9 +730,9 @@ pub fn list_questions(
     let titles = questions::prompt_texts(file);
     let mut out = Vec::new();
     for (start, len) in form_package_ranges(node) {
+        let maps = values::question_maps(&node.body[start..start + len]);
         for q in questions::questions(&node.body[start..start + len], form_id) {
-            let map = values::find_question(&node.body[start..start + len], form_id, q.question_id);
-            let (seed_value, ifr_default) = match &map {
+            let (seed_value, ifr_default) = match maps.get(&(form_id, q.question_id)) {
                 Some(m) => (
                     m.varstore.as_ref().and_then(|vs| {
                         seed_lookup(
