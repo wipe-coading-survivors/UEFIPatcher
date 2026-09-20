@@ -2238,6 +2238,48 @@ pub async fn refresh_form_details_if_needed(
     Ok(())
 }
 
+/// Переменные NVAR-стора под курсором Image View — лениво, кэш по
+/// (image_id, path); не-стор очищает панель. Спека nvar-op §7.
+pub async fn refresh_nvars_if_needed(app: &mut App, client: &mut Client) -> Result<(), String> {
+    let Some(path) = app.selected_path() else {
+        return Ok(());
+    };
+    if !app.selected_is_nvar() {
+        if app.nvar.key.is_some() || !app.nvar.stores.is_empty() {
+            app.nvar = Default::default();
+        }
+        return Ok(());
+    }
+    let image_id = app
+        .active_image_id
+        .clone()
+        .or_else(|| client.state.active_image_id.clone())
+        .ok_or("no active image")?;
+    let key = format!("{image_id}:{path}");
+    if app.nvar.key.as_deref() == Some(&key) {
+        return Ok(());
+    }
+    let resp = client
+        .inner
+        .nvar_list(auth_req(
+            &client.state,
+            NvarListRequest {
+                image_id,
+                path: Some(path),
+                include_data: true,
+            },
+        ))
+        .await
+        .map_err(|e| e.message().to_string())?
+        .into_inner();
+    app.nvar.stores = resp.stores;
+    app.nvar.cursor = 0;
+    app.nvar.hex_scroll = 0;
+    app.nvar.list_state = ratatui::widgets::ListState::default();
+    app.nvar.key = Some(key);
+    Ok(())
+}
+
 /// Диапазон/options выбранного вопроса — лениво, по смене
 /// (FormKey, question_id); кэш на один вопрос. Спека tui-forms-view
 /// §4 V2 (подсказка при вводе set-value).

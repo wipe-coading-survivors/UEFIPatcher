@@ -116,6 +116,17 @@ pub struct RegistryData {
     pub cursor: usize,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct NvarPane {
+    pub key: Option<String>,
+    pub stores: Vec<uefi_proto::NvarStoreInfo>,
+    pub loading: bool,
+    pub cursor: usize,
+    pub hex_scroll: u16,
+    pub hex_viewport: usize,
+    pub list_state: ratatui::widgets::ListState,
+}
+
 #[derive(Debug, Clone)]
 pub enum RegistryRow {
     Image(usize),
@@ -205,6 +216,7 @@ pub struct App {
     pub registry: RegistryData,
     pub view: View,
     pub forms: FormsData,
+    pub nvar: NvarPane,
     pub active_image_id: Option<String>,
     pub selected: Option<String>,
     pub cmdline: crate::line::LineBuffer,
@@ -237,6 +249,7 @@ impl App {
             registry: RegistryData::default(),
             view: View::Image,
             forms: FormsData::default(),
+            nvar: NvarPane::default(),
             active_image_id: None,
             selected: None,
             cmdline: crate::line::LineBuffer::new(),
@@ -328,6 +341,39 @@ impl App {
             self.details_scroll = self.details_scroll.saturating_add(delta as u16);
         } else {
             self.details_scroll = self.details_scroll.saturating_sub((-delta) as u16);
+        }
+    }
+
+    pub fn selected_is_nvar(&self) -> bool {
+        self.selected_tree_idx()
+            .and_then(|i| self.tree.get(i))
+            .is_some_and(|n| n.is_nvar)
+    }
+
+    pub fn nvar_vars(&self) -> &[uefi_proto::NvarVarInfo] {
+        self.nvar
+            .stores
+            .first()
+            .map(|s| s.vars.as_slice())
+            .unwrap_or(&[])
+    }
+
+    pub fn nvar_cursor_down(&mut self) {
+        let len = self.nvar_vars().len();
+        if len > 0 {
+            self.nvar.cursor = (self.nvar.cursor + 1).min(len - 1);
+        }
+    }
+
+    pub fn nvar_cursor_up(&mut self) {
+        self.nvar.cursor = self.nvar.cursor.saturating_sub(1);
+    }
+
+    pub fn nvar_hex_scroll_by(&mut self, delta: i32) {
+        if delta >= 0 {
+            self.nvar.hex_scroll = self.nvar.hex_scroll.saturating_add(delta as u16);
+        } else {
+            self.nvar.hex_scroll = self.nvar.hex_scroll.saturating_sub((-delta) as u16);
         }
     }
 
@@ -1751,5 +1797,51 @@ mod tests {
         assert_eq!(app.details_scroll, 5);
         app.details_scroll_by(-10);
         assert_eq!(app.details_scroll, 0);
+    }
+
+    #[test]
+    fn nvar_cursor_moves_within_vars() {
+        let mut app = App::new();
+        app.tree = vec![TreeNode {
+            path: "0/0".into(),
+            depth: 1,
+            node_type: 66,
+            subtype: 0x01,
+            guid: None,
+            name: "NVRAM store".into(),
+            region: String::new(),
+            action: ACTION_NO,
+            expanded: false,
+            has_children: false,
+            is_nvar: true,
+        }];
+        app.cursor = 0;
+        app.nvar.stores = vec![uefi_proto::NvarStoreInfo {
+            vars: vec![var_info("Setup"), var_info("Timeout")],
+            ..Default::default()
+        }];
+        app.nvar.key = Some("i:0/0".into());
+        assert!(app.selected_is_nvar());
+        app.nvar_cursor_down();
+        assert_eq!(app.nvar.cursor, 1);
+        app.nvar_cursor_down();
+        assert_eq!(app.nvar.cursor, 1, "курсор не выходит за список");
+        app.nvar_cursor_up();
+        assert_eq!(app.nvar.cursor, 0);
+        app.nvar_hex_scroll_by(4);
+        app.nvar_hex_scroll_by(-2);
+        assert_eq!(app.nvar.hex_scroll, 2);
+    }
+
+    fn var_info(name: &str) -> uefi_proto::NvarVarInfo {
+        uefi_proto::NvarVarInfo {
+            name: name.into(),
+            guid: "EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9".into(),
+            offset: 0x500088,
+            size: 1217,
+            attributes: 0x82,
+            depth: 1,
+            data: vec![0u8; 40],
+        }
     }
 }
