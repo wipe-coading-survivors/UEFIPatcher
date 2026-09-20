@@ -26,15 +26,20 @@ for target in $($cli node list 2>/dev/null | grep 'Section(Compressed)' | awk '{
     payload=${body%.body}.in
     aid=$($cli node extract "$target" --body-only 2>/dev/null | tail -1)
     $cli artifact export "$aid" "$body" >/dev/null
-    # algo-байт (5-й тела) обязан быть 1 (EFI standard) — разведка: 228/228 на C275
+    # algo-байт (5-й тела) обязан быть 1 — «EFI/Tiano compressed»; pbit 4/5
+    # он не различает (гейт на 226D2IL: algo-1 секции есть в обоих вариантах)
     if [ "$(head -c 5 "$body" | tail -c 1 | xxd -p)" != "01" ]; then
         rm -f "$body"; continue
     fi
     dd if="$body" bs=1 skip=5 of="$payload" 2>/dev/null
-    if /tmp/tiano-oracle 4 <"$payload" >"${payload%.in}.expected" 2>/dev/null; then
+    expected=${payload%.in}.expected
+    # оракул: сначала pbit 4 (EFI), при отказе pbit 5 (Tiano)
+    if /tmp/tiano-oracle 4 <"$payload" >"$expected" 2>/dev/null; then
+        i=$((i+1))
+    elif /tmp/tiano-oracle 5 <"$payload" >"$expected" 2>/dev/null; then
         i=$((i+1))
     else
-        rm -f "$payload" "${payload%.in}.expected"
+        rm -f "$payload" "$expected"
     fi
     rm -f "$body"
 done

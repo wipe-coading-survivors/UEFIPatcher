@@ -39,6 +39,10 @@ fn real_asrock_tiano_expanded_hii_alive_round_trip() {
         let mut total = 0;
         let mut expanded = 0;
         count_algo1(&image.root, &mut total, &mut expanded);
+        assert!(
+            total > 0,
+            "{name}: ожидали хотя бы одну algo-1 секцию, получено {total}"
+        );
         if name.starts_with("C275") {
             assert!(
                 total > 100,
@@ -55,6 +59,14 @@ fn real_asrock_tiano_expanded_hii_alive_round_trip() {
             !forms.is_empty(),
             "{name}: HII-канал должен ожить после декомпрессии"
         );
+        if name == "C275D4I3.20" {
+            let guids: std::collections::HashSet<&str> =
+                forms.iter().map(|f| f.formset_guid.as_str()).collect();
+            assert!(
+                guids.contains("7B59104A-C00D-4158-87FF-F04D6396A915"),
+                "{name}: Setup FormSet-GUID не найден, фактические: {guids:?}"
+            );
+        }
 
         let built = uefi_engine::builder::build_image(&image).unwrap();
         assert_eq!(

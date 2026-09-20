@@ -6,7 +6,9 @@
 //! Corrupted вместо вечного цикла); orig_size > 512 МиБ → Corrupted;
 //! get_bits(0) возвращает 0 (в C не вызывается, `>> 32` в Rust паникует);
 //! UINT16-переполнение mBlockSize на завершающем «фантомном» DecodeC —
-//! wrapping, как в C ( ref: DecodeC, C:673).
+//! wrapping, как в C ( ref: DecodeC, C:673); read_clen пробрасывает ошибку
+//! построения C-таблицы, которую C-эталон игнорирует ( ref:
+//! EfiTianoDecompress.c:612); на битых данных Rust строже.
 
 use crate::decompress::DecompressError;
 
