@@ -1,4 +1,4 @@
-use crate::types::{FfsNode, FfsType, Guid, Image};
+use crate::types::{FfsNode, FfsType, Guid, Image, ImageMode};
 use thiserror::Error;
 
 const SIG: [u8; 4] = *b"NVAR";
@@ -459,6 +459,187 @@ pub(crate) fn store_desc(node: &FfsNode, file_guid: Option<&Guid>) -> String {
     } else {
         format!("file {guid_text} section {:#04x} raw body", node.subtype)
     }
+}
+
+#[derive(Debug)]
+pub struct NvarSetOutcome {
+    pub applied: Vec<String>,
+    pub stores: Vec<String>,
+}
+
+struct VarHit {
+    path: Vec<usize>,
+    desc: String,
+    data_off: usize,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn collect_var_hits(
+    node: &FfsNode,
+    path: &mut Vec<usize>,
+    barrier: bool,
+    file_guid: Option<&Guid>,
+    name: &str,
+    guid: Option<Guid>,
+    offset: usize,
+    width: usize,
+    out: &mut Vec<VarHit>,
+) -> Result<(), NvarError> {
+    let own_file_guid = if node.node_type == FfsType::File {
+        node.guid.as_ref()
+    } else {
+        file_guid
+    };
+    if is_nvar_body(node) {
+        if barrier {
+            return Err(NvarError::MutationBehindCompression);
+        }
+        if let Some(f) = find_var(&node.body, name, guid)? {
+            if f.record.extended_size > 0 {
+                return Err(NvarError::ValueOpUnsupported(
+                    "record has an extended header; edit refused".into(),
+                ));
+            }
+            if offset + width > f.record.data_len {
+                return Err(NvarError::ValueOpUnsupported(format!(
+                    "offset {offset:#x} + width {width} exceeds data size {}",
+                    f.record.data_len
+                )));
+            }
+            out.push(VarHit {
+                path: path.clone(),
+                desc: store_desc(node, own_file_guid),
+                data_off: f.data_off,
+            });
+        }
+        return Ok(());
+    }
+    let child_barrier = barrier || section_blocks_mutation(node);
+    for (i, child) in node.children.iter().enumerate() {
+        path.push(i);
+        collect_var_hits(
+            child,
+            path,
+            child_barrier,
+            own_file_guid,
+            name,
+            guid,
+            offset,
+            width,
+            out,
+        )?;
+        path.pop();
+    }
+    Ok(())
+}
+
+/// Правка данных переменной во ВСЕХ копиях во всех сторах образа (философия
+/// согласованного флипа v5). Адресация: имя; GUID обязателен при
+/// неоднозначности имени в сторе. Мутация in-place +
+/// ops::mark_rebuild_to_root_by_path (LZMA-копии пересобираются билдером,
+/// как у set_value). Спека nvar-op §3.
+pub fn nvar_set(
+    image: &mut Image,
+    name: &str,
+    guid: Option<&str>,
+    offset: u64,
+    value: u64,
+    width: u32,
+) -> Result<NvarSetOutcome, NvarError> {
+    if image.mode != ImageMode::Write {
+        return Err(NvarError::NotWritable);
+    }
+    if !matches!(width, 1 | 2 | 4 | 8) {
+        return Err(NvarError::ValueOpUnsupported(format!(
+            "width {width} must be one of 1, 2, 4, 8"
+        )));
+    }
+    let width = width as usize;
+    if width < 8 && value >= 1u64 << (8 * width) {
+        return Err(NvarError::ValueOpUnsupported(format!(
+            "value {value} does not fit width {width}"
+        )));
+    }
+    let guid = match guid {
+        Some(s) => Some(
+            Guid::try_parse(s)
+                .map_err(|e| NvarError::ValueOpUnsupported(format!("invalid guid '{s}': {e}")))?,
+        ),
+        None => None,
+    };
+    let offset = offset as usize;
+    let mut hits = Vec::new();
+    let mut path = Vec::new();
+    collect_var_hits(
+        &image.root,
+        &mut path,
+        false,
+        None,
+        name,
+        guid,
+        offset,
+        width,
+        &mut hits,
+    )?;
+    if hits.is_empty() {
+        return Err(NvarError::ValueOpUnsupported(format!(
+            "no NVAR store in the image has a variable named '{name}'"
+        )));
+    }
+    struct Plan {
+        hit_index: usize,
+        off: usize,
+        from: Vec<u8>,
+        to: Vec<u8>,
+    }
+    let mut plans = Vec::new();
+    for (i, hit) in hits.iter().enumerate() {
+        let off = hit.data_off + offset;
+        let from = crate::hii::node_at(&image.root, &hits[i].path)
+            .body
+            .get(off..off + width)
+            .ok_or_else(|| NvarError::ValueOpUnsupported("record data out of bounds".into()))?
+            .to_vec();
+        let mut to = value.to_le_bytes().to_vec();
+        to.truncate(width);
+        plans.push(Plan {
+            hit_index: i,
+            off,
+            from,
+            to,
+        });
+    }
+    let mut applied = Vec::new();
+    for plan in &plans {
+        if plan.from == plan.to {
+            continue;
+        }
+        let hit = &hits[plan.hit_index];
+        {
+            let node = crate::hii::node_at_mut(&mut image.root, &hit.path);
+            node.body[plan.off..plan.off + width].copy_from_slice(&plan.to);
+        }
+        crate::ops::mark_rebuild_to_root_by_path(&mut image.root, &hit.path);
+        applied.push(format!(
+            "{} store+{:#x}: {} -> {}",
+            hit.desc,
+            plan.off,
+            hex_bytes(&plan.from),
+            hex_bytes(&plan.to)
+        ));
+    }
+    Ok(NvarSetOutcome {
+        applied,
+        stores: hits.iter().map(|h| h.desc.clone()).collect(),
+    })
+}
+
+fn hex_bytes(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[cfg(test)]
@@ -956,6 +1137,190 @@ mod tests {
         assert!(matches!(
             nvar_list(&empty, Some("0"), false),
             Err(NvarError::InvalidStore(_))
+        ));
+    }
+
+    fn image_two_stores_write() -> Image {
+        let mk = |seed: u8| {
+            let mut inner = entry(Some("Setup"), &[seed; 8], 0x82, Some(0));
+            inner.extend_from_slice(&[0u8; 6]);
+            entry(Some("StdDefaults"), &inner, 0x82, Some(0))
+        };
+        let f1 = FfsNode {
+            guid: Some(Guid::try_parse("CEF5B9A3-476D-497F-9FDC-E98143E0422C").unwrap()),
+            node_type: FfsType::File,
+            subtype: 0x01,
+            offset: 0x1000,
+            header: vec![0x11; 4],
+            body: mk(0x00),
+            tail: vec![],
+            children: vec![],
+            action: Action::NoAction,
+            parsing_data: ParsingData::None,
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        };
+        let mut f2 = f1.clone();
+        f2.guid = Some(Guid::try_parse("AA000000-0000-0000-0000-000000000001").unwrap());
+        f2.offset = 0x2000;
+        let mut img = empty_image();
+        img.mode = ImageMode::Write;
+        img.root.children = vec![f1, f2];
+        img
+    }
+
+    fn ext_header_setup_store() -> Vec<u8> {
+        let mut body = Vec::new();
+        body.push(0);
+        body.extend_from_slice(b"Setup");
+        body.push(0);
+        body.extend_from_slice(&[0x00; 4]);
+        body.extend_from_slice(&[0x00, 0x03, 0x00]);
+        let mut e = Vec::new();
+        e.extend_from_slice(b"NVAR");
+        e.extend_from_slice(&((10 + body.len()) as u16).to_le_bytes());
+        e.extend_from_slice(&[0xFF, 0xFF, 0xFF]);
+        e.push(ATTR_VALID | ATTR_ASCII_NAME | ATTR_EXTENDED_HEADER);
+        e.extend_from_slice(&body);
+        entry(Some("StdDefaults"), &e, 0x82, Some(0))
+    }
+
+    #[test]
+    fn nvar_set_flips_all_copies_and_reports() {
+        let mut img = image_two_stores_write();
+        let out = nvar_set(&mut img, "Setup", None, 2, 0xAB, 1).unwrap();
+        assert_eq!(out.stores.len(), 2);
+        assert_eq!(out.applied.len(), 2);
+        assert!(out.applied[0].contains("store+"), "{}", out.applied[0]);
+        assert!(out.applied[0].contains("00 -> ab"), "{}", out.applied[0]);
+        for f in &img.root.children {
+            let flat = flatten(&f.body)
+                .into_iter()
+                .find(|x| x.record.name.as_deref() == Some("Setup"))
+                .unwrap();
+            assert_eq!(f.body[flat.data_off + 2], 0xAB);
+            assert_eq!(f.body[flat.data_off + 3], 0x00, "width=1 трогает один байт");
+        }
+    }
+
+    #[test]
+    fn nvar_set_noop_copy_is_reported_via_stores() {
+        let mut img = image_two_stores_write();
+        let out = nvar_set(&mut img, "Setup", None, 0, 0x00, 1).unwrap();
+        assert_eq!(out.stores.len(), 2);
+        assert!(out.applied.is_empty(), "нет фактических флипов");
+    }
+
+    #[test]
+    fn nvar_set_validates_width_value_offset_and_mode() {
+        let mut img = image_two_stores_write();
+        assert!(matches!(
+            nvar_set(&mut img, "Setup", None, 0, 0, 3),
+            Err(NvarError::ValueOpUnsupported(_))
+        ));
+        assert!(matches!(
+            nvar_set(&mut img, "Setup", None, 0, 0x1FF, 1),
+            Err(NvarError::ValueOpUnsupported(_))
+        ));
+        assert!(matches!(
+            nvar_set(&mut img, "Setup", None, 8, 0, 1),
+            Err(NvarError::ValueOpUnsupported(_))
+        ));
+        assert!(matches!(
+            nvar_set(&mut img, "Setup", Some("not-a-guid"), 0, 0, 1),
+            Err(NvarError::ValueOpUnsupported(_))
+        ));
+        assert!(matches!(
+            nvar_set(&mut img, "Missing", None, 0, 0, 1),
+            Err(NvarError::ValueOpUnsupported(_))
+        ));
+        let mut ro = image_two_stores_write();
+        ro.mode = ImageMode::Read;
+        assert!(matches!(
+            nvar_set(&mut ro, "Setup", None, 0, 0, 1),
+            Err(NvarError::NotWritable)
+        ));
+    }
+
+    #[test]
+    fn nvar_set_refuses_extended_header_record() {
+        let mut img = empty_image();
+        img.mode = ImageMode::Write;
+        img.root.children = vec![FfsNode {
+            guid: Some(Guid::try_parse("CEF5B9A3-476D-497F-9FDC-E98143E0422C").unwrap()),
+            node_type: FfsType::File,
+            subtype: 0x01,
+            offset: 0,
+            header: vec![],
+            body: ext_header_setup_store(),
+            tail: vec![],
+            children: vec![],
+            action: Action::NoAction,
+            parsing_data: ParsingData::None,
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        }];
+        let err = nvar_set(&mut img, "Setup", None, 0, 1, 1).unwrap_err();
+        assert!(matches!(err, NvarError::ValueOpUnsupported(_)));
+        assert!(err.to_string().contains("extended header"));
+    }
+
+    #[test]
+    fn nvar_set_width_two_writes_le() {
+        let mut img = image_two_stores_write();
+        nvar_set(&mut img, "Setup", None, 0, 0x1234, 2).unwrap();
+        let f = &img.root.children[0];
+        let flat = flatten(&f.body)
+            .into_iter()
+            .find(|x| x.record.name.as_deref() == Some("Setup"))
+            .unwrap();
+        assert_eq!(&f.body[flat.data_off..flat.data_off + 2], &[0x34, 0x12]);
+    }
+
+    #[test]
+    fn nvar_set_behind_hard_compression_is_refused() {
+        let mut img = empty_image();
+        img.mode = ImageMode::Write;
+        img.root.children = vec![FfsNode {
+            guid: None,
+            node_type: FfsType::Section,
+            subtype: crate::ffs::EFI_SECTION_GUID_DEFINED,
+            offset: 0,
+            header: vec![],
+            body: vec![],
+            tail: vec![],
+            children: vec![FfsNode {
+                guid: Some(Guid::try_parse("CEF5B9A3-476D-497F-9FDC-E98143E0422C").unwrap()),
+                node_type: FfsType::File,
+                subtype: 0x01,
+                offset: 0,
+                header: vec![],
+                body: {
+                    let inner = entry(Some("Setup"), &[0x00; 4], 0x82, Some(0));
+                    entry(Some("StdDefaults"), &inner, 0x82, Some(0))
+                },
+                tail: vec![],
+                children: vec![],
+                action: Action::NoAction,
+                parsing_data: ParsingData::None,
+                fixed: false,
+                compressed: false,
+                alignment_bytes: vec![],
+            }],
+            action: Action::NoAction,
+            parsing_data: ParsingData::GuidedSection(crate::types::GuidedSectionParsingData {
+                guid: Guid::try_parse("00000000-0000-0000-0000-000000000000").unwrap(),
+                dictionary_size: 0,
+            }),
+            fixed: false,
+            compressed: false,
+            alignment_bytes: vec![],
+        }];
+        assert!(matches!(
+            nvar_set(&mut img, "Setup", None, 0, 1, 1),
+            Err(NvarError::MutationBehindCompression)
         ));
     }
 }
