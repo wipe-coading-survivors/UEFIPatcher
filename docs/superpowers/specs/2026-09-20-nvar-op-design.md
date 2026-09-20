@@ -160,7 +160,10 @@ N записей, свободный хвост, размер GUID-стора.
 
 По образцу hii-команд (сессия/активный образ, форматы text/tsv/json):
 - `nvar list [--path P] [--var NAME]` — таблица переменных; text-режим
-  группирует по сторам с метой;
+  группирует по сторам с метой; легенда — в stderr через общее
+  семейство `uefi_common::format` (по образцу `format_legend` /
+  `hii_legend`: свой вариант `NvarLegendCmd::VarList`, stdout остаётся
+  чистым для пайпов);
 - `nvar set <name> --guid <G> --offset <N> --value <V> [--width W]` —
   вывод applied-строк как у `hii question set-value`;
 - `hii question info` / список вопросов — строка/колонка seed-значения.
