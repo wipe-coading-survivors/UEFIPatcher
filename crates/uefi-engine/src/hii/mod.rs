@@ -22,7 +22,8 @@ pub mod strings;
 pub mod values;
 
 use crate::ffs::{
-    EFI_SECTION_COMPRESSION, EFI_SECTION_GUID_DEFINED, EFI_SECTION_PE32, EFI_SECTION_RAW,
+    EFI_SECTION_COMPRESSION, EFI_SECTION_FREEFORM_SUBTYPE_GUID, EFI_SECTION_GUID_DEFINED,
+    EFI_SECTION_PE32, EFI_SECTION_RAW,
 };
 use crate::ops;
 use crate::types::*;
@@ -219,9 +220,25 @@ pub(crate) fn form_package_ranges(node: &FfsNode) -> Vec<(usize, usize)> {
         }
     } else if node.subtype == EFI_SECTION_PE32 {
         pe_resource_form_packages(&node.body).unwrap_or_default()
+    } else if node.subtype == EFI_SECTION_FREEFORM_SUBTYPE_GUID {
+        freeform_form_package_ranges(&node.body).unwrap_or_default()
     } else {
         vec![]
     }
+}
+
+/// Диапазоны форм-пакетов exact-списка 0x18-секции; offset-ы — из единого
+/// прохода парсера (без второго обхода цепочки). Аддендум hii-walker
+/// 2026-09-21.
+fn freeform_form_package_ranges(body: &[u8]) -> Option<Vec<(usize, usize)>> {
+    let list = package_list::parse_package_list_exact(body)?;
+    Some(
+        list.packages
+            .iter()
+            .filter(|p| p.kind == r_efi::hii::PACKAGE_FORMS)
+            .map(|p| (p.offset, p.bytes.len()))
+            .collect(),
+    )
 }
 
 fn expr_text(expr: &gates::GateExpr, region: &[u8]) -> String {
@@ -3251,6 +3268,40 @@ mod tests {
             &pkg1[..],
             "первый пакет нетронут"
         );
+    }
+
+    #[test]
+    fn form_package_ranges_sees_exact_list_in_freeform_subtype_guid() {
+        let pkg1 = value_forms_pkg();
+        let pkg2 = forms_pkg([g_form(9), g_end(), g_end()].concat());
+        let list_guid = Guid::try_parse("97E409E6-4CC1-11D9-81F6-000000000000").unwrap();
+        let mut body = list_guid.to_bytes().to_vec();
+        body.extend_from_slice(&2u32.to_le_bytes());
+        body.extend_from_slice(&pkg1);
+        body.extend_from_slice(&pkg2);
+        let image = vendor_image_with(0x18, body);
+        let node = &image.root.children[0].children[0].children[0];
+        let ranges = form_package_ranges(node);
+        assert_eq!(ranges.len(), 2, "обе 0x18-формы видны, got {ranges:?}");
+        assert_eq!(&node.body[ranges[0].0..ranges[0].0 + ranges[0].1], &pkg1[..]);
+        assert_eq!(&node.body[ranges[1].0..ranges[1].0 + ranges[1].1], &pkg2[..]);
+
+        let questions = list_questions(
+            &image,
+            "5c60f367-a505-419a-859e-2a4ff6ca6fe5:0x18:0",
+            10029,
+        )
+        .unwrap();
+        assert_eq!(questions.len(), 1, "каскад list_questions работает через 0x18");
+    }
+
+    #[test]
+    fn form_package_ranges_ignores_non_hii_0x18_body() {
+        let mut junk = vec![0xDE, 0xAD, 0xBE, 0xEF];
+        junk.extend(vec![0x00; 32]);
+        let image = vendor_image_with(0x18, junk);
+        let node = &image.root.children[0].children[0].children[0];
+        assert!(form_package_ranges(node).is_empty());
     }
 
     #[test]

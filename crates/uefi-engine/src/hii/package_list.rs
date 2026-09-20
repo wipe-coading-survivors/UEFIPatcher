@@ -4,6 +4,7 @@ use r_efi::hii::PACKAGE_END;
 pub struct HiiPackage<'a> {
     pub kind: u8,
     pub bytes: &'a [u8],
+    pub offset: usize,
 }
 
 pub struct HiiPackageList<'a> {
@@ -40,6 +41,7 @@ pub fn parse_package_list(bytes: &[u8]) -> Option<HiiPackageList<'_>> {
         packages.push(HiiPackage {
             kind,
             bytes: &bytes[pos..pos + plen],
+            offset: pos,
         });
         pos += plen;
     }
@@ -84,6 +86,7 @@ pub fn parse_package_list_exact(bytes: &[u8]) -> Option<HiiPackageList<'_>> {
         packages.push(HiiPackage {
             kind,
             bytes: &bytes[pos..pos + plen],
+            offset: pos,
         });
         pos += plen;
     }
