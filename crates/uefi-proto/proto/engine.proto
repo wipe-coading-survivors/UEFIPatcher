@@ -107,6 +107,7 @@ message Node {
   string name = 7;
   uint32 action = 8;
   string region = 9;
+  bool is_nvar = 10;
 }
 message ImageNodesResponse { repeated Node nodes = 1; }
 

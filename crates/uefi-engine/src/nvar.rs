@@ -103,6 +103,17 @@ pub fn parse_entry(buf: &[u8], off: usize) -> Option<NvarRecord> {
     })
 }
 
+/// File/Section-лист, чьё тело начинается с валидной NVAR-записи
+/// (проб первого заголовка). Критерий метки «NVRAM store» и сбора
+/// сторов для nvar list/set (спека nvar-op §2/§3).
+pub fn is_nvar_body(node: &crate::types::FfsNode) -> bool {
+    matches!(
+        node.node_type,
+        crate::types::FfsType::File | crate::types::FfsType::Section
+    ) && node.children.is_empty()
+        && parse_entry(&node.body, 0).is_some()
+}
+
 pub fn walk(buf: &[u8]) -> Vec<NvarRecord> {
     let mut out = Vec::new();
     let mut off = 0usize;
