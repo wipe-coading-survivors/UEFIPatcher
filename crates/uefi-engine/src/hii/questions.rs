@@ -5,9 +5,10 @@ use r_efi::hii::{
 };
 
 use crate::ffs::{
-    EFI_SECTION_COMPRESSION, EFI_SECTION_GUID_DEFINED, EFI_SECTION_PE32, EFI_SECTION_RAW,
+    EFI_SECTION_COMPRESSION, EFI_SECTION_FREEFORM_SUBTYPE_GUID, EFI_SECTION_GUID_DEFINED,
+    EFI_SECTION_PE32, EFI_SECTION_RAW,
 };
-use crate::hii::package_list::parse_package_list;
+use crate::hii::package_list::{parse_package_list, parse_package_list_exact};
 use crate::hii::pe_resource::hii_resource_blobs;
 use crate::hii::strings::{declared_len_sane, parse_string_package};
 use crate::hii::values::{
@@ -91,6 +92,19 @@ fn collect_string_sections(node: &FfsNode, titles: &mut HashMap<u16, String>) {
                     let Some(list) = parse_package_list(blob) else {
                         continue;
                     };
+                    for pkg in &list.packages {
+                        if pkg.kind == PACKAGE_STRINGS
+                            && let Some(sp) = parse_string_package(pkg.bytes)
+                        {
+                            for (sid, text) in sp.strings {
+                                titles.entry(sid).or_insert(text);
+                            }
+                        }
+                    }
+                }
+            }
+            EFI_SECTION_FREEFORM_SUBTYPE_GUID => {
+                if let Some(list) = parse_package_list_exact(&child.body) {
                     for pkg in &list.packages {
                         if pkg.kind == PACKAGE_STRINGS
                             && let Some(sp) = parse_string_package(pkg.bytes)

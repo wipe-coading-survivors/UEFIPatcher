@@ -275,6 +275,12 @@ fn real_asrock_226d2il_forms_in_freeform_subtype_guid() {
             sol.iter().any(|q| q.question_id == 5 && q.width == 1),
             "{name}: SOL-вопрос (form 0x0401 qid 0x0005) виден"
         );
+        let sol_q = sol.iter().find(|q| q.question_id == 5).unwrap();
+        assert!(
+            !sol_q.prompt.is_empty(),
+            "{name}: промпт SOL-вопроса из строкового пакета 0x18, got {:?}",
+            sol_q.prompt
+        );
     }
     let data = std::fs::read(asrock_path("C275D4I3.20")).unwrap();
     let image = parse_image(&data, ImageMode::Read, "t", "s").unwrap();

@@ -3351,6 +3351,39 @@ mod tests {
     }
 
     #[test]
+    fn list_questions_resolves_prompts_from_0x18_string_package() {
+        let mut one_of_payload = Vec::new();
+        one_of_payload.extend_from_slice(&1u16.to_le_bytes());
+        one_of_payload.extend_from_slice(&2u16.to_le_bytes());
+        one_of_payload.extend_from_slice(&0x003Bu16.to_le_bytes());
+        one_of_payload.extend_from_slice(&1u16.to_le_bytes());
+        one_of_payload.extend_from_slice(&0x003Au16.to_le_bytes());
+        one_of_payload.extend_from_slice(&[0x10, 0x10, 0x00, 0x01, 0x00]);
+        let one_of_prompt_main = g_opcode(r_efi::hii::IFR_ONE_OF_OP, true, &one_of_payload);
+        let pkg = forms_pkg(
+            [
+                g_varstore(1, 0x72, "Setup"),
+                g_form(10029),
+                one_of_prompt_main,
+                g_end(),
+                g_end(),
+                g_end(),
+            ]
+            .concat(),
+        );
+        let list_guid = Guid::try_parse("97E409E6-4CC1-11D9-81F6-000000000000").unwrap();
+        let mut body = list_guid.to_bytes().to_vec();
+        body.extend_from_slice(&2u32.to_le_bytes());
+        body.extend_from_slice(&test_string_pkg());
+        body.extend_from_slice(&pkg);
+        let image = vendor_image_with(0x18, body);
+        let qs =
+            list_questions(&image, "5c60f367-a505-419a-859e-2a4ff6ca6fe5:0x18:0", 10029).unwrap();
+        assert_eq!(qs.len(), 1);
+        assert_eq!(qs[0].prompt, "Main", "промпт из строкового пакета 0x18");
+    }
+
+    #[test]
     fn unlock_no_gates_is_ok_empty() {
         let pkg = forms_pkg([g_form(10029), g_end(), g_end()].concat());
         let mut image = vendor_image_with(0x19, pkg);
