@@ -1463,6 +1463,12 @@ atomic_write. После первой мутации хранимый файл �
   Отложено (E13: инертно для посева первого бута — SDP optimal/failsafe
   посевом НЕ читаются; остаётся кандидатом только для Load-Defaults-
   семантики меню Setup).
+  Статус инфраструктуры (аудит 2026-09-21): парсер живых Table-3 записей
+  уже в production — `spf::scan_question_records` (fs@+52/opt@+53;
+  используется form_add-сдвигами ifr-off@+28), флип-хелпер
+  `spf::write_record_defaults` (ровно байты +52/+53) существует, но без
+  production-вызовов (см. отдельный пункт про write_record_defaults).
+  Осталась сама операция set-optimal/failsafe (RPC/CLI) + wiring.
 * [x] **v4. Real-image gate + E13 (прошит — НЕ сработал)** — кандидат был
   `refs/amibcp/e13-unlock-plus-4g-default.bin` (unlock + IFR-флаги +
   SDP optimal/failsafe). Итог на железе: 4G [Disabled] — посев первого
@@ -3865,7 +3871,7 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   (2026-09-12, live-гейт 450x: два GOTO на форму 1 корневого Setup
   вставились без ошибки и повисли; движок-сторона кросс-резолва
   проверена зондом — с formset_guid resolves_cross=true).
-* [ ] **uefi-engine: extract/export и move форм/вопросов — лёгкая
+* [x] **uefi-engine: extract/export и move форм/вопросов — лёгкая
   переподвязка в другие корни** — сериализация существующей
   формы/вопроса (IFR + строки + varstore-декларация) в JSON-схему
   QuestionAddList, зеркальную add_question/add_ref/add_varstores:
@@ -3877,6 +3883,16 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   Move = export + insert в целевой корень + удаление оригинала
   (IFR-удаления сейчас нет — отдельная операция). Запрос владельца
   (2026-09-12, при гейте дуги formset-unlock).
+  Закрыто: цикл hii-form-export (2026-09-19, спека
+  `2026-09-19-hii-form-export-design.md`, PR #20) — `hii form export`
+  (RPC HiiFormExport + конверт `{"meta","formset","refs"}` с
+  `meta.lossy`, CLI/TUI-клавиша `e`; Numeric in-scope IFR_DEFAULT через
+  scan_options + map_defaults) + `hii import` (клавиша `I`, round-trip
+  JSON) + refs-only пакет `R` — «реф, не move», вкл. кросс-формсетный
+  REF3 (см. закрытие «форма под формой» выше); move-половина закрыта
+  именно REF-подходом. Живой гейт E30 (экспорт+импорт под родителем на
+  rd450x) прошёл. IFR-удаление остаётся нереализованным (отдельно не
+  запрашивалось).
 * [ ] **uefi-engine: позиционная вставка REF/вопроса — IntelRCSetup
   топ-уровнем бара Setup** — сегодня add_ref/add_question вставляют
   стейтмент перед END формы (в конец), поэтому новый пункт в баре
