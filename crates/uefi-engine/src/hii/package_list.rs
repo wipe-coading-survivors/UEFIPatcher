@@ -4,6 +4,7 @@ use r_efi::hii::PACKAGE_END;
 pub struct HiiPackage<'a> {
     pub kind: u8,
     pub bytes: &'a [u8],
+    pub offset: usize,
 }
 
 pub struct HiiPackageList<'a> {
@@ -40,11 +41,55 @@ pub fn parse_package_list(bytes: &[u8]) -> Option<HiiPackageList<'_>> {
         packages.push(HiiPackage {
             kind,
             bytes: &bytes[pos..pos + plen],
+            offset: pos,
         });
         pos += plen;
     }
     tracing::warn!("HII package list without END terminator; dropping whole list");
     None
+}
+
+/// Tolerant-вариант для FREEFORM_SUBTYPE_GUID-секций (AMI, 226D2IL): u32 в
+/// заголовке — счётчик пакетов, END-терминатора нет, цепочка обязана
+/// потребить буфер ровно до конца; END допустим последним пакетом (без
+/// хвоста за ним). Неструктурные тела отсекаются exact-условием, не
+/// логируются warn. Строгий контракт PE32-ресурсов — parse_package_list.
+/// Аддендум hii-walker 2026-09-21.
+pub fn parse_package_list_exact(bytes: &[u8]) -> Option<HiiPackageList<'_>> {
+    if bytes.len() < 20 {
+        return None;
+    }
+    let mut arr = [0u8; 16];
+    arr.copy_from_slice(&bytes[0..16]);
+    let guid = Guid::from_bytes(arr);
+    let mut packages = Vec::new();
+    let mut pos = 20usize;
+    loop {
+        if pos == bytes.len() {
+            return Some(HiiPackageList { guid, packages });
+        }
+        if pos + 4 > bytes.len() {
+            return None;
+        }
+        let plen =
+            bytes[pos] as usize | (bytes[pos + 1] as usize) << 8 | (bytes[pos + 2] as usize) << 16;
+        let kind = bytes[pos + 3];
+        if kind == PACKAGE_END {
+            if pos + 4 != bytes.len() {
+                return None;
+            }
+            return Some(HiiPackageList { guid, packages });
+        }
+        if plen < 4 || pos + plen > bytes.len() {
+            return None;
+        }
+        packages.push(HiiPackage {
+            kind,
+            bytes: &bytes[pos..pos + plen],
+            offset: pos,
+        });
+        pos += plen;
+    }
 }
 
 #[cfg(test)]
@@ -160,5 +205,86 @@ mod tests {
             | (parsed.packages[0].bytes[1] as usize) << 8
             | (parsed.packages[0].bytes[2] as usize) << 16;
         assert_eq!(len, 6852);
+    }
+
+    fn raw_list_no_end(guid: &Guid, pkgs: &[&[u8]]) -> Vec<u8> {
+        let mut b = guid.to_bytes().to_vec();
+        b.extend_from_slice(&(pkgs.len() as u32).to_le_bytes());
+        for p in pkgs {
+            b.extend_from_slice(p);
+        }
+        b
+    }
+
+    #[test]
+    fn exact_parses_chain_without_end_terminator() {
+        let g = Guid::from_str(LIST_GUID).unwrap();
+        let form = pkg(PACKAGE_FORMS, &[0x0Eu8, 0x17, 0xAA]);
+        let string = pkg(PACKAGE_STRINGS, &[0x00; 8]);
+        let bytes = raw_list_no_end(&g, &[&form, &string]);
+        let parsed = parse_package_list_exact(&bytes).unwrap();
+        assert_eq!(parsed.guid, g);
+        assert_eq!(parsed.packages.len(), 2);
+        assert_eq!(parsed.packages[0].bytes, &form[..]);
+        assert_eq!(parsed.packages[1].kind, PACKAGE_STRINGS);
+    }
+
+    #[test]
+    fn exact_accepts_end_terminator_as_last_package() {
+        let g = Guid::from_str(LIST_GUID).unwrap();
+        let form = pkg(PACKAGE_FORMS, &[0x0Eu8, 0x17, 0xBB]);
+        let mut bytes = raw_list_no_end(&g, &[&form]);
+        bytes.extend_from_slice(&[4, 0, 0, PACKAGE_END]);
+        let parsed = parse_package_list_exact(&bytes).unwrap();
+        assert_eq!(parsed.packages.len(), 1);
+    }
+
+    #[test]
+    fn exact_rejects_trailing_bytes_after_chain() {
+        let g = Guid::from_str(LIST_GUID).unwrap();
+        let form = pkg(PACKAGE_FORMS, &[0x0Eu8, 0x17, 0xCC]);
+        let mut bytes = raw_list_no_end(&g, &[&form]);
+        bytes.push(0xAA);
+        assert!(parse_package_list_exact(&bytes).is_none());
+    }
+
+    #[test]
+    fn exact_rejects_trailing_bytes_after_end() {
+        let g = Guid::from_str(LIST_GUID).unwrap();
+        let form = pkg(PACKAGE_FORMS, &[0x0Eu8, 0x17, 0xCD]);
+        let mut bytes = raw_list_no_end(&g, &[&form]);
+        bytes.extend_from_slice(&[4, 0, 0, PACKAGE_END]);
+        bytes.extend_from_slice(&[0x55; 4]);
+        assert!(parse_package_list_exact(&bytes).is_none());
+    }
+
+    #[test]
+    fn exact_rejects_truncated_package() {
+        let g = Guid::from_str(LIST_GUID).unwrap();
+        let mut bytes = raw_list_no_end(&g, &[]);
+        bytes.extend_from_slice(&[0x02, 0x00, 0x00, PACKAGE_FORMS]);
+        assert!(parse_package_list_exact(&bytes).is_none());
+    }
+
+    #[test]
+    fn exact_rejects_package_length_below_header() {
+        let g = Guid::from_str(LIST_GUID).unwrap();
+        let mut bytes = raw_list_no_end(&g, &[]);
+        bytes.extend_from_slice(&[0x02, 0x00, 0x00, PACKAGE_FORMS]);
+        bytes.extend_from_slice(&[0xEE]);
+        assert!(parse_package_list_exact(&bytes).is_none());
+    }
+
+    #[test]
+    fn exact_empty_list_is_valid() {
+        let g = Guid::from_str(LIST_GUID).unwrap();
+        let bytes = raw_list_no_end(&g, &[]);
+        let parsed = parse_package_list_exact(&bytes).unwrap();
+        assert!(parsed.packages.is_empty());
+    }
+
+    #[test]
+    fn exact_short_input_returns_none() {
+        assert!(parse_package_list_exact(&[0u8; 19]).is_none());
     }
 }

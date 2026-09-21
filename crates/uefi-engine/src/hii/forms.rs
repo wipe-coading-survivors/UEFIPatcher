@@ -4,30 +4,32 @@ use r_efi::hii::{PACKAGE_FORMS, PACKAGE_STRINGS};
 use uefi_proto::FormInfo;
 
 use crate::ffs::{
-    EFI_SECTION_COMPRESSION, EFI_SECTION_GUID_DEFINED, EFI_SECTION_PE32, EFI_SECTION_RAW,
+    EFI_SECTION_COMPRESSION, EFI_SECTION_FREEFORM_SUBTYPE_GUID, EFI_SECTION_GUID_DEFINED,
+    EFI_SECTION_PE32, EFI_SECTION_RAW,
 };
 use crate::hii::ifr::{FormSetInfo, parse_form_package};
-use crate::hii::package_list::parse_package_list;
+use crate::hii::package_list::{HiiPackageList, parse_package_list, parse_package_list_exact};
 use crate::hii::pe_resource::{bare_form_packages, hii_resource_blobs, hii_resource_ranges};
 use crate::hii::strings::{declared_len_sane, parse_string_package};
 use crate::types::{FfsNode, FfsType, Guid, Image, guid_to_upper_string};
 
 pub fn collect_forms(image: &Image) -> Vec<FormInfo> {
     let mut out = Vec::new();
-    walk_files(&image.root, &mut out);
+    let fallback = crate::hii::questions::image_string_fallback(&image.root);
+    walk_files(&image.root, &fallback, &mut out);
     out
 }
 
-fn walk_files(node: &FfsNode, out: &mut Vec<FormInfo>) {
+fn walk_files(node: &FfsNode, fallback: &HashMap<u16, String>, out: &mut Vec<FormInfo>) {
     for child in &node.children {
         if child.node_type == FfsType::File {
-            collect_file_forms(child, out);
+            collect_file_forms(child, fallback, out);
         }
-        walk_files(child, out);
+        walk_files(child, fallback, out);
     }
 }
 
-fn collect_file_forms(file: &FfsNode, out: &mut Vec<FormInfo>) {
+fn collect_file_forms(file: &FfsNode, fallback: &HashMap<u16, String>, out: &mut Vec<FormInfo>) {
     let Some(fg) = file.guid else {
         return;
     };
@@ -41,7 +43,11 @@ fn collect_file_forms(file: &FfsNode, out: &mut Vec<FormInfo>) {
                 form_id: target.clone(),
                 formset_guid: guid_to_upper_string(&fs.guid),
                 form_id_ifr: raw.form_id as u32,
-                title: titles.get(&raw.title).cloned().unwrap_or_default(),
+                title: titles
+                    .get(&raw.title)
+                    .or_else(|| fallback.get(&raw.title))
+                    .cloned()
+                    .unwrap_or_default(),
                 visible: !raw.suppressed,
             });
         }
@@ -80,25 +86,8 @@ fn walk_sections(
         } else if child.subtype == EFI_SECTION_PE32 {
             let ranges = hii_resource_ranges(&child.body);
             for blob in hii_resource_blobs(&child.body) {
-                let Some(list) = parse_package_list(blob) else {
-                    continue;
-                };
-                for pkg in &list.packages {
-                    match pkg.kind {
-                        PACKAGE_FORMS => {
-                            if let Some(fs) = parse_form_package(pkg.bytes) {
-                                found.push((target.clone(), fs));
-                            }
-                        }
-                        PACKAGE_STRINGS => {
-                            if let Some(sp) = parse_string_package(pkg.bytes) {
-                                for (sid, text) in sp.strings {
-                                    titles.entry(sid).or_insert(text);
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
+                if let Some(list) = parse_package_list(blob) {
+                    drain_list_packages(&list, &target, titles, found);
                 }
             }
             for pkg in bare_form_packages(&child.body, &ranges) {
@@ -106,9 +95,38 @@ fn walk_sections(
                     found.push((target.clone(), fs));
                 }
             }
+        } else if child.subtype == EFI_SECTION_FREEFORM_SUBTYPE_GUID
+            && let Some(list) = parse_package_list_exact(&child.body)
+        {
+            drain_list_packages(&list, &target, titles, found);
         }
         if child.subtype == EFI_SECTION_COMPRESSION || child.subtype == EFI_SECTION_GUID_DEFINED {
             walk_sections(child, fg, titles, found, counters);
+        }
+    }
+}
+
+fn drain_list_packages(
+    list: &HiiPackageList<'_>,
+    target: &str,
+    titles: &mut HashMap<u16, String>,
+    found: &mut Vec<(String, FormSetInfo)>,
+) {
+    for pkg in &list.packages {
+        match pkg.kind {
+            PACKAGE_FORMS => {
+                if let Some(fs) = parse_form_package(pkg.bytes) {
+                    found.push((target.to_string(), fs));
+                }
+            }
+            PACKAGE_STRINGS => {
+                if let Some(sp) = parse_string_package(pkg.bytes) {
+                    for (sid, text) in sp.strings {
+                        titles.entry(sid).or_insert(text);
+                    }
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -508,6 +526,155 @@ mod tests {
         let node = crate::parser::target::find_item(&image.root, &t).unwrap();
         assert_eq!(node.subtype, 0x10);
         assert_eq!(node.node_type, FfsType::Section);
+    }
+
+    fn hii_list_raw(form: &[u8], string: &[u8]) -> Vec<u8> {
+        let g = Guid::from_str(FILE_GUID).unwrap();
+        let mut b = g.to_bytes().to_vec();
+        b.extend_from_slice(&2u32.to_le_bytes());
+        b.extend_from_slice(string);
+        b.extend_from_slice(form);
+        b
+    }
+
+    fn mk_0x18_image(list: Vec<u8>, extra_junk_0x18: bool) -> Image {
+        let pe_sec = mk_node(
+            None,
+            FfsType::Section,
+            0x10,
+            vec![0x4Du8, 0x5A, 0x00, 0x00],
+            vec![],
+        );
+        let mut sections = vec![pe_sec, mk_node(None, FfsType::Section, 0x18, list, vec![])];
+        if extra_junk_0x18 {
+            sections.push(mk_node(
+                None,
+                FfsType::Section,
+                0x18,
+                vec![0xDE, 0xAD, 0xBE, 0xEF],
+                vec![],
+            ));
+        }
+        let file = mk_node(
+            Some(Guid::from_str(FILE_GUID).unwrap()),
+            FfsType::File,
+            0x07,
+            vec![],
+            sections,
+        );
+        let volume = mk_node(None, FfsType::Volume, 0, vec![], vec![file]);
+        let root = mk_node(None, FfsType::Image, 0, vec![], vec![volume]);
+        Image {
+            image_id: "img".into(),
+            session_id: "s".into(),
+            root,
+            mode: ImageMode::Read,
+        }
+    }
+
+    #[test]
+    fn collect_forms_sees_forms_in_freeform_subtype_guid() {
+        let list = hii_list_raw(&form_pkg(1), &string_pkg());
+        let image = mk_0x18_image(list, true);
+        let forms = collect_forms(&image);
+        assert_eq!(forms.len(), 2);
+        assert_eq!(
+            forms[0].form_id,
+            format!("{}:0x18:0", FILE_GUID.to_ascii_uppercase())
+        );
+        assert_eq!(forms[0].formset_guid, FORMSET_GUID);
+        assert_eq!(forms[0].title, "Main");
+        assert!(forms[0].visible);
+        assert_eq!(forms[1].title, "Hidden");
+        assert!(!forms[1].visible);
+    }
+
+    #[test]
+    fn collect_forms_0x18_target_round_trips() {
+        let list = hii_list_raw(&form_pkg(1), &string_pkg());
+        let image = mk_0x18_image(list, false);
+        let forms = collect_forms(&image);
+        let t = crate::parser::target::parse_target(&forms[0].form_id).unwrap();
+        match t {
+            Target::GuidSection {
+                section_type,
+                section_index,
+                ..
+            } => {
+                assert_eq!(section_type, 0x18);
+                assert_eq!(section_index, Some(0));
+            }
+            other => panic!("expected GuidSection, got {other:?}"),
+        }
+        let node = crate::parser::target::find_item(&image.root, &t).unwrap();
+        assert_eq!(node.subtype, 0x18);
+        assert_eq!(node.node_type, FfsType::Section);
+    }
+
+    fn mk_pool_image(file_a_sections: Vec<FfsNode>) -> Image {
+        let file_a = mk_node(
+            Some(Guid::from_str("91B4D9C1-141C-4824-8D02-3C298E36EB3F").unwrap()),
+            FfsType::File,
+            0x07,
+            vec![],
+            file_a_sections,
+        );
+        let mut pool_body = Guid::from_str(FILE_GUID).unwrap().to_bytes().to_vec();
+        pool_body.extend_from_slice(&2u32.to_le_bytes());
+        pool_body.extend_from_slice(&string_pkg());
+        pool_body.extend_from_slice(&form_pkg(1));
+        let sec18 = mk_node(None, FfsType::Section, 0x18, pool_body, vec![]);
+        let file_b = mk_node(
+            Some(Guid::from_str(FILE_GUID).unwrap()),
+            FfsType::File,
+            0x07,
+            vec![],
+            vec![sec18],
+        );
+        let volume = mk_node(None, FfsType::Volume, 0, vec![], vec![file_a, file_b]);
+        let root = mk_node(None, FfsType::Image, 0, vec![], vec![volume]);
+        Image {
+            image_id: "img".into(),
+            session_id: "s".into(),
+            root,
+            mode: ImageMode::Read,
+        }
+    }
+
+    #[test]
+    fn collect_forms_titles_fallback_to_largest_image_pool() {
+        let form_sec = mk_node(None, FfsType::Section, 0x19, form_pkg(1), vec![]);
+        let image = mk_pool_image(vec![form_sec]);
+        let forms = collect_forms(&image);
+        let from_a: Vec<_> = forms
+            .iter()
+            .filter(|f| f.form_id.starts_with("91B4D9C1"))
+            .collect();
+        assert_eq!(from_a.len(), 2);
+        assert_eq!(from_a[0].title, "Main", "титул из крупнейшего пула образа");
+        assert_eq!(from_a[1].title, "Hidden");
+    }
+
+    #[test]
+    fn collect_forms_per_file_pool_wins_over_fallback() {
+        let str_sec = mk_node(
+            None,
+            FfsType::Section,
+            0x19,
+            string_pkg_with(b"OwnTitle"),
+            vec![],
+        );
+        let form_sec = mk_node(None, FfsType::Section, 0x19, form_pkg(1), vec![]);
+        let image = mk_pool_image(vec![str_sec, form_sec]);
+        let forms = collect_forms(&image);
+        let from_a: Vec<_> = forms
+            .iter()
+            .filter(|f| f.form_id.starts_with("91B4D9C1"))
+            .collect();
+        assert_eq!(
+            from_a[0].title, "OwnTitle",
+            "per-file пул приоритетнее fallback"
+        );
     }
 
     #[test]

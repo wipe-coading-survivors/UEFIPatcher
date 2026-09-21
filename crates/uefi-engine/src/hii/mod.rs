@@ -22,7 +22,8 @@ pub mod strings;
 pub mod values;
 
 use crate::ffs::{
-    EFI_SECTION_COMPRESSION, EFI_SECTION_GUID_DEFINED, EFI_SECTION_PE32, EFI_SECTION_RAW,
+    EFI_SECTION_COMPRESSION, EFI_SECTION_FREEFORM_SUBTYPE_GUID, EFI_SECTION_GUID_DEFINED,
+    EFI_SECTION_PE32, EFI_SECTION_RAW,
 };
 use crate::ops;
 use crate::types::*;
@@ -219,9 +220,25 @@ pub(crate) fn form_package_ranges(node: &FfsNode) -> Vec<(usize, usize)> {
         }
     } else if node.subtype == EFI_SECTION_PE32 {
         pe_resource_form_packages(&node.body).unwrap_or_default()
+    } else if node.subtype == EFI_SECTION_FREEFORM_SUBTYPE_GUID {
+        freeform_form_package_ranges(&node.body).unwrap_or_default()
     } else {
         vec![]
     }
+}
+
+/// Диапазоны форм-пакетов exact-списка 0x18-секции; offset-ы — из единого
+/// прохода парсера (без второго обхода цепочки). Аддендум hii-walker
+/// 2026-09-21.
+fn freeform_form_package_ranges(body: &[u8]) -> Option<Vec<(usize, usize)>> {
+    let list = package_list::parse_package_list_exact(body)?;
+    Some(
+        list.packages
+            .iter()
+            .filter(|p| p.kind == r_efi::hii::PACKAGE_FORMS)
+            .map(|p| (p.offset, p.bytes.len()))
+            .collect(),
+    )
 }
 
 fn expr_text(expr: &gates::GateExpr, region: &[u8]) -> String {
@@ -639,7 +656,7 @@ fn find_question_map(
     for &i in &path[..path.len() - 1] {
         file = &file.children[i];
     }
-    let texts = questions::prompt_texts(file);
+    let texts = questions::prompt_texts(file, &questions::image_string_fallback(&image.root));
     for (start, len) in form_package_ranges(node) {
         if let Some(map) =
             values::find_question(&node.body[start..start + len], form_id, question_id)
@@ -727,7 +744,8 @@ pub fn list_questions(
     for &i in &path[..path.len() - 1] {
         file = &file.children[i];
     }
-    let titles = questions::prompt_texts(file);
+    let titles = questions::prompt_texts_own(file);
+    let fallback = questions::image_string_fallback(&image.root);
     let mut out = Vec::new();
     for (start, len) in form_package_ranges(node) {
         let maps = values::question_maps(&node.body[start..start + len]);
@@ -750,7 +768,11 @@ pub fn list_questions(
             out.push(uefi_proto::QuestionSummary {
                 question_id: q.question_id as u32,
                 kind: question_kind_str(q.kind).to_string(),
-                prompt: titles.get(&q.prompt_sid).cloned().unwrap_or_default(),
+                prompt: titles
+                    .get(&q.prompt_sid)
+                    .or_else(|| fallback.get(&q.prompt_sid))
+                    .cloned()
+                    .unwrap_or_default(),
                 var_store_id: q.var_store_id as u32,
                 var_offset: q.var_offset as u32,
                 width: q.width as u32,
@@ -819,14 +841,23 @@ struct StoreHit {
     body_offset: usize,
 }
 
+/// Барьерная семантика v5 (спека nvar-op §3, аддендум 2026-09-21):
+/// StdDefaults-копии за non-recompressable секциями — запечённые слепки,
+/// пропускаются (skipped_behind_barrier) без анализа записей;
+/// MutationBehindCompression — только если доступных копий ноль.
+struct StdDefaultsScan {
+    path: Vec<usize>,
+    hits: Vec<StoreHit>,
+    skipped_behind_barrier: bool,
+}
+
 fn collect_std_defaults_hits(
     node: &FfsNode,
-    path: &mut Vec<usize>,
     barrier: bool,
     file_guid: Option<&Guid>,
     name: &str,
     data_len: usize,
-    out: &mut Vec<StoreHit>,
+    scan: &mut StdDefaultsScan,
 ) -> Result<(), HiiError> {
     let own_file_guid = if node.node_type == FfsType::File {
         node.guid.as_ref()
@@ -840,11 +871,12 @@ fn collect_std_defaults_hits(
     };
     if is_store_body(node) {
         if barrier {
-            return Err(HiiError::MutationBehindCompression);
+            scan.skipped_behind_barrier = true;
+            return Ok(());
         }
         if let Some((off, _)) = nvar::find_varstore_record(&node.body, name, data_len) {
-            out.push(StoreHit {
-                path: path.clone(),
+            scan.hits.push(StoreHit {
+                path: scan.path.clone(),
                 desc: crate::nvar::store_desc(node, own_file_guid),
                 body_offset: off,
             });
@@ -860,17 +892,9 @@ fn collect_std_defaults_hits(
     }
     let child_barrier = barrier || crate::nvar::section_blocks_mutation(node);
     for (i, child) in node.children.iter().enumerate() {
-        path.push(i);
-        collect_std_defaults_hits(
-            child,
-            path,
-            child_barrier,
-            own_file_guid,
-            name,
-            data_len,
-            out,
-        )?;
-        path.pop();
+        scan.path.push(i);
+        collect_std_defaults_hits(child, child_barrier, own_file_guid, name, data_len, scan)?;
+        scan.path.pop();
     }
     Ok(())
 }
@@ -917,18 +941,23 @@ pub fn set_value(image: &mut Image, item_id: &str, value: u64) -> Result<ValueOu
             map.var_offset, width, varstore.size
         )));
     }
-    let mut hits = Vec::new();
-    let mut path = Vec::new();
+    let mut scan = StdDefaultsScan {
+        path: Vec::new(),
+        hits: Vec::new(),
+        skipped_behind_barrier: false,
+    };
     collect_std_defaults_hits(
         &image.root,
-        &mut path,
         false,
         None,
         &varstore.name,
         varstore.size as usize,
-        &mut hits,
+        &mut scan,
     )?;
-    if hits.is_empty() {
+    if scan.hits.is_empty() {
+        if scan.skipped_behind_barrier {
+            return Err(HiiError::MutationBehindCompression);
+        }
         return Err(HiiError::ValueOpUnsupported(
             "no NVAR StdDefaults stores found in the image".into(),
         ));
@@ -938,6 +967,7 @@ pub fn set_value(image: &mut Image, item_id: &str, value: u64) -> Result<ValueOu
         from: Vec<u8>,
         to: Vec<u8>,
     }
+    let hits = scan.hits;
     let mut plans = Vec::new();
     for (i, hit) in hits.iter().enumerate() {
         let node = node_at(&image.root, &hit.path);
@@ -3254,6 +3284,46 @@ mod tests {
     }
 
     #[test]
+    fn form_package_ranges_sees_exact_list_in_freeform_subtype_guid() {
+        let pkg1 = value_forms_pkg();
+        let pkg2 = forms_pkg([g_form(9), g_end(), g_end()].concat());
+        let list_guid = Guid::try_parse("97E409E6-4CC1-11D9-81F6-000000000000").unwrap();
+        let mut body = list_guid.to_bytes().to_vec();
+        body.extend_from_slice(&2u32.to_le_bytes());
+        body.extend_from_slice(&pkg1);
+        body.extend_from_slice(&pkg2);
+        let image = vendor_image_with(0x18, body);
+        let node = &image.root.children[0].children[0].children[0];
+        let ranges = form_package_ranges(node);
+        assert_eq!(ranges.len(), 2, "обе 0x18-формы видны, got {ranges:?}");
+        assert_eq!(
+            &node.body[ranges[0].0..ranges[0].0 + ranges[0].1],
+            &pkg1[..]
+        );
+        assert_eq!(
+            &node.body[ranges[1].0..ranges[1].0 + ranges[1].1],
+            &pkg2[..]
+        );
+
+        let questions =
+            list_questions(&image, "5c60f367-a505-419a-859e-2a4ff6ca6fe5:0x18:0", 10029).unwrap();
+        assert_eq!(
+            questions.len(),
+            1,
+            "каскад list_questions работает через 0x18"
+        );
+    }
+
+    #[test]
+    fn form_package_ranges_ignores_non_hii_0x18_body() {
+        let mut junk = vec![0xDE, 0xAD, 0xBE, 0xEF];
+        junk.extend(vec![0x00; 32]);
+        let image = vendor_image_with(0x18, junk);
+        let node = &image.root.children[0].children[0].children[0];
+        assert!(form_package_ranges(node).is_empty());
+    }
+
+    #[test]
     fn unlock_refuses_read_only_mode() {
         let mut image = vendor_image_with(0x19, vendor_forms_pkg());
         image.mode = ImageMode::Read;
@@ -3283,6 +3353,95 @@ mod tests {
             unlock(&mut image, VENDOR_FORM_ITEM),
             Err(HiiError::MutationBehindCompression)
         ));
+    }
+
+    #[test]
+    fn list_questions_resolves_prompts_from_0x18_string_package() {
+        let mut one_of_payload = Vec::new();
+        one_of_payload.extend_from_slice(&1u16.to_le_bytes());
+        one_of_payload.extend_from_slice(&2u16.to_le_bytes());
+        one_of_payload.extend_from_slice(&0x003Bu16.to_le_bytes());
+        one_of_payload.extend_from_slice(&1u16.to_le_bytes());
+        one_of_payload.extend_from_slice(&0x003Au16.to_le_bytes());
+        one_of_payload.extend_from_slice(&[0x10, 0x10, 0x00, 0x01, 0x00]);
+        let one_of_prompt_main = g_opcode(r_efi::hii::IFR_ONE_OF_OP, true, &one_of_payload);
+        let pkg = forms_pkg(
+            [
+                g_varstore(1, 0x72, "Setup"),
+                g_form(10029),
+                one_of_prompt_main,
+                g_end(),
+                g_end(),
+                g_end(),
+            ]
+            .concat(),
+        );
+        let list_guid = Guid::try_parse("97E409E6-4CC1-11D9-81F6-000000000000").unwrap();
+        let mut body = list_guid.to_bytes().to_vec();
+        body.extend_from_slice(&2u32.to_le_bytes());
+        body.extend_from_slice(&test_string_pkg());
+        body.extend_from_slice(&pkg);
+        let image = vendor_image_with(0x18, body);
+        let qs =
+            list_questions(&image, "5c60f367-a505-419a-859e-2a4ff6ca6fe5:0x18:0", 10029).unwrap();
+        assert_eq!(qs.len(), 1);
+        assert_eq!(qs[0].prompt, "Main", "промпт из строкового пакета 0x18");
+    }
+
+    #[test]
+    fn list_questions_prompt_falls_back_to_largest_image_pool() {
+        let one_of_payload = {
+            let mut p = Vec::new();
+            p.extend_from_slice(&1u16.to_le_bytes());
+            p.extend_from_slice(&2u16.to_le_bytes());
+            p.extend_from_slice(&0x003Bu16.to_le_bytes());
+            p.extend_from_slice(&1u16.to_le_bytes());
+            p.extend_from_slice(&0x003Au16.to_le_bytes());
+            p.extend_from_slice(&[0x10, 0x10, 0x00, 0x01, 0x00]);
+            p
+        };
+        let pkg = forms_pkg(
+            [
+                g_varstore(1, 0x72, "Setup"),
+                g_form(10029),
+                g_opcode(r_efi::hii::IFR_ONE_OF_OP, true, &one_of_payload),
+                g_end(),
+                g_end(),
+                g_end(),
+            ]
+            .concat(),
+        );
+        let mut forms_section = mk_node(FfsType::Section, pkg, vec![]);
+        forms_section.subtype = 0x19;
+        let mut forms_file = mk_node(FfsType::File, vec![], vec![forms_section]);
+        forms_file.guid = Some(Guid::from_str("91B4D9C1-141C-4824-8D02-3C298E36EB3F").unwrap());
+
+        let mut pool_body = Guid::from_str(VENDOR_FORMSET_GUID_STR)
+            .unwrap()
+            .to_bytes()
+            .to_vec();
+        pool_body.extend_from_slice(&1u32.to_le_bytes());
+        pool_body.extend_from_slice(&test_string_pkg());
+        let mut pool_section = mk_node(FfsType::Section, pool_body, vec![]);
+        pool_section.subtype = 0x18;
+        let mut pool_file = mk_node(FfsType::File, vec![], vec![pool_section]);
+        pool_file.guid = Some(Guid::from_str(VENDOR_FORMSET_GUID_STR).unwrap());
+
+        let volume = mk_node(FfsType::Volume, vec![], vec![forms_file, pool_file]);
+        let root = mk_node(FfsType::Image, vec![], vec![volume]);
+        let image = Image {
+            image_id: "img".into(),
+            session_id: "s".into(),
+            root,
+            mode: ImageMode::Read,
+        };
+        let qs =
+            list_questions(&image, "91b4d9c1-141c-4824-8d02-3c298e36eb3f:0x19:0", 10029).unwrap();
+        assert_eq!(qs.len(), 1);
+        assert_eq!(
+            qs[0].prompt, "Main",
+            "промпт из крупнейшего пула другого файла (централизованные AMI-строки)"
+        );
     }
 
     #[test]
@@ -3927,6 +4086,27 @@ mod tests {
     }
 
     #[test]
+    fn set_value_skips_baked_copy_behind_non_recompressable() {
+        let mut image = image_with_nvar_stores();
+        image.root.children[1].children[0].children[0].parsing_data =
+            ParsingData::GuidedSection(crate::types::GuidedSectionParsingData {
+                guid: crate::ffs::crc32_guid(),
+                dictionary_size: 0,
+            });
+        let baked = image.root.children[1].children[0].children[0].children[0]
+            .body
+            .clone();
+
+        let outcome = set_value(&mut image, VENDOR_QUESTION_ITEM, 1).unwrap();
+        assert_eq!(outcome.applied.len(), 1, "пишется только живая raw-копия");
+
+        let live = &image.root.children[0].children[0];
+        assert_ne!(live.body, nvar_store_body(), "raw-стор изменён");
+        let baked_now = &image.root.children[1].children[0].children[0].children[0].body;
+        assert_eq!(&baked_now[..], &baked[..], "запечённый слепок нетронут");
+    }
+
+    #[test]
     fn set_value_refuses_read_only() {
         let mut image = image_with_nvar_stores();
         image.mode = ImageMode::Read;
@@ -4034,17 +4214,14 @@ mod tests {
             root,
             mode: ImageMode::Write,
         };
-        let mut hits = Vec::new();
-        collect_std_defaults_hits(
-            &image.root,
-            &mut Vec::new(),
-            false,
-            None,
-            "Setup",
-            6,
-            &mut hits,
-        )
-        .unwrap();
+        let mut scan = StdDefaultsScan {
+            path: Vec::new(),
+            hits: Vec::new(),
+            skipped_behind_barrier: false,
+        };
+        collect_std_defaults_hits(&image.root, false, None, "Setup", 6, &mut scan).unwrap();
+        assert!(!scan.skipped_behind_barrier);
+        let hits = scan.hits;
         assert_eq!(hits.len(), 1, "only the leaf store is a hit, got {hits:?}");
         assert_eq!(
             hits[0].path,

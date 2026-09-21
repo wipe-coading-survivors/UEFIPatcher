@@ -257,3 +257,27 @@ Real-image `#[ignore]` (образы: 226D2IL3.30/.50, C275D4I3.20, HNX99TF):
   (подписан в UI), владелец подтверждён.
 - Объём TUI-части (панель + формы-цвета) — отдельные задачи плана,
   движимые TestBackend-тестами.
+
+## Аддендум (2026-09-21): семантика барьера §3 распространяется на `set_value`
+
+`collect_std_defaults_hits` (hii/mod.rs, путь `hii set_value`) отказывает
+`MutationBehindCompression` на ЛЮБОЙ StdDefaults-копии за барьером — даже
+когда доступна живая raw-копия. На 226D2IL это убивает всю операцию:
+запечённый слепок за Tiano (путь 6/3/0/0/0/11/0/0) найдётся обходом и
+прервёт её, хотя raw-стор FFS CEF5B9A3 @FV0x500000 записываем. Расхождение
+с §3 (nvar_set: skip non-recompressable, refuse sole-behind-barrier).
+
+Решение: `collect_std_defaults_hits` переходит на v5 — за-барьерные копии
+пропускаются, `MutationBehindCompression` только если после обхода
+доступных копий ноль (sole-behind-barrier). Юнит-тест
+`set_value_refuses_store_behind_non_recompressable` уточняется: refuse
+остаётся для sole-behind-barrier; новый кейс mixed (raw + за-Tiano →
+пишется raw).
+
+Мотивация: `hii set-value` на 226D2IL (см. аддендум hii-walker 2026-09-21):
+Above 4G = CheckBox form 0x0486 qid 0x010D, varstore `Setup` off=1141;
+SOL = OneOf off=1 (формы читаются из 0x18-канала). Реал-гейт: дифф set_value
+совпадает с nvar-путём — ровно байты 0x500089/0x5004FD. Граница §10
+«SDP/IFR-дефолты не трогаем» подтверждена probe: у вопросов SOL/4G
+IFR-дефолты пусты (`defaults=[]`), реальные дефолты живут только в
+StdDefaults.

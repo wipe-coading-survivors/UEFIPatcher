@@ -1,8 +1,9 @@
 use crate::ffs::{
-    EFI_SECTION_COMPRESSION, EFI_SECTION_GUID_DEFINED, EFI_SECTION_PE32, EFI_SECTION_RAW,
+    EFI_SECTION_COMPRESSION, EFI_SECTION_FREEFORM_SUBTYPE_GUID, EFI_SECTION_GUID_DEFINED,
+    EFI_SECTION_PE32, EFI_SECTION_RAW,
 };
 use crate::hii::ifr::parse_form_package;
-use crate::hii::package_list::parse_package_list;
+use crate::hii::package_list::{parse_package_list, parse_package_list_exact};
 use crate::hii::pe_resource::{bare_form_packages, hii_resource_blobs, hii_resource_ranges};
 use crate::hii::values::walk_statements;
 use crate::types::{FfsNode, FfsType, Image, guid_to_upper_string};
@@ -92,6 +93,18 @@ fn walk_sections(node: &FfsNode, out: &mut Vec<uefi_proto::FormEdge>) {
                 for pkg in bare_form_packages(&child.body, &ranges) {
                     if let Some(fs) = parse_form_package(pkg) {
                         push_edges(pkg, &fs.guid, out);
+                    }
+                }
+            }
+            EFI_SECTION_FREEFORM_SUBTYPE_GUID => {
+                if let Some(list) = parse_package_list_exact(&child.body) {
+                    for pkg in &list.packages {
+                        if pkg.kind != PACKAGE_FORMS {
+                            continue;
+                        }
+                        if let Some(fs) = parse_form_package(pkg.bytes) {
+                            push_edges(pkg.bytes, &fs.guid, out);
+                        }
                     }
                 }
             }
@@ -272,6 +285,35 @@ mod tests {
             vec![(10001, 10019, None), (10019, 10030, None)],
             "дубль (10001,10019) схлопнулся, порядок первого появления"
         );
+    }
+
+    #[test]
+    fn collect_edges_sees_refs_in_freeform_subtype_guid() {
+        let g = Guid::from_str(FILE_GUID).unwrap();
+        let pkg = tree_pkg();
+        let mut body = g.to_bytes().to_vec();
+        body.extend_from_slice(&1u32.to_le_bytes());
+        body.extend_from_slice(&pkg);
+        let sec = mk_node(None, FfsType::Section, 0x18, body, vec![]);
+        let file = mk_node(
+            Some(Guid::from_str(FILE_GUID).unwrap()),
+            FfsType::File,
+            0x07,
+            vec![],
+            vec![sec],
+        );
+        let volume = mk_node(None, FfsType::Volume, 0, vec![], vec![file]);
+        let root = mk_node(None, FfsType::Image, 0, vec![], vec![volume]);
+        let image = Image {
+            image_id: "img".into(),
+            session_id: "s".into(),
+            root,
+            mode: ImageMode::Read,
+        };
+        let edges = collect_edges(&image);
+        assert_eq!(edges.len(), 2, "REF-рёбра из 0x18-списка, got {edges:?}");
+        assert_eq!(edges[0].parent_form_id, 10001);
+        assert_eq!(edges[0].form_id, 10019);
     }
 
     #[test]

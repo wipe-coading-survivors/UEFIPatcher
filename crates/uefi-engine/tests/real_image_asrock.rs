@@ -14,14 +14,15 @@ fn asrock_path(name: &str) -> PathBuf {
 }
 
 fn count_algo1(node: &FfsNode, total: &mut usize, expanded: &mut usize) {
-    if node.node_type == FfsType::Section && node.subtype == EFI_SECTION_COMPRESSION {
-        if let ParsingData::CompressedSection(cd) = &node.parsing_data {
-            if cd.compression_type == 1 && node.body.len() > 5 {
-                *total += 1;
-                if !node.children.is_empty() {
-                    *expanded += 1;
-                }
-            }
+    if node.node_type == FfsType::Section
+        && node.subtype == EFI_SECTION_COMPRESSION
+        && let ParsingData::CompressedSection(cd) = &node.parsing_data
+        && cd.compression_type == 1
+        && node.body.len() > 5
+    {
+        *total += 1;
+        if !node.children.is_empty() {
+            *expanded += 1;
         }
     }
     for child in &node.children {
@@ -139,8 +140,14 @@ fn real_asrock_226d2il_nvar_listing_geometry() {
 fn real_asrock_226d2il_nvar_bake_sol_4g() {
     for name in ["226D2IL3.30", "226D2IL3.50"] {
         let data = std::fs::read(asrock_path(name)).unwrap();
-        assert_eq!(data[0x500089], 0, "{name}: SOL-байт до правки");
-        assert_eq!(data[0x5004FD], 0, "{name}: 4G-байт до правки");
+        assert_eq!(
+            data[0x500089], 0,
+            "{name}: 4G-байт (1215:0x13E, off=1) до правки"
+        );
+        assert_eq!(
+            data[0x5004FD], 0,
+            "{name}: SOL-байт (1158:0x10D, off=1141) до правки"
+        );
         let mut img = parse_image(&data, ImageMode::Write, "t", "s").unwrap();
         let out = uefi_engine::nvar::nvar_set(
             &mut img,
@@ -235,5 +242,138 @@ fn real_asrock_bake_sol4g_artifacts() {
         let out_path = asrock_path(out_name);
         std::fs::write(&out_path, &built).unwrap();
         println!("{out_name}: {}", out_path.display());
+    }
+}
+
+const ASR1_SETUP_FILE: &str = "899407D7-99FE-43D8-9A21-79EC328CAC21";
+// Above 4G Decoding: live-экран «North Bridge Configuration» — форма 1215,
+// qid 0x13E, var_offset 1 → image 0x500089 (живая проба 2026-09-21: тумблер
+// Enabled/Disabled flips ровно этот байт; отчёт 2026-09-21-live-varmap).
+// Формы 1025 (пустой заголовок, формсет 985EEE91) и 1035 «PCI Subsystem
+// Settings» — призраки, разделяющие prompt-строку.
+const ASR1_4G_ITEM: &str = "899407D7-99FE-43D8-9A21-79EC328CAC21:0x18:0#1215:0x13E";
+// 3.30: 0x18-формсеты другого билда — 1215:0x13E указывает на off=841;
+// байт off=1 там доступен через призрак 1025:5 (var_offset тот же, живой
+// Setup-блоб 3.30↔3.50 идентичен — разведка 2026-09-20).
+const ASR1_4G_ITEM_330: &str = "899407D7-99FE-43D8-9A21-79EC328CAC21:0x18:0#1025:5";
+// Блок SOL формы 1158 «Serial Port Console Redirection»: CheckBox qid 0x10D,
+// var_offset 1141 → image 0x5004FD. Атрибуция закрыта живой сессией 2026-09-21
+// (тумблер глушит SOL-мост, байт 01→00, efivar-откат возвращает POST).
+const ASR1_FORM1158_ITEM: &str = "899407D7-99FE-43D8-9A21-79EC328CAC21:0x18:0#1158:0x010D";
+
+#[test]
+#[ignore = "requires external ASRock images under refs/amibcp/ (gitignored)"]
+fn real_asrock_226d2il_forms_in_freeform_subtype_guid() {
+    for name in ["226D2IL3.30", "226D2IL3.50"] {
+        let data = std::fs::read(asrock_path(name)).unwrap();
+        let image = parse_image(&data, ImageMode::Read, "t", "s").unwrap();
+        let forms = uefi_engine::hii::forms::collect_forms(&image);
+        let target_prefix = format!("{ASR1_SETUP_FILE}:0x18:0");
+        let from_0x18: Vec<_> = forms
+            .iter()
+            .filter(|f| f.form_id.starts_with(&target_prefix))
+            .collect();
+        assert_eq!(
+            from_0x18.len(),
+            85,
+            "{name}: 85 форм из 0x18-канала (7 форм-пакетов probe 2026-09-21)"
+        );
+        let titled = from_0x18.iter().filter(|f| !f.title.is_empty()).count();
+        assert!(
+            titled >= 60,
+            "{name}: титулы из строкового пакета, titled={titled}"
+        );
+        assert_eq!(
+            from_0x18[0].formset_guid, "985EEE91-BCAC-4238-8778-57EFDC93F24E",
+            "{name}"
+        );
+        // 3.50 (риг): live-вопрос 1215:0x13E off=1; 3.30: IFR другого билда,
+        // off=1 живёт у призрака 1025:5.
+        let (form_id, qid) = if name == "226D2IL3.50" {
+            (1215u16, 0x13Eu32)
+        } else {
+            (1025u16, 5u32)
+        };
+        let qs =
+            uefi_engine::hii::list_questions(&image, &format!("{ASR1_SETUP_FILE}:0x18:0"), form_id)
+                .unwrap();
+        let q4g = qs.iter().find(|q| q.question_id == qid).unwrap();
+        assert_eq!(q4g.var_offset, 1, "{name}: off=1 → 0x500089 (live-проба)");
+        assert_eq!(
+            q4g.prompt, "Above 4G Decoding",
+            "{name}: промпт live-экрана North Bridge из строкового пакета 0x18"
+        );
+        let d37: Vec<_> = forms
+            .iter()
+            .filter(|f| f.formset_guid == "D37BCD57-ABA1-44E6-A92C-898B158F2F59")
+            .collect();
+        assert_eq!(d37.len(), 9, "{name}: security-формсет 91B4D9C1");
+        let d37_titled = d37.iter().filter(|f| !f.title.is_empty()).count();
+        assert!(
+            d37_titled >= 5,
+            "{name}: титулы D37BCD57 из крупнейшего пула (fallback), titled={d37_titled}"
+        );
+        let edges = uefi_engine::hii::ref_tree::collect_edges(&image);
+        let e14_edges = edges
+            .iter()
+            .filter(|e| e.formset_guid == "E14F04FA-8706-4353-92F2-9C2424746F9F")
+            .count();
+        assert!(
+            e14_edges >= 10,
+            "{name}: REF-иерархия E14F04FA из 0x18-канала, edges={e14_edges}"
+        );
+    }
+    let data = std::fs::read(asrock_path("C275D4I3.20")).unwrap();
+    let image = parse_image(&data, ImageMode::Read, "t", "s").unwrap();
+    let forms = uefi_engine::hii::forms::collect_forms(&image);
+    assert!(!forms.is_empty(), "C275: формы из .rsrc как раньше");
+    assert!(
+        forms.iter().all(|f| !f.form_id.contains(":0x18:")),
+        "C275: канал 0x18 не добавляет задвоений"
+    );
+}
+
+#[test]
+#[ignore = "requires external ASRock images under refs/amibcp/ (gitignored)"]
+fn real_asrock_226d2il_set_value_bakes_two_setup_bytes() {
+    for name in ["226D2IL3.30", "226D2IL3.50"] {
+        let data = std::fs::read(asrock_path(name)).unwrap();
+        assert_eq!(
+            data[0x500089], 0,
+            "{name}: байт off=1 (Above 4G, 1215:0x13E) до правки"
+        );
+        assert_eq!(
+            data[0x5004FD], 0,
+            "{name}: байт off=1141 (SOL, 1158:0x10D) до правки"
+        );
+        let mut img = parse_image(&data, ImageMode::Write, "t", "s").unwrap();
+        let item_4g = if name == "226D2IL3.50" {
+            ASR1_4G_ITEM
+        } else {
+            ASR1_4G_ITEM_330
+        };
+        let out = uefi_engine::hii::set_value(&mut img, item_4g, 1).unwrap();
+        assert_eq!(out.applied.len(), 1, "{name}: только живая raw-копия");
+        let out = uefi_engine::hii::set_value(&mut img, ASR1_FORM1158_ITEM, 1).unwrap();
+        assert_eq!(out.applied.len(), 1, "{name}");
+        let built = uefi_engine::builder::build_image(&img).unwrap();
+        let diff: Vec<usize> = (0..data.len()).filter(|&i| data[i] != built[i]).collect();
+        assert_eq!(
+            diff,
+            vec![0x500089, 0x5004FD],
+            "{name}: дифф ровно два байта — совпадает с nvar-путём"
+        );
+        assert_eq!(built[0x500089], 1, "{name}");
+        assert_eq!(built[0x5004FD], 1, "{name}");
+        let re = parse_image(&built, ImageMode::Read, "t2", "s2").unwrap();
+        let forms = uefi_engine::hii::forms::collect_forms(&re);
+        assert_eq!(
+            forms
+                .iter()
+                .filter(|f| f.form_id.starts_with(&format!("{ASR1_SETUP_FILE}:0x18:0")))
+                .count(),
+            85,
+            "{name}: формы живы после round-trip"
+        );
     }
 }

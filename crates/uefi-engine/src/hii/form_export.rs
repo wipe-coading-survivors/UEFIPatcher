@@ -29,7 +29,8 @@ pub struct FormExport {
 pub fn export_form(image: &Image, item_id: &str) -> Result<FormExport, HiiError> {
     let (file, node, form_id) = resolve_form(image, item_id)?;
     let pkg = find_form_package(node, form_id).ok_or(HiiError::NotFound)?;
-    let texts = super::questions::prompt_texts(file);
+    let texts =
+        super::questions::prompt_texts(file, &super::questions::image_string_fallback(&image.root));
     let mut lossy = Vec::new();
     let items = collect_items(pkg, form_id, &texts, &mut lossy);
     let varstores = fill_varstores(&items, pkg, &mut lossy);
