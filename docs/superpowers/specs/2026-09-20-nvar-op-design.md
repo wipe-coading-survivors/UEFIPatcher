@@ -281,3 +281,48 @@ SOL = OneOf off=1 (формы читаются из 0x18-канала). Реал
 «SDP/IFR-дефолты не трогаем» подтверждена probe: у вопросов SOL/4G
 IFR-дефолты пусты (`defaults=[]`), реальные дефолты живут только в
 StdDefaults.
+
+## Аддендум (2026-09-21): TUI ex-команды `:nvar list/set`
+
+§7 дал NVAR-панель Details, но ex-команды не завёл — NVRAM-правки
+остались CLI-only (§6). Живая сессия 2026-09-21 это подсветила: Timeout
+правили из шелла через `uefi-cli nvar set`, хотя это HII-вопрос
+(1031:0x4) и печётся из Forms View; сам путь «узнать офсет → set» в TUI
+отсутствовал (TODO:1612, мини-цикл).
+
+Решения:
+- `:nvar list [PATH] [--var NAME]` — два режима. С PATH — целевой:
+  `goto_path` (с разворотом предков — запечённая копия за барьером
+  6/3/0/0/0/11/0/0 достигается одной командой, без ручного разворота
+  8 уровней, TODO:3332) + загрузка панель по `NvarList(path,
+  include_data=true)`, статус `nvar <path>: N vars · records R · free
+  F`. Без PATH — сводка в статус-строку: `nvar: S stores · V vars
+  (paths)`; пустой ответ подсказывает behind-barrier-копию и PATH.
+  `--var NAME` — строки `имя офсет размер стор` (офсет — как в CLI,
+  {:#010x}); `--var` валиден только без PATH: панель всегда показывает
+  все переменные стора, половинчатый фильтр отвергнут (usage-отказ).
+- `:nvar set NAME --offset OFF --value VAL [--guid GUID] [--width
+  1|2|4|8]` — паритет с §6: offset — смещение ВНУТРИ данных переменной,
+  width дефолт 1, hex/dec через parse_u64_loose; статус повторяет
+  applied-строки движка (`<desc> store+<off>: from -> to`). После
+  успешного set кэш панель (`nvar.key`) инвалидируется; курсор на сторе
+  — немедленная перезагрузка (hex показывает новые байты).
+- Комплишен: подкоманды list/set; PATH — по видимому дереву; имена и
+  guid — из загруженной панель (все сторы, дедуп); width — 1/2/4/8.
+- Enter в NVAR-панель (Focus::Details на узле стора) — prefill
+  `:nvar set <name> [--guid G] --offset 0 --value ` (паттерн Forms View
+  Enter → set-value; guid подставляется, если запись его несёт).
+- Хелп-оверлей: обе команды в EX-COMMANDS (с семантикой offset и
+  behind-barrier) + новая секция NVRAM STORE для клавиш панели —
+  до этого панель в хелпе не была документирована вовсе.
+
+Тесты: 12 новых. Unit: parse_nvar_set (дефолты/отказы/unknown-флаг),
+nvar_set_prefill (guid/без guid/пустая панель), complete_nvar_* (команды/
+флаги/значения), nvar_status_builders. Integration (мок): list сводка+
+фильтр+usage-отказы, list целевой (панель+goto+несуществующий путь),
+set (RPC-поля, инвалидация кэша, width/usage). Мок-сервер: NvarList
+отдаёт фикстуру с эхом path, NvarSet пишется в schema_calls
+(target=name, schema_json=offset, extra=`guid|value|width`).
+
+Статус: TODO:1612 закрыт; коммит 9e88d26 (master → PR), клозед-цикл
+без правок движка/RPC — только TUI-клиент.

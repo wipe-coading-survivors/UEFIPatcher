@@ -216,6 +216,11 @@ async fn handle_normal(app: &mut App, ev: &AppEvent, client: &mut Option<command
         AppEvent::Enter if app.focus == Focus::Registry => {
             handle_registry_enter(app, client).await;
         }
+        AppEvent::Enter if app.focus == Focus::Details && app.selected_is_nvar() => {
+            if let Some(pre) = commands::nvar_set_prefill(app) {
+                app.enter_insert_mode("nvar", pre);
+            }
+        }
         AppEvent::Key('/') => {
             app.enter_insert_mode("goto", "goto ".into());
         }

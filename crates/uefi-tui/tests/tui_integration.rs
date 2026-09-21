@@ -525,6 +525,178 @@ fn schema_file(td: &tempfile::TempDir, name: &str, body: &str) -> String {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn nvar_list_summary_and_var_filter() {
+    let td = TempDir::new().unwrap();
+    let sock = td.path().join("test.sock");
+    let _handle = mock_server::start_mock(&sock).await;
+    let state = uefi_common::State {
+        session_id: Some("s1".into()),
+        token: Some("t1".into()),
+        active_image_id: None,
+        sock_path: Some(sock.display().to_string()),
+    };
+    let mut client = uefi_tui::commands::connect(None, state).await.unwrap();
+    let mut app = uefi_tui::app::App::new();
+
+    let err = uefi_tui::commands::execute_command(&mut app, "nvar list", &mut client).await;
+    assert!(err.is_err(), "без активного образа — отказ");
+
+    uefi_tui::commands::execute_command(&mut app, "open /dev/null", &mut client)
+        .await
+        .unwrap();
+    uefi_tui::commands::execute_command(&mut app, "nvar list", &mut client)
+        .await
+        .unwrap();
+    assert_eq!(
+        app.status_msg, "nvar: 1 stores · 2 vars (1/0/0)",
+        "сводный статус по всем сторам"
+    );
+    assert!(
+        app.nvar.stores.is_empty(),
+        "сводный режим панель не трогает"
+    );
+
+    uefi_tui::commands::execute_command(&mut app, "nvar list --var Timeout", &mut client)
+        .await
+        .unwrap();
+    assert!(
+        app.status_msg.contains("Timeout 0x0050057a 2B @1/0/0"),
+        "строки переменной с офетом и стором: {}",
+        app.status_msg
+    );
+
+    uefi_tui::commands::execute_command(&mut app, "nvar list --var Nope", &mut client)
+        .await
+        .unwrap();
+    assert_eq!(app.status_msg, "nvar: no vars named Nope");
+
+    let err =
+        uefi_tui::commands::execute_command(&mut app, "nvar list 1/0/0 --var Timeout", &mut client)
+            .await
+            .unwrap_err();
+    assert!(err.contains("--var"), "PATH + --var — usage-отказ: {err}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn nvar_list_targeted_loads_pane_and_moves_cursor() {
+    let td = TempDir::new().unwrap();
+    let sock = td.path().join("test.sock");
+    let _handle = mock_server::start_mock(&sock).await;
+    let state = uefi_common::State {
+        session_id: Some("s1".into()),
+        token: Some("t1".into()),
+        active_image_id: None,
+        sock_path: Some(sock.display().to_string()),
+    };
+    let mut client = uefi_tui::commands::connect(None, state).await.unwrap();
+    let mut app = uefi_tui::app::App::new();
+    uefi_tui::commands::execute_command(&mut app, "open /dev/null", &mut client)
+        .await
+        .unwrap();
+    app.cursor = 0;
+
+    uefi_tui::commands::execute_command(&mut app, "nvar list 1/0", &mut client)
+        .await
+        .unwrap();
+    assert_eq!(app.nvar.stores.len(), 1, "панель загружена по PATH");
+    assert_eq!(app.nvar.stores[0].path, "1/0");
+    assert_eq!(app.nvar.cursor, 0, "курсор панель сбрасывает");
+    assert!(
+        app.nvar.key.as_deref().is_some_and(|k| k.ends_with(":1/0")),
+        "ключ кэша панель: {:?}",
+        app.nvar.key
+    );
+    assert_eq!(
+        app.selected_path().as_deref(),
+        Some("1/0"),
+        "курсор дерева переведён"
+    );
+    assert!(
+        app.status_msg.starts_with("nvar 1/0: 2 vars · records 3"),
+        "статус целевого режима: {}",
+        app.status_msg
+    );
+
+    let err = uefi_tui::commands::execute_command(&mut app, "nvar list 9/9", &mut client)
+        .await
+        .unwrap_err();
+    assert!(
+        err.contains("no node at path"),
+        "goto несуществующего пути: {err}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn nvar_set_sends_rpc_invalidates_pane_and_validates() {
+    let td = TempDir::new().unwrap();
+    let sock = td.path().join("test.sock");
+    let (_h, calls) = mock_server::start_mock(&sock).await;
+    let state = uefi_common::State {
+        session_id: Some("s1".into()),
+        token: Some("t1".into()),
+        active_image_id: None,
+        sock_path: Some(sock.display().to_string()),
+    };
+    let mut client = uefi_tui::commands::connect(None, state).await.unwrap();
+    let mut app = uefi_tui::app::App::new();
+    uefi_tui::commands::execute_command(&mut app, "open /dev/null", &mut client)
+        .await
+        .unwrap();
+    app.nvar.key = Some("stale".into());
+    app.nvar.stores = vec![uefi_proto::NvarStoreInfo::default()];
+
+    uefi_tui::commands::execute_command(
+        &mut app,
+        "nvar set Timeout --offset 0 --value 5 --width 2",
+        &mut client,
+    )
+    .await
+    .unwrap();
+    let calls = calls.lock().await;
+    let sets: Vec<_> = calls.iter().filter(|c| c.rpc == "NvarSet").collect();
+    assert_eq!(sets.len(), 1);
+    assert_eq!(sets[0].target, "Timeout");
+    assert_eq!(sets[0].schema_json, "0x0");
+    assert_eq!(sets[0].extra, "|0x5|2", "guid пуст, value/width на месте");
+    drop(calls);
+    assert_eq!(app.nvar.key, None, "кэш панель сброшен после set");
+    assert!(
+        app.status_msg.contains("nvar set Timeout+0x0=0x5 (w2)"),
+        "статус set: {}",
+        app.status_msg
+    );
+    assert!(
+        app.status_msg
+            .contains("applied 0/2 AMI NVAR store+0x0: 00 -> 05"),
+        "applied-строка движка в статусе: {}",
+        app.status_msg
+    );
+
+    let err = uefi_tui::commands::execute_command(
+        &mut app,
+        "nvar set Timeout --offset 0 --value 5 --width 3",
+        &mut client,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err, "width must be one of 1, 2, 4, 8");
+
+    let err =
+        uefi_tui::commands::execute_command(&mut app, "nvar set Timeout --value 5", &mut client)
+            .await
+            .unwrap_err();
+    assert!(
+        err.contains("usage: :nvar set"),
+        "--offset обязателен: {err}"
+    );
+
+    let err = uefi_tui::commands::execute_command(&mut app, "nvar bogus", &mut client)
+        .await
+        .unwrap_err();
+    assert!(err.contains("usage: :nvar"), "неизвестный подглагол: {err}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn hii_formset_add_sends_schema_and_refreshes() {
     let td = tempfile::TempDir::new().unwrap();
     let sock = td.path().join("test.sock");

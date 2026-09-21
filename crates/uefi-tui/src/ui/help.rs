@@ -28,6 +28,11 @@ REGISTRY focus
   Enter on image    -> :switch <id>  (return to Tree)
   Enter on artifact -> prefill :insert <path> --artifact-id <id>
 
+NVRAM STORE (панель Details при курсоре на узле стора в Tree)
+  j / k          выбор переменной (строки панель)
+  PgDn / PgUp    скролл hex данных выбранной переменной
+  Enter          prefill :nvar set <name> --offset 0 --value
+
 FORMS VIEW (Tab / Shift-Tab, :forms / :image)
   j / k          move cursor (формы / строки)
   h / l          collapse / expand формсета (и формы в REF-дереве)
@@ -72,6 +77,13 @@ EX-COMMANDS
   :hii question add TARGET#FORM FILE     (form_id — десятичное)
   :hii page add TARGET FILE
   :hii hijack TARGET FILE [SETUPDATA-GUID]
+  :nvar list [PATH] [--var NAME]  (PATH = путь узла NVRAM-стора: панель + goto;
+                                   без PATH — сводка по всем сторам, --var ищет
+                                   переменную по имени; запечённые копии за
+                                   барьером видны только с PATH)
+  :nvar set NAME --offset OFF --value VAL [--guid GUID] [--width 1|2|4|8]
+                                   (OFF = смещение внутри данных переменной;
+                                   правит ВСЕ копии стора, width по умолч. 1)
   :filter TEXT                фильтр strings-браузера (пустой — сброс)
   :refresh
   :artifacts
@@ -163,5 +175,27 @@ mod tests {
         }
         assert!(HELP.contains(":hii form export ITEM [--out FILE]"));
         assert!(HELP.contains(":hii import TARGET --file FILE"));
+    }
+
+    #[test]
+    fn help_documents_nvar_commands_and_pane() {
+        for cmd in [
+            ":nvar list [PATH] [--var NAME]",
+            ":nvar set NAME --offset OFF --value VAL [--guid GUID] [--width 1|2|4|8]",
+        ] {
+            assert!(HELP.contains(cmd), "help должен документировать {cmd}");
+        }
+        assert!(
+            HELP.contains("NVRAM STORE (панель Details при курсоре на узле стора в Tree)"),
+            "секция NVAR-панель в help"
+        );
+        assert!(
+            HELP.contains("Enter          prefill :nvar set"),
+            "Enter-хинт панель"
+        );
+        assert!(
+            HELP.contains("OFF = смещение внутри данных переменной"),
+            "семантика offset задокументирована"
+        );
     }
 }

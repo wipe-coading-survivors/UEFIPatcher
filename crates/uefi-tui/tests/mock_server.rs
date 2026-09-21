@@ -585,17 +585,64 @@ impl EngineService for MockEngine {
     }
     async fn nvar_list(
         &self,
-        _req: Request<NvarListRequest>,
+        req: Request<NvarListRequest>,
     ) -> Result<Response<NvarListResponse>, Status> {
-        Ok(Response::new(NvarListResponse { stores: vec![] }))
+        let r = req.into_inner();
+        let path = r.path.unwrap_or_else(|| "1/0/0".into());
+        Ok(Response::new(NvarListResponse {
+            stores: vec![NvarStoreInfo {
+                path,
+                desc: "0/2 AMI NVAR".into(),
+                records: 3,
+                free_tail: 0x20,
+                guid_store_size: 64,
+                vars: vec![
+                    NvarVarInfo {
+                        name: "Setup".into(),
+                        guid: "EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9".into(),
+                        offset: 0x500088,
+                        size: 0x8AE,
+                        attributes: 0x82,
+                        depth: 0,
+                        data: vec![0; 4],
+                    },
+                    NvarVarInfo {
+                        name: "Timeout".into(),
+                        guid: String::new(),
+                        offset: 0x50057A,
+                        size: 2,
+                        attributes: 0x82,
+                        depth: 1,
+                        data: vec![1, 0],
+                    },
+                ],
+            }],
+        }))
     }
     async fn nvar_set(
         &self,
-        _req: Request<NvarSetRequest>,
+        req: Request<NvarSetRequest>,
     ) -> Result<Response<NvarSetResponse>, Status> {
+        let r = req.into_inner();
+        self.record_schema(
+            "NvarSet",
+            &r.image_id,
+            &r.name,
+            &format!("{:#x}", r.offset),
+            &format!(
+                "{}|{:#x}|{}",
+                r.guid.clone().unwrap_or_default(),
+                r.value,
+                r.width
+            ),
+        )
+        .await;
         Ok(Response::new(NvarSetResponse {
-            applied: vec![],
-            stores: vec![],
+            applied: vec![format!(
+                "0/2 AMI NVAR store+{:#x}: 00 -> {:02x}",
+                r.offset, r.value
+            )],
+            stores: vec!["0/2 AMI NVAR".into()],
         }))
     }
     async fn image_snapshot_create(
