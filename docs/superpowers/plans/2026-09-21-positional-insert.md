@@ -760,7 +760,7 @@ git commit -m "feat(engine): проброс insert_before в add_ref/add_questio
 
 ### Task 5: NP-интеграционный тест — позиционный add_ref на resource-канале + $SPF-порог
 
-Полный путь: schema→preflight→string-pack→позиционный splice→$SPF-fixup→build→re-parse. Полигон HNX (тот же, что `real_image_ops_insert_serial_np3`), якорь — stock-вопрос формы 10019, найденный через `$SPF`-запись (без hardcoded qid), обязательно **depth-0** (вне gate-блоков): скоупленный якорь поднимается лифтом перед блок (спека §2), и ассерт «следующий стейтмент — якорь» перестаёт выполняться (живой факт 2026-09-21: первый $SPF-рекорд формы — CHECKBOX q35 внутри SUPPRESS_IF).
+Полный путь: schema→preflight→string-pack→позиционный splice→$SPF-fixup→build→re-parse. Полигон HNX (тот же, что `real_image_ops_insert_serial_np3`). Якорь — **первый depth-0 question-op формы 10019 по прямому IFR-обходу** (qid u16@+6 из байтов стейтмента; без hardcoded qid). Почему не `$SPF`-запись: живой факт 2026-09-21 (раунд 2) — единственный $SPF-рекорд формы q35 CHECKBOX@0x954 скоуплен (SUPPRESS_IF@0x94c), depth-0 записей в `$SPF` нет (depth-0 ONE_OF q34@0x921 без записи); depth-0 якорь нужен, потому что скоупленный лифтится перед блок (спека §2) и ассерт «следующий стейтмент — якорь» не выполняется. `$SPF`-записи остаются для порогового инварианта: insert_at == anchor_off (depth-0 — лифт identity), сдвиг 15 для ifr_offset >= anchor_off.
 
 **Files:**
 - Modify: `crates/uefi-engine/tests/real_image.rs` (новый тест после `real_image_ops_insert_serial_np3`, ~`:5140`)
@@ -774,9 +774,11 @@ git commit -m "feat(engine): проброс insert_before в add_ref/add_questio
 /// Позиционная вставка на NP-полигоне (спека positional-insert
 /// acceptance 2): add_ref c insert_before {question_id} в форму 10019
 /// (resource-канал) — REF встаёт перед якорным stock-вопросом
-/// (якорь depth-0: вне gate-блоков, лифт не срабатывает — вставка
-/// ровно перед вопросом); $SPF-записи с ifr_offset >= insert_at
-/// (= anchor_off для depth-0) сдвигаются на 15, до — нет.
+/// (якорь — первый depth-0 question-op формы по IFR-обходу: вне
+/// gate-блоков, лифт identity — вставка ровно перед вопросом;
+/// $SPF-записи формы скоуплены, якорем быть не могут);
+/// $SPF-записи с ifr_offset >= anchor_off (= insert_at) сдвигаются
+/// на 15, до — нет.
 #[test]
 #[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
 fn real_image_ops_insert_positional_np() {
@@ -799,7 +801,7 @@ fn real_image_ops_insert_positional_np() {
         .expect("форма 10019 в stock");
     let form_hdr = (stock_pkg[span.form_op + 1] & 0x7F) as usize;
     let mut depth = 0usize;
-    let mut unscoped: Vec<u32> = Vec::new();
+    let mut anchor: Option<(u16, u32)> = None;
     let mut i = span.form_op + form_hdr;
     while i + 2 <= span.next_form_op {
         let ls = stock_pkg[i + 1];
@@ -807,11 +809,27 @@ fn real_image_ops_insert_positional_np() {
         if len < 2 || i + len > span.next_form_op {
             break;
         }
-        if stock_pkg[i] == r_efi::hii::IFR_END_OP {
+        let op = stock_pkg[i];
+        if op == r_efi::hii::IFR_END_OP {
             depth = depth.saturating_sub(1);
         } else {
-            if depth == 0 {
-                unscoped.push(i as u32);
+            let is_question = matches!(
+                op,
+                r_efi::hii::IFR_ONE_OF_OP
+                    | r_efi::hii::IFR_CHECKBOX_OP
+                    | r_efi::hii::IFR_NUMERIC_OP
+                    | r_efi::hii::IFR_PASSWORD_OP
+                    | r_efi::hii::IFR_ORDERED_LIST_OP
+                    | r_efi::hii::IFR_STRING_OP
+                    | r_efi::hii::IFR_DATE_OP
+                    | r_efi::hii::IFR_TIME_OP
+                    | r_efi::hii::IFR_ACTION_OP
+            );
+            if depth == 0 && is_question && len >= 8 && anchor.is_none() {
+                anchor = Some((
+                    u16::from_le_bytes([stock_pkg[i + 6], stock_pkg[i + 7]]),
+                    i as u32,
+                ));
             }
             if ls & 0x80 != 0 {
                 depth += 1;
@@ -819,11 +837,7 @@ fn real_image_ops_insert_positional_np() {
         }
         i += len;
     }
-    let (anchor_qid, anchor_off) = stock_recs
-        .iter()
-        .find(|(_, off, _)| unscoped.contains(off))
-        .map(|(q, off, _)| (*q, *off))
-        .expect("resolving $SPF-запись depth-0 в форме 10019");
+    let (anchor_qid, anchor_off) = anchor.expect("depth-0 question-op в форме 10019");
 
     let ref_json = std::fs::read_to_string(std::path::Path::new(NP_SERIAL_DIR).join("np_ref.json"))
         .unwrap();
