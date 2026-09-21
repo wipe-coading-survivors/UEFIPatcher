@@ -573,6 +573,7 @@ git commit -m "feat(engine): InsertPos + locate_insert_at — позиционн
 
 **Files:**
 - Modify: `crates/uefi-engine/src/hii/mod.rs` (`check_ref_slots :1897`, `add_ref :1925`, `add_question :1544`, `preflight_question_splice :1406`, `check_rsrc_question_splice :1113`, `splice_question_ops_into_resource :1152`, `check_ref_add :2001`, `check_question_add :1651`; tests)
+- Modify: `crates/uefi-engine/src/hii/ifr.rs` (удаление обёртки `locate_form_end` после миграции последних вызывателей)
 
 **Interfaces:**
 - Consumes: `schema::InsertBefore` (Task 1), `ifr::InsertPos`/`locate_insert_at` (Task 3).
@@ -620,17 +621,23 @@ git commit -m "feat(engine): InsertPos + locate_insert_at — позиционн
         f.extend_from_slice(&100u16.to_le_bytes());
         f.extend_from_slice(&10u16.to_le_bytes());
         ifr.extend_from_slice(&f);
-        for (target, qid) in [(200u16, 0u16), (300, 0x31)] {
-            let mut r = vec![r_efi::hii::IFR_REF_OP, 15];
-            r.extend_from_slice(&0x51u16.to_le_bytes());
-            r.extend_from_slice(&0x52u16.to_le_bytes());
-            r.extend_from_slice(&qid.to_le_bytes());
-            r.extend_from_slice(&0u16.to_le_bytes());
-            r.extend_from_slice(&0u16.to_le_bytes());
-            r.push(0);
-            r.extend_from_slice(&target.to_le_bytes());
-            ifr.extend_from_slice(&r);
-        }
+        let mut r = vec![r_efi::hii::IFR_REF_OP, 15];
+        r.extend_from_slice(&0x51u16.to_le_bytes());
+        r.extend_from_slice(&0x52u16.to_le_bytes());
+        r.extend_from_slice(&0u16.to_le_bytes());
+        r.extend_from_slice(&0u16.to_le_bytes());
+        r.extend_from_slice(&0u16.to_le_bytes());
+        r.push(0);
+        r.extend_from_slice(&200u16.to_le_bytes());
+        ifr.extend_from_slice(&r);
+        let mut q = vec![r_efi::hii::IFR_ONE_OF_OP, 13];
+        q.extend_from_slice(&0x61u16.to_le_bytes());
+        q.extend_from_slice(&0x62u16.to_le_bytes());
+        q.extend_from_slice(&0x31u16.to_le_bytes());
+        q.extend_from_slice(&1u16.to_le_bytes());
+        q.extend_from_slice(&0x40u16.to_le_bytes());
+        q.push(0);
+        ifr.extend_from_slice(&q);
         ifr.extend_from_slice(&[r_efi::hii::IFR_END_OP, 0x02]);
         ifr.extend_from_slice(&[r_efi::hii::IFR_END_OP, 0x02]);
         let mut pkg = vec![0u8, 0, 0, r_efi::hii::PACKAGE_FORMS];
@@ -644,7 +651,7 @@ git commit -m "feat(engine): InsertPos + locate_insert_at — позиционн
 
     #[test]
     fn check_ref_slots_allows_navigation_qid_zero() {
-        let pkg = mini_ref_package(); // REF qid 0 и REF qid 0x31 в форме 100
+        let pkg = mini_ref_package(); // REF qid 0 → 200 и ONE_OF qid 0x31 в форме 100
         let nav = schema::QuestionAddRefSchema {
             form_id: 100,
             prompt: "P".into(),
@@ -654,7 +661,9 @@ git commit -m "feat(engine): InsertPos + locate_insert_at — позиционн
             insert_before: None,
         };
         check_ref_slots(&nav, &pkg, &[])
-            .expect("qid 0 навигационный: коллизия с барным REF qid 0 не ошибка");
+            .expect("qid 0 навигационный: без pending-коллизий");
+        check_ref_slots(&nav, &pkg, &[0])
+            .expect("два qid-0 REF в одном запросе легитимны (карве-аут pending_qids)");
         let mut clash = nav.clone();
         clash.question_id = 0x31;
         assert!(matches!(
@@ -667,7 +676,7 @@ git commit -m "feat(engine): InsertPos + locate_insert_at — позиционн
 - [ ] **Step 2: Red**
 
 Run: `cargo test -p uefi-engine insert_pos_of && cargo test -p uefi-engine check_ref_slots`
-Expected: FAIL — `insert_pos_of` не определён; `check_ref_slots_allows_navigation_qid_zero` падает на `InvalidSchema` (коллизия qid 0).
+Expected: FAIL — `insert_pos_of` не определён (компиляция); `check_ref_slots_allows_navigation_qid_zero` падает на втором expect: сегодня `pending_qids`, содержащий 0, даёт `InvalidSchema` (слот-чек REF'ов не видит — `is_question_op` без `IFR_REF_OP`; уточнение спеки §3 от 2026-09-21).
 
 - [ ] **Step 3: Реализация (mod.rs)**
 
@@ -743,7 +752,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/uefi-engine/src/hii/mod.rs
+git add crates/uefi-engine/src/hii/mod.rs crates/uefi-engine/src/hii/ifr.rs
 git commit -m "feat(engine): проброс insert_before в add_ref/add_question (оба канала + preflight), карве-аут навигационного qid 0 в check_ref_slots (спека positional-insert §3)"
 ```
 
