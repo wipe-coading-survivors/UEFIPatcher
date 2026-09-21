@@ -943,7 +943,7 @@ fn real_amibcp_450x_positional_insert() {
                     "help": "Intel RC Setup Configuration",
                     "question_id": 0,
                     "formset_guid": "EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9",
-                    "insert_before": { "goto_form_id": 4104 } } ]
+                    "insert_before": { "goto_form_id": 10008 } } ]
     }"#;
     let list = uefi_engine::hii::schema::parse_question_add_schema(schema_json).unwrap();
     let root_item = format!("{ROOT_SETUP_FFS}:0x10:0#10000");
@@ -1092,4 +1092,4 @@ git commit -m "feat(tui): help :hii question add упоминает insert_befor
 
 - [ ] **Step 5: Live-гейт за владельцем (не код)**
 
-Сценарий — спека §Live: чистая копия `refs/amibcp/450x — копия.bin` → `:hii question add 899407D7-…:0x10:0#10000 <refs-schema.json>` (schema из §1: qid 0, formset EC87D643-…, форма 1, `insert_before {goto_form_id: 4104}`) → `:image save` → прошивка → SOL-проверка вкладки «IntelRCSetup» между Advanced и Server Mgmt (F9 после флеша обязателен). Развилки — спека §Live п.4. По вердикту — закрыть TODO:3896 docs-коммитом в master.
+Сценарий — спека §Live: чистая копия `refs/amibcp/450x — копия.bin` → `:hii question add 899407D7-…:0x10:0#10000 <refs-schema.json>` (schema из §1: qid 0, formset EC87D643-…, форма 1, `insert_before {goto_form_id: 10008}`) → `:image save` → прошивка → SOL-проверка вкладки «IntelRCSetup» между Advanced и Server Mgmt (F9 после флеша обязателен). Развилки — спека §Live п.4. По вердикту — закрыть TODO:3896 docs-коммитом в master.
