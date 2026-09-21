@@ -1156,7 +1156,7 @@ fn splice_question_ops_into_resource(
 ) -> Result<(usize, usize), HiiError> {
     let chk = check_rsrc_question_splice(pe, form_id, ops.len())?;
     let mut pkg = pe[chk.pkg_off..chk.pkg_off + chk.old_len].to_vec();
-    let res = ifr::splice_question_ops(&mut pkg, 0, form_id, ops)?;
+    let res = ifr::splice_question_ops(&mut pkg, 0, form_id, ifr::InsertPos::End, ops)?;
     let delta = pkg.len() - chk.old_len;
     let plan =
         pe_resource::plan_rsrc_blob_growth(pe, delta).ok_or(HiiError::PeGrowthUnsupported)?;
@@ -1614,7 +1614,7 @@ pub fn add_question(
         let node = crate::parser::target::find_item_mut(&mut image.root, &qt.target)
             .map_err(|_| HiiError::NotFound)?;
         if qt.bare_channel {
-            ifr::splice_question_ops(&mut node.body, 0, qt.form_id, &ops)?
+            ifr::splice_question_ops(&mut node.body, 0, qt.form_id, ifr::InsertPos::End, &ops)?
         } else {
             splice_question_ops_into_resource(&mut node.body, qt.form_id, &ops)?
         }
@@ -1979,7 +1979,7 @@ pub fn add_ref(
         let node = crate::parser::target::find_item_mut(&mut image.root, &qt.target)
             .map_err(|_| HiiError::NotFound)?;
         if qt.bare_channel {
-            ifr::splice_question_ops(&mut node.body, 0, qt.form_id, &ops)?
+            ifr::splice_question_ops(&mut node.body, 0, qt.form_id, ifr::InsertPos::End, &ops)?
         } else {
             splice_question_ops_into_resource(&mut node.body, qt.form_id, &ops)?
         }

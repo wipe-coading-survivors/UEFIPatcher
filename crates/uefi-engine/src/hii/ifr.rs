@@ -1,9 +1,11 @@
 use r_efi::hii::{
-    FormId, IFR_END_OP, IFR_FORM_OP, IFR_FORM_SET_OP, IFR_SUPPRESS_IF_OP, PACKAGE_FORMS, StringId,
+    FormId, IFR_END_OP, IFR_FORM_OP, IFR_FORM_SET_OP, IFR_REF_OP, IFR_SUPPRESS_IF_OP,
+    PACKAGE_FORMS, StringId,
 };
 
 use super::HiiError;
-use super::values::walk_statements;
+use super::ref_variant::{RefTarget, parse_ref};
+use super::values::{is_question_op, walk_statements};
 use crate::types::Guid;
 
 #[derive(Debug, Clone)]
@@ -313,14 +315,13 @@ pub fn splice_question_ops(
     package: &mut Vec<u8>,
     formset_idx: usize,
     form_id: u16,
+    pos: InsertPos,
     ops: &[u8],
 ) -> Result<(usize, usize), HiiError> {
     if ops.is_empty() {
         return Err(HiiError::InvalidSchema("empty ops".into()));
     }
-    let Some(insert_at) = locate_form_end(package, formset_idx, form_id) else {
-        return Err(HiiError::NotFound);
-    };
+    let insert_at = locate_insert_at(package, formset_idx, form_id, pos)?;
     package.splice(insert_at..insert_at, ops.iter().copied());
     let plen = (package[0] as usize | (package[1] as usize) << 8 | (package[2] as usize) << 16)
         + ops.len();
@@ -367,6 +368,92 @@ pub fn splice_varstore_ops(package: &mut Vec<u8>, ops: &[u8]) -> Result<(usize, 
 
 pub(crate) fn locate_form_end(body: &[u8], formset_idx: usize, form_id: u16) -> Option<usize> {
     form_span(body, formset_idx, form_id).map(|(_, end)| end)
+}
+
+/// Позиция вставки в форме (спека positional-insert §2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InsertPos {
+    End,
+    BeforeGoto(u16),
+    BeforeQuestion(u16),
+}
+
+/// Offset вставки в форме: End — перед END формы; BeforeGoto/
+/// BeforeQuestion — offset якорного стейтмента, поднятый к началу
+/// самого внешнего охватывающего scope-блока (SUPPRESS_IF/GRAY_OUT_IF),
+/// чтобы вставка не наследовала suppress якоря (спека
+/// positional-insert §2, живой кейс GOTO→10008 в форме 10000).
+/// NotFound — нет формы/формсета; InvalidSchema — якорь не найден,
+/// сообщение содержит листинг доступных якорей формы. НЕ мутирует pkg.
+pub(crate) fn locate_insert_at(
+    body: &[u8],
+    formset_idx: usize,
+    form_id: u16,
+    pos: InsertPos,
+) -> Result<usize, HiiError> {
+    let Some((form_op, form_end)) = form_span(body, formset_idx, form_id) else {
+        return Err(HiiError::NotFound);
+    };
+    if pos == InsertPos::End {
+        return Ok(form_end);
+    }
+    let form_hdr = (body[form_op + 1] & 0x7F) as usize;
+    let mut refs: Vec<String> = Vec::new();
+    let mut qids: Vec<String> = Vec::new();
+    let mut scopes: Vec<usize> = Vec::new();
+    let mut anchor: Option<usize> = None;
+    let mut i = form_op + form_hdr;
+    while i + 2 <= form_end {
+        let op = body[i];
+        let ls = body[i + 1];
+        let len = (ls & 0x7F) as usize;
+        if len < 2 || i + len > form_end {
+            break;
+        }
+        if op == IFR_END_OP {
+            scopes.pop();
+            i += len;
+            continue;
+        }
+        if op == IFR_REF_OP && len >= 15 {
+            let target = match parse_ref(op, &body[i..i + len]) {
+                Some(RefTarget::Form { form_id }) => Some(form_id),
+                Some(RefTarget::FormQuestion { form_id, .. }) => Some(form_id),
+                Some(RefTarget::Formset { form_id, .. }) => Some(form_id),
+                _ => None,
+            };
+            if let Some(t) = target {
+                refs.push(format!("{t:#x}@0x{i:x}"));
+                if pos == InsertPos::BeforeGoto(t) && anchor.is_none() {
+                    anchor = Some(scopes.first().copied().unwrap_or(i));
+                }
+            }
+        }
+        if is_question_op(op) && len >= 8 {
+            let q = u16::from_le_bytes([body[i + 6], body[i + 7]]);
+            qids.push(format!("{q:#x}@0x{i:x}"));
+            if pos == InsertPos::BeforeQuestion(q) && anchor.is_none() {
+                anchor = Some(scopes.first().copied().unwrap_or(i));
+            }
+        }
+        if ls & 0x80 != 0 {
+            scopes.push(i);
+        }
+        i += len;
+    }
+    anchor.map(Ok).unwrap_or_else(|| {
+        Err(match pos {
+            InsertPos::BeforeGoto(t) => HiiError::InvalidSchema(format!(
+                "insert_before goto_form_id {t:#x} not found in form {form_id:#x}; available REF targets: {}",
+                if refs.is_empty() { "(none)".to_string() } else { refs.join(", ") }
+            )),
+            InsertPos::BeforeQuestion(q) => HiiError::InvalidSchema(format!(
+                "insert_before question_id {q:#x} not found in form {form_id:#x}; available question ids: {}",
+                if qids.is_empty() { "(none)".to_string() } else { qids.join(", ") }
+            )),
+            InsertPos::End => unreachable!("handled above"),
+        })
+    })
 }
 
 /// Границы формы (offset IFR_FORM_OP, offset её END) в формсете
@@ -541,8 +628,8 @@ pub fn scope_balance(pkg: &[u8]) -> i32 {
 mod tests {
     use super::*;
     use r_efi::hii::{
-        IFR_ONE_OF_OP, IFR_ONE_OF_OPTION_OP, IFR_SUBTITLE_OP, IFR_TEXT_OP, IFR_VARSTORE_EFI_OP,
-        PACKAGE_STRINGS,
+        IFR_ONE_OF_OP, IFR_ONE_OF_OPTION_OP, IFR_REF_OP, IFR_SUBTITLE_OP, IFR_TEXT_OP, IFR_TRUE_OP,
+        IFR_VARSTORE_EFI_OP, PACKAGE_STRINGS,
     };
     use std::str::FromStr;
 
@@ -1173,6 +1260,30 @@ mod tests {
         package(&ifr)
     }
 
+    fn goto(target_form: u16, qid: u16) -> Vec<u8> {
+        let mut p = Vec::new();
+        p.extend_from_slice(&0x51u16.to_le_bytes());
+        p.extend_from_slice(&0x52u16.to_le_bytes());
+        p.extend_from_slice(&qid.to_le_bytes());
+        p.extend_from_slice(&0u16.to_le_bytes());
+        p.extend_from_slice(&0u16.to_le_bytes());
+        p.push(0u8);
+        p.extend_from_slice(&target_form.to_le_bytes());
+        opcode(IFR_REF_OP, false, &p)
+    }
+
+    fn bar_form_package() -> Vec<u8> {
+        let g = Guid::from_str(FORMSET_GUID).unwrap();
+        let mut ifr = form_set(&g, 7);
+        ifr.extend(form(100, 10));
+        ifr.extend(goto(200, 0));
+        ifr.extend(goto(300, 0));
+        ifr.extend(goto(400, 0));
+        ifr.extend(end());
+        ifr.extend(end());
+        package(&ifr)
+    }
+
     #[test]
     fn form_span_returns_form_header_and_end_offsets() {
         let pkg = two_form_package();
@@ -1196,7 +1307,7 @@ mod tests {
                 0x11, 0x00, 0x12, 0x00, 0xD1, 0x01, 0x01, 0x00, 0x5D, 0x00, 0x10,
             ],
         );
-        let (at, delta) = splice_question_ops(&mut pkg, 0, 100, &ops).unwrap();
+        let (at, delta) = splice_question_ops(&mut pkg, 0, 100, InsertPos::End, &ops).unwrap();
         assert_eq!(delta, ops.len());
         assert_eq!(pkg.len(), before_len + delta);
         // ops лежат после существующего вопроса формы 100 и перед её END (0x29)
@@ -1229,10 +1340,10 @@ mod tests {
             ],
         );
         assert!(matches!(
-            splice_question_ops(&mut pkg, 0, 200, &ops),
+            splice_question_ops(&mut pkg, 0, 200, InsertPos::End, &ops),
             Err(HiiError::NotFound)
         ));
-        let (at, delta) = splice_question_ops(&mut pkg, 1, 200, &ops).unwrap();
+        let (at, delta) = splice_question_ops(&mut pkg, 1, 200, InsertPos::End, &ops).unwrap();
         assert_eq!(delta, ops.len());
         assert_eq!(pkg.len(), orig_len + delta);
         assert_eq!(
@@ -1271,11 +1382,11 @@ mod tests {
             ],
         );
         assert!(matches!(
-            splice_question_ops(&mut pkg, 0, 999, &ops),
+            splice_question_ops(&mut pkg, 0, 999, InsertPos::End, &ops),
             Err(HiiError::NotFound)
         ));
         assert!(matches!(
-            splice_question_ops(&mut pkg, 1, 100, &ops),
+            splice_question_ops(&mut pkg, 1, 100, InsertPos::End, &ops),
             Err(HiiError::NotFound)
         ));
         assert_eq!(pkg, before);
@@ -1286,10 +1397,126 @@ mod tests {
         let mut pkg = two_form_package();
         let before = pkg.clone();
         assert!(matches!(
-            splice_question_ops(&mut pkg, 0, 100, &[]),
+            splice_question_ops(&mut pkg, 0, 100, InsertPos::End, &[]),
             Err(HiiError::InvalidSchema(_))
         ));
         assert_eq!(pkg, before);
+    }
+
+    #[test]
+    fn splice_question_ops_inserts_before_anchor_goto() {
+        let mut pkg = bar_form_package();
+        let ops = opcode(
+            0x05,
+            true,
+            &[
+                0x11, 0x00, 0x12, 0x00, 0xD1, 0x01, 0x01, 0x00, 0x5D, 0x00, 0x10,
+            ],
+        );
+        let (at, delta) =
+            splice_question_ops(&mut pkg, 0, 100, InsertPos::BeforeGoto(300), &ops).unwrap();
+        assert_eq!(delta, ops.len());
+        assert_eq!(&pkg[at..at + delta], &ops[..]);
+        let prev = at - 15;
+        assert_eq!(pkg[prev], IFR_REF_OP);
+        assert_eq!(u16::from_le_bytes([pkg[prev + 13], pkg[prev + 14]]), 200);
+        let next = at + delta;
+        assert_eq!(pkg[next], IFR_REF_OP);
+        assert_eq!(u16::from_le_bytes([pkg[next + 13], pkg[next + 14]]), 300);
+    }
+
+    #[test]
+    fn splice_question_ops_inserts_before_anchor_question() {
+        let mut pkg = two_form_package(); // форма 100 c one_of qid 0x31
+        let ops = opcode(
+            0x05,
+            true,
+            &[
+                0x11, 0x00, 0x12, 0x00, 0xD1, 0x01, 0x01, 0x00, 0x5D, 0x00, 0x10,
+            ],
+        );
+        let (at, delta) =
+            splice_question_ops(&mut pkg, 0, 100, InsertPos::BeforeQuestion(0x31), &ops).unwrap();
+        // ops стоят ПЕРЕД one_of (не перед END): сразу за вставкой — question-op якоря
+        assert_eq!(pkg[at + delta], IFR_ONE_OF_OP);
+        assert_eq!(
+            u16::from_le_bytes([pkg[at + delta + 6], pkg[at + delta + 7]]),
+            0x31
+        );
+    }
+
+    #[test]
+    fn splice_anchor_inside_suppress_lifts_to_block_start() {
+        let g = Guid::from_str(FORMSET_GUID).unwrap();
+        let mut ifr = form_set(&g, 7);
+        ifr.extend(form(100, 10));
+        ifr.extend(goto(200, 0));
+        let mut sup = opcode(IFR_SUPPRESS_IF_OP, true, &[IFR_TRUE_OP, 0x02]);
+        sup.extend(goto(300, 0));
+        sup.extend(end());
+        ifr.extend(sup);
+        ifr.extend(goto(400, 0));
+        ifr.extend(end());
+        ifr.extend(end());
+        let mut pkg = package(&ifr);
+        let ops = opcode(
+            0x05,
+            true,
+            &[
+                0x11, 0x00, 0x12, 0x00, 0xD1, 0x01, 0x01, 0x00, 0x5D, 0x00, 0x10,
+            ],
+        );
+        let (at, delta) =
+            splice_question_ops(&mut pkg, 0, 100, InsertPos::BeforeGoto(300), &ops).unwrap();
+        // вставка ПЕРЕД suppress-блоком (depth 0), не внутрь: за вставкой — SUPPRESS_IF
+        assert_eq!(pkg[at + delta], IFR_SUPPRESS_IF_OP);
+        let prev = at - 15;
+        assert_eq!(pkg[prev], IFR_REF_OP, "перед вставкой — GOTO→200");
+    }
+
+    #[test]
+    fn splice_question_ops_anchor_not_found_lists_targets() {
+        let mut pkg = bar_form_package();
+        let before = pkg.clone();
+        let ops = opcode(
+            0x05,
+            true,
+            &[
+                0x11, 0x00, 0x12, 0x00, 0xD1, 0x01, 0x01, 0x00, 0x5D, 0x00, 0x10,
+            ],
+        );
+        let err =
+            splice_question_ops(&mut pkg, 0, 100, InsertPos::BeforeGoto(999), &ops).unwrap_err();
+        match err {
+            HiiError::InvalidSchema(msg) => {
+                assert!(msg.contains("goto_form_id 0x3e7 not found"), "{msg}");
+                assert!(msg.contains("0xc8@"), "REF-цель 200 в листинге: {msg}");
+                assert!(msg.contains("0x12c@"), "REF-цель 300 в листинге: {msg}");
+            }
+            other => panic!("expected InvalidSchema, got {other:?}"),
+        }
+        assert_eq!(pkg, before, "пакет не изменён при ошибке якоря");
+    }
+
+    #[test]
+    fn splice_question_ops_question_anchor_not_found_lists_qids() {
+        let mut pkg = two_form_package();
+        let ops = opcode(
+            0x05,
+            true,
+            &[
+                0x11, 0x00, 0x12, 0x00, 0xD1, 0x01, 0x01, 0x00, 0x5D, 0x00, 0x10,
+            ],
+        );
+        let err = splice_question_ops(&mut pkg, 0, 100, InsertPos::BeforeQuestion(0x77), &ops)
+            .unwrap_err();
+        match err {
+            HiiError::InvalidSchema(msg) => {
+                assert!(msg.contains("question_id 0x77 not found"), "{msg}");
+                assert!(msg.contains("0x31@"), "qid 0x31 в листинге: {msg}");
+            }
+            other => panic!("expected InvalidSchema, got {other:?}"),
+        }
     }
 
     #[test]
