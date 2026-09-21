@@ -1417,9 +1417,7 @@ fn preflight_question_splice(
     let node =
         crate::parser::target::find_item(&image.root, target).map_err(|_| HiiError::NotFound)?;
     if bare_channel {
-        return ifr::locate_insert_at(&node.body, 0, form_id, pos)
-            .map(|_| ())
-            .map_err(|_| HiiError::NotFound);
+        return ifr::locate_insert_at(&node.body, 0, form_id, pos).map(|_| ());
     }
     let mut post_strings = node.body.clone();
     match string_pack::add_strings_to_resource(&mut post_strings, strings) {
@@ -4970,6 +4968,29 @@ mod tests {
             .unwrap();
             assert_eq!(q.kind, "one_of");
             assert_eq!(q.var_offset, 0x80);
+        }
+
+        #[test]
+        fn preflight_bare_channel_bad_anchor_is_invalid_schema_with_listing() {
+            let (flash, _, _) = question_add_bare_flash_image();
+            let img = parse_image(&flash, ImageMode::Read, "i", "s").unwrap();
+            let target =
+                crate::parser::target::parse_target("5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:0")
+                    .unwrap();
+            let err = preflight_question_splice(
+                &img,
+                &target,
+                true,
+                10019,
+                ifr::InsertPos::BeforeGoto(0xDEAD),
+                15,
+                &[],
+            )
+            .unwrap_err();
+            assert!(
+                matches!(&err, HiiError::InvalidSchema(m) if m.contains("insert_before") && m.contains("0xdead")),
+                "got {err:?}"
+            );
         }
 
         #[test]
