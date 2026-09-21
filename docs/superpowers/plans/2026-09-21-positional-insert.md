@@ -968,7 +968,8 @@ fn real_amibcp_450x_positional_insert() {
     let span = uefi_engine::hii::form_hijack::locate_form(&re_pkg, 10000).expect("форма 10000");
     let mut seen: Vec<(u16, u16, usize, usize)> = Vec::new(); // (target, qid, off, scope_depth)
     let mut scopes: Vec<usize> = Vec::new();
-    let mut i = span.form_op;
+    let form_hdr = (re_pkg[span.form_op + 1] & 0x7F) as usize;
+    let mut i = span.form_op + form_hdr;
     while i + 2 <= span.next_form_op {
         let len = (re_pkg[i + 1] & 0x7F) as usize;
         if len < 2 {
