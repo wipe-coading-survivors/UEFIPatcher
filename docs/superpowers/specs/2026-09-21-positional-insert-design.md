@@ -137,7 +137,10 @@ pub fn splice_question_ops(
 - `BeforeGoto(f)` → обход стейтментов **внутри целевой формы**: границы
   даёт лёгкая реструктуризация `locate_form_end` (`hii/ifr.rs:368`) в
   `form_span` (start = найденный `IFR_FORM_OP`, end = текущий возврат),
-  `locate_form_end` остаётся тонкой обёрткой. Первый стейтмент с opcode
+  `locate_form_end` остаётся тонкой обёрткой на время миграции (§3
+  переводит его последних вызывателей на `locate_insert_at`; после этого
+  обёртка удаляется — мёртвый pub(crate)-код не проходит clippy
+  `-D warnings`; уточнение от 2026-09-21). Первый стейтмент с opcode
   `IFR_REF_OP`, у которого `ref_variant::parse_ref` возвращает цель с
   `form_id == f` (варианты `Form`/`FormQuestion`/`Formset` —
   formset_guid цели игнорируется, внутри формы бара цели уникальны по

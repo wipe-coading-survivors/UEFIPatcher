@@ -40,6 +40,8 @@
 
 **Files:**
 - Modify: `crates/uefi-engine/src/hii/schema.rs` (структуры `:225`/`:255`, валидация `:275`, tests)
+- Modify: `crates/uefi-engine/src/hii/mod.rs` (литералы тест-хелперов `:4441` `question_add_schema`, `:5088` `ref_add_schema` — добавить `insert_before: None`)
+- Modify: `crates/uefi-engine/tests/real_image.rs` (литералы `:3980`, `:4029` `live_question_schema`, `:4205` `np_smoke_schema` — добавить `insert_before: None`)
 - Create: ветка `positional-insert`
 
 **Interfaces:**
@@ -198,7 +200,7 @@ Expected: PASS (вне схемы никто не конструирует ст�
 - [ ] **Step 6: Commit**
 
 ```bash
-git add crates/uefi-engine/src/hii/schema.rs
+git add crates/uefi-engine/src/hii/schema.rs crates/uefi-engine/src/hii/mod.rs crates/uefi-engine/tests/real_image.rs
 git commit -m "feat(engine): insert_before {goto_form_id|question_id} в схемах add_question/add_ref — ровно один ключ, qid 0 только для refs (спека positional-insert §1)"
 ```
 
@@ -727,6 +729,8 @@ fn insert_pos_of(ib: Option<&schema::InsertBefore>) -> Result<ifr::InsertPos, Hi
 - `check_question_add` (`:1651`) и `check_ref_add` (`:2001`): в циклах preflight получает `insert_pos_of(s.insert_before.as_ref())?` для каждой схемы (`pos` вычисляется в цикле — там где берётся `schema`/`refs[i]`).
 
 Позиции вычисляются один раз на вызов и идут и в preflight, и в splice (оба резолвят по свежему телу — string-pack меняет тело между preflight и splice, координаты не переносятся).
+
+После миграции `:1122` и `:1417` у обёртки `ifr::locate_form_end` не остаётся вызывателей — удалить её в этой же задаче (иначе `dead_code` под `clippy -D warnings`; спека positional-insert §2, уточнение от 2026-09-21: обёртка — временная, на время Task 2-3).
 
 - [ ] **Step 4: Green + регрессия**
 
