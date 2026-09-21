@@ -1326,10 +1326,17 @@ atomic_write. После первой мутации хранимый файл �
   unlock; расширение осознанно не вошло в цикл hii-walker-consistency
   (спека §4): меняет класс мутации существующего RPC. Контекст: отдельный
   мини-цикл при живом прецеденте.
-* [ ] **hii/values: приватный дубль `package_bounds` (values.rs:55)** — третий
+* [ ] **hii/values: приватный дубль `package_bounds` (values.rs:69)** — третий
   экземпляр того же bounds-хелпера после выноса в `hii::ifr::package_bounds`
   (pub(crate), цикл hii-walker-consistency §3.8 дедуплицировал только
   gates.rs). Контекст: выровнять при следующем касании values.rs.
+* [ ] **hii/ifr: единый generic opcode-walker (вариант B) — отложен** — на
+  дизайне цикла hii-walker-consistency (2026-09-10) рассмотрен и отклонён:
+  переписать все find_*/walk-обходчики на один generic walker с колбэками —
+  рефакторинг живых легаси-путей с регрессионным риском на real-image
+  тестах, не минор; реализован вариант A (точечные фиксы, форма каждого
+  walker'а сохранена + общие хелперы package_bounds/scope_balance/pkg_off).
+  Контекст: вернуться, когда walker'ов станет заметно больше.
 * [ ] **set_item_visibility: precedence HidingUnsupported/NotASetupItem для
   не-HII PE32** — `visible=false` на PE32-секции без form-пакетов теперь
   даёт HidingUnsupported (ранний возврат до каналов, спека §3.2) вместо
