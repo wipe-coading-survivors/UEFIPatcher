@@ -109,10 +109,10 @@ pub struct InsertBefore {
   "help": "Intel RC Setup Configuration",
   "question_id": 0,
   "formset_guid": "EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9",
-  "insert_before": { "goto_form_id": 4104 } }
+  "insert_before": { "goto_form_id": 10008 } }
 ```
 
-(4104 = 0x1008 — GOTO→Chipset в корневой форме 10000; вставка перед ним
+(10008 = 0x2718 — GOTO→Chipset в корневой форме 10000; вставка перед ним
 = сразу после GOTO→Advanced 10002.)
 
 ### 2. ifr.rs — позиция внутри splice
@@ -249,7 +249,7 @@ TUI `:hii question add TARGET#FORM FILE` получают поле автома�
 1. Чистая копия `refs/amibcp/450x — копия.bin`, write-режим.
 2. `:hii question add 899407D7-…:0x10:0#10000 <refs-schema.json>` —
    schema из §1 (REF3 qid 0, formset EC87D643-…, форма 1, prompt
-   «IntelRCSetup», `insert_before {goto_form_id: 4104}`).
+   «IntelRCSetup», `insert_before {goto_form_id: 10008}`).
 3. `:image save` → прошивка → SOL: бар Setup содержит вкладку
    «IntelRCSetup» между «Advanced» и «Server Mgmt»; Enter открывает
    корень IntelRCSetup (дерево как в вердикте §7). F9 после флеша
