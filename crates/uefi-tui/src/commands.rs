@@ -129,6 +129,102 @@ fn mode_to_i32(s: &str) -> Result<i32, String> {
     }
 }
 
+const NVAR_USAGE: &str = "usage: :nvar list [PATH] [--var NAME] | :nvar set NAME --offset OFF --value VAL [--guid GUID] [--width 1|2|4|8]";
+
+fn flag_value<'a>(parts: &'a [&str], flag: &str) -> Option<&'a str> {
+    parts
+        .iter()
+        .position(|p| *p == flag)
+        .and_then(|i| parts.get(i + 1).copied())
+        .filter(|v| !v.starts_with("--"))
+}
+
+struct NvarSetArgs {
+    name: String,
+    guid: Option<String>,
+    offset: u64,
+    value: u64,
+    width: u32,
+}
+
+/// Парсинг `:nvar set NAME --offset OFF --value VAL [--guid GUID]
+/// [--width 1|2|4|8]`; offset/value — dec или 0x-hex (parse_u64_loose),
+/// width дефолт 1, как в CLI (uefi-cli NvarCmd::Set).
+fn parse_nvar_set(parts: &[&str]) -> Result<NvarSetArgs, String> {
+    const USAGE: &str =
+        "usage: :nvar set NAME --offset OFF --value VAL [--guid GUID] [--width 1|2|4|8]";
+    let name = parts.get(2).filter(|p| !p.starts_with("--")).ok_or(USAGE)?;
+    let offset = parse_u64_loose(flag_value(parts, "--offset").ok_or(USAGE)?)?;
+    let value = parse_u64_loose(flag_value(parts, "--value").ok_or(USAGE)?)?;
+    let guid = flag_value(parts, "--guid").map(str::to_string);
+    let width = match flag_value(parts, "--width") {
+        Some(w) => w
+            .parse::<u32>()
+            .map_err(|_| "width must be one of 1, 2, 4, 8".to_string())?,
+        None => 1,
+    };
+    if !matches!(width, 1 | 2 | 4 | 8) {
+        return Err("width must be one of 1, 2, 4, 8".into());
+    }
+    let mut i = 3;
+    while i < parts.len() {
+        if matches!(parts[i], "--offset" | "--value" | "--guid" | "--width") {
+            i += 2;
+        } else {
+            return Err(format!("unexpected argument {} ({USAGE})", parts[i]));
+        }
+    }
+    Ok(NvarSetArgs {
+        name: name.to_string(),
+        guid,
+        offset,
+        value,
+        width,
+    })
+}
+
+/// Сводный статус `:nvar list` без PATH: число сторов/переменных и их пути
+/// (полный листинг движка пропускает копии за барьером — подсказка PATH).
+fn nvar_summary_status(stores: &[uefi_proto::NvarStoreInfo]) -> String {
+    if stores.is_empty() {
+        return "nvar: no stores (behind-barrier copy? :nvar list PATH)".into();
+    }
+    let vars: usize = stores.iter().map(|s| s.vars.len()).sum();
+    let paths: Vec<&str> = stores.iter().map(|s| s.path.as_str()).collect();
+    format!(
+        "nvar: {} stores · {} vars ({})",
+        stores.len(),
+        vars,
+        paths.join(" · ")
+    )
+}
+
+/// Строки переменной для `--var NAME`: `имя офсет размер стор` (офсет —
+/// абсолютный офсет данных, как в выводе CLI nvar list).
+fn nvar_var_rows(stores: &[uefi_proto::NvarStoreInfo], name: &str) -> Vec<String> {
+    stores
+        .iter()
+        .flat_map(|s| {
+            s.vars
+                .iter()
+                .filter(|v| v.name == name)
+                .map(|v| format!("{} {:#010x} {}B @{}", v.name, v.offset, v.size, s.path))
+        })
+        .collect()
+}
+
+/// Prefill `:nvar set` из переменной под курсором NVAR-панель (offset 0 =
+/// начало данных переменной; guid подставляется, если запись его несёт).
+pub fn nvar_set_prefill(app: &App) -> Option<String> {
+    let v = app.nvar_vars().get(app.nvar.cursor)?;
+    let guid = if v.guid.is_empty() {
+        String::new()
+    } else {
+        format!("--guid {} ", v.guid)
+    };
+    Some(format!("nvar set {} {guid}--offset 0 --value ", v.name))
+}
+
 fn parse_u64_loose(s: &str) -> Result<u64, String> {
     if let Some(hex) = s.strip_prefix("0x") {
         u64::from_str_radix(hex, 16)
@@ -1200,6 +1296,133 @@ pub async fn execute_command(
                 other => Err(format!("unknown hii subcommand: {other}")),
             }
         }
+        "nvar" => {
+            let sub = parts.get(1).copied().ok_or(NVAR_USAGE)?;
+            let iid = client
+                .state
+                .active_image_id
+                .clone()
+                .ok_or("no active image")?;
+            match sub {
+                "list" => {
+                    let path = parts.get(2).filter(|p| !p.starts_with("--")).copied();
+                    let var = flag_value(&parts, "--var");
+                    if path.is_some() && var.is_some() {
+                        return Err(
+                            "usage: :nvar list [PATH] [--var NAME] — --var only without PATH"
+                                .into(),
+                        );
+                    }
+                    match path {
+                        Some(p) => {
+                            app.goto_path(p)?;
+                            let resp = client
+                                .inner
+                                .nvar_list(auth_req(
+                                    &client.state,
+                                    NvarListRequest {
+                                        image_id: iid.clone(),
+                                        path: Some(p.to_string()),
+                                        include_data: true,
+                                    },
+                                ))
+                                .await
+                                .map_err(|e| e.message().to_string())?
+                                .into_inner();
+                            let store = resp
+                                .stores
+                                .first()
+                                .ok_or_else(|| format!("no NVRAM store at {p}"))?;
+                            let vars = store.vars.len();
+                            let records = store.records;
+                            let free_tail = store.free_tail;
+                            app.nvar.stores = resp.stores;
+                            app.nvar.cursor = 0;
+                            app.nvar.hex_scroll = 0;
+                            app.nvar.list_state = ratatui::widgets::ListState::default();
+                            app.nvar.key = Some(format!("{iid}:{p}"));
+                            app.status_msg = format!(
+                                "nvar {p}: {vars} vars · records {records} · free {free_tail:#x}B"
+                            );
+                            Ok(p.to_string())
+                        }
+                        None => {
+                            let resp = client
+                                .inner
+                                .nvar_list(auth_req(
+                                    &client.state,
+                                    NvarListRequest {
+                                        image_id: iid,
+                                        path: None,
+                                        include_data: false,
+                                    },
+                                ))
+                                .await
+                                .map_err(|e| e.message().to_string())?
+                                .into_inner();
+                            match var {
+                                Some(name) => {
+                                    let rows = nvar_var_rows(&resp.stores, name);
+                                    app.status_msg = if rows.is_empty() {
+                                        format!("nvar: no vars named {name}")
+                                    } else {
+                                        format!(
+                                            "nvar {name}: {} · {}",
+                                            rows.len(),
+                                            rows.join(" · ")
+                                        )
+                                    };
+                                    Ok(name.to_string())
+                                }
+                                None => {
+                                    app.status_msg = nvar_summary_status(&resp.stores);
+                                    Ok(resp.stores.len().to_string())
+                                }
+                            }
+                        }
+                    }
+                }
+                "set" => {
+                    let args = parse_nvar_set(&parts)?;
+                    let resp = client
+                        .inner
+                        .nvar_set(auth_req(
+                            &client.state,
+                            NvarSetRequest {
+                                image_id: iid,
+                                name: args.name.clone(),
+                                guid: args.guid.clone(),
+                                offset: args.offset,
+                                value: args.value,
+                                width: args.width,
+                            },
+                        ))
+                        .await
+                        .map_err(|e| e.message().to_string())?
+                        .into_inner();
+                    app.nvar.key = None;
+                    if app.selected_is_nvar() {
+                        let _ = refresh_nvars_if_needed(app, client).await;
+                    }
+                    let applied = if resp.applied.is_empty() {
+                        "none".to_string()
+                    } else {
+                        resp.applied.join(" · ")
+                    };
+                    app.status_msg = format!(
+                        "nvar set {}+{:#x}={:#x} (w{}): applied {} · stores {}",
+                        args.name,
+                        args.offset,
+                        args.value,
+                        args.width,
+                        applied,
+                        resp.stores.len()
+                    );
+                    Ok(args.name)
+                }
+                _ => Err(NVAR_USAGE.into()),
+            }
+        }
         "filter" => {
             if !app.forms.show_strings {
                 return Err("filter is for the strings browser (S to open)".into());
@@ -1258,6 +1481,7 @@ const COMMANDS: &[&str] = &[
     "goto",
     "g",
     "hii",
+    "nvar",
     "upload",
     "snapshot",
     "snapshots",
@@ -1361,6 +1585,19 @@ fn unique_formset_guids(app: &App) -> Vec<String> {
         .collect()
 }
 
+/// Уникальные имена переменных всех загруженных сторов NVAR-панель
+/// (для `:nvar set NAME` и `--var`).
+fn nvar_var_names(app: &App) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    app.nvar
+        .stores
+        .iter()
+        .flat_map(|s| s.vars.iter())
+        .map(|v| v.name.clone())
+        .filter(|n| seen.insert(n.clone()))
+        .collect()
+}
+
 /// item_id-кандидаты (`<target>#<form_id>`, form_id десятичное — контракт
 /// parse_item_id): общий список для question add / set-value /
 /// visibility / unlock / form export. Спека hii-form-export §4.
@@ -1461,6 +1698,32 @@ fn context_candidates(app: &App, cmd: &str, head: &[&str], token: &str) -> Vec<S
             .filter(|c| c.starts_with(token))
             .collect();
     }
+    if head.last() == Some(&"--var") {
+        return nvar_var_names(app)
+            .into_iter()
+            .filter(|c| c.starts_with(token))
+            .collect();
+    }
+    if cmd == "nvar" && head.last() == Some(&"--guid") {
+        let mut seen = std::collections::HashSet::new();
+        return app
+            .nvar
+            .stores
+            .iter()
+            .flat_map(|s| s.vars.iter())
+            .filter(|v| !v.guid.is_empty())
+            .map(|v| v.guid.clone())
+            .filter(|g| seen.insert(g.clone()))
+            .filter(|g| g.starts_with(token))
+            .collect();
+    }
+    if cmd == "nvar" && head.last() == Some(&"--width") {
+        return ["1", "2", "4", "8"]
+            .iter()
+            .filter(|c| c.starts_with(token))
+            .map(|s| s.to_string())
+            .collect();
+    }
     if token.starts_with("--") {
         let flags: &[&str] = match cmd {
             "insert" => &["--file", "--artifact-id", "--mode"],
@@ -1471,6 +1734,10 @@ fn context_candidates(app: &App, cmd: &str, head: &[&str], token: &str) -> Vec<S
             "hii" if head.len() == 4 && head[1] == "formset" && head[2] == "add" => &["--ffs"],
             "hii" if head.len() == 4 && head[1] == "form" && head[2] == "export" => &["--out"],
             "hii" if head.len() == 3 && head[1] == "import" => &["--file"],
+            "nvar" if head.len() == 2 && head[1] == "list" => &["--var"],
+            "nvar" if head.len() >= 2 && head[1] == "set" => {
+                &["--guid", "--offset", "--value", "--width"]
+            }
             _ => &[],
         };
         return flags
@@ -1598,6 +1865,30 @@ fn context_candidates(app: &App, cmd: &str, head: &[&str], token: &str) -> Vec<S
             && !head[2..].iter().any(|s| !s.starts_with("--"))
         {
             return item_id_candidates(app)
+                .into_iter()
+                .filter(|c| c.starts_with(token))
+                .collect();
+        }
+        return vec![];
+    }
+    if cmd == "nvar" {
+        if head.len() == 1 {
+            return ["list", "set"]
+                .iter()
+                .filter(|c| c.starts_with(token))
+                .map(|s| s.to_string())
+                .collect();
+        }
+        if head.len() == 2 && head[1] == "list" {
+            return app
+                .visible()
+                .iter()
+                .map(|&i| app.tree[i].path.clone())
+                .filter(|p| p.starts_with(token))
+                .collect();
+        }
+        if head.len() == 2 && head[1] == "set" {
+            return nvar_var_names(app)
                 .into_iter()
                 .filter(|c| c.starts_with(token))
                 .collect();
@@ -3391,5 +3682,188 @@ mod tests {
         app.tree = vec![mk("1", 65), mk("1/28", 66)];
         let c = complete(&app, "remove 1/2");
         assert_eq!(c.common.as_deref(), Some("remove 1/28 "));
+    }
+
+    fn nvar_app() -> crate::app::App {
+        let mut app = crate::app::App::new();
+        let mk = |path: &str| crate::app::TreeNode {
+            path: path.into(),
+            depth: 1,
+            node_type: 65,
+            subtype: 0,
+            guid: None,
+            name: String::new(),
+            region: String::new(),
+            action: crate::theme::ACTION_NO,
+            expanded: true,
+            has_children: false,
+            is_nvar: false,
+        };
+        app.tree = vec![mk("0"), mk("1"), mk("1/0")];
+        app.nvar.stores = vec![uefi_proto::NvarStoreInfo {
+            path: "1/0".into(),
+            vars: vec![
+                uefi_proto::NvarVarInfo {
+                    name: "Setup".into(),
+                    guid: "EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9".into(),
+                    offset: 0x500088,
+                    size: 0x8AE,
+                    ..Default::default()
+                },
+                uefi_proto::NvarVarInfo {
+                    name: "Timeout".into(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }];
+        app
+    }
+
+    #[test]
+    fn parse_nvar_set_flags_and_defaults() {
+        let parse = |s: &str| parse_nvar_set(&s.split(' ').collect::<Vec<_>>());
+        let a = parse("nvar set Timeout --offset 0 --value 5").unwrap();
+        assert_eq!(
+            (
+                a.name.as_str(),
+                a.guid.as_deref(),
+                a.offset,
+                a.value,
+                a.width
+            ),
+            ("Timeout", None, 0, 5, 1),
+            "width дефолт 1, guid опционален"
+        );
+        let a = parse(
+            "nvar set Setup --guid EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9 --offset 0x10 --value 0xFF --width 8",
+        )
+        .unwrap();
+        assert_eq!(
+            (
+                a.name.as_str(),
+                a.guid.as_deref(),
+                a.offset,
+                a.value,
+                a.width
+            ),
+            (
+                "Setup",
+                Some("EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9"),
+                0x10,
+                0xFF,
+                8
+            )
+        );
+        assert!(parse("nvar set X --offset 0 --value 5 --width 3").is_err());
+        assert!(
+            parse("nvar set X --value 5").is_err(),
+            "--offset обязателен"
+        );
+        assert!(
+            parse("nvar set X --offset 0").is_err(),
+            "--value обязателен"
+        );
+        assert!(
+            parse("nvar set X --offset 0 --value 5 --bogus 1").is_err(),
+            "неизвестный флаг — отказ"
+        );
+        assert!(
+            parse("nvar set --offset 0 --value 5").is_err(),
+            "имя обязательно"
+        );
+    }
+
+    #[test]
+    fn nvar_set_prefill_name_and_optional_guid() {
+        let mut app = nvar_app();
+        assert_eq!(
+            nvar_set_prefill(&app).as_deref(),
+            Some("nvar set Setup --guid EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9 --offset 0 --value ")
+        );
+        app.nvar.cursor = 1;
+        assert_eq!(
+            nvar_set_prefill(&app).as_deref(),
+            Some("nvar set Timeout --offset 0 --value "),
+            "без guid префикс --guid не вставляется"
+        );
+        app.nvar.stores.clear();
+        assert_eq!(nvar_set_prefill(&app), None, "пустая панель — префилла нет");
+    }
+
+    #[test]
+    fn complete_nvar_subcommands_flags_and_values() {
+        let app = nvar_app();
+        let c = complete(&app, "nva");
+        assert_eq!(c.common.as_deref(), Some("nvar "));
+        let c = complete(&app, "nvar ");
+        assert_eq!(
+            c.items
+                .iter()
+                .map(|i| i.display.clone())
+                .collect::<Vec<_>>(),
+            vec!["list".to_string(), "set".to_string()]
+        );
+        let c = complete(&app, "nvar list 1/");
+        assert_eq!(c.common.as_deref(), Some("nvar list 1/0 "));
+        let c = complete(&app, "nvar list --va");
+        assert_eq!(c.common.as_deref(), Some("nvar list --var "));
+        let c = complete(&app, "nvar list --var ");
+        assert_eq!(
+            c.items
+                .iter()
+                .map(|i| i.display.clone())
+                .collect::<Vec<_>>(),
+            vec!["Setup".to_string(), "Timeout".to_string()]
+        );
+        let c = complete(&app, "nvar set ");
+        assert_eq!(
+            c.items
+                .iter()
+                .map(|i| i.display.clone())
+                .collect::<Vec<_>>(),
+            vec!["Setup".to_string(), "Timeout".to_string()],
+            "имена переменных из панель"
+        );
+        let c = complete(&app, "nvar set Timeout --wi");
+        assert_eq!(c.common.as_deref(), Some("nvar set Timeout --width "));
+        let c = complete(&app, "nvar set Timeout --width ");
+        assert_eq!(
+            c.items
+                .iter()
+                .map(|i| i.display.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                "1".to_string(),
+                "2".to_string(),
+                "4".to_string(),
+                "8".to_string()
+            ]
+        );
+        let c = complete(&app, "nvar set Timeout --guid ");
+        assert_eq!(
+            c.common.as_deref(),
+            Some("nvar set Timeout --guid EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9 ")
+        );
+    }
+
+    #[test]
+    fn nvar_status_builders() {
+        let app = nvar_app();
+        let stores = app.nvar.stores.clone();
+        assert_eq!(
+            nvar_summary_status(&stores),
+            "nvar: 1 stores · 2 vars (1/0)"
+        );
+        assert_eq!(
+            nvar_summary_status(&[]),
+            "nvar: no stores (behind-barrier copy? :nvar list PATH)"
+        );
+        assert_eq!(
+            nvar_var_rows(&stores, "Timeout"),
+            vec!["Timeout 0x00000000 0B @1/0".to_string()],
+            "строка = имя офсет размер стор"
+        );
+        assert!(nvar_var_rows(&stores, "Nope").is_empty());
     }
 }
