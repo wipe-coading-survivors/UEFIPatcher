@@ -4459,6 +4459,7 @@ mod tests {
                     },
                 ],
                 defaults: None,
+                insert_before: None,
             }
         }
 
@@ -5091,6 +5092,7 @@ mod tests {
                     help: "Goto Page help".into(),
                     question_id: qid,
                     formset_guid: None,
+                    insert_before: None,
                 }
             }
 

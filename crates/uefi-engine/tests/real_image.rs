@@ -3991,6 +3991,7 @@ fn real_image_add_question_discovers_nested_setupdata() {
             default: None,
         }],
         defaults: None,
+        insert_before: None,
     };
     let err = uefi_engine::hii::add_question(&mut live, "4/28/1/0#10019", &schema)
         .expect_err("out-of-bounds var_offset must be rejected");
@@ -4047,6 +4048,7 @@ fn live_question_schema(qid: u16, voff: u16) -> uefi_engine::hii::schema::Questi
             },
         ],
         defaults: None,
+        insert_before: None,
     }
 }
 
@@ -4224,6 +4226,7 @@ fn np_smoke_schema() -> uefi_engine::hii::schema::QuestionAddSchema {
             },
         ],
         defaults: None,
+        insert_before: None,
     }
 }
 
