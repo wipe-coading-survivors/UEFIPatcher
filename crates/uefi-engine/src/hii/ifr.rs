@@ -366,6 +366,12 @@ pub fn splice_varstore_ops(package: &mut Vec<u8>, ops: &[u8]) -> Result<(usize, 
 }
 
 pub(crate) fn locate_form_end(body: &[u8], formset_idx: usize, form_id: u16) -> Option<usize> {
+    form_span(body, formset_idx, form_id).map(|(_, end)| end)
+}
+
+/// Границы формы (offset IFR_FORM_OP, offset её END) в формсете
+/// formset_idx. Спека positional-insert §2.
+pub(crate) fn form_span(body: &[u8], formset_idx: usize, form_id: u16) -> Option<(usize, usize)> {
     if !is_form_package(body) {
         return None;
     }
@@ -407,7 +413,7 @@ pub(crate) fn locate_form_end(body: &[u8], formset_idx: usize, form_id: u16) -> 
                             if f_op == IFR_END_OP {
                                 fdepth -= 1;
                                 if fdepth == 0 {
-                                    return Some(k);
+                                    return Some((j, k));
                                 }
                             } else if f_ls & 0x80 != 0 {
                                 fdepth += 1;
@@ -1165,6 +1171,18 @@ mod tests {
         ifr.extend(end());
         ifr.extend(end());
         package(&ifr)
+    }
+
+    #[test]
+    fn form_span_returns_form_header_and_end_offsets() {
+        let pkg = two_form_package();
+        let (start, end_off) = form_span(&pkg, 0, 100).unwrap();
+        assert_eq!(pkg[start], IFR_FORM_OP);
+        assert_eq!(u16::from_le_bytes([pkg[start + 2], pkg[start + 3]]), 100);
+        assert_eq!(pkg[end_off], IFR_END_OP);
+        assert!(end_off > start);
+        assert!(form_span(&pkg, 0, 999).is_none());
+        assert!(form_span(&pkg, 1, 100).is_none());
     }
 
     #[test]
