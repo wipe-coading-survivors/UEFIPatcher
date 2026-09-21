@@ -185,6 +185,93 @@ fn real_amibcp_450x_formset_unlock() {
     }
 }
 
+/// Живой гейт позиционной вставки на 450x (спека positional-insert
+/// acceptance 4): REF3 qid 0 insert_before {goto_form_id: 10008} в
+/// корневую форму 10000 — пункт «IntelRCSetup» между Advanced и Server
+/// Mgmt; вставка перед suppress-блоком Chipset (depth 0), не внутрь.
+#[test]
+#[ignore = "requires external real AMI image under refs/amibcp/ (gitignored)"]
+fn real_amibcp_450x_positional_insert() {
+    let data = std::fs::read(amibcp_path()).unwrap();
+    let mut image = parse_image(&data, ImageMode::Write, "t", "s").unwrap();
+    let files_before = count_files(&image.root);
+    let schema_json = r#"{
+        "refs": [ { "form_id": 1, "prompt": "Intel RC Setup",
+                    "help": "Intel RC Setup Configuration",
+                    "question_id": 0,
+                    "formset_guid": "EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9",
+                    "insert_before": { "goto_form_id": 10008 } } ]
+    }"#;
+    let list = uefi_engine::hii::schema::parse_question_add_schema(schema_json).unwrap();
+    let root_item = format!("{ROOT_SETUP_FFS}:0x10:0#10000");
+    uefi_engine::hii::add_ref(&mut image, &root_item, &list.refs[0])
+        .expect("позиционный REF3 qid 0 перед GOTO→10008 в форме 10000");
+
+    let rebuilt = uefi_engine::builder::build_image(&image).unwrap();
+    assert!(
+        rebuilt.len() >= data.len(),
+        "reloc-aware рост .rsrc не должен уменьшать образ: {} < {}",
+        rebuilt.len(),
+        data.len()
+    );
+    let re = parse_image(&rebuilt, ImageMode::Read, "t2", "s").unwrap();
+    assert_eq!(
+        count_files(&re.root),
+        files_before,
+        "вставка не должна терять файлы"
+    );
+
+    let re_pkg = module_form_package(&re, &module_pe32_node_path(&re, ROOT_SETUP_FFS));
+    let span = uefi_engine::hii::form_hijack::locate_form(&re_pkg, 10000).expect("форма 10000");
+    let mut seen: Vec<(u16, u16, usize, usize)> = Vec::new(); // (target, qid, off, scope_depth)
+    let mut scopes: Vec<usize> = Vec::new();
+    let form_hdr = (re_pkg[span.form_op + 1] & 0x7F) as usize;
+    let mut i = span.form_op + form_hdr;
+    while i + 2 <= span.next_form_op {
+        let len = (re_pkg[i + 1] & 0x7F) as usize;
+        if len < 2 {
+            break;
+        }
+        let op = re_pkg[i];
+        if op == r_efi::hii::IFR_END_OP {
+            scopes.pop();
+        } else {
+            if op == r_efi::hii::IFR_REF_OP && len >= 15 {
+                seen.push((
+                    u16::from_le_bytes([re_pkg[i + 13], re_pkg[i + 14]]),
+                    u16::from_le_bytes([re_pkg[i + 6], re_pkg[i + 7]]),
+                    i,
+                    scopes.len(),
+                ));
+            }
+            if re_pkg[i + 1] & 0x80 != 0 {
+                scopes.push(i);
+            }
+        }
+        i += len;
+    }
+    let targets: Vec<u16> = seen.iter().map(|(t, ..)| *t).collect();
+    let pos_new = targets
+        .iter()
+        .position(|t| *t == 1)
+        .expect("REF3 → IntelRCSetup#1 в форме 10000");
+    assert_eq!(
+        pos_new, 2,
+        "новый REF третий — после 10001/10002, перед 10008: {targets:?}"
+    );
+    assert_eq!(&targets[..2], &[10001, 10002]);
+    assert_eq!(&targets[3..], &[10008, 10009, 10010, 10012]);
+    assert_eq!(seen[pos_new].1, 0, "qid 0 — вкладочный");
+    assert_eq!(
+        seen[pos_new].3, 0,
+        "вставка на depth 0 (перед suppress-блоком Chipset, не внутрь)"
+    );
+    eprintln!(
+        "450x positional: порядок REF-целей формы 10000: {targets:?}, рост образа {} байт",
+        rebuilt.len() - data.len()
+    );
+}
+
 const FHV_SIG: [u8; 4] = *b"_FVH";
 
 fn find_sig_offsets(data: &[u8]) -> Vec<usize> {
