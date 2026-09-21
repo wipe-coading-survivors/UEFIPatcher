@@ -140,8 +140,14 @@ fn real_asrock_226d2il_nvar_listing_geometry() {
 fn real_asrock_226d2il_nvar_bake_sol_4g() {
     for name in ["226D2IL3.30", "226D2IL3.50"] {
         let data = std::fs::read(asrock_path(name)).unwrap();
-        assert_eq!(data[0x500089], 0, "{name}: SOL-байт до правки");
-        assert_eq!(data[0x5004FD], 0, "{name}: 4G-байт до правки");
+        assert_eq!(
+            data[0x500089], 0,
+            "{name}: 4G-байт (1215:0x13E, off=1) до правки"
+        );
+        assert_eq!(
+            data[0x5004FD], 0,
+            "{name}: SOL-байт (1158:0x10D, off=1141) до правки"
+        );
         let mut img = parse_image(&data, ImageMode::Write, "t", "s").unwrap();
         let out = uefi_engine::nvar::nvar_set(
             &mut img,
@@ -240,13 +246,19 @@ fn real_asrock_bake_sol4g_artifacts() {
 }
 
 const ASR1_SETUP_FILE: &str = "899407D7-99FE-43D8-9A21-79EC328CAC21";
-// Above 4G Decoding — подтверждён юзером в TUI (две формы: 1025 qid 5 и
-// 1035 qid 0x23, обе varstore Setup off=1).
-const ASR1_4G_ITEM: &str = "899407D7-99FE-43D8-9A21-79EC328CAC21:0x18:0#1025:5";
-// Второй столбец формы 1158 «Serial Port Console Redirection» (CheckBox
-// off=1141 → 0x5004FD). Атрибуция байта (SOL?) уточняется живой сессией
-// диффов asr1 — см. отчёт 2026-09-20 (метки live-диффа могли быть
-// переставлены).
+// Above 4G Decoding: live-экран «North Bridge Configuration» — форма 1215,
+// qid 0x13E, var_offset 1 → image 0x500089 (живая проба 2026-09-21: тумблер
+// Enabled/Disabled flips ровно этот байт; отчёт 2026-09-21-live-varmap).
+// Формы 1025 (пустой заголовок, формсет 985EEE91) и 1035 «PCI Subsystem
+// Settings» — призраки, разделяющие prompt-строку.
+const ASR1_4G_ITEM: &str = "899407D7-99FE-43D8-9A21-79EC328CAC21:0x18:0#1215:0x13E";
+// 3.30: 0x18-формсеты другого билда — 1215:0x13E указывает на off=841;
+// байт off=1 там доступен через призрак 1025:5 (var_offset тот же, живой
+// Setup-блоб 3.30↔3.50 идентичен — разведка 2026-09-20).
+const ASR1_4G_ITEM_330: &str = "899407D7-99FE-43D8-9A21-79EC328CAC21:0x18:0#1025:5";
+// Блок SOL формы 1158 «Serial Port Console Redirection»: CheckBox qid 0x10D,
+// var_offset 1141 → image 0x5004FD. Атрибуция закрыта живой сессией 2026-09-21
+// (тумблер глушит SOL-мост, байт 01→00, efivar-откат возвращает POST).
 const ASR1_FORM1158_ITEM: &str = "899407D7-99FE-43D8-9A21-79EC328CAC21:0x18:0#1158:0x010D";
 
 #[test]
@@ -275,17 +287,21 @@ fn real_asrock_226d2il_forms_in_freeform_subtype_guid() {
             from_0x18[0].formset_guid, "985EEE91-BCAC-4238-8778-57EFDC93F24E",
             "{name}"
         );
-        let form1025 =
-            uefi_engine::hii::list_questions(&image, &format!("{ASR1_SETUP_FILE}:0x18:0"), 1025)
+        // 3.50 (риг): live-вопрос 1215:0x13E off=1; 3.30: IFR другого билда,
+        // off=1 живёт у призрака 1025:5.
+        let (form_id, qid) = if name == "226D2IL3.50" {
+            (1215u16, 0x13Eu32)
+        } else {
+            (1025u16, 5u32)
+        };
+        let qs =
+            uefi_engine::hii::list_questions(&image, &format!("{ASR1_SETUP_FILE}:0x18:0"), form_id)
                 .unwrap();
-        assert!(
-            form1025.iter().any(|q| q.question_id == 5 && q.width == 1),
-            "{name}: Above 4G-вопрос (form 1025 qid 0x0005, off=1) виден"
-        );
-        let q4g = form1025.iter().find(|q| q.question_id == 5).unwrap();
+        let q4g = qs.iter().find(|q| q.question_id == qid).unwrap();
+        assert_eq!(q4g.var_offset, 1, "{name}: off=1 → 0x500089 (live-проба)");
         assert_eq!(
             q4g.prompt, "Above 4G Decoding",
-            "{name}: промпт из строкового пакета 0x18"
+            "{name}: промпт live-экрана North Bridge из строкового пакета 0x18"
         );
         let d37: Vec<_> = forms
             .iter()
@@ -322,13 +338,21 @@ fn real_asrock_226d2il_forms_in_freeform_subtype_guid() {
 fn real_asrock_226d2il_set_value_bakes_two_setup_bytes() {
     for name in ["226D2IL3.30", "226D2IL3.50"] {
         let data = std::fs::read(asrock_path(name)).unwrap();
-        assert_eq!(data[0x500089], 0, "{name}: байт off=1 (Above 4G) до правки");
+        assert_eq!(
+            data[0x500089], 0,
+            "{name}: байт off=1 (Above 4G, 1215:0x13E) до правки"
+        );
         assert_eq!(
             data[0x5004FD], 0,
-            "{name}: байт off=1141 (форма 1158) до правки"
+            "{name}: байт off=1141 (SOL, 1158:0x10D) до правки"
         );
         let mut img = parse_image(&data, ImageMode::Write, "t", "s").unwrap();
-        let out = uefi_engine::hii::set_value(&mut img, ASR1_4G_ITEM, 1).unwrap();
+        let item_4g = if name == "226D2IL3.50" {
+            ASR1_4G_ITEM
+        } else {
+            ASR1_4G_ITEM_330
+        };
+        let out = uefi_engine::hii::set_value(&mut img, item_4g, 1).unwrap();
         assert_eq!(out.applied.len(), 1, "{name}: только живая raw-копия");
         let out = uefi_engine::hii::set_value(&mut img, ASR1_FORM1158_ITEM, 1).unwrap();
         assert_eq!(out.applied.len(), 1, "{name}");
