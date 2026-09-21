@@ -366,10 +366,6 @@ pub fn splice_varstore_ops(package: &mut Vec<u8>, ops: &[u8]) -> Result<(usize, 
     Ok((insert_at, ops.len()))
 }
 
-pub(crate) fn locate_form_end(body: &[u8], formset_idx: usize, form_id: u16) -> Option<usize> {
-    form_span(body, formset_idx, form_id).map(|(_, end)| end)
-}
-
 /// Позиция вставки в форме (спека positional-insert §2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InsertPos {
