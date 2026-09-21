@@ -143,6 +143,13 @@ pub fn splice_question_ops(
   formset_guid цели игнорируется, внутри формы бара цели уникальны по
   form_id; `Dynamic` не матчится — цель статически неразрешима).
   Возврат — offset начала стейтмента;
+- **Подъём к scope-блоку**: если якорь-стейтмент лежит внутри
+  scope-блока (SUPPRESS_IF/GRAY_OUT_IF — scope-бит длины), insert_at
+  поднимается к началу самого внешнего охватывающего блока внутри
+  формы. Живой кейс: GOTO→10008 в форме 10000 закрыт `suppress_if TRUE`
+  (`@pkg+0x6da`, вердикт §7) — вставка «перед 10008» обязана встать
+  перед suppress-блоком (видимый пункт сразу после Advanced), а не
+  внутрь него (иначе новый REF унаследует невидимость якоря).
 - `BeforeQuestion(q)` → первый question-op (`values::is_question_op`)
   внутри формы с QuestionId == q (QuestionId — u16@+6 question-header,
   как в `spf_record_resolves`, `hii/mod.rs:1239`).
@@ -201,7 +208,9 @@ TUI `:hii question add TARGET#FORM FILE` получают поле автома�
 
 1. Синтетика (uefi-engine): вставка перед каждым из трёх GOTO синтетической
    формы (`BeforeGoto`) даёт ожидаемый порядок стейтментов;
-   `BeforeQuestion` — перед целевым вопросом; `End` — регрессия
+   `BeforeQuestion` — перед целевым вопросом; якорь GOTO внутри
+   suppress_if-блока → вставка перед блоком, не внутрь (новый
+   стейтмент на depth 0 формы); `End` — регрессия
    байт-в-байт; `insert_before` с обоими/ни одним ключом →
    `InvalidSchema`; несуществующий якорь → `InvalidSchema` c листингом
    доступных REF-целей/qid формы; qid 0 в refs проходит мимо
