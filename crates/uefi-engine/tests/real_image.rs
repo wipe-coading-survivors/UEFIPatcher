@@ -5156,6 +5156,130 @@ fn real_image_ops_insert_serial_np3() {
     }
 }
 
+/// Позиционная вставка на NP-полигоне (спека positional-insert
+/// acceptance 2): add_ref c insert_before {question_id} в форму 10019
+/// (resource-канал) — REF встаёт перед якорным stock-вопросом
+/// (якорь — первый depth-0 question-op формы по IFR-обходу: вне
+/// gate-блоков, лифт identity — вставка ровно перед вопросом;
+/// $SPF-записи формы скоуплены, якорем быть не могут);
+/// $SPF-записи с ifr_offset >= anchor_off (= insert_at) сдвигаются
+/// на 15, до — нет.
+#[test]
+#[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
+fn real_image_ops_insert_positional_np() {
+    use uefi_engine::builder::build_image;
+    use uefi_engine::hii::schema::parse_question_add_schema;
+    use uefi_engine::hii::spf;
+    use uefi_engine::types::ImageMode;
+
+    let data = load_fw();
+    let mut img = parse_image(&data, ImageMode::Write, "i1", "s").unwrap();
+
+    let stock_pkg = module_form_package(&img, &module_pe32_node_path(&img, NP_SETUP_MODULE_GUID));
+    let stock_spf = find_spf_leaf_body(&img, NP_SETUPDATA_GUID);
+    let stock_recs: Vec<(u16, u32, usize)> = spf::scan_question_records(&stock_spf)
+        .into_iter()
+        .filter(|r| uefi_engine::hii::spf_record_resolves(&stock_pkg, r.question_id, r.ifr_offset))
+        .map(|r| (r.question_id, r.ifr_offset, r.offset))
+        .collect();
+    let span = uefi_engine::hii::form_hijack::locate_form(&stock_pkg, NP_PARENT_FORM_ID)
+        .expect("форма 10019 в stock");
+    let form_hdr = (stock_pkg[span.form_op + 1] & 0x7F) as usize;
+    let mut depth = 0usize;
+    let mut anchor: Option<(u16, u32)> = None;
+    let mut i = span.form_op + form_hdr;
+    while i + 2 <= span.next_form_op {
+        let ls = stock_pkg[i + 1];
+        let len = (ls & 0x7F) as usize;
+        if len < 2 || i + len > span.next_form_op {
+            break;
+        }
+        let op = stock_pkg[i];
+        if op == r_efi::hii::IFR_END_OP {
+            depth = depth.saturating_sub(1);
+        } else {
+            let is_question = matches!(
+                op,
+                r_efi::hii::IFR_ONE_OF_OP
+                    | r_efi::hii::IFR_CHECKBOX_OP
+                    | r_efi::hii::IFR_NUMERIC_OP
+                    | r_efi::hii::IFR_PASSWORD_OP
+                    | r_efi::hii::IFR_ORDERED_LIST_OP
+                    | r_efi::hii::IFR_STRING_OP
+                    | r_efi::hii::IFR_DATE_OP
+                    | r_efi::hii::IFR_TIME_OP
+                    | r_efi::hii::IFR_ACTION_OP
+            );
+            if depth == 0 && is_question && len >= 8 && anchor.is_none() {
+                anchor = Some((
+                    u16::from_le_bytes([stock_pkg[i + 6], stock_pkg[i + 7]]),
+                    i as u32,
+                ));
+            }
+            if ls & 0x80 != 0 {
+                depth += 1;
+            }
+        }
+        i += len;
+    }
+    let (anchor_qid, anchor_off) = anchor.expect("depth-0 question-op в форме 10019");
+
+    let ref_json =
+        std::fs::read_to_string(std::path::Path::new(NP_SERIAL_DIR).join("np_ref.json")).unwrap();
+    let mut list = parse_question_add_schema(&ref_json).unwrap();
+    let rs = &mut list.refs[0];
+    rs.form_id = NP_PARENT_FORM_ID;
+    rs.question_id = 528;
+    rs.insert_before = Some(uefi_engine::hii::schema::InsertBefore {
+        goto_form_id: None,
+        question_id: Some(anchor_qid),
+    });
+    let item = format!("{NP_SETUP_MODULE_GUID}:0x10:0#{NP_PARENT_FORM_ID}");
+    uefi_engine::hii::add_ref(&mut img, &item, rs)
+        .expect("позиционный add_ref перед stock-вопросом 10019");
+
+    let built = build_image(&img).unwrap();
+    assert_eq!(built.len(), data.len(), "total flash length preserved");
+
+    let re = parse_image(&built, ImageMode::Read, "re", "s").unwrap();
+    let final_pkg = module_form_package(&re, &module_pe32_node_path(&re, NP_SETUP_MODULE_GUID));
+    let r_off = np_find_ref_op(&final_pkg, NP_PARENT_FORM_ID, 528).expect("REF 528 в 10019");
+    assert_eq!(final_pkg[r_off + 1] & 0x7F, 15, "plain REF");
+    // вставлен ПЕРЕД якорным вопросом: следующий стейтмент — якорь
+    let next = r_off + 15;
+    assert!(
+        next + 8 <= final_pkg.len(),
+        "за REF должен быть стейтмент якоря"
+    );
+    assert_eq!(
+        u16::from_le_bytes([final_pkg[next + 6], final_pkg[next + 7]]),
+        anchor_qid,
+        "за REF — якорный stock-вопрос (не END формы)"
+    );
+
+    let final_spf = find_spf_leaf_body(&re, NP_SETUPDATA_GUID);
+    let final_recs = spf::scan_question_records(&final_spf);
+    for (qid, off, _) in &stock_recs {
+        let fr = final_recs
+            .iter()
+            .find(|f| f.question_id == *qid)
+            .expect("stock live record must survive");
+        let expected = off + if *off >= anchor_off { 15 } else { 0 };
+        assert_eq!(
+            fr.ifr_offset, expected,
+            "$SPF-порог q{qid}: записи после insert_at сдвигаются на 15, до — нет"
+        );
+        assert!(
+            uefi_engine::hii::spf_record_resolves(&final_pkg, fr.question_id, fr.ifr_offset),
+            "record q{qid} остаётся resolving в final"
+        );
+    }
+    eprintln!(
+        "np positional: REF 528 перед q{anchor_qid} (insert@{anchor_off:#x}), $SPF-записей проверено {}",
+        stock_recs.len()
+    );
+}
+
 #[test]
 #[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
 fn real_image_ops_insert_serial_np4() {
