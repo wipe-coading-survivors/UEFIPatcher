@@ -2624,6 +2624,46 @@ E5 v2 #329188 (нужно зеркало PDF). Если PECI-чтение 2B о�
 - dev2 по-прежнему только fn0 (2B/2C/2D невидимы) — цель охоты
   не изменилась.
 
+#### U.7. Setup-ревизия по SOL: скрытые порты ЭКСПОНИРУЮТСЯ, help-текст = признание механизма (2026-09-22)
+
+Хозяин оставил Setup открытым (Advanced); прошли по SOL (fifo-клавиши,
+pyte-рендер, подсветка = bold-white fg). Путь: Advanced → Intel RC
+Setup → IIO Configuration → IIO0 Configuration. Ничего не меняли,
+выход «Quit without saving», бут, инварианты целы.
+
+1. **Опции бифуркации (экран IIO0)**: `IOU2 (IIO PCIe Port 1)
+   [x8]`, `IOU0 (IIO PCIe Port 2) [Auto]`, `IOU1 (IIO PCIe
+   Port 3) [Auto]`. RC-принт этого бута: «IOU0=0. IOU1=4. IOU2=1.»
+   — Auto↔резолв: IOU0(Port2)→0=x4x4x4x4, IOU1(Port3)→4=x16,
+   IOU2(Port1)=x8 явно. Ответ хозяину «на слоте x16»: текущее
+   значение **Auto** (в попапе x16 — лишь один из вариантов);
+   «x16» виден в подменю Port 2A строкой «PCI-E Port Link Max:
+   Max Width x16» (= LnkCap порта), при «Link Status: Linked as
+   x4, Gen 3». Никто x16 не ставил; x4-тренировка = разрешение
+   Auto→x4x4x4x4 (детект рейзера), сток-поведение.
+2. **ГЛАВНОЕ: Setup показывает подменю скрытых функций** — в
+   списке есть `Socket 0 PcieD02F1 - Port 2B`, `D02F2 - 2C`,
+   `D02F3 - 2D` рядом с 1A/2A/3A. Port 2B внутри: `PCI-E Port
+   [Enable]`, `Hot Plug Capable [Disable]`, `Override Max Link
+   Width [Auto]`, статусы **«PCI-E Port Link Status: Link Did Not
+   Train»**, **«Link Max: ERROR: Not Available»**, «Link Speed:
+   Link Did Not Train» — Setup ЧИТАЕТ скрытое пространство (через
+   RC-данные, не ECAM). Контраст 2A: «Linked as x4 / Max Width
+   x16 / Gen 3».
+3. **Help-текст порта 2B = признание механизма хайда языком AMI**:
+   «In auto mode the BIOS will remove the EXP port if there is no
+   device or errors on that device and the device is not HP
+   capable. Disable is used to disable the port and hide its CFG»
+   — это presence-самозамок (§S: F_e963e7/cfg e37) в документации
+   интерфейса. Условие удаления: (нет устройства ИЛИ ошибки) И
+   (не HP-capable).
+4. **Следующий кандидат (дешёвый, обратимый)**: `Hot Plug Capable
+   [Disable]→[Enable]` на 2B/2C/2D — по help HP-capable порт НЕ
+   удаляется авто-режимом даже без устройства. Проверить: включить
+   на 2B, Save&Exit, смотреть lspci/dev2 fn1 и селектор presence.
+   (PCI-E Port на 2B уже [Enable] — принудительный Enable не
+   экспонирует, авто-режим поверх.)
+
 ### V. Фронт PECI-пасстру: AMI OEM 0x32/0xBF найден, жив, расколот до провода (2026-09-18 ночь)
 
 #### V.1. Источник прошивок (хозяин)
