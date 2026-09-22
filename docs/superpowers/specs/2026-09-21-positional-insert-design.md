@@ -334,4 +334,16 @@ QuestionId 0xFFFF — паттерн `CIfrRef3`), тогда как AMI-гене
 GUID → вердикт «топ-уровень бара недостижим через IFR на этом
 TSE», кейс закрывается лучшим из доступных.
 
+v2-артефакт собран и верифицирован (2026-09-22, коммиты f931502
+docs + 4c5d0e1 fix): `refs/amibcp/450x-positional-intelrcsetup-v2.bin`,
+16 777 216 байт, sha256
+`cca796fb9780b42d7af43f86d3b82fb4527282fe82a9e989d256523fdf958fca`;
+схема — `450x-intelrcsetup-tab.json` (обновлена до v2), канонический
+JSON — в тесте `real_amibcp_450x_positional_insert`. Байт-дамп бара:
+REF3 @0x06ef len 33 depth 0, qid 301, vsid 0, voff 0xFFFF, flags 0,
+FormId 1, QuestionId 0, GUID EC87D643-… — между suppress-блоком
+Chipset и GOTO→10009; строки 1113/1114 на месте; рост образа 0 байт.
+Отличия от стоковых вкладок остаются только структурные: len 33
+(у барных GOTO 15) и наличие FormSetGuid.
+
 Вердикт: (заполняется после гейта владельца).
