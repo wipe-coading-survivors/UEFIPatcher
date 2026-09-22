@@ -230,7 +230,10 @@ impl IfrBuilder {
     }
 
     /// REF3 (спека formset-unlock §2): кросс-формсетный GOTO, total 33.
-    /// QuestionId — 0xFFFF (EFI_QUESTION_ID_INVALID, паттерн EDK2 CIfrRef3).
+    /// VarStoreId/QuestionId — нули: нативный AMI-паттерн (родные REF3
+    /// образа 450x: vsid 0, QuestionId 0, последовательные qid) —
+    /// EDK2-маркеры 0xFFFF живым AMITSE не рендерятся (живой гейт
+    /// 2026-09-22, аддендум «Живой гейт п.3» спеки positional-insert).
     pub fn emit_ref3(
         &mut self,
         prompt_id: u16,
@@ -243,11 +246,11 @@ impl IfrBuilder {
         self.buf.extend_from_slice(&prompt_id.to_le_bytes());
         self.buf.extend_from_slice(&help_id.to_le_bytes());
         self.buf.extend_from_slice(&qid.to_le_bytes());
-        self.buf.extend_from_slice(&0xFFFFu16.to_le_bytes());
+        self.buf.extend_from_slice(&0u16.to_le_bytes());
         self.buf.extend_from_slice(&0xFFFFu16.to_le_bytes());
         self.buf.push(0);
         self.buf.extend_from_slice(&form_id.to_le_bytes());
-        self.buf.extend_from_slice(&0xFFFFu16.to_le_bytes());
+        self.buf.extend_from_slice(&0u16.to_le_bytes());
         self.buf.extend_from_slice(&guid_to_bytes(formset));
     }
 
@@ -391,8 +394,18 @@ mod tests {
         let buf = b.build();
         assert_eq!(buf[0], OP_REF);
         assert_eq!(buf[1] & 0x7F, 33);
+        assert_eq!(u16::from_le_bytes([buf[6], buf[7]]), 0x7F10);
+        assert_eq!(
+            u16::from_le_bytes([buf[8], buf[9]]),
+            0,
+            "VarStoreId — нативный AMI-паттерн (родные REF3: 0)"
+        );
         assert_eq!(u16::from_le_bytes([buf[13], buf[14]]), 1);
-        assert_eq!(u16::from_le_bytes([buf[15], buf[16]]), 0xFFFF);
+        assert_eq!(
+            u16::from_le_bytes([buf[15], buf[16]]),
+            0,
+            "QuestionId@15 — нативный AMI-паттерн (родные REF3: 0)"
+        );
         assert_eq!(&buf[17..33], &g.to_bytes());
     }
 

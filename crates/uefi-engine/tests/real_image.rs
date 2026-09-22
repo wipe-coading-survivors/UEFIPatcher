@@ -185,10 +185,11 @@ fn real_amibcp_450x_formset_unlock() {
     }
 }
 
-/// Живой гейт позиционной вставки на 450x (спека positional-insert
-/// acceptance 4): REF3 qid 0 insert_before {goto_form_id: 10008} в
-/// корневую форму 10000 — пункт «IntelRCSetup» между Advanced и Server
-/// Mgmt; вставка перед suppress-блоком Chipset (depth 0), не внутрь.
+/// Живой гейт позиционной вставки на 450x (спека positional-insert,
+/// аддендум «Живой гейт п.3» — v2): REF3 нативного AMI-паттерна
+/// (qid 301, vsid 0, QuestionId 0; EDK2-маркеры 0xFFFF живым TSE не
+/// рендерятся) с insert_before {goto_form_id: 10009} (вариант Б —
+/// после suppress-блока Chipset) в корневую форму 10000.
 #[test]
 #[ignore = "requires external real AMI image under refs/amibcp/ (gitignored)"]
 fn real_amibcp_450x_positional_insert() {
@@ -198,14 +199,14 @@ fn real_amibcp_450x_positional_insert() {
     let schema_json = r#"{
         "refs": [ { "form_id": 1, "prompt": "Intel RC Setup",
                     "help": "Intel RC Setup Configuration",
-                    "question_id": 0,
+                    "question_id": 301,
                     "formset_guid": "EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9",
-                    "insert_before": { "goto_form_id": 10008 } } ]
+                    "insert_before": { "goto_form_id": 10009 } } ]
     }"#;
     let list = uefi_engine::hii::schema::parse_question_add_schema(schema_json).unwrap();
     let root_item = format!("{ROOT_SETUP_FFS}:0x10:0#10000");
     uefi_engine::hii::add_ref(&mut image, &root_item, &list.refs[0])
-        .expect("позиционный REF3 qid 0 перед GOTO→10008 в форме 10000");
+        .expect("позиционный REF3 нативного паттерна перед GOTO→10009 в форме 10000");
 
     let rebuilt = uefi_engine::builder::build_image(&image).unwrap();
     assert!(
@@ -256,18 +257,39 @@ fn real_amibcp_450x_positional_insert() {
         .position(|t| *t == 1)
         .expect("REF3 → IntelRCSetup#1 в форме 10000");
     assert_eq!(
-        pos_new, 2,
-        "новый REF третий — после 10001/10002, перед 10008: {targets:?}"
+        pos_new, 3,
+        "новый REF четвёртый — после 10001/10002 и suppress-блока 10008, перед 10009: {targets:?}"
     );
-    assert_eq!(&targets[..2], &[10001, 10002]);
-    assert_eq!(&targets[3..], &[10008, 10009, 10010, 10012]);
-    assert_eq!(seen[pos_new].1, 0, "qid 0 — вкладочный");
+    assert_eq!(&targets[..3], &[10001, 10002, 10008]);
+    assert_eq!(&targets[4..], &[10009, 10010, 10012]);
+    assert_eq!(
+        seen[pos_new].1, 301,
+        "qid 301 — нативный последовательный паттерн"
+    );
     assert_eq!(
         seen[pos_new].3, 0,
-        "вставка на depth 0 (перед suppress-блоком Chipset, не внутрь)"
+        "вставка на depth 0 (после suppress-блока Chipset)"
+    );
+    let r = seen[pos_new].2;
+    assert_eq!(re_pkg[r + 1] & 0x7F, 33, "REF3 len 33");
+    assert_eq!(
+        u16::from_le_bytes([re_pkg[r + 8], re_pkg[r + 9]]),
+        0,
+        "VarStoreId 0 — нативный AMI-паттерн (родные REF3: 0)"
+    );
+    assert_eq!(
+        u16::from_le_bytes([re_pkg[r + 10], re_pkg[r + 11]]),
+        0xFFFF,
+        "offset 0xFFFF — no-storage сентинел стока"
+    );
+    assert_eq!(re_pkg[r + 12], 0, "flags 0 — как у стоковых барных GOTO");
+    assert_eq!(
+        u16::from_le_bytes([re_pkg[r + 15], re_pkg[r + 16]]),
+        0,
+        "QuestionId@15 0 — нативный AMI-паттерн"
     );
     eprintln!(
-        "450x positional: порядок REF-целей формы 10000: {targets:?}, рост образа {} байт",
+        "450x positional v2: порядок REF-целей формы 10000: {targets:?}, рост образа {} байт",
         rebuilt.len() - data.len()
     );
 }

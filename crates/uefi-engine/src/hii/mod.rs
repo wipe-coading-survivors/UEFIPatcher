@@ -5491,9 +5491,9 @@ mod tests {
                     Some(ref_variant::RefTarget::Formset {
                         formset_guid: g,
                         form_id: 10020,
-                        question_id: 0xFFFF,
+                        question_id: 0,
                     }),
-                    "emitted REF3 must re-parse to a cross-formset target"
+                    "emitted REF3 must re-parse to a cross-formset target (native AMI pattern: QuestionId 0)"
                 );
             }
 
