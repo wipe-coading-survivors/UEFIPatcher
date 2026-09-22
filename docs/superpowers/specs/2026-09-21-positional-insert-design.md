@@ -463,6 +463,22 @@ PE @image 0xe35c30 (кандидат — драйвер ABBCE13D; несёт
 найти, кто строит root-page и чего не хватает EC87D643;
 (b) дочитать дизасм потребителя блока 3 (0x2c3xx) TSE.
 
+Рецептура живого дампа (воспроизводимая):
+
+```sh
+# на хосте рига (root): flashrom уже стоит в t-adm (toolbox)
+printf "00800000:00ffffff bioshi\n" > /tmp/l3.txt   # ПРОБЕЛ, не двоеточие!
+toolbox run -c t-adm flashrom -p internal -c MX25L12835F/MX25L12873F \
+  -l /tmp/l3.txt -i bioshi -r /tmp/450x-nvram-8M.bin
+# полный чип не читается: дескриптор/ME закрыты (Transaction error)
+```
+
+Чекпоинт-артефакты на диске (refs/amibcp, gitignored):
+`450x-flash-live-20260922.bin` (живой дамп), 
+`probes/tse-b1da0adf/tse.pe` + `tse.asm` (PE TSE и полный
+дизасм .text), `450x-positional-intelrcsetup-v2.bin` (cca796fb…),
+`450x-intelrcsetup-tab.json` (v2-схема).
+
 ### Вердикт живого гейта v2 (2026-09-22)
 
 Прошит (TMM), загружен, F9 выполнен владельцем: вкладки НЕТ.
