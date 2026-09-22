@@ -2724,6 +2724,44 @@ AC-cycle хозяина) и точный офсет DEVHIDE по E5 v2 datasheet
 (**PDF уже в `refs/fw/xeon-e5-v2-datasheet-vol-2.pdf`** — снять
 определение статикой следующей сессией).
 
+#### U.9. E5 v2 datasheet §1.2.1.5: семантика DEVHIDE расколота (2026-09-22)
+
+`refs/fw/xeon-e5-v2-datasheet-vol-2.pdf` (329188, January 2014) —
+единственный публичный источник с развёрнутой семантикой (офсет
+регистра и там только в NDA EDS; в таблицах R3QPI0 dev19/fn4
+главы 5 DEVHIDE-записи нет). Четыре пункта §1.2.1.5:
+
+1. **Скрытые DEVHIDE'ом НЕ скрыты от конфиг-пространства со
+   стороны JTAG/SMBus-порта IIO — «All PCI devices are always
+   visible via JTAG/SMBus»** — правовая основа PECI-фронта:
+   сайдбанд (message channel) видит 2B/2C/2D всегда.
+2. «Devices or functions when **turned off** are always hidden
+   (and NOT programmable to be unhidden) … also from PECI/JTAG» —
+   отключённые функции не анхайдятся вообще. Наши 2B/2C/2D — НЕ
+   turned-off (x4x4x4x4 держит их implemented, лейны тренируются
+   фантомом) ⇒ мы в категории (3).
+3. «Devices that are NOT turned off, but otherwise not used …
+   can be hidden by BIOS **appropriately programming the DEVHIDE
+   register**» — DEVHIDE = **RW-регистр, программируемый BIOS в
+   рантайме, НЕ страп**. Писец существует в прошивке; наш IO-трейс
+   его не видел потому, что путь записи — сайдбанд/message channel,
+   не ECAM (запись в скрытый декод через ECAM сама мастер-абортится —
+   курица-и-яйцо).
+4. «The only change DEVHIDE register makes is to abort **Type0**
+   configuration accesses to the device space itself» — тонко:
+   Type0 (доступ к самому девайсу) абортится; Type1 (через мост)
+   не упоминается ⇒ бар/окна скрытой функции через видимого
+   соседа теоретически не тронуты.
+
+Практический вывод: два живых фронта подтверждаются — (a) PECI/
+SMBus-запись DEVHIDE (после AC-cycle), (b) поиск писца в прошивке
+по сайдбанд-инициализации (порт-IO CF8-циклы типа 0/1 не в счёт).
+Плюс новый дешёвый hardware-тест (вопрос хозяина «совать ли
+рейзер с оптанами»): реальный x4-эндпоинт на лейнах 2B через
+x8→2×x4 бифуркационный адаптер в слоте 1 — проверяет, анхайдит
+ли писец порты с реальным presence (фантом не анхайдил; реальная
+карта с PRSNT# — может).
+
 ### V. Фронт PECI-пасстру: AMI OEM 0x32/0xBF найден, жив, расколот до провода (2026-09-18 ночь)
 
 #### V.1. Источник прошивок (хозяин)
