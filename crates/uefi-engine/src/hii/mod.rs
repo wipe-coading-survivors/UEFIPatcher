@@ -1113,13 +1113,14 @@ struct RsrcSpliceCheck {
 fn check_rsrc_question_splice(
     pe: &[u8],
     form_id: u16,
+    pos: ifr::InsertPos,
     ops_len: usize,
 ) -> Result<RsrcSpliceCheck, HiiError> {
     let (pkg_off, old_len) = form_add::resource_forms_package(pe).ok_or(HiiError::NotASetupItem)?;
     let pkg = pe
         .get(pkg_off..pkg_off + old_len)
         .ok_or(HiiError::InvalidIfr)?;
-    ifr::locate_form_end(pkg, 0, form_id).ok_or(HiiError::NotFound)?;
+    ifr::locate_insert_at(pkg, 0, form_id, pos)?;
     let (_, blob_off, blob_len) = pe_resource::hii_entry_locations(pe)
         .first()
         .copied()
@@ -1152,11 +1153,12 @@ fn check_rsrc_question_splice(
 fn splice_question_ops_into_resource(
     pe: &mut Vec<u8>,
     form_id: u16,
+    pos: ifr::InsertPos,
     ops: &[u8],
 ) -> Result<(usize, usize), HiiError> {
-    let chk = check_rsrc_question_splice(pe, form_id, ops.len())?;
+    let chk = check_rsrc_question_splice(pe, form_id, pos, ops.len())?;
     let mut pkg = pe[chk.pkg_off..chk.pkg_off + chk.old_len].to_vec();
-    let res = ifr::splice_question_ops(&mut pkg, 0, form_id, ops)?;
+    let res = ifr::splice_question_ops(&mut pkg, 0, form_id, pos, ops)?;
     let delta = pkg.len() - chk.old_len;
     let plan =
         pe_resource::plan_rsrc_blob_growth(pe, delta).ok_or(HiiError::PeGrowthUnsupported)?;
@@ -1408,15 +1410,14 @@ fn preflight_question_splice(
     target: &crate::types::Target,
     bare_channel: bool,
     form_id: u16,
+    pos: ifr::InsertPos,
     ops_len: usize,
     strings: &[String],
 ) -> Result<(), HiiError> {
     let node =
         crate::parser::target::find_item(&image.root, target).map_err(|_| HiiError::NotFound)?;
     if bare_channel {
-        return ifr::locate_form_end(&node.body, 0, form_id)
-            .map(|_| ())
-            .ok_or(HiiError::NotFound);
+        return ifr::locate_insert_at(&node.body, 0, form_id, pos).map(|_| ());
     }
     let mut post_strings = node.body.clone();
     match string_pack::add_strings_to_resource(&mut post_strings, strings) {
@@ -1428,7 +1429,7 @@ fn preflight_question_splice(
             return Err(HiiError::PeGrowthUnsupported);
         }
     }
-    check_rsrc_question_splice(&post_strings, form_id, ops_len)?;
+    check_rsrc_question_splice(&post_strings, form_id, pos, ops_len)?;
     Ok(())
 }
 
@@ -1550,6 +1551,7 @@ pub fn add_question(
         return Err(HiiError::NotWritable);
     }
     let qt = resolve_question_target(image, item_id)?;
+    let pos = insert_pos_of(schema.insert_before.as_ref())?;
     if schema.form_id != qt.form_id {
         return Err(HiiError::InvalidSchema(format!(
             "schema form_id {} does not match target form {}",
@@ -1581,6 +1583,7 @@ pub fn add_question(
         &qt.target,
         qt.bare_channel,
         qt.form_id,
+        pos,
         build_question_ops(schema, 0, 0, |_| Some(0), optimized)?.len(),
         &strings,
     )?;
@@ -1614,9 +1617,9 @@ pub fn add_question(
         let node = crate::parser::target::find_item_mut(&mut image.root, &qt.target)
             .map_err(|_| HiiError::NotFound)?;
         if qt.bare_channel {
-            ifr::splice_question_ops(&mut node.body, 0, qt.form_id, &ops)?
+            ifr::splice_question_ops(&mut node.body, 0, qt.form_id, pos, &ops)?
         } else {
-            splice_question_ops_into_resource(&mut node.body, qt.form_id, &ops)?
+            splice_question_ops_into_resource(&mut node.body, qt.form_id, pos, &ops)?
         }
     };
     ops::mark_rebuild_to_root_by_path(&mut image.root, &path);
@@ -1701,6 +1704,7 @@ pub fn check_question_add(
     let mut pending: Vec<(u16, u16, u32, u32)> = Vec::new();
     for schema in schemas {
         let (optimized, _) = validate_question_add(schema)?;
+        let pos = insert_pos_of(schema.insert_before.as_ref())?;
         let declared = varstores.iter().any(|v| v.id == schema.var_store_id)
             || values::varstore_map(&qt.pkg)
                 .iter()
@@ -1720,6 +1724,7 @@ pub fn check_question_add(
             &qt.target,
             qt.bare_channel,
             qt.form_id,
+            pos,
             build_question_ops(schema, 0, 0, |_| Some(0), optimized)?.len(),
             &strings,
         )?;
@@ -1894,25 +1899,44 @@ fn build_ref_ops(
     Ok(b.build())
 }
 
+/// Коллизии qid для refs (спека positional-insert §3): qid 0 —
+/// навигационный (без NVRAM-хранилища), exempt от коллизий; ненулевой
+/// qid не должен существовать в формсете и не дублируется в запросе.
 fn check_ref_slots(
     schema: &schema::QuestionAddRefSchema,
     pkg: &[u8],
     pending_qids: &[u16],
 ) -> Result<(), HiiError> {
     let slots = values::scan_question_slots(pkg);
-    if slots.iter().any(|s| s.question_id == schema.question_id) {
+    if schema.question_id != 0 && slots.iter().any(|s| s.question_id == schema.question_id) {
         return Err(HiiError::InvalidSchema(format!(
             "question id {:#x} already exists in the formset",
             schema.question_id
         )));
     }
-    if pending_qids.contains(&schema.question_id) {
+    if schema.question_id != 0 && pending_qids.contains(&schema.question_id) {
         return Err(HiiError::InvalidSchema(format!(
             "question id {:#x} duplicates an earlier question in the same request",
             schema.question_id
         )));
     }
     Ok(())
+}
+
+/// Schema-якорь → позиция splice (спека positional-insert §3).
+/// Ровно один ключ проверяется и здесь: add_ref/add_question принимают
+/// схему в обход parse (структурой из кода).
+fn insert_pos_of(ib: Option<&schema::InsertBefore>) -> Result<ifr::InsertPos, HiiError> {
+    match ib {
+        None => Ok(ifr::InsertPos::End),
+        Some(a) => match (a.goto_form_id, a.question_id) {
+            (Some(f), None) => Ok(ifr::InsertPos::BeforeGoto(f)),
+            (None, Some(q)) => Ok(ifr::InsertPos::BeforeQuestion(q)),
+            _ => Err(HiiError::InvalidSchema(
+                "insert_before: exactly one of goto_form_id/question_id is required".into(),
+            )),
+        },
+    }
 }
 
 #[derive(Debug)]
@@ -1931,6 +1955,7 @@ pub fn add_ref(
         return Err(HiiError::NotWritable);
     }
     let qt = resolve_question_target(image, item_id)?;
+    let pos = insert_pos_of(schema.insert_before.as_ref())?;
     let path = resolve_writable_path(image, &qt.target)?;
     let sd_path = ami_patcher::discover_pfs_payload_path(image)?;
     let spf_plan = {
@@ -1952,6 +1977,7 @@ pub fn add_ref(
         &qt.target,
         qt.bare_channel,
         qt.form_id,
+        pos,
         build_ref_ops(schema, 0, 0)?.len(),
         &strings,
     )?;
@@ -1979,9 +2005,9 @@ pub fn add_ref(
         let node = crate::parser::target::find_item_mut(&mut image.root, &qt.target)
             .map_err(|_| HiiError::NotFound)?;
         if qt.bare_channel {
-            ifr::splice_question_ops(&mut node.body, 0, qt.form_id, &ops)?
+            ifr::splice_question_ops(&mut node.body, 0, qt.form_id, pos, &ops)?
         } else {
-            splice_question_ops_into_resource(&mut node.body, qt.form_id, &ops)?
+            splice_question_ops_into_resource(&mut node.body, qt.form_id, pos, &ops)?
         }
     };
     ops::mark_rebuild_to_root_by_path(&mut image.root, &path);
@@ -2023,6 +2049,7 @@ pub fn check_ref_add(
     let mut pending: Vec<u16> = question_qids.to_vec();
     for schema in refs {
         check_ref_slots(schema, &qt.pkg, &pending)?;
+        let pos = insert_pos_of(schema.insert_before.as_ref())?;
         let mut strings: Vec<String> = vec![schema.prompt.clone(), schema.help.clone()];
         strings.dedup();
         preflight_question_splice(
@@ -2030,6 +2057,7 @@ pub fn check_ref_add(
             &qt.target,
             qt.bare_channel,
             qt.form_id,
+            pos,
             build_ref_ops(schema, 0, 0)?.len(),
             &strings,
         )?;
@@ -2437,6 +2465,93 @@ mod tests {
             HiiError::PeGrowthUnsupported.to_string(),
             "cannot grow PE resource section"
         );
+    }
+
+    #[test]
+    fn insert_pos_of_maps_schema_anchor() {
+        assert!(matches!(insert_pos_of(None).unwrap(), ifr::InsertPos::End));
+        assert!(matches!(
+            insert_pos_of(Some(&schema::InsertBefore {
+                goto_form_id: Some(0x1008),
+                question_id: None,
+            }))
+            .unwrap(),
+            ifr::InsertPos::BeforeGoto(0x1008)
+        ));
+        assert!(matches!(
+            insert_pos_of(Some(&schema::InsertBefore {
+                question_id: Some(528),
+                goto_form_id: None,
+            }))
+            .unwrap(),
+            ifr::InsertPos::BeforeQuestion(528)
+        ));
+        assert!(matches!(
+            insert_pos_of(Some(&schema::InsertBefore {
+                goto_form_id: Some(2),
+                question_id: Some(3),
+            })),
+            Err(HiiError::InvalidSchema(_))
+        ));
+    }
+
+    fn mini_ref_package() -> Vec<u8> {
+        let mut ifr = Vec::new();
+        let mut fs = vec![r_efi::hii::IFR_FORM_SET_OP, (2 + 20) | 0x80];
+        fs.extend(std::iter::repeat_n(0u8, 20));
+        ifr.extend_from_slice(&fs);
+        let mut f = vec![r_efi::hii::IFR_FORM_OP, (2 + 4) | 0x80];
+        f.extend_from_slice(&100u16.to_le_bytes());
+        f.extend_from_slice(&10u16.to_le_bytes());
+        ifr.extend_from_slice(&f);
+        let mut r = vec![r_efi::hii::IFR_REF_OP, 15];
+        r.extend_from_slice(&0x51u16.to_le_bytes());
+        r.extend_from_slice(&0x52u16.to_le_bytes());
+        r.extend_from_slice(&0u16.to_le_bytes());
+        r.extend_from_slice(&0u16.to_le_bytes());
+        r.extend_from_slice(&0u16.to_le_bytes());
+        r.push(0);
+        r.extend_from_slice(&200u16.to_le_bytes());
+        ifr.extend_from_slice(&r);
+        let mut q = vec![r_efi::hii::IFR_ONE_OF_OP, 13];
+        q.extend_from_slice(&0x61u16.to_le_bytes());
+        q.extend_from_slice(&0x62u16.to_le_bytes());
+        q.extend_from_slice(&0x31u16.to_le_bytes());
+        q.extend_from_slice(&1u16.to_le_bytes());
+        q.extend_from_slice(&0x40u16.to_le_bytes());
+        q.push(0);
+        ifr.extend_from_slice(&q);
+        ifr.extend_from_slice(&[r_efi::hii::IFR_END_OP, 0x02]);
+        ifr.extend_from_slice(&[r_efi::hii::IFR_END_OP, 0x02]);
+        let mut pkg = vec![0u8, 0, 0, r_efi::hii::PACKAGE_FORMS];
+        let len = 4 + ifr.len();
+        pkg[0] = (len & 0xFF) as u8;
+        pkg[1] = ((len >> 8) & 0xFF) as u8;
+        pkg[2] = ((len >> 16) & 0xFF) as u8;
+        pkg.extend_from_slice(&ifr);
+        pkg
+    }
+
+    #[test]
+    fn check_ref_slots_allows_navigation_qid_zero() {
+        let pkg = mini_ref_package(); // REF qid 0 → 200 и ONE_OF qid 0x31 в форме 100
+        let nav = schema::QuestionAddRefSchema {
+            form_id: 100,
+            prompt: "P".into(),
+            help: "H".into(),
+            question_id: 0,
+            formset_guid: None,
+            insert_before: None,
+        };
+        check_ref_slots(&nav, &pkg, &[]).expect("qid 0 навигационный: без pending-коллизий");
+        check_ref_slots(&nav, &pkg, &[0])
+            .expect("два qid-0 REF в одном запросе легитимны (карве-аут pending_qids)");
+        let mut clash = nav.clone();
+        clash.question_id = 0x31;
+        assert!(matches!(
+            check_ref_slots(&clash, &pkg, &[]),
+            Err(HiiError::InvalidSchema(_))
+        ));
     }
 
     #[test]
@@ -4459,6 +4574,7 @@ mod tests {
                     },
                 ],
                 defaults: None,
+                insert_before: None,
             }
         }
 
@@ -4855,6 +4971,29 @@ mod tests {
         }
 
         #[test]
+        fn preflight_bare_channel_bad_anchor_is_invalid_schema_with_listing() {
+            let (flash, _, _) = question_add_bare_flash_image();
+            let img = parse_image(&flash, ImageMode::Read, "i", "s").unwrap();
+            let target =
+                crate::parser::target::parse_target("5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:0")
+                    .unwrap();
+            let err = preflight_question_splice(
+                &img,
+                &target,
+                true,
+                10019,
+                ifr::InsertPos::BeforeGoto(0xDEAD),
+                15,
+                &[],
+            )
+            .unwrap_err();
+            assert!(
+                matches!(&err, HiiError::InvalidSchema(m) if m.contains("insert_before") && m.contains("0xdead")),
+                "got {err:?}"
+            );
+        }
+
+        #[test]
         fn add_question_discovers_grandchild_setupdata_behind_guided_wrapper() {
             let (flash, _, _) = question_add_nested_ui_flash_image();
             let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
@@ -5091,6 +5230,7 @@ mod tests {
                     help: "Goto Page help".into(),
                     question_id: qid,
                     formset_guid: None,
+                    insert_before: None,
                 }
             }
 
@@ -5351,9 +5491,9 @@ mod tests {
                     Some(ref_variant::RefTarget::Formset {
                         formset_guid: g,
                         form_id: 10020,
-                        question_id: 0xFFFF,
+                        question_id: 0,
                     }),
-                    "emitted REF3 must re-parse to a cross-formset target"
+                    "emitted REF3 must re-parse to a cross-formset target (native AMI pattern: QuestionId 0)"
                 );
             }
 

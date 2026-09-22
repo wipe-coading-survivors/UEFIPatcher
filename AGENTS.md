@@ -110,7 +110,7 @@ cd webui && npm run check           # svelte-check (цикл 5+7)
 - SOL-мост: `hack/solrig.py <fifo> <log>` (fifo→pty→`ipmitool sol activate`→лог; прямые редиректы падают на tcgetattr). Клавиши: `echo -ne '\x1bN' > <fifo>`.
 - **F-клавиши через SOL эмулируются как ESC+<N>**: F1=`\x1b1`, F9=`\x1b9`, F10=`\x1b0`; Enter=`\r`; Ctrl+S=`\x13`.
 - **Ориентир входа в Setup — промпт `Press <F1> ...`** (F1 = вход в Setup). Промпт `Press Ctrl+S` — это OptROM сетевух, после F9 он исчезает, по нему не ориентироваться.
-- F9 (Optimal Defaults) после флеша обязателен: пересева печёных дефолтов самим флешем не наблюдается.
+- F9 (Optimal Defaults) после флеша обязателен: пересева печёных дефолтов самим флешем не наблюдается. [Уточнение 2026-09-22: на 450x/TMM пересева нет, а на соседнем C226 дефолты после прошивки берутся из IFR сами (владелец) — правило платформо-зависимое; F9 остаётся безопасной конвенцией, для навигационных правок (REF) не нужен.]
 - power cycle рвёт SOL — перезапустить мост; если сессия закрыта («SOL session closed by BMC») — смело сначала `ipmitool ... sol deactivate`, потом всё остальное (перезапуск моста). Зомби-payload («already active on another session») лечится `sol deactivate`, упорные — `mc reset warm` (BMC ~1 мин, хост не трогается).
 - Хост рига: `ssh root-rd450x`. ECAM-пробы из ОС — поштучные dword (python mmap /dev/mem r+b, `iomem=relaxed` уже в ostree-конфиге).
 

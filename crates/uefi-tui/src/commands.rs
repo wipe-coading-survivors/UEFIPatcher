@@ -1206,14 +1206,16 @@ pub async fn execute_command(
                 }
                 "question" => {
                     if parts.get(2).copied() != Some("add") {
-                        return Err("usage: :hii question add TARGET#FORM FILE".into());
+                        return Err(
+                            "usage: :hii question add TARGET#FORM FILE (insert_before {goto_form_id|question_id} в JSON задаёт позицию; без — конец формы)".into(),
+                        );
                     }
                     let item = parts
                         .get(3)
-                        .ok_or("usage: :hii question add TARGET#FORM FILE")?;
+                        .ok_or("usage: :hii question add TARGET#FORM FILE (insert_before {goto_form_id|question_id} в JSON задаёт позицию; без — конец формы)")?;
                     let file = parts
                         .get(4)
-                        .ok_or("usage: :hii question add TARGET#FORM FILE")?;
+                        .ok_or("usage: :hii question add TARGET#FORM FILE (insert_before {goto_form_id|question_id} в JSON задаёт позицию; без — конец формы)")?;
                     let schema_json = read_schema(file)?;
                     let r = client
                         .inner

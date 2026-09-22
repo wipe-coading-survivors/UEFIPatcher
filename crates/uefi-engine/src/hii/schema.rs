@@ -233,6 +233,8 @@ pub struct QuestionAddSchema {
     pub options: Vec<QuestionAddOption>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub defaults: Option<QuestionAddDefaults>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub insert_before: Option<InsertBefore>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -259,6 +261,33 @@ pub struct QuestionAddRefSchema {
     pub question_id: u16,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub formset_guid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub insert_before: Option<InsertBefore>,
+}
+
+/// Якорь позиционной вставки (спека positional-insert §1): ровно один
+/// из ключей. goto_form_id — первый REF-стейтмент формы с этой целью
+/// (бар: qid-0 GOTO); question_id — первый вопрос с этим qid.
+/// НЕ резолвит якорь в байтах — это уровень splice (ifr::locate_insert_at).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InsertBefore {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goto_form_id: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub question_id: Option<u16>,
+}
+
+fn validate_insert_before(ib: &InsertBefore) -> Result<(), HiiError> {
+    match (ib.goto_form_id, ib.question_id) {
+        (Some(_), Some(_)) => Err(HiiError::InvalidSchema(
+            "insert_before: exactly one of goto_form_id/question_id is required, got both".into(),
+        )),
+        (None, None) => Err(HiiError::InvalidSchema(
+            "insert_before: exactly one of goto_form_id/question_id is required, got none".into(),
+        )),
+        _ => Ok(()),
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -295,6 +324,21 @@ pub fn parse_question_add_schema(json: &str) -> Result<QuestionAddList, HiiError
         return Err(HiiError::InvalidSchema(
             "questions and refs must not both be empty".to_string(),
         ));
+    }
+    for q in &s.questions {
+        if q.question_id == 0 {
+            return Err(HiiError::InvalidSchema(
+                "question_id 0 is navigation-only (refs); storage questions require a nonzero question_id".into(),
+            ));
+        }
+        if let Some(ib) = q.insert_before.as_ref() {
+            validate_insert_before(ib)?;
+        }
+    }
+    for r in &s.refs {
+        if let Some(ib) = r.insert_before.as_ref() {
+            validate_insert_before(ib)?;
+        }
     }
     Ok(s)
 }
@@ -611,5 +655,73 @@ mod tests {
         let e = parse_page_add_schema(r#"{"form_id": 10021, "title": "T", "prompt": "P"}"#)
             .unwrap_err();
         assert!(format!("{e:?}").contains("unknown field"));
+    }
+
+    #[test]
+    fn parse_ref_insert_before_goto_form_id() {
+        let s = parse_question_add_schema(
+            r#"{ "refs": [ { "form_id": 1, "prompt": "P", "help": "H",
+                "question_id": 0, "formset_guid": "EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9",
+                "insert_before": { "goto_form_id": 4104 } } ] }"#,
+        )
+        .unwrap();
+        assert_eq!(s.refs[0].insert_before.unwrap().goto_form_id, Some(4104));
+    }
+
+    #[test]
+    fn parse_insert_before_question_id() {
+        let s = parse_question_add_schema(
+            r#"{ "refs": [ { "form_id": 1, "prompt": "P", "help": "H",
+                "question_id": 5, "insert_before": { "question_id": 528 } } ] }"#,
+        )
+        .unwrap();
+        assert_eq!(s.refs[0].insert_before.unwrap().question_id, Some(528));
+    }
+
+    #[test]
+    fn parse_insert_before_both_keys_rejected() {
+        let err = parse_question_add_schema(
+            r#"{ "refs": [ { "form_id": 1, "prompt": "P", "help": "H",
+                "question_id": 5, "insert_before": { "goto_form_id": 2, "question_id": 3 } } ] }"#,
+        );
+        assert!(matches!(err, Err(HiiError::InvalidSchema(_))));
+    }
+
+    #[test]
+    fn parse_insert_before_no_keys_rejected() {
+        let err = parse_question_add_schema(
+            r#"{ "refs": [ { "form_id": 1, "prompt": "P", "help": "H",
+                "question_id": 5, "insert_before": {} } ] }"#,
+        );
+        assert!(matches!(err, Err(HiiError::InvalidSchema(_))));
+    }
+
+    #[test]
+    fn parse_insert_before_unknown_key_rejected() {
+        let err = parse_question_add_schema(
+            r#"{ "refs": [ { "form_id": 1, "prompt": "P", "help": "H",
+                "question_id": 5, "insert_before": { "offset": 16 } } ] }"#,
+        );
+        assert!(matches!(err, Err(HiiError::InvalidSchema(_))));
+    }
+
+    #[test]
+    fn parse_question_qid_zero_rejected() {
+        let err = parse_question_add_schema(
+            r#"{ "questions": [ { "form_id": 1, "prompt": "P", "help": "H",
+                "question_id": 0, "var_store_id": 1, "var_offset": 0, "size": 1,
+                "options": [] } ] }"#,
+        );
+        assert!(matches!(err, Err(HiiError::InvalidSchema(_))));
+    }
+
+    #[test]
+    fn parse_ref_qid_zero_accepted() {
+        let s = parse_question_add_schema(
+            r#"{ "refs": [ { "form_id": 1, "prompt": "P", "help": "H",
+                "question_id": 0 } ] }"#,
+        )
+        .unwrap();
+        assert_eq!(s.refs[0].question_id, 0);
     }
 }
