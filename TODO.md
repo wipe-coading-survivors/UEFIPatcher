@@ -4344,3 +4344,9 @@ tiano-op (коммит 66cad9a), воспроизводится на чисто�
 Task 3 (проверено git stash). Штатная команда цикла (без --all-targets)
 зелёная, поэтому не блокирует nvar-op; поправить свёрткой условий при
 ближайшем проходе по clippy.
+
+## NVRAM-дифф nat↔Supermicro (2026-09-22)
+
+Журнал: `docs/superpowers/journals/2026-09-22-nvram-settings-diff.md`
+(селекторы IOU nat=FF/Auto vs sm=03/x8x8-из-коробки; wipe NVRAM = no-op;
+кандидат-эксперимент IOU0=x8x8 через видимую вкладку IntelRCSetup).
