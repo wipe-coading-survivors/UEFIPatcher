@@ -257,6 +257,9 @@ pub fn hijack_form(
             Err(string_pack::AddStringsToResourceError::GrowthUnsupported) => {
                 return Err(HiiError::PeGrowthUnsupported);
             }
+            Err(string_pack::AddStringsToResourceError::IdExhausted { next }) => {
+                return Err(HiiError::StringIdExhausted { next });
+            }
         }
     };
 

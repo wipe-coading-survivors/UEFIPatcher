@@ -65,6 +65,7 @@ fn hii_error_status(e: crate::hii::HiiError) -> Status {
         | crate::hii::HiiError::PeGrowthUnsupported
         | crate::hii::HiiError::ValueOpUnsupported(_)
         | crate::hii::HiiError::IdOccupied(_) => Status::failed_precondition(e.to_string()),
+        crate::hii::HiiError::StringIdExhausted { .. } => Status::resource_exhausted(e.to_string()),
         _ => Status::internal(e.to_string()),
     }
 }
@@ -1553,6 +1554,13 @@ mod tests {
     fn hii_error_status_maps_id_occupied() {
         let st = hii_error_status(crate::hii::HiiError::IdOccupied(7));
         assert_eq!(st.code(), tonic::Code::FailedPrecondition);
+    }
+
+    #[test]
+    fn hii_error_status_maps_string_id_exhausted() {
+        let st = hii_error_status(crate::hii::HiiError::StringIdExhausted { next: 0xFFFE });
+        assert_eq!(st.code(), tonic::Code::ResourceExhausted);
+        assert!(st.message().contains("exhausted at 65534"));
     }
 
     #[test]

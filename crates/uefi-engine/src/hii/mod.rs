@@ -44,6 +44,8 @@ pub enum HiiError {
     StringPackageNotFound,
     #[error("string id {0} is already occupied")]
     IdOccupied(u16),
+    #[error("string id space exhausted at {next}")]
+    StringIdExhausted { next: u16 },
     #[error("AMI files not found (setupdataBin/amitseSct)")]
     AmiFilesNotFound,
     #[error("IFR build error: {0}")]
@@ -1457,6 +1459,9 @@ fn preflight_question_splice(
         Err(string_pack::AddStringsToResourceError::GrowthUnsupported) => {
             return Err(HiiError::PeGrowthUnsupported);
         }
+        Err(string_pack::AddStringsToResourceError::IdExhausted { next }) => {
+            return Err(HiiError::StringIdExhausted { next });
+        }
     }
     check_rsrc_question_splice(&post_strings, form_id, pos, ops_len)?;
     Ok(())
@@ -1629,6 +1634,9 @@ pub fn add_question(
             }
             Err(string_pack::AddStringsToResourceError::GrowthUnsupported) => {
                 return Err(HiiError::PeGrowthUnsupported);
+            }
+            Err(string_pack::AddStringsToResourceError::IdExhausted { next }) => {
+                return Err(HiiError::StringIdExhausted { next });
             }
         }
     };
@@ -2024,6 +2032,9 @@ pub fn add_ref(
             Err(string_pack::AddStringsToResourceError::GrowthUnsupported) => {
                 return Err(HiiError::PeGrowthUnsupported);
             }
+            Err(string_pack::AddStringsToResourceError::IdExhausted { next }) => {
+                return Err(HiiError::StringIdExhausted { next });
+            }
         }
     };
 
@@ -2178,6 +2189,9 @@ pub fn add_page(
             }
             Err(string_pack::AddStringsToResourceError::GrowthUnsupported) => {
                 return Err(HiiError::PeGrowthUnsupported);
+            }
+            Err(string_pack::AddStringsToResourceError::IdExhausted { next }) => {
+                return Err(HiiError::StringIdExhausted { next });
             }
         }
     };

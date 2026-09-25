@@ -38,29 +38,67 @@ pub fn add_strings(
     for &i in &path {
         node = &mut node.children[i];
     }
-    let mapping = add_strings_to_body(&mut node.body, strings);
+    let mapping = add_strings_to_body(&mut node.body, strings)
+        .map_err(|e| HiiError::StringIdExhausted { next: e.next })?;
     ops::mark_rebuild_to_root_by_path(&mut image.root, &path);
     Ok(mapping)
 }
 
-fn add_strings_to_body(body: &mut Vec<u8>, strings: &[String]) -> HashMap<String, u16> {
+/// Отказ выдачи string-id: next — недоступный следующий id,
+/// requested — сколько строк просили. Спека hii-write-guard §1 B1.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StringIdExhausted {
+    next: u16,
+    requested: usize,
+}
+
+/// Добавляет строки в тело string-пакета, назначая последовательные id.
+/// Контракт: id выдаются только из 1..=0xFFFE; при исчерпании или
+/// нечитаемом next_id существующего пакета — Err, тело пакета не тронуто.
+/// Пустой срез — байт-в-байт no-op (Ok), пакет не перезаписывается.
+/// Спека hii-write-guard §1 B1.
+fn add_strings_to_body(
+    body: &mut Vec<u8>,
+    strings: &[String],
+) -> Result<HashMap<String, u16>, StringIdExhausted> {
+    if strings.is_empty() {
+        return Ok(HashMap::new());
+    }
     let sibt_start = string_info_offset(body);
-    let (mut next_id, mut end_pos) = scan_sibt(body, sibt_start);
+    let (mut next_id, mut end_pos) = scan_sibt(body, sibt_start).ok_or(StringIdExhausted {
+        next: 0xFFFF,
+        requested: strings.len(),
+    })?;
+    if !strings.is_empty() {
+        let span = u16::try_from(strings.len() - 1)
+            .ok()
+            .and_then(|n| next_id.checked_add(n));
+        match span {
+            Some(last) if last <= 0xFFFE => {}
+            _ => {
+                return Err(StringIdExhausted {
+                    next: next_id,
+                    requested: strings.len(),
+                });
+            }
+        }
+    }
     let mut mapping = HashMap::new();
     for s in strings {
         let new_id = next_id;
-        next_id = next_id.wrapping_add(1);
+        next_id += 1;
         mapping.insert(s.clone(), new_id);
         end_pos = append_scsu_string(body, end_pos, s);
     }
     update_package_length(body);
-    mapping
+    Ok(mapping)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AddStringsToResourceError {
     NotFound,
     GrowthUnsupported,
+    IdExhausted { next: u16 },
 }
 
 pub fn add_strings_to_resource(
@@ -80,7 +118,8 @@ pub fn add_strings_to_resource(
     let prefix: usize = parsed.packages[..idx].iter().map(|p| p.bytes.len()).sum();
     let old_len = parsed.packages[idx].bytes.len();
     let mut grown = blob[20 + prefix..20 + prefix + old_len].to_vec();
-    let mapping = add_strings_to_body(&mut grown, strings);
+    let mapping = add_strings_to_body(&mut grown, strings)
+        .map_err(|e| AddStringsToResourceError::IdExhausted { next: e.next })?;
     let delta = grown.len() - old_len;
     let sum: usize = parsed.packages.iter().map(|p| p.bytes.len()).sum();
     let new_blob_len = blob_len.checked_add(delta).ok_or(GrowthUnsupported)?;
@@ -176,25 +215,29 @@ fn string_info_offset(body: &[u8]) -> usize {
     PACKAGE_HEADER_LEN
 }
 
-fn scan_sibt(body: &[u8], start: usize) -> (u16, usize) {
+/// Walk SIBT-блока существующего пакета до SIBT_END: возвращает
+/// (next_id, позицию END). None = обход переполняет u16 id-пространство —
+/// данные пакета не согласованы с id-пространством, писать в него нельзя.
+/// Спека hii-write-guard §1 B1.
+fn scan_sibt(body: &[u8], start: usize) -> Option<(u16, usize)> {
     let mut pos = start;
     let mut next_id: u16 = 1;
     while pos < body.len() {
         match body[pos] {
-            SIBT_END => return (next_id, pos),
+            SIBT_END => return Some((next_id, pos)),
             SIBT_STRING_SCSU => {
-                next_id = next_id.wrapping_add(1);
+                next_id = next_id.checked_add(1)?;
                 pos = skip_scsu(body, pos + 1);
             }
             SIBT_STRING_SCSU_FONT => {
-                next_id = next_id.wrapping_add(1);
+                next_id = next_id.checked_add(1)?;
                 pos = skip_scsu(body, pos + 2);
             }
             SIBT_STRINGS_SCSU => {
                 let (ids, p) = read_u16_count(body, pos + 1);
                 pos = p;
                 for _ in 0..ids {
-                    next_id = next_id.wrapping_add(1);
+                    next_id = next_id.checked_add(1)?;
                     pos = skip_scsu(body, pos);
                 }
             }
@@ -202,23 +245,23 @@ fn scan_sibt(body: &[u8], start: usize) -> (u16, usize) {
                 let (ids, p) = read_u16_count(body, pos + 2);
                 pos = p;
                 for _ in 0..ids {
-                    next_id = next_id.wrapping_add(1);
+                    next_id = next_id.checked_add(1)?;
                     pos = skip_scsu(body, pos);
                 }
             }
             SIBT_STRING_UCS2 => {
-                next_id = next_id.wrapping_add(1);
+                next_id = next_id.checked_add(1)?;
                 pos = skip_ucs2(body, pos + 1);
             }
             SIBT_STRING_UCS2_FONT => {
-                next_id = next_id.wrapping_add(1);
+                next_id = next_id.checked_add(1)?;
                 pos = skip_ucs2(body, pos + 2);
             }
             SIBT_STRINGS_UCS2 => {
                 let (ids, p) = read_u16_count(body, pos + 1);
                 pos = p;
                 for _ in 0..ids {
-                    next_id = next_id.wrapping_add(1);
+                    next_id = next_id.checked_add(1)?;
                     pos = skip_ucs2(body, pos);
                 }
             }
@@ -226,28 +269,28 @@ fn scan_sibt(body: &[u8], start: usize) -> (u16, usize) {
                 let (ids, p) = read_u16_count(body, pos + 2);
                 pos = p;
                 for _ in 0..ids {
-                    next_id = next_id.wrapping_add(1);
+                    next_id = next_id.checked_add(1)?;
                     pos = skip_ucs2(body, pos);
                 }
             }
             SIBT_DUPLICATE => {
-                next_id = next_id.wrapping_add(1);
+                next_id = next_id.checked_add(1)?;
                 pos += 1 + 2;
             }
             SIBT_SKIP2 => {
                 let (c, p) = read_u16_count(body, pos + 1);
-                next_id = next_id.wrapping_add(c);
+                next_id = next_id.checked_add(c)?;
                 pos = p;
             }
             SIBT_SKIP1 => {
                 let count = body.get(pos + 1).copied().unwrap_or(0);
-                next_id = next_id.wrapping_add(count as u16);
+                next_id = next_id.checked_add(u16::from(count))?;
                 pos += 2;
             }
             _ => break,
         }
     }
-    (next_id, body.len())
+    Some((next_id, body.len()))
 }
 
 fn skip_scsu(body: &[u8], start: usize) -> usize {
@@ -366,7 +409,7 @@ mod tests {
     #[test]
     fn add_strings_to_body_assigns_sequential_ids() {
         let mut pkg = make_string_package(&["first", "second"]);
-        let mapping = add_strings_to_body(&mut pkg, &["a".to_string(), "b".to_string()]);
+        let mapping = add_strings_to_body(&mut pkg, &["a".to_string(), "b".to_string()]).unwrap();
         assert_eq!(mapping["a"], 3);
         assert_eq!(mapping["b"], 4);
     }
@@ -376,7 +419,7 @@ mod tests {
         let mut pkg = make_string_package(&["first"]);
         let end_pos_before = pkg.len() - 1;
         assert_eq!(pkg[end_pos_before], SIBT_END);
-        add_strings_to_body(&mut pkg, &["new".to_string()]);
+        add_strings_to_body(&mut pkg, &["new".to_string()]).unwrap();
         assert_eq!(pkg[end_pos_before], SIBT_STRING_SCSU);
         assert_eq!(&pkg[end_pos_before + 1..end_pos_before + 4], b"new");
         assert_eq!(pkg[end_pos_before + 4], 0x00);
@@ -387,7 +430,7 @@ mod tests {
     fn add_strings_to_body_updates_length() {
         let mut pkg = make_string_package(&[]);
         let len_before = pkg.len();
-        add_strings_to_body(&mut pkg, &["hello".to_string()]);
+        add_strings_to_body(&mut pkg, &["hello".to_string()]).unwrap();
         let stored = pkg[0] as u32 | ((pkg[1] as u32) << 8) | ((pkg[2] as u32) << 16);
         assert_eq!(stored as usize, pkg.len());
         assert!(pkg.len() > len_before);
@@ -398,8 +441,92 @@ mod tests {
         let mut pkg = make_string_package(&["first"]);
         let end = pkg.len() - 1;
         pkg.splice(end..end, [SIBT_SKIP2, 0x05, 0x00]);
-        let mapping = add_strings_to_body(&mut pkg, &["after".to_string()]);
+        let mapping = add_strings_to_body(&mut pkg, &["after".to_string()]).unwrap();
         assert_eq!(mapping["after"], 7);
+    }
+
+    #[test]
+    fn add_strings_to_body_refuses_when_ids_exceed_0xfffe() {
+        let mut pkg = make_string_package(&[]);
+        let end = pkg.len() - 1;
+        pkg.splice(end..end, [SIBT_SKIP2, 0xFD, 0xFF]);
+        let snapshot = pkg.clone();
+        let err = add_strings_to_body(&mut pkg, &["a".to_string(), "b".to_string()]).unwrap_err();
+        assert_eq!(err.next, 0xFFFE);
+        assert_eq!(err.requested, 2);
+        assert_eq!(pkg, snapshot, "отказ исчерпания не должен трогать пакет");
+    }
+
+    #[test]
+    fn add_strings_to_body_allows_the_last_valid_id() {
+        let mut pkg = make_string_package(&[]);
+        let end = pkg.len() - 1;
+        pkg.splice(end..end, [SIBT_SKIP2, 0xFD, 0xFF]);
+        let mapping = add_strings_to_body(&mut pkg, &["only".to_string()]).unwrap();
+        assert_eq!(mapping["only"], 0xFFFE);
+        assert_eq!(*pkg.last().unwrap(), SIBT_END);
+    }
+
+    #[test]
+    fn add_strings_to_body_refuses_at_invalid_0xffff_next() {
+        let mut pkg = make_string_package(&[]);
+        let end = pkg.len() - 1;
+        pkg.splice(end..end, [SIBT_SKIP2, 0xFE, 0xFF]);
+        let snapshot = pkg.clone();
+        assert!(add_strings_to_body(&mut pkg, &["x".to_string()]).is_err());
+        assert_eq!(pkg, snapshot);
+    }
+
+    #[test]
+    fn add_strings_to_body_empty_slice_is_always_ok() {
+        let mut pkg = make_string_package(&[]);
+        let end = pkg.len() - 1;
+        pkg.splice(end..end, [SIBT_SKIP2, 0xFE, 0xFF]);
+        let snapshot = pkg.clone();
+        let mapping = add_strings_to_body(&mut pkg, &[]).unwrap();
+        assert!(mapping.is_empty());
+        assert_eq!(pkg, snapshot);
+    }
+
+    #[test]
+    fn scan_sibt_returns_none_on_skip2_id_overflow() {
+        let mut pkg = make_string_package(&[]);
+        let end = pkg.len() - 1;
+        pkg.splice(end..end, [SIBT_SKIP2, 0xFF, 0xFF]);
+        assert!(scan_sibt(&pkg, string_info_offset(&pkg)).is_none());
+    }
+
+    #[test]
+    fn add_strings_maps_exhaustion_to_hii_error() {
+        let mut pkg = make_string_package(&[]);
+        let end = pkg.len() - 1;
+        pkg.splice(end..end, [SIBT_SKIP2, 0xFE, 0xFF]);
+        let mut image = make_image(pkg);
+        assert!(matches!(
+            add_strings(&mut image, None, &["x".to_string()]),
+            Err(HiiError::StringIdExhausted { next: 0xFFFF })
+        ));
+    }
+
+    #[test]
+    fn add_strings_to_resource_maps_exhaustion() {
+        let g = Guid::try_parse("899407D7-99FE-43D8-9A21-79EC328CAC21").unwrap();
+        let mut sp = make_string_package(&[]);
+        let end = sp.len() - 1;
+        sp.splice(end..end, [SIBT_SKIP2, 0xFE, 0xFF]);
+        let len = sp.len() as u32;
+        sp[0] = (len & 0xFF) as u8;
+        sp[1] = ((len >> 8) & 0xFF) as u8;
+        sp[2] = ((len >> 16) & 0xFF) as u8;
+        let form = pkg(r_efi::hii::PACKAGE_FORMS, &[0x0Eu8, 0x17, 0xAA]);
+        let blob = res_list(&g, &[&form, &sp]);
+        let mut pe = crate::hii::pe_resource::synth_hii_pe("HII", &blob);
+        let snapshot = pe.clone();
+        assert!(matches!(
+            add_strings_to_resource(&mut pe, &["x".to_string()]),
+            Err(AddStringsToResourceError::IdExhausted { next: 0xFFFF })
+        ));
+        assert_eq!(pe, snapshot);
     }
 
     #[test]
