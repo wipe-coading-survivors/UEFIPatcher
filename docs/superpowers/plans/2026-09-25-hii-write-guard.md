@@ -337,11 +337,15 @@ struct StringIdExhausted {
 /// Добавляет строки в тело string-пакета, назначая последовательные id.
 /// Контракт: id выдаются только из 1..=0xFFFE; при исчерпании или
 /// нечитаемом next_id существующего пакета — Err, тело пакета не тронуто.
+/// Пустой срез — байт-в-байт no-op (u24 не пересчитывается).
 /// Спека hii-write-guard §1 B1.
 fn add_strings_to_body(
     body: &mut Vec<u8>,
     strings: &[String],
 ) -> Result<HashMap<String, u16>, StringIdExhausted> {
+    if strings.is_empty() {
+        return Ok(HashMap::new());
+    }
     let sibt_start = string_info_offset(body);
     let (mut next_id, mut end_pos) =
         scan_sibt(body, sibt_start).ok_or(StringIdExhausted {
