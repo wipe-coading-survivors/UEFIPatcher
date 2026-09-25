@@ -654,6 +654,7 @@ git commit -m "fix(rpc): A3 — HiiListQuestions form_id>0xFFFF → invalid_argu
 - Modify: `crates/uefi-cli/tests/mock_server.rs` (литерал StringInfo `:246`)
 - Modify: `crates/uefi-tui/src/app.rs` (литералы `:1344`, `:1349`, `:1523`)
 - Modify: `crates/uefi-tui/src/ui/forms.rs` (литерал `:489`)
+- Modify: `crates/uefi-tui/tests/mock_server.rs` (литералы `:349-366` — 3 шт., hii_list_strings)
 
 **Interfaces:**
 - Consumes: `StringPackageRef { file_guid: Option<Guid>, channel: StringPackageChannel, ... }` (strings.rs `:251`), `crate::types::guid_to_upper_string`.
@@ -687,7 +688,7 @@ cargo build -p uefi-proto
             });
 ```
 
-`mock_server.rs:246`, `app.rs:1344/:1349/:1523`, `ui/forms.rs:489` — в каждый литерал добавить строку `source: String::new(),`.
+`mock_server.rs:246`, `app.rs:1344/:1349/:1523`, `ui/forms.rs:489`, `uefi-tui/tests/mock_server.rs:349-366` (3 литерала hii_list_strings) — в каждый литерал добавить строку `source: String::new(),`.
 
 ```bash
 cargo test -p uefi-engine -p uefi-cli -p uefi-tui
