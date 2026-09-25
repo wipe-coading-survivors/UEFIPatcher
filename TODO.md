@@ -166,10 +166,12 @@
 > Фаза 3 (`hii/strings.rs`, reader) завершена; ниже — отложенные minors
 > из per-task и финального ревью (branch `fix/cycle6-reimplent`).
 
-* [ ] **hii/strings: SIBT_EXT1/2/4 (0x30–0x32) не обрабатываются** —
+* [x] **hii/strings: SIBT_EXT1/2/4 (0x30–0x32) не обрабатываются** —
   трактуются как unknown-opcode, walk останавливается с warn; пакет с EXT-
   блоками молча теряет все последующие строки. Контекст: writer
   (`string_pack.rs`) ведёт себя так же; в реальном firmware редкость.
+  Закрыто: hii-read-truth A1 (ветка `hii-read-truth`) — EXT-блоки
+  скипаются по Length без движения next_id; усечённый EXT = warn+stop.
 * [ ] **hii/strings + string_pack: унифицировать SIBT-код** — константы
   опкодов и u16-хелперы дублируются reader'ом и writer'ом и уже дрейфуют
   (clamp `<=` vs `<` в info_off). Контекст: вынести в общий `sibt`
