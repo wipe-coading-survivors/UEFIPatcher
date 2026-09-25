@@ -553,7 +553,7 @@ Expected: FAIL — `parse_stops_on_skip2_id_overflow...` видит wrap (id 0 �
 
 ```rust
     'outer: while pos < body.len() {
-        if body[pos] != SIBT_END && next_id >= 0xFFFF {
+        if body[pos] != SIBT_END && next_id == 0xFFFF {
             tracing::warn!("string id space exhausted; stopping string parse");
             break;
         }
