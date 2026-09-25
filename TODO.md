@@ -3474,10 +3474,13 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   `let _ = refresh_questions_if_needed` в `main.rs`; при ошибке RPC панель
   висит на «loading…». Показывать ошибку в status_msg. Контекст:
   `crates/uefi-tui/src/main.rs` (два call-сайта).
-* [ ] **uefi-engine: HiiListQuestions молча режет form_id u32→u16** — при
+* [x] **uefi-engine: HiiListQuestions молча режет form_id u32→u16** — при
   form_id > 65535 значение усекается без диагностики. Добавить
   валидацию/ошибку. Контекст: `crates/uefi-engine/src/rpc/server.rs`
   (handler hii_list_questions).
+  Закрыто: hii-read-truth A3 (ветка `hii-read-truth`) — u16::try_from +
+  invalid_argument "form_id out of range: {n}" в handler'е до вызова
+  list_questions.
 * [ ] **uefi-engine: collect_string_sections дублирует схему walk_sections**
   — обход секций у questions.rs и forms.rs повторяет друг друга; извлечь
   общий хелпер при появлении третьего потребителя. Контекст:

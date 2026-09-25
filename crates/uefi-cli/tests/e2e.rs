@@ -135,6 +135,12 @@ async fn hii_question_info_and_set_value_output_content() {
         .stdout(predicates::str::contains("00 -> 01"));
 
     cli(&sock, cwd)
+        .args(["hii", "question", "list", "0:0x19:0#65536"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("form_id out of range: 65536"));
+
+    cli(&sock, cwd)
         .args(["--format", "tsv", "hii", "question", "info", "0#42:0x1"])
         .assert()
         .success()

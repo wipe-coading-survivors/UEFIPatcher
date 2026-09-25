@@ -359,8 +359,15 @@ impl EngineService for MockEngine {
     }
     async fn hii_list_questions(
         &self,
-        _req: Request<HiiListQuestionsRequest>,
+        req: Request<HiiListQuestionsRequest>,
     ) -> Result<Response<HiiListQuestionsResponse>, Status> {
+        let r = req.get_ref();
+        if r.form_id > u16::MAX as u32 {
+            return Err(Status::invalid_argument(format!(
+                "form_id out of range: {}",
+                r.form_id
+            )));
+        }
         self.journal.lock().await.push("HiiListQuestions".into());
         Ok(Response::new(HiiListQuestionsResponse {
             questions: vec![
