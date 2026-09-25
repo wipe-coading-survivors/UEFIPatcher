@@ -328,14 +328,27 @@ fn read_ucs2(body: &[u8], start: usize) -> Option<(String, usize)> {
     ))
 }
 
+/// Строки всех string-пакетов образа; source = владелец + канал
+/// (`GUID/res|bare`, без владельца — голый канал). Идентификаторы
+/// уникальны только внутри package-list — source делает коллизии
+/// различимыми. Спека hii-read-truth §4.
 pub fn collect_strings(image: &Image) -> Vec<StringInfo> {
     let mut out = Vec::new();
     for pkg in collect_string_packages(image) {
+        let source = match &pkg.file_guid {
+            Some(g) => format!(
+                "{}/{}",
+                crate::types::guid_to_upper_string(g),
+                pkg.channel.suffix()
+            ),
+            None => pkg.channel.suffix().to_string(),
+        };
         for (sid, text) in pkg.strings {
             out.push(StringInfo {
                 language: pkg.language.clone(),
                 string_id: sid as u32,
                 text,
+                source: source.clone(),
             });
         }
     }
@@ -346,6 +359,15 @@ pub fn collect_strings(image: &Image) -> Vec<StringInfo> {
 pub(crate) enum StringPackageChannel {
     Bare,
     Resource,
+}
+
+impl StringPackageChannel {
+    fn suffix(&self) -> &'static str {
+        match self {
+            StringPackageChannel::Bare => "bare",
+            StringPackageChannel::Resource => "res",
+        }
+    }
 }
 
 #[allow(dead_code)]
@@ -679,6 +701,10 @@ mod tests {
         assert_eq!(out[0].language, "eng");
         assert_eq!(out[0].string_id, 1);
         assert_eq!(out[0].text, "X");
+        assert_eq!(
+            out[0].source, "bare",
+            "файл-владелец неизвестен — голый канал"
+        );
     }
 
     #[test]
@@ -704,6 +730,7 @@ mod tests {
         let out = collect_strings(&image);
         assert!(!out.is_empty());
         assert_eq!(out[0].language, "en-US");
+        assert_eq!(out[0].source, "res");
     }
 
     #[test]
@@ -752,6 +779,11 @@ mod tests {
                 .iter()
                 .any(|s| s.language == "x-UEFI-AMI" && s.text == "PRC")
         );
+        assert!(strings.iter().all(|s| matches!(
+            s.source.as_str(),
+            "5C60F367-A505-419A-859E-2A4FF6CA6FE5/bare"
+                | "ABBCE13D-E25A-4D9F-A1F9-2F7710786892/res"
+        )));
 
         let pkgs = collect_string_packages(&image);
         assert_eq!(pkgs.len(), 4);

@@ -1345,11 +1345,13 @@ mod tests {
                 language: "en-US".into(),
                 string_id: 1,
                 text: "Setup".into(),
+                source: String::new(),
             },
             uefi_proto::StringInfo {
                 language: "en-US".into(),
                 string_id: 2,
                 text: "serial port".into(),
+                source: String::new(),
             },
         ];
         assert_eq!(app.strings_visible().len(), 2);
@@ -1528,6 +1530,7 @@ mod tests {
                 } else {
                     format!("x{i}")
                 },
+                source: String::new(),
             })
             .collect();
         app.forms.strings_filter = "s".into();
