@@ -4373,3 +4373,22 @@ Task 3 (проверено git stash). Штатная команда цикла 
 Журнал: `docs/superpowers/journals/2026-09-22-nvram-settings-diff.md`
 (селекторы IOU nat=FF/Auto vs sm=03/x8x8-из-коробки; wipe NVRAM = no-op;
 кандидат-эксперимент IOU0=x8x8 через видимую вкладку IntelRCSetup).
+
+## Отложенные миноры финального ревью hii-read-truth (2026-09-25)
+
+> Ветка `hii-read-truth`, whole-branch ревью: Ready to merge, все находки
+> Minor/plan-mandated — отложены (Б-цикл коснётся тех же файлов).
+
+* [ ] **hii/strings: мёртвый let-else в STRINGS_SCSU/SCSU_FONT телах** —
+  guard `p >= body.len()` покрывает то же условие, что None у read_scsu
+  (start >= len); мёртвые 2 из 4 arm'ов (UCS2-варианты живы: хвостовой
+  байт). Контекст: убрать при касании walk в Б-цикле.
+* [ ] **real_image.rs: тихий u32→u16 cast form_id_ifr в rk3588-гейте** —
+  анти-паттерн, закрытый A3 в handler'е; тестовому коду можно
+  `u16::try_from` со skip. Контекст: прецеденты :6013/:6084/:6384.
+* [ ] **tui strings-браузер: титул при пустом результате :filter** —
+  показывает source скрытой строки `strings[strings_cursor]`. Контекст:
+  guard «cursor входит в visible» при следующем касании render_strings.
+* [ ] **real_image.rs: ignore-подсказка rk3588-гейта с относительным
+  путём env** — из CWD теста не резолвится; запуск уже через `$PWD/...`
+  (план Task 10). Контекст: одна строка при следующем touch.
