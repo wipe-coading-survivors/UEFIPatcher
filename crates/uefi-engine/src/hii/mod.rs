@@ -490,6 +490,7 @@ fn own_formset_guid(node: &FfsNode) -> Option<Guid> {
 /// Только для form-таргетов (question_id == None): Question-рука find_gates
 /// матчится по голой (form_id, question_id) паре без привязки к формсету —
 /// question-таргетный кросс флипал бы чужих доноров по совпадающей паре.
+/// Атомарна: при Err дерево байт-идентично состоянию до вызова (snapshot-rollback; спека hii-write-guard §3 B3).
 fn apply_cross_formset_gates(
     image: &mut Image,
     target: &crate::types::Target,
@@ -515,39 +516,49 @@ fn apply_cross_formset_gates(
         ..gt
     };
     let sites = cross_formset::find_cross_gates(image, &skip_path, &gt_cross);
+    let snapshot = image.root.clone();
     let mut any = false;
-    for site in sites {
-        resolve_writable_path(image, &crate::types::Target::Path(site.path.clone()))?;
-        let pkg = {
-            let node = node_at(&image.root, &site.path);
-            node.body[site.pkg_start..site.pkg_start + site.pkg_len].to_vec()
-        };
-        let flips = gates::plan_gates_skip_unlocked(&pkg, &site.gates)
-            .map_err(HiiError::GateExpressionUnsupported)?;
-        for gate in &site.gates {
-            let mut gi = gate_info(&pkg, gate);
-            gi.source_target = site.source_ffs.clone();
-            infos.push(gi);
+    let result = (|| -> Result<(), HiiError> {
+        for site in &sites {
+            resolve_writable_path(image, &crate::types::Target::Path(site.path.clone()))?;
+            let pkg = {
+                let node = node_at(&image.root, &site.path);
+                node.body[site.pkg_start..site.pkg_start + site.pkg_len].to_vec()
+            };
+            let flips = gates::plan_gates_skip_unlocked(&pkg, &site.gates)
+                .map_err(HiiError::GateExpressionUnsupported)?;
+            for gate in &site.gates {
+                let mut gi = gate_info(&pkg, gate);
+                gi.source_target = site.source_ffs.clone();
+                infos.push(gi);
+            }
+            if flips.is_empty() {
+                continue;
+            }
+            applied.extend(flips.iter().map(flip_text));
+            let absolute: Vec<gates::PlannedFlip> = flips
+                .into_iter()
+                .map(|f| gates::PlannedFlip {
+                    offset: site.pkg_start + f.offset,
+                    from: f.from,
+                    to: f.to,
+                })
+                .collect();
+            let node = node_at_mut(&mut image.root, &site.path);
+            gates::apply_flips(&mut node.body, &absolute)
+                .map_err(HiiError::GateExpressionUnsupported)?;
+            ops::mark_rebuild_to_root_by_path(&mut image.root, &site.path);
+            any = true;
         }
-        if flips.is_empty() {
-            continue;
+        Ok(())
+    })();
+    match result {
+        Ok(()) => Ok(any),
+        Err(e) => {
+            image.root = snapshot;
+            Err(e)
         }
-        applied.extend(flips.iter().map(flip_text));
-        let absolute: Vec<gates::PlannedFlip> = flips
-            .into_iter()
-            .map(|f| gates::PlannedFlip {
-                offset: site.pkg_start + f.offset,
-                from: f.from,
-                to: f.to,
-            })
-            .collect();
-        let node = node_at_mut(&mut image.root, &site.path);
-        gates::apply_flips(&mut node.body, &absolute)
-            .map_err(HiiError::GateExpressionUnsupported)?;
-        ops::mark_rebuild_to_root_by_path(&mut image.root, &site.path);
-        any = true;
     }
-    Ok(any)
 }
 
 fn question_kind_str(kind: values::QuestionKind) -> &'static str {
@@ -928,6 +939,23 @@ fn collect_std_defaults_hits(
         scan.path.pop();
     }
     Ok(())
+}
+
+/// Apply-фаза с snapshot-rollback: при Err дерево байт-идентично
+/// состоянию до вызова (deepcopy FfsNode до первой мутации).
+/// Спека hii-write-guard §3 B3.
+pub(crate) fn with_rollback<T>(
+    image: &mut Image,
+    f: impl FnOnce(&mut Image) -> Result<T, HiiError>,
+) -> Result<T, HiiError> {
+    let snapshot = image.root.clone();
+    match f(image) {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            image.root = snapshot;
+            Err(e)
+        }
+    }
 }
 
 pub(crate) fn node_at<'a>(root: &'a FfsNode, path: &[usize]) -> &'a FfsNode {
@@ -3770,6 +3798,25 @@ mod tests {
             Action::Rebuild,
             "донорская секция помечена на rebuild"
         );
+    }
+
+    #[test]
+    fn unlock_cross_phase_failure_rolls_back_all_donors() {
+        let mut image = cross_formset::cross_fixtures::three_file_image(
+            cross_formset::cross_fixtures::donor_pkg(),
+            cross_formset::cross_fixtures::donor_true_expr_pkg(),
+            cross_formset::cross_fixtures::target_pkg(),
+        );
+        let debug_before = format!("{:?}", image.root);
+        let bytes_before = crate::builder::build_image(&image).unwrap();
+        let err = unlock(&mut image, "ABBCE13D-E25A-4D9F-A1F9-2F7710786892:0x19:0#1").unwrap_err();
+        assert!(matches!(err, HiiError::GateExpressionUnsupported(_)));
+        assert_eq!(
+            format!("{:?}", image.root),
+            debug_before,
+            "кросс-фаза с поздним отказом должна откатить и раннего донора: ни флипов, ни rebuild-меток"
+        );
+        assert_eq!(crate::builder::build_image(&image).unwrap(), bytes_before);
     }
 
     #[test]

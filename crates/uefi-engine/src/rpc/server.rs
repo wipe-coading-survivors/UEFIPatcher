@@ -1143,6 +1143,8 @@ impl EngineService for EngineServer {
         }))
     }
 
+    /// Apply-фаза атомарна: при Err дерево байт-идентично состоянию до
+    /// вызова (snapshot-rollback; спека hii-write-guard §3 B3).
     #[tracing::instrument(skip(self, req), err)]
     async fn hii_question_add(
         &self,
@@ -1152,8 +1154,7 @@ impl EngineService for EngineServer {
         let schema = crate::hii::schema::parse_question_add_schema(&r.schema_json)
             .map_err(|e| Status::invalid_argument(e.to_string()))?;
         let img = self.get_or_load_image(&r.image_id).await?;
-        let mut outcomes = Vec::with_capacity(schema.questions.len());
-        let mut ref_outcomes = Vec::with_capacity(schema.refs.len());
+        let (outcomes, ref_outcomes);
         {
             let mut images = self.images.lock().await;
             let img_slot = images
@@ -1169,36 +1170,40 @@ impl EngineService for EngineServer {
             let question_qids: Vec<u16> = schema.questions.iter().map(|q| q.question_id).collect();
             crate::hii::check_ref_add(img_slot, &r.target, &schema.refs, &question_qids)
                 .map_err(|e| hii_error_status_ctx(e, &r.target))?;
-            if !schema.varstores.is_empty() {
-                crate::hii::add_varstores(img_slot, &r.target, &schema.varstores)
-                    .map_err(|e| hii_error_status_ctx(e, &r.target))?;
-            }
-            for q in &schema.questions {
-                let result = crate::hii::add_question(img_slot, &r.target, q)
-                    .map_err(|e| hii_error_status_ctx(e, &r.target))?;
-                outcomes.push(HiiQuestionAddOutcome {
-                    question_id: u32::from(result.question_id),
-                    string_ids: result
-                        .string_ids
-                        .into_iter()
-                        .map(|(k, v)| (k, u32::from(v)))
-                        .collect(),
-                    spf_record_offset: result.spf_record_offset as u32,
-                });
-            }
-            for rf in &schema.refs {
-                let result = crate::hii::add_ref(img_slot, &r.target, rf)
-                    .map_err(|e| hii_error_status_ctx(e, &r.target))?;
-                ref_outcomes.push(HiiQuestionAddOutcome {
-                    question_id: u32::from(result.question_id),
-                    string_ids: result
-                        .string_ids
-                        .into_iter()
-                        .map(|(k, v)| (k, u32::from(v)))
-                        .collect(),
-                    spf_record_offset: 0,
-                });
-            }
+            let applied = crate::hii::with_rollback(img_slot, |img| {
+                let mut outcomes = Vec::with_capacity(schema.questions.len());
+                let mut ref_outcomes = Vec::with_capacity(schema.refs.len());
+                if !schema.varstores.is_empty() {
+                    crate::hii::add_varstores(img, &r.target, &schema.varstores)?;
+                }
+                for q in &schema.questions {
+                    let result = crate::hii::add_question(img, &r.target, q)?;
+                    outcomes.push(HiiQuestionAddOutcome {
+                        question_id: u32::from(result.question_id),
+                        string_ids: result
+                            .string_ids
+                            .into_iter()
+                            .map(|(k, v)| (k, u32::from(v)))
+                            .collect(),
+                        spf_record_offset: result.spf_record_offset as u32,
+                    });
+                }
+                for rf in &schema.refs {
+                    let result = crate::hii::add_ref(img, &r.target, rf)?;
+                    ref_outcomes.push(HiiQuestionAddOutcome {
+                        question_id: u32::from(result.question_id),
+                        string_ids: result
+                            .string_ids
+                            .into_iter()
+                            .map(|(k, v)| (k, u32::from(v)))
+                            .collect(),
+                        spf_record_offset: 0,
+                    });
+                }
+                Ok((outcomes, ref_outcomes))
+            })
+            .map_err(|e| hii_error_status_ctx(e, &r.target))?;
+            (outcomes, ref_outcomes) = applied;
         }
         self.flush_image(&r.image_id).await?;
         let _ = self.sm.touch(&img.session_id);
@@ -2352,6 +2357,88 @@ mod tests {
             flash,
             "a failing question list must leave the image exactly as it was"
         );
+    }
+
+    fn near_exhausted_string_package(next_id: u16) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&[0x00, 0x00, 0x00, crate::hii::string_pack::PACKAGE_STRINGS]);
+        buf.extend_from_slice(&12u32.to_le_bytes());
+        buf.extend_from_slice(&12u32.to_le_bytes());
+        buf.push(0x21);
+        buf.extend_from_slice(&(next_id - 1).to_le_bytes());
+        buf.push(0x00);
+        let len = buf.len() as u32;
+        buf[0] = (len & 0xFF) as u8;
+        buf[1] = ((len >> 8) & 0xFF) as u8;
+        buf[2] = ((len >> 16) & 0xFF) as u8;
+        buf
+    }
+
+    #[tokio::test]
+    async fn hii_question_add_rolls_back_apply_phase_failure() {
+        use crate::hii::form_hijack::test_fixtures::{
+            FILE_GUID, ffs_file_bytes, file_sections, flash_with_files, section_bytes,
+        };
+        use crate::hii::question_add_fixtures::{
+            question_add_forms_pkg, question_add_spf_body_for, sd_file_direct,
+        };
+        let pkg = question_add_forms_pkg();
+        let spf_body = question_add_spf_body_for(&pkg);
+        let setup = ffs_file_bytes(
+            &Guid::try_parse(FILE_GUID).unwrap(),
+            &file_sections(&[
+                section_bytes(crate::ffs::EFI_SECTION_RAW, &pkg),
+                section_bytes(
+                    crate::ffs::EFI_SECTION_RAW,
+                    &near_exhausted_string_package(0xFFFB),
+                ),
+            ]),
+        );
+        let sd = sd_file_direct(&spf_body);
+        let flash = flash_with_files(vec![setup, sd]);
+        let img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+        let debug_before = format!("{:?}", img.root);
+        let td = TempDir::new().unwrap();
+        let db = crate::storage::open_db(&td.path().join("db.sqlite")).unwrap();
+        let sm = Arc::new(SessionManager::new(
+            db,
+            td.path().to_path_buf(),
+            Duration::from_secs(864000),
+            Duration::from_secs(3600),
+            false,
+        ));
+        let images = Arc::new(Mutex::new(HashMap::from([("i".to_string(), img)])));
+        let server = EngineServer {
+            sm,
+            images: images.clone(),
+            data_dir: td.path().to_path_buf(),
+        };
+        const TARGET: &str = "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:0#10019";
+        const TWO_QUESTIONS: &str = r#"{"questions": [
+            {"form_id": 10019, "prompt": "A", "help": "AH", "question_id": 512,
+             "var_store_id": 1, "var_offset": 128, "size": 1,
+             "options": [{"text": "Off", "value": 0}, {"text": "On", "value": 1, "default": "optimized"}]},
+            {"form_id": 10019, "prompt": "B", "help": "BH", "question_id": 513,
+             "var_store_id": 1, "var_offset": 129, "size": 1,
+             "options": [{"text": "Off2", "value": 0}, {"text": "On2", "value": 1, "default": "optimized"}]}
+        ]}"#;
+        let st = server
+            .hii_question_add(Request::new(HiiQuestionAddRequest {
+                image_id: "i".into(),
+                target: TARGET.into(),
+                schema_json: TWO_QUESTIONS.into(),
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(st.code(), tonic::Code::ResourceExhausted);
+        let img_ref = images.lock().await;
+        let img_ref = img_ref.get("i").unwrap();
+        assert_eq!(
+            crate::builder::build_image(img_ref).unwrap(),
+            flash,
+            "apply-фаза с серединным отказом должна откатить дерево байт-в-байт"
+        );
+        assert_eq!(format!("{:?}", img_ref.root), debug_before);
     }
 
     #[tokio::test]
