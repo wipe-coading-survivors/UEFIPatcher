@@ -47,6 +47,10 @@ pub fn parse_string_package(body: &[u8]) -> Option<ParsedStringPackage> {
     let mut next_id: u16 = 1;
     let mut pos = info_off;
     'outer: while pos < body.len() {
+        if body[pos] != SIBT_END && next_id == 0xFFFF {
+            tracing::warn!("string id space exhausted; stopping string parse");
+            break;
+        }
         match body[pos] {
             SIBT_END => break,
             SIBT_STRING_SCSU => {
@@ -78,10 +82,7 @@ pub fn parse_string_package(body: &[u8]) -> Option<ParsedStringPackage> {
                         );
                         break 'outer;
                     }
-                    let Some((text, np)) = read_scsu(body, p) else {
-                        warn_truncated_block(body[pos]);
-                        break 'outer;
-                    };
+                    let (text, np) = read_scsu(body, p).expect("p < body.len() checked above");
                     push(&mut strings, &mut by_id, &mut next_id, text);
                     p = np;
                 }
@@ -100,10 +101,7 @@ pub fn parse_string_package(body: &[u8]) -> Option<ParsedStringPackage> {
                         );
                         break 'outer;
                     }
-                    let Some((text, np)) = read_scsu(body, p) else {
-                        warn_truncated_block(body[pos]);
-                        break 'outer;
-                    };
+                    let (text, np) = read_scsu(body, p).expect("p < body.len() checked above");
                     push(&mut strings, &mut by_id, &mut next_id, text);
                     p = np;
                 }
@@ -183,12 +181,24 @@ pub fn parse_string_package(body: &[u8]) -> Option<ParsedStringPackage> {
                     warn_truncated_block(body[pos]);
                     break;
                 };
-                next_id = next_id.wrapping_add(count);
+                match next_id.checked_add(count) {
+                    Some(n) => next_id = n,
+                    None => {
+                        tracing::warn!("string id space exhausted; stopping string parse");
+                        break;
+                    }
+                }
                 pos = p;
             }
             SIBT_SKIP1 => {
                 let count = body.get(pos + 1).copied().unwrap_or(0);
-                next_id = next_id.wrapping_add(count as u16);
+                match next_id.checked_add(u16::from(count)) {
+                    Some(n) => next_id = n,
+                    None => {
+                        tracing::warn!("string id space exhausted; stopping string parse");
+                        break;
+                    }
+                }
                 pos += 2;
             }
             SIBT_EXT1 => match sibt_ext_next(body, pos, 1) {
@@ -939,5 +949,43 @@ mod tests {
         let parsed = parse_string_package(&pkg).unwrap();
         assert_eq!(parsed.strings.len(), 1);
         assert!(logs_contain("truncated SIBT block"));
+    }
+
+    #[test]
+    fn parse_stops_on_skip2_id_overflow_without_id_zero() {
+        let pkg = make_pkg("en", &[SIBT_SKIP2, 0xFF, 0xFF, SIBT_END]);
+        let parsed = parse_string_package(&pkg).unwrap();
+        assert!(parsed.strings.is_empty());
+        assert!(parsed.strings.iter().all(|(id, _)| *id != 0));
+    }
+
+    #[test]
+    fn parse_stops_when_string_block_would_pass_0xfffe() {
+        let mut sibt = vec![SIBT_SKIP2, 0xFE, 0xFF];
+        sibt.push(SIBT_STRING_SCSU);
+        sibt.extend_from_slice(b"past");
+        sibt.push(0x00);
+        sibt.push(SIBT_END);
+        let pkg = make_pkg("en", &sibt);
+        let parsed = parse_string_package(&pkg).unwrap();
+        assert!(
+            parsed.strings.iter().all(|(id, _)| *id != 0xFFFF),
+            "блок на невалидном id 0xFFFF не листится"
+        );
+    }
+
+    #[test]
+    fn parse_survives_skip_exactly_to_0xffff_then_end() {
+        let pkg = make_pkg("en", &[SIBT_SKIP2, 0xFE, 0xFF, SIBT_END]);
+        let parsed = parse_string_package(&pkg).unwrap();
+        assert!(parsed.strings.is_empty());
+    }
+
+    #[tracing_test::traced_test]
+    #[test]
+    fn parse_warns_on_id_exhaustion() {
+        let pkg = make_pkg("en", &[SIBT_SKIP2, 0xFF, 0xFF, SIBT_END]);
+        let _ = parse_string_package(&pkg);
+        assert!(logs_contain("string id space exhausted"));
     }
 }

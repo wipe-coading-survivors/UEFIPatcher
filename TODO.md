@@ -4396,10 +4396,12 @@ Task 3 (проверено git stash). Штатная команда цикла 
 > Ветка `hii-read-truth`, whole-branch ревью: Ready to merge, все находки
 > Minor/plan-mandated — отложены (Б-цикл коснётся тех же файлов).
 
-* [ ] **hii/strings: мёртвый let-else в STRINGS_SCSU/SCSU_FONT телах** —
+* [x] **hii/strings: мёртвый let-else в STRINGS_SCSU/SCSU_FONT телах** —
   guard `p >= body.len()` покрывает то же условие, что None у read_scsu
   (start >= len); мёртвые 2 из 4 arm'ов (UCS2-варианты живы: хвостовой
   байт). Контекст: убрать при касании walk в Б-цикле.
+  Закрыто: цикл hii-write-guard Task 3 (reader-близнец B1) — let-else
+  заменён на expect с инвариантом guard'а.
 * [ ] **real_image.rs: тихий u32→u16 cast form_id_ifr в rk3588-гейте** —
   анти-паттерн, закрытый A3 в handler'е; тестовому коду можно
   `u16::try_from` со skip. Контекст: прецеденты :6013/:6084/:6384.
