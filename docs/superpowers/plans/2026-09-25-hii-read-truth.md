@@ -156,7 +156,7 @@ Expected: PASS + строка вида `real_image hii: N forms across ...; M st
     fn parse_truncated_ext_stops_walk_without_fake_strings() {
         let sibt = [
             SIBT_STRING_SCSU, b'A', 0,
-            0x30, 0x99, 0x05, 0x01, 0x02,
+            0x30, 0x99, 0x09, 0x01, 0x02,
             SIBT_STRING_SCSU, b'Z', 0,
             SIBT_END,
         ];
@@ -168,12 +168,14 @@ Expected: PASS + строка вида `real_image hii: N forms across ...; M st
     }
 ```
 
+(Length=0x09: EXT-контракт требует 9 байт extended-данных, в теле остаётся 6 — реальное усечение; Length=0x05 умещался бы ровно в остаток и усечением не был бы.)
+
 - [ ] **Step 4: Запустить — убедиться в падении**
 
 ```bash
 cargo test -p uefi-engine hii::strings
 ```
-Expected: FAIL — `parse_ext1_between_strings_skips_extended_data` и `parse_ext2_and_ext4_blocks_skip` дают `strings.len() == 1` (EXT → unknown-opcode, walk остановлен); `parse_truncated_ext_stops_walk_without_fake_strings` — нет лога + `strings.len() == 2`.
+Expected: FAIL — `parse_ext1_between_strings_skips_extended_data` и `parse_ext2_and_ext4_blocks_skip` дают `strings.len() == 1` (EXT → unknown-opcode, walk остановлен); `parse_truncated_ext_stops_walk_without_fake_strings` — walk и так останавливается на unknown-opcode (`strings.len() == 1`), красным является только `logs_contain("truncated SIBT_EXT block")` (лога нет).
 
 - [ ] **Step 5: Реализовать** (strings.rs)
 
