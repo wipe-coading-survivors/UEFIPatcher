@@ -1027,6 +1027,22 @@ git add crates/uefi-engine/src/hii/mod.rs crates/uefi-engine/src/hii/cross_forms
 git commit -m "feat(uefi-engine): hii-write-guard B3 — snapshot-rollback apply-фаз question_add и кросс-unlock"
 ```
 
+- [ ] **Step 10 (финальное ревью B3): `unlock` атомарна целиком — own-фаза + кросс-фаза под общим rollback**
+
+Находка финального ревью: own-фаза `unlock` (`:416-470`) мутирует дерево (флипы + rebuild-метки) ДО снапшота `apply_cross_formset_gates` (`:471`, снапшот на входе функции). Если own-гейты применились, а кросс-донор упал — Err с частичной own-мутацией в дереве. Спека §3:146 («Err = ничего не применено») этого не допускает.
+
+10a. Failing-тест (mod.rs, `mod tests`, рядом с `unlock_cross_phase_failure_rolls_back_all_donors`): образ `three_file_image(donor_pkg(), donor_true_expr_pkg(), target_with_own_gate_pkg())` — таргет с собственным флипаемым гейтом на вопросе (иначе own-фаза ничего не мутирует и окно не тестируется); `unlock(...)` → `Err(GateExpressionUnsupported)`; дерево (debug) и `build_image`-байты == до вызова. При необходимости — новая фикстура `cross_fixtures::target_with_own_gate_pkg()` (по образцу `target_pkg`, + suppress-if EqConst на вопросе).
+
+10b. Реализация: тело `unlock` после `resolve_writable_path` (`:408`) обернуть в `with_rollback(image, |image| { ... })` (хелпер Step 5; снапшот до первой мутации); rustdoc `unlock` дополнить строкой атомарности (как у `apply_cross_formset_gates`). Внутренний снапшот `apply_cross_formset_gates` остаётся (самостоятельный контракт функции).
+
+10c. Гейты + коммит:
+
+```bash
+cargo test -p uefi-engine && cargo clippy -p uefi-engine -- -D warnings && cargo fmt --all -- --check
+git commit -m "fix(uefi-engine): hii-write-guard B3 — unlock атомарна целиком: own-фаза и кросс-фаза под общим snapshot-rollback (финальное ревью)"
+```
+
+
 ---
 
 ### Task 5: B2 — bounds-guard'ы план-фазы гейтов
