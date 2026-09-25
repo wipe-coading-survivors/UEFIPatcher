@@ -1035,6 +1035,8 @@ git commit -m "feat(uefi-engine): hii-write-guard B3 — snapshot-rollback apply
 
 10b. Реализация: тело `unlock` после `resolve_writable_path` (`:408`) обернуть в `with_rollback(image, |image| { ... })` (хелпер Step 5; снапшот до первой мутации); rustdoc `unlock` дополнить строкой атомарности (как у `apply_cross_formset_gates`). Внутренний снапшот `apply_cross_formset_gates` остаётся (самостоятельный контракт функции).
 
+Сопутствующий дефект (выявлен при реализации Step 10): тест `unlock_marks_own_rebuild_when_cross_donor_behind_compression` (Task 4, ранний шаг) кодифицировал старую семантику частичной мутации («own-флипы применены до отказа донора», rebuild-метка на own-пути) — противоречит §3:146 при новом контракте целостной атомарности. Тест обновить: `Err(MutationBehindCompression)` сохраняется, но own-тело байт-идентично исходному и `action == NoAction`; переименовать в `unlock_rolls_back_own_phase_when_cross_donor_behind_compression`.
+
 10c. Гейты + коммит:
 
 ```bash
