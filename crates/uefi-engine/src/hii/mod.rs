@@ -315,9 +315,12 @@ pub(crate) fn flip_text(flip: &gates::PlannedFlip) -> String {
     )
 }
 
+/// Out-of-bounds Gate деградирует в flippable=false (read-only дисплей; спека hii-write-guard §2 B2).
 fn gate_info(pkg: &[u8], gate: &gates::Gate) -> uefi_proto::GateInfo {
-    let region = &pkg[gate.expr_offset..gate.expr_end.min(pkg.len())];
-    let flip = gates::plan_flip(pkg, gate);
+    let region = pkg
+        .get(gate.expr_offset..gate.expr_end.min(pkg.len()))
+        .unwrap_or(&[]);
+    let flip = gates::plan_flip(pkg, gate).unwrap_or(None);
     let (wraps, form_id, host_form_id, question_id) = match gate.wraps {
         gates::Wraps::Form { form_id } => ("form", form_id as u32, form_id as u32, 0),
         gates::Wraps::Ref {
@@ -2536,6 +2539,21 @@ mod tests {
             HiiError::PeGrowthUnsupported.to_string(),
             "cannot grow PE resource section"
         );
+    }
+
+    #[test]
+    fn gate_info_degrades_out_of_bounds_gate_to_unflippable() {
+        let pkg = vec![0u8; 8];
+        let gate = gates::Gate {
+            kind: gates::GateKind::Suppress,
+            wraps: gates::Wraps::Form { form_id: 901 },
+            scope_offset: 0,
+            expr_offset: 100,
+            expr_end: 104,
+            expr: gates::GateExpr::EqConst { a: 1, b: 1 },
+        };
+        let gi = gate_info(&pkg, &gate);
+        assert!(!gi.flippable);
     }
 
     #[test]

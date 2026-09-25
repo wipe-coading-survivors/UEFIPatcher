@@ -305,29 +305,61 @@ pub(crate) fn question_storage_width(body: &[u8], question_id: u16) -> Option<u8
     None
 }
 
-pub(crate) fn plan_flip(body: &[u8], gate: &Gate) -> Option<PlannedFlip> {
+/// План флипа одного гейта. Ok(None) — выражение не hardware-validated
+/// класс (EqConst с a!=b, EqIdVal c 0xFFFF, True, Other). Err — границы
+/// гейта выходят за тело пакета: не паникует ни на каком Gate, в т.ч.
+/// сконструированном вручную. Спека hii-write-guard §2 B2.
+pub(crate) fn plan_flip(body: &[u8], gate: &Gate) -> Result<Option<PlannedFlip>, String> {
+    let bounds_err = || {
+        format!(
+            "gate bounds out of package at {}",
+            super::pkg_off(gate.expr_offset)
+        )
+    };
+    if gate
+        .expr_offset
+        .checked_add(2)
+        .is_none_or(|e| e > gate.expr_end.min(body.len()))
+    {
+        return Err(bounds_err());
+    }
     match gate.expr {
         GateExpr::EqConst { a, b } if a == b => {
-            let first_len = (body[gate.expr_offset + 1] & 0x7F) as usize;
-            let offset = gate.expr_offset + first_len + 2;
-            let from = body[offset];
-            Some(PlannedFlip {
+            let first_len = usize::from(body[gate.expr_offset + 1] & 0x7F);
+            let Some(offset) = gate
+                .expr_offset
+                .checked_add(first_len)
+                .and_then(|o| o.checked_add(2))
+            else {
+                return Err(bounds_err());
+            };
+            let Some(&from) = body.get(offset) else {
+                return Err(bounds_err());
+            };
+            Ok(Some(PlannedFlip {
                 offset,
                 from: vec![from],
                 to: vec![from.wrapping_add(1)],
-            })
+            }))
         }
         GateExpr::EqIdVal { question_id, value } if value != 0xFFFF => {
             if question_storage_width(body, question_id).is_some_and(|w| w > 1) {
-                return None;
+                return Ok(None);
             }
-            Some(PlannedFlip {
+            if gate
+                .expr_offset
+                .checked_add(6)
+                .is_none_or(|e| e > body.len())
+            {
+                return Err(bounds_err());
+            }
+            Ok(Some(PlannedFlip {
                 offset: gate.expr_offset + 4,
                 from: value.to_le_bytes().to_vec(),
                 to: 0xFFFFu16.to_le_bytes().to_vec(),
-            })
+            }))
         }
-        _ => None,
+        _ => Ok(None),
     }
 }
 
@@ -335,9 +367,11 @@ pub fn plan_gates(body: &[u8], gates: &[Gate]) -> Result<Vec<PlannedFlip>, Strin
     let mut flips = Vec::new();
     for gate in gates {
         match plan_flip(body, gate) {
-            Some(flip) => flips.push(flip),
-            None => {
-                let region = &body[gate.expr_offset..gate.expr_end.min(body.len())];
+            Ok(Some(flip)) => flips.push(flip),
+            Ok(None) => {
+                let region = body
+                    .get(gate.expr_offset..gate.expr_end.min(body.len()))
+                    .unwrap_or(&[]);
                 return Err(format!(
                     "{} gate at {} wrapping {:?}: expression [{}] is not a hardware-validated flip class",
                     gate.kind.as_str(),
@@ -350,6 +384,7 @@ pub fn plan_gates(body: &[u8], gates: &[Gate]) -> Result<Vec<PlannedFlip>, Strin
                         .join(" ")
                 ));
             }
+            Err(e) => return Err(e),
         }
     }
     Ok(flips)
@@ -370,9 +405,11 @@ pub fn plan_gates_skip_unlocked(body: &[u8], gates: &[Gate]) -> Result<Vec<Plann
             continue;
         }
         match plan_flip(body, gate) {
-            Some(flip) => flips.push(flip),
-            None => {
-                let region = &body[gate.expr_offset..gate.expr_end.min(body.len())];
+            Ok(Some(flip)) => flips.push(flip),
+            Ok(None) => {
+                let region = body
+                    .get(gate.expr_offset..gate.expr_end.min(body.len()))
+                    .unwrap_or(&[]);
                 return Err(format!(
                     "{} gate at {} wrapping {:?}: expression [{}] is not a hardware-validated flip class",
                     gate.kind.as_str(),
@@ -385,6 +422,7 @@ pub fn plan_gates_skip_unlocked(body: &[u8], gates: &[Gate]) -> Result<Vec<Plann
                         .join(" ")
                 ));
             }
+            Err(e) => return Err(e),
         }
     }
     Ok(flips)
@@ -852,6 +890,60 @@ mod tests {
         assert!(gates.len() <= 1);
     }
 
+    fn hand_gate(expr_offset: usize, expr_end: usize, expr: GateExpr) -> Gate {
+        Gate {
+            kind: GateKind::Suppress,
+            wraps: Wraps::Form { form_id: 901 },
+            scope_offset: 4,
+            expr_offset,
+            expr_end,
+            expr,
+        }
+    }
+
+    #[test]
+    fn plan_flip_errs_when_expr_offset_beyond_body() {
+        let pkg = package(&vendor_ifr());
+        let gate = hand_gate(
+            pkg.len() + 10,
+            pkg.len() + 40,
+            GateExpr::EqConst { a: 1, b: 1 },
+        );
+        let err = plan_flip(&pkg, &gate).unwrap_err();
+        assert!(err.contains("gate bounds out of package"), "{err}");
+        assert!(plan_gates(&pkg, &[gate]).is_err());
+    }
+
+    #[test]
+    fn plan_flip_errs_when_first_len_pushes_literal_out() {
+        let mut pkg = package(&vendor_ifr());
+        let gates = find_gates(&pkg, &FORM_GATE_TARGET);
+        let gate = gates[0].clone();
+        pkg[gate.expr_offset + 1] = 0x7F;
+        let err = plan_flip(&pkg, &gate).unwrap_err();
+        assert!(err.contains("gate bounds out of package"), "{err}");
+    }
+
+    #[test]
+    fn plan_flip_errs_when_eq_id_val_literal_out() {
+        let pkg = package(&vendor_ifr());
+        let gates = find_gates(&pkg, &QUESTION_GATE_TARGET);
+        let body = &pkg[..gates[0].expr_offset + 4];
+        let err = plan_flip(body, &gates[0]).unwrap_err();
+        assert!(err.contains("gate bounds out of package"), "{err}");
+        assert!(plan_gates(body, &gates).is_err());
+    }
+
+    #[test]
+    fn plan_flip_errs_when_region_inverted() {
+        let pkg = package(&vendor_ifr());
+        let gates = find_gates(&pkg, &FORM_GATE_TARGET);
+        let mut gate = gates[0].clone();
+        gate.expr_end = gate.expr_offset;
+        let err = plan_flip(&pkg, &gate).unwrap_err();
+        assert!(err.contains("gate bounds out of package"), "{err}");
+    }
+
     #[test]
     fn plan_eq_const_flip_targets_second_operand_lsb() {
         let pkg = package(&vendor_ifr());
@@ -1019,7 +1111,7 @@ mod tests {
                 value: 0xFFFF
             }
         );
-        assert!(plan_flip(&pkg, &gates[0]).is_none());
+        assert_eq!(plan_flip(&pkg, &gates[0]), Ok(None));
         assert!(plan_gates(&pkg, &gates).is_err());
     }
 
