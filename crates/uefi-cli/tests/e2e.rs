@@ -88,6 +88,21 @@ async fn hii_list_output_content() {
         .success()
         .stdout(predicates::str::contains("Hello"));
     cli(&sock, cwd)
+        .args(["--format", "tsv", "hii", "string", "list"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "language\tstring_id\tsource\ttext",
+        ))
+        .stdout(predicates::str::contains(
+            "eng\t1\t899407D7-99FE-43D8-9A21-79EC328CAC21/res\tHello",
+        ));
+    cli(&sock, cwd)
+        .args(["--format", "json", "hii", "string", "list"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("\"source\""));
+    cli(&sock, cwd)
         .args(["session", "destroy"])
         .assert()
         .success();

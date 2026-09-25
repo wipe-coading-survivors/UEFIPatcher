@@ -1679,12 +1679,15 @@ atomic_write. После первой мутации хранимый файл �
   обе копии (raw store+0x72 → байт @0x8000D2 0→1; LZMA-секция
   @0xafb538, dec-дифф ровно 1 байт @0x76=0x2C+0x4A); flash-дифф =
   1 байт + слот 0xafb550..0xafb967, больше ничего.
-* [ ] **мелочь: string-id коллизии между списками пакетов** — `hii
+* [x] **мелочь: string-id коллизии между списками пакетов** — `hii
   string list` агрегирует строки разных package-list'ов, id уникальны
   только внутри списка (в 450x id 3/4 в списке UiApp = «Removable
   Drive»/«Hard Drive», а в опциях Setup-вопроса те же id читаются как
   Disabled/Enabled). Контекст: string list/list-scoping; проявилось
   при поиске «Above 4G» на 450x.
+  Закрыто: hii-read-truth A4 (ветка `hii-read-truth`) — StringInfo.source
+  (GUID владельца + канал) в `hii string list` text/tsv/json; одинаковые
+  id из разных package-list'ов различимы.
 
 ### E16: вставка формы на HNX — кандидат собран, ждёт железо (2026-09-03)
 

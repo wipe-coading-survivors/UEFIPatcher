@@ -199,14 +199,14 @@ pub fn print_strings(strings: &[StringInfo], format: OutputFormat) {
             println!("{v}");
         }
         OutputFormat::Tsv => {
-            println!("language\tstring_id\ttext");
+            println!("language\tstring_id\tsource\ttext");
             for s in strings {
-                println!("{}\t{}\t{}", s.language, s.string_id, s.text);
+                println!("{}\t{}\t{}\t{}", s.language, s.string_id, s.source, s.text);
             }
         }
         OutputFormat::Text => {
             for s in strings {
-                println!("[{}] {}: {}", s.language, s.string_id, s.text);
+                println!("[{}] {} {}: {}", s.language, s.string_id, s.source, s.text);
             }
         }
     }
