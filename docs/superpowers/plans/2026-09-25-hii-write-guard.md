@@ -560,7 +560,7 @@ Expected: FAIL — `parse_stops_on_skip2_id_overflow...` видит wrap (id 0 �
         match body[pos] {
 ```
 
-(существующая метка `'outer:` остаётся; guard гасит все string-производящие руки разом — каждая кладёт ровно один id по `next_id < 0xFFFF`.)
+(существующая метка `'outer:` остаётся; guard гасит string-производящие руки на входе в итерацию — но STRINGS-руки кладут `count` id за одну итерацию, поэтому дополнительно 3d.)
 
 3b. SKIP-руки (`:181-193`) — checked:
 
@@ -599,6 +599,54 @@ Expected: FAIL — `parse_stops_on_skip2_id_overflow...` видит wrap (id 0 �
 ```
 
 (UCS2-руки НЕ трогать — их let-else жив: хвостовой байт.)
+
+3d. Исчерпание внутри STRINGS-блоков (находка ревью Task 3): `push` (`:251`) заменить на
+
+```rust
+/// Записывает строку под next_id и инкрементирует его. false = id-пространство
+/// исчерпано (next_id == 0xFFFF): запись не создана, инкремента нет.
+/// Спека hii-write-guard §1 B1.
+fn push(
+    strings: &mut Vec<(u16, String)>,
+    by_id: &mut HashMap<u16, String>,
+    next_id: &mut u16,
+    text: String,
+) -> bool {
+    if *next_id == 0xFFFF {
+        return false;
+    }
+    by_id.insert(*next_id, text.clone());
+    strings.push((*next_id, text));
+    *next_id += 1;
+    true
+}
+```
+
+и во всех 9 call-сайтах (`:61`-`:176`, все внутри walk с меткой `'outer`):
+
+```rust
+                if !push(&mut strings, &mut by_id, &mut next_id, text) {
+                    tracing::warn!("string id space exhausted; stopping string parse");
+                    break 'outer;
+                }
+```
+
+Тест (Step 1 дополнение):
+
+```rust
+    #[test]
+    fn parse_stops_inside_strings_block_at_0xffff() {
+        let mut sibt = vec![SIBT_SKIP2, 0xFD, 0xFF];
+        sibt.push(SIBT_STRINGS_SCSU);
+        sibt.extend_from_slice(&3u16.to_le_bytes());
+        sibt.extend_from_slice(b"aa\x00bb\x00cc\x00");
+        sibt.push(SIBT_END);
+        let pkg = make_pkg("en", &sibt);
+        let parsed = parse_string_package(&pkg).unwrap();
+        assert_eq!(parsed.strings.len(), 1);
+        assert_eq!(parsed.strings[0], (0xFFFE, "aa".to_string()));
+    }
+```
 
 - [ ] **Step 4: Green**
 
