@@ -350,16 +350,19 @@ impl EngineService for MockEngine {
                     language: "en-US".into(),
                     string_id: 1,
                     text: "Setup".into(),
+                    source: String::new(),
                 },
                 StringInfo {
                     language: "en-US".into(),
                     string_id: 2,
                     text: "Advanced".into(),
+                    source: String::new(),
                 },
                 StringInfo {
                     language: "en-US".into(),
                     string_id: 3,
                     text: "Serial Port".into(),
+                    source: String::new(),
                 },
             ],
         }))

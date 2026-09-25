@@ -211,6 +211,9 @@ fn resolve_writable_path(
     Ok(path)
 }
 
+/// Ранги form-пакетов для мутаций и их пре-чеков; bare-канал не входит —
+/// мутации bare не аппаратно-валидированы (TODO:383); чтение —
+/// `form_package_ranges_read`. Спека hii-read-truth §5.
 pub(crate) fn form_package_ranges(node: &FfsNode) -> Vec<(usize, usize)> {
     if node.subtype == EFI_SECTION_RAW || ifr::is_form_package(&node.body) {
         if ifr::is_form_package(&node.body) {
@@ -220,6 +223,32 @@ pub(crate) fn form_package_ranges(node: &FfsNode) -> Vec<(usize, usize)> {
         }
     } else if node.subtype == EFI_SECTION_PE32 {
         pe_resource_form_packages(&node.body).unwrap_or_default()
+    } else if node.subtype == EFI_SECTION_FREEFORM_SUBTYPE_GUID {
+        freeform_form_package_ranges(&node.body).unwrap_or_default()
+    } else {
+        vec![]
+    }
+}
+
+/// Суперсет мутационного селектора для читающего пути (list-questions /
+/// question-info / gates-list own / form-export): PE32-ветка =
+/// resource-ранги + bare-ранги (exclude = resource-блобы, без дублей);
+/// RAW/0x18-ветви идентичны мутационному. Мутации сюда НЕ переключать.
+/// Спека hii-read-truth §5.
+pub(crate) fn form_package_ranges_read(node: &FfsNode) -> Vec<(usize, usize)> {
+    if node.subtype == EFI_SECTION_RAW || ifr::is_form_package(&node.body) {
+        if ifr::is_form_package(&node.body) {
+            vec![(0, node.body.len())]
+        } else {
+            vec![]
+        }
+    } else if node.subtype == EFI_SECTION_PE32 {
+        let mut out = pe_resource_form_packages(&node.body).unwrap_or_default();
+        let blobs = crate::hii::pe_resource::hii_resource_ranges(&node.body);
+        out.extend(crate::hii::pe_resource::bare_form_package_ranges(
+            &node.body, &blobs,
+        ));
+        out
     } else if node.subtype == EFI_SECTION_FREEFORM_SUBTYPE_GUID {
         freeform_form_package_ranges(&node.body).unwrap_or_default()
     } else {
@@ -335,7 +364,7 @@ pub fn gates_list(image: &Image, item_id: &str) -> Result<Vec<uefi_proto::GateIn
         formset_guid: None,
     };
     let mut out = Vec::new();
-    for (start, len) in form_package_ranges(node) {
+    for (start, len) in form_package_ranges_read(node) {
         let pkg = &node.body[start..start + len];
         for gate in gates::find_gates(pkg, &gt) {
             out.push(gate_info(pkg, &gate));
@@ -657,7 +686,7 @@ fn find_question_map(
         file = &file.children[i];
     }
     let texts = questions::prompt_texts(file, &questions::image_string_fallback(&image.root));
-    for (start, len) in form_package_ranges(node) {
+    for (start, len) in form_package_ranges_read(node) {
         if let Some(map) =
             values::find_question(&node.body[start..start + len], form_id, question_id)
         {
@@ -747,7 +776,7 @@ pub fn list_questions(
     let titles = questions::prompt_texts_own(file);
     let fallback = questions::image_string_fallback(&image.root);
     let mut out = Vec::new();
-    for (start, len) in form_package_ranges(node) {
+    for (start, len) in form_package_ranges_read(node) {
         let maps = values::question_maps(&node.body[start..start + len]);
         for q in questions::questions(&node.body[start..start + len], form_id) {
             let (seed_value, ifr_default) = match maps.get(&(form_id, q.question_id)) {
@@ -3436,6 +3465,78 @@ mod tests {
         let image = vendor_image_with(0x18, junk);
         let node = &image.root.children[0].children[0].children[0];
         assert!(form_package_ranges(node).is_empty());
+    }
+
+    #[test]
+    fn form_package_ranges_read_includes_bare_and_mutation_does_not() {
+        let mut body = vec![0x44u8; 16];
+        body.extend(value_forms_pkg());
+        let image = vendor_image_with(0x10, body);
+        let node = &image.root.children[0].children[0].children[0];
+        assert!(
+            form_package_ranges(node).is_empty(),
+            "мутационный селектор bare не включает (пиннинг, TODO:383)"
+        );
+        let read = form_package_ranges_read(node);
+        assert_eq!(read.len(), 1, "read-селектор видит bare-пакет");
+        let (start, len) = read[0];
+        assert_eq!(&node.body[start..start + len], &value_forms_pkg()[..]);
+    }
+
+    #[test]
+    fn form_package_ranges_read_does_not_duplicate_resource_packages() {
+        let pe = crate::hii::pe_resource::synth_hii_pe("HII", &vendor_hii_blob());
+        let image = vendor_image_with(0x10, pe);
+        let node = &image.root.children[0].children[0].children[0];
+        let mutation = form_package_ranges(node);
+        let read = form_package_ranges_read(node);
+        assert!(!mutation.is_empty());
+        assert_eq!(read, mutation, "resource-пакеты не задваиваются (exclude)");
+    }
+
+    #[test]
+    fn form_package_ranges_read_matches_mutation_on_raw_and_freeform() {
+        let raw_image = vendor_image_with(0x19, vendor_forms_pkg());
+        let raw_node = &raw_image.root.children[0].children[0].children[0];
+        assert_eq!(
+            form_package_ranges_read(raw_node),
+            form_package_ranges(raw_node)
+        );
+
+        let pkg1 = value_forms_pkg();
+        let pkg2 = forms_pkg([g_form(9), g_end(), g_end()].concat());
+        let list_guid = Guid::try_parse("97E409E6-4CC1-11D9-81F6-000000000000").unwrap();
+        let mut body = list_guid.to_bytes().to_vec();
+        body.extend_from_slice(&2u32.to_le_bytes());
+        body.extend_from_slice(&pkg1);
+        body.extend_from_slice(&pkg2);
+        let ff_image = vendor_image_with(0x18, body);
+        let ff_node = &ff_image.root.children[0].children[0].children[0];
+        assert_eq!(
+            form_package_ranges_read(ff_node),
+            form_package_ranges(ff_node)
+        );
+        assert_eq!(form_package_ranges_read(ff_node).len(), 2);
+    }
+
+    #[test]
+    fn list_questions_and_question_info_see_bare_form_package_in_pe_body() {
+        let mut body = vec![0x44u8; 16];
+        body.extend(value_forms_pkg());
+        let image = vendor_image_with(0x10, body);
+        let target = "5c60f367-a505-419a-859e-2a4ff6ca6fe5:0x10:0";
+        let questions = list_questions(&image, target, 10029).unwrap();
+        assert!(
+            !questions.is_empty(),
+            "bare-таргет отдаёт вопросы (было пусто)"
+        );
+        assert_eq!(questions[0].question_id, 0x3B);
+        let item = format!("{target}#10029:0x3B");
+        let info = question_info(&image, &item).unwrap();
+        assert_eq!(
+            info.question_id, 0x3B,
+            "question_info резолвится по bare (было NotFound)"
+        );
     }
 
     #[test]

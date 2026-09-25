@@ -21,6 +21,9 @@ const SIBT_STRINGS_UCS2_FONT: u8 = 0x17;
 const SIBT_DUPLICATE: u8 = 0x20;
 const SIBT_SKIP2: u8 = 0x21;
 const SIBT_SKIP1: u8 = 0x22;
+const SIBT_EXT1: u8 = 0x30;
+const SIBT_EXT2: u8 = 0x31;
+const SIBT_EXT4: u8 = 0x32;
 
 const HEADER_LEN: usize = 4;
 const STRING_INFO_OFFSET_POS: usize = 8;
@@ -47,17 +50,26 @@ pub fn parse_string_package(body: &[u8]) -> Option<ParsedStringPackage> {
         match body[pos] {
             SIBT_END => break,
             SIBT_STRING_SCSU => {
-                let (text, p) = read_scsu(body, pos + 1);
+                let Some((text, p)) = read_scsu(body, pos + 1) else {
+                    warn_truncated_block(body[pos]);
+                    break;
+                };
                 push(&mut strings, &mut by_id, &mut next_id, text);
                 pos = p;
             }
             SIBT_STRING_SCSU_FONT => {
-                let (text, p) = read_scsu(body, pos + 2);
+                let Some((text, p)) = read_scsu(body, pos + 2) else {
+                    warn_truncated_block(body[pos]);
+                    break;
+                };
                 push(&mut strings, &mut by_id, &mut next_id, text);
                 pos = p;
             }
             SIBT_STRINGS_SCSU => {
-                let (count, mut p) = read_u16(body, pos + 1);
+                let Some((count, mut p)) = read_u16(body, pos + 1) else {
+                    warn_truncated_block(body[pos]);
+                    break;
+                };
                 for _ in 0..count {
                     if p >= body.len() {
                         tracing::warn!(
@@ -66,14 +78,20 @@ pub fn parse_string_package(body: &[u8]) -> Option<ParsedStringPackage> {
                         );
                         break 'outer;
                     }
-                    let (text, np) = read_scsu(body, p);
+                    let Some((text, np)) = read_scsu(body, p) else {
+                        warn_truncated_block(body[pos]);
+                        break 'outer;
+                    };
                     push(&mut strings, &mut by_id, &mut next_id, text);
                     p = np;
                 }
                 pos = p;
             }
             SIBT_STRINGS_SCSU_FONT => {
-                let (count, mut p) = read_u16(body, pos + 2);
+                let Some((count, mut p)) = read_u16(body, pos + 2) else {
+                    warn_truncated_block(body[pos]);
+                    break;
+                };
                 for _ in 0..count {
                     if p >= body.len() {
                         tracing::warn!(
@@ -82,24 +100,36 @@ pub fn parse_string_package(body: &[u8]) -> Option<ParsedStringPackage> {
                         );
                         break 'outer;
                     }
-                    let (text, np) = read_scsu(body, p);
+                    let Some((text, np)) = read_scsu(body, p) else {
+                        warn_truncated_block(body[pos]);
+                        break 'outer;
+                    };
                     push(&mut strings, &mut by_id, &mut next_id, text);
                     p = np;
                 }
                 pos = p;
             }
             SIBT_STRING_UCS2 => {
-                let (text, p) = read_ucs2(body, pos + 1);
+                let Some((text, p)) = read_ucs2(body, pos + 1) else {
+                    warn_truncated_block(body[pos]);
+                    break;
+                };
                 push(&mut strings, &mut by_id, &mut next_id, text);
                 pos = p;
             }
             SIBT_STRING_UCS2_FONT => {
-                let (text, p) = read_ucs2(body, pos + 2);
+                let Some((text, p)) = read_ucs2(body, pos + 2) else {
+                    warn_truncated_block(body[pos]);
+                    break;
+                };
                 push(&mut strings, &mut by_id, &mut next_id, text);
                 pos = p;
             }
             SIBT_STRINGS_UCS2 => {
-                let (count, mut p) = read_u16(body, pos + 1);
+                let Some((count, mut p)) = read_u16(body, pos + 1) else {
+                    warn_truncated_block(body[pos]);
+                    break;
+                };
                 for _ in 0..count {
                     if p >= body.len() {
                         tracing::warn!(
@@ -108,14 +138,20 @@ pub fn parse_string_package(body: &[u8]) -> Option<ParsedStringPackage> {
                         );
                         break 'outer;
                     }
-                    let (text, np) = read_ucs2(body, p);
+                    let Some((text, np)) = read_ucs2(body, p) else {
+                        warn_truncated_block(body[pos]);
+                        break 'outer;
+                    };
                     push(&mut strings, &mut by_id, &mut next_id, text);
                     p = np;
                 }
                 pos = p;
             }
             SIBT_STRINGS_UCS2_FONT => {
-                let (count, mut p) = read_u16(body, pos + 2);
+                let Some((count, mut p)) = read_u16(body, pos + 2) else {
+                    warn_truncated_block(body[pos]);
+                    break;
+                };
                 for _ in 0..count {
                     if p >= body.len() {
                         tracing::warn!(
@@ -124,20 +160,29 @@ pub fn parse_string_package(body: &[u8]) -> Option<ParsedStringPackage> {
                         );
                         break 'outer;
                     }
-                    let (text, np) = read_ucs2(body, p);
+                    let Some((text, np)) = read_ucs2(body, p) else {
+                        warn_truncated_block(body[pos]);
+                        break 'outer;
+                    };
                     push(&mut strings, &mut by_id, &mut next_id, text);
                     p = np;
                 }
                 pos = p;
             }
             SIBT_DUPLICATE => {
-                let (ref_id, _) = read_u16(body, pos + 1);
+                let Some((ref_id, _)) = read_u16(body, pos + 1) else {
+                    warn_truncated_block(body[pos]);
+                    break;
+                };
                 let text = by_id.get(&ref_id).cloned().unwrap_or_default();
                 push(&mut strings, &mut by_id, &mut next_id, text);
                 pos += 1 + 2;
             }
             SIBT_SKIP2 => {
-                let (count, p) = read_u16(body, pos + 1);
+                let Some((count, p)) = read_u16(body, pos + 1) else {
+                    warn_truncated_block(body[pos]);
+                    break;
+                };
                 next_id = next_id.wrapping_add(count);
                 pos = p;
             }
@@ -146,6 +191,36 @@ pub fn parse_string_package(body: &[u8]) -> Option<ParsedStringPackage> {
                 next_id = next_id.wrapping_add(count as u16);
                 pos += 2;
             }
+            SIBT_EXT1 => match sibt_ext_next(body, pos, 1) {
+                Some(next) => pos = next,
+                None => {
+                    tracing::warn!(
+                        opcode = body[pos],
+                        "truncated SIBT_EXT block; stopping string parse"
+                    );
+                    break;
+                }
+            },
+            SIBT_EXT2 => match sibt_ext_next(body, pos, 2) {
+                Some(next) => pos = next,
+                None => {
+                    tracing::warn!(
+                        opcode = body[pos],
+                        "truncated SIBT_EXT block; stopping string parse"
+                    );
+                    break;
+                }
+            },
+            SIBT_EXT4 => match sibt_ext_next(body, pos, 4) {
+                Some(next) => pos = next,
+                None => {
+                    tracing::warn!(
+                        opcode = body[pos],
+                        "truncated SIBT_EXT block; stopping string parse"
+                    );
+                    break;
+                }
+            },
             other => {
                 tracing::warn!(opcode = other, "unknown SIBT opcode; stopping string parse");
                 break;
@@ -153,6 +228,14 @@ pub fn parse_string_package(body: &[u8]) -> Option<ParsedStringPackage> {
         }
     }
     Some(ParsedStringPackage { language, strings })
+}
+
+fn warn_truncated_block(opcode: u8) {
+    tracing::warn!(
+        opcode = opcode,
+        "truncated SIBT block ({:#04x}); stopping string parse",
+        opcode
+    );
 }
 
 fn push(
@@ -178,11 +261,25 @@ fn read_u32(body: &[u8], pos: usize) -> Option<u32> {
     ]))
 }
 
-fn read_u16(body: &[u8], pos: usize) -> (u16, usize) {
+fn read_u16(body: &[u8], pos: usize) -> Option<(u16, usize)> {
     if pos + 2 > body.len() {
-        return (0, body.len());
+        return None;
     }
-    (u16::from_le_bytes([body[pos], body[pos + 1]]), pos + 2)
+    Some((u16::from_le_bytes([body[pos], body[pos + 1]]), pos + 2))
+}
+
+/// Смещение следующего SIBT_EXT-блока: header = opcode + BlockType2 +
+/// Length(len_width LE); total = pos + 2 + len_width + Length. None —
+/// заголовок или Length выходят за тело (усечённый EXT). Спека
+/// hii-read-truth §1 (edk2 UefiInternalFormRepresentation.h:365–399).
+fn sibt_ext_next(body: &[u8], pos: usize, len_width: usize) -> Option<usize> {
+    let field = pos.checked_add(2)?;
+    let mut length = 0usize;
+    for i in 0..len_width {
+        length |= (body.get(field + i).copied()? as usize) << (8 * i);
+    }
+    let next = pos.checked_add(2 + len_width)?.checked_add(length)?;
+    (next <= body.len()).then_some(next)
 }
 
 fn read_language(body: &[u8], start: usize, end: usize) -> String {
@@ -196,18 +293,22 @@ fn read_language(body: &[u8], start: usize, end: usize) -> String {
     s
 }
 
-fn read_scsu(body: &[u8], start: usize) -> (String, usize) {
-    let start = start.min(body.len());
+fn read_scsu(body: &[u8], start: usize) -> Option<(String, usize)> {
+    if start >= body.len() {
+        return None;
+    }
     let mut i = start;
     while i < body.len() && body[i] != 0 {
         i += 1;
     }
     let text = String::from_utf8_lossy(&body[start..i]).into_owned();
-    (text, if i < body.len() { i + 1 } else { body.len() })
+    Some((text, if i < body.len() { i + 1 } else { body.len() }))
 }
 
-fn read_ucs2(body: &[u8], start: usize) -> (String, usize) {
-    let start = start.min(body.len());
+fn read_ucs2(body: &[u8], start: usize) -> Option<(String, usize)> {
+    if body.len().saturating_sub(start) < 2 {
+        return None;
+    }
     let mut i = start;
     while i + 1 < body.len() && !(body[i] == 0 && body[i + 1] == 0) {
         i += 2;
@@ -217,24 +318,37 @@ fn read_ucs2(body: &[u8], start: usize) -> (String, usize) {
         .map(|c| u16::from_le_bytes([c[0], c[1]]))
         .collect();
     let text = String::from_utf16_lossy(&units);
-    (
+    Some((
         text,
         if i + 1 < body.len() {
             i + 2
         } else {
             body.len()
         },
-    )
+    ))
 }
 
+/// Строки всех string-пакетов образа; source = владелец + канал
+/// (`GUID/res|bare`, без владельца — голый канал). Идентификаторы
+/// уникальны только внутри package-list — source делает коллизии
+/// различимыми. Спека hii-read-truth §4.
 pub fn collect_strings(image: &Image) -> Vec<StringInfo> {
     let mut out = Vec::new();
     for pkg in collect_string_packages(image) {
+        let source = match &pkg.file_guid {
+            Some(g) => format!(
+                "{}/{}",
+                crate::types::guid_to_upper_string(g),
+                pkg.channel.suffix()
+            ),
+            None => pkg.channel.suffix().to_string(),
+        };
         for (sid, text) in pkg.strings {
             out.push(StringInfo {
                 language: pkg.language.clone(),
                 string_id: sid as u32,
                 text,
+                source: source.clone(),
             });
         }
     }
@@ -245,6 +359,15 @@ pub fn collect_strings(image: &Image) -> Vec<StringInfo> {
 pub(crate) enum StringPackageChannel {
     Bare,
     Resource,
+}
+
+impl StringPackageChannel {
+    fn suffix(&self) -> &'static str {
+        match self {
+            StringPackageChannel::Bare => "bare",
+            StringPackageChannel::Resource => "res",
+        }
+    }
 }
 
 #[allow(dead_code)]
@@ -578,6 +701,10 @@ mod tests {
         assert_eq!(out[0].language, "eng");
         assert_eq!(out[0].string_id, 1);
         assert_eq!(out[0].text, "X");
+        assert_eq!(
+            out[0].source, "bare",
+            "файл-владелец неизвестен — голый канал"
+        );
     }
 
     #[test]
@@ -603,6 +730,7 @@ mod tests {
         let out = collect_strings(&image);
         assert!(!out.is_empty());
         assert_eq!(out[0].language, "en-US");
+        assert_eq!(out[0].source, "res");
     }
 
     #[test]
@@ -651,6 +779,11 @@ mod tests {
                 .iter()
                 .any(|s| s.language == "x-UEFI-AMI" && s.text == "PRC")
         );
+        assert!(strings.iter().all(|s| matches!(
+            s.source.as_str(),
+            "5C60F367-A505-419A-859E-2A4FF6CA6FE5/bare"
+                | "ABBCE13D-E25A-4D9F-A1F9-2F7710786892/res"
+        )));
 
         let pkgs = collect_string_packages(&image);
         assert_eq!(pkgs.len(), 4);
@@ -661,5 +794,150 @@ mod tests {
         assert_eq!(pkgs[2].file_guid, Some(gb));
         assert_eq!(pkgs[2].language, "en-US");
         assert_eq!(pkgs[3].language, "x-UEFI-AMI");
+    }
+
+    #[test]
+    fn parse_ext1_between_strings_skips_extended_data() {
+        let sibt = [
+            SIBT_STRING_SCSU,
+            b'H',
+            b'i',
+            0,
+            0x30,
+            0x99,
+            0x02,
+            0xAA,
+            0xBB,
+            SIBT_STRING_SCSU,
+            b'B',
+            b'y',
+            b'e',
+            0,
+            SIBT_END,
+        ];
+        let pkg = make_pkg("en", &sibt);
+        let parsed = parse_string_package(&pkg).unwrap();
+        assert_eq!(parsed.strings.len(), 2, "строки по обе стороны EXT видны");
+        assert_eq!(parsed.strings[0], (1, "Hi".to_string()));
+        assert_eq!(parsed.strings[1], (2, "Bye".to_string()));
+    }
+
+    #[test]
+    fn parse_ext2_and_ext4_blocks_skip() {
+        let mut sibt = vec![SIBT_STRING_SCSU, b'A', 0];
+        sibt.extend_from_slice(&[0x31, 0x77, 0x01, 0x00, 0xCC]);
+        sibt.extend_from_slice(&[SIBT_STRING_SCSU, b'B', 0]);
+        sibt.extend_from_slice(&[0x32, 0x77, 0x00, 0x00, 0x00, 0x00]);
+        sibt.extend_from_slice(&[SIBT_STRING_SCSU, b'C', 0, SIBT_END]);
+        let pkg = make_pkg("en", &sibt);
+        let parsed = parse_string_package(&pkg).unwrap();
+        assert_eq!(parsed.strings.len(), 3);
+        assert_eq!(parsed.strings[0], (1, "A".to_string()));
+        assert_eq!(parsed.strings[1], (2, "B".to_string()));
+        assert_eq!(parsed.strings[2], (3, "C".to_string()));
+    }
+
+    #[tracing_test::traced_test]
+    #[test]
+    fn parse_truncated_ext_stops_walk_without_fake_strings() {
+        let sibt = [
+            SIBT_STRING_SCSU,
+            b'A',
+            0,
+            0x30,
+            0x99,
+            0x09,
+            0x01,
+            0x02,
+            SIBT_STRING_SCSU,
+            b'Z',
+            0,
+            SIBT_END,
+        ];
+        let pkg = make_pkg("en", &sibt);
+        let parsed = parse_string_package(&pkg).unwrap();
+        assert_eq!(
+            parsed.strings.len(),
+            1,
+            "строки до EXT возвращены, после — нет"
+        );
+        assert_eq!(parsed.strings[0], (1, "A".to_string()));
+        assert!(logs_contain("truncated SIBT_EXT block"));
+    }
+
+    #[test]
+    fn parse_truncated_duplicate_does_not_fabricate_empty_string() {
+        let sibt = [SIBT_STRING_SCSU, b'A', 0, SIBT_DUPLICATE];
+        let pkg = make_pkg("en", &sibt);
+        let parsed = parse_string_package(&pkg).unwrap();
+        assert_eq!(
+            parsed.strings.len(),
+            1,
+            "усечённый DUPLICATE не даёт пустую запись"
+        );
+        assert_eq!(parsed.strings[0], (1, "A".to_string()));
+    }
+
+    #[test]
+    fn parse_trailing_scsu_opcode_is_truncation_not_empty_string() {
+        let sibt = [SIBT_STRING_SCSU, b'A', 0, SIBT_STRING_SCSU];
+        let pkg = make_pkg("en", &sibt);
+        let parsed = parse_string_package(&pkg).unwrap();
+        assert_eq!(parsed.strings.len(), 1, "0 байтов до NUL = усечение");
+    }
+
+    #[test]
+    fn parse_trailing_ucs2_byte_is_truncation_not_empty_string() {
+        let sibt = [SIBT_STRING_SCSU, b'A', 0, SIBT_STRING_UCS2, 0x41];
+        let pkg = make_pkg("en", &sibt);
+        let parsed = parse_string_package(&pkg).unwrap();
+        assert_eq!(
+            parsed.strings.len(),
+            1,
+            "<2 байтов до терминатора = усечение"
+        );
+    }
+
+    #[test]
+    fn parse_valid_empty_strings_remain() {
+        let sibt = [
+            SIBT_STRING_SCSU,
+            b'A',
+            0,
+            SIBT_STRING_SCSU,
+            0,
+            SIBT_STRING_UCS2,
+            0,
+            0,
+            SIBT_END,
+        ];
+        let pkg = make_pkg("en", &sibt);
+        let parsed = parse_string_package(&pkg).unwrap();
+        assert_eq!(parsed.strings.len(), 3, "валидные пустые строки остаются");
+        assert_eq!(parsed.strings[1], (2, String::new()));
+        assert_eq!(parsed.strings[2], (3, String::new()));
+    }
+
+    #[tracing_test::traced_test]
+    #[test]
+    fn parse_truncated_strings_count_warns_instead_of_silence() {
+        let sibt = [SIBT_STRING_SCSU, b'A', 0, SIBT_STRINGS_SCSU];
+        let pkg = make_pkg("en", &sibt);
+        let parsed = parse_string_package(&pkg).unwrap();
+        assert_eq!(parsed.strings.len(), 1, "строки до усечения возвращены");
+        assert!(
+            logs_contain("truncated SIBT block"),
+            "без молчаливого count=0"
+        );
+    }
+
+    #[tracing_test::traced_test]
+    #[test]
+    fn parse_truncated_skip2_warns_instead_of_silence() {
+        let sibt = [SIBT_STRING_SCSU, b'A', 0, SIBT_SKIP2];
+        let pkg = make_pkg("en", &sibt);
+        let parsed = parse_string_package(&pkg).unwrap();
+        assert_eq!(parsed.strings.len(), 1);
+        assert!(logs_contain("truncated SIBT block"));
     }
 }

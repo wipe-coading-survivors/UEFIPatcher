@@ -88,6 +88,21 @@ async fn hii_list_output_content() {
         .success()
         .stdout(predicates::str::contains("Hello"));
     cli(&sock, cwd)
+        .args(["--format", "tsv", "hii", "string", "list"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "language\tstring_id\tsource\ttext",
+        ))
+        .stdout(predicates::str::contains(
+            "eng\t1\t899407D7-99FE-43D8-9A21-79EC328CAC21/res\tHello",
+        ));
+    cli(&sock, cwd)
+        .args(["--format", "json", "hii", "string", "list"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("\"source\""));
+    cli(&sock, cwd)
         .args(["session", "destroy"])
         .assert()
         .success();
@@ -133,6 +148,12 @@ async fn hii_question_info_and_set_value_output_content() {
         .assert()
         .success()
         .stdout(predicates::str::contains("00 -> 01"));
+
+    cli(&sock, cwd)
+        .args(["hii", "question", "list", "0:0x19:0#65536"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("form_id out of range: 65536"));
 
     cli(&sock, cwd)
         .args(["--format", "tsv", "hii", "question", "info", "0#42:0x1"])

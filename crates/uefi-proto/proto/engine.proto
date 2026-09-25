@@ -202,6 +202,7 @@ message StringInfo {
   string language = 1;
   uint32 string_id = 2;
   string text = 3;
+  string source = 4;   // NEW: "<UPPER-FFS-GUID>/res" | "<UPPER-FFS-GUID>/bare" | "res" | "bare"
 }
 message HiiListStringsResponse { repeated StringInfo strings = 1; }
 

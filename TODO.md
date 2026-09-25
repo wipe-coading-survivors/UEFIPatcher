@@ -166,25 +166,33 @@
 > Фаза 3 (`hii/strings.rs`, reader) завершена; ниже — отложенные minors
 > из per-task и финального ревью (branch `fix/cycle6-reimplent`).
 
-* [ ] **hii/strings: SIBT_EXT1/2/4 (0x30–0x32) не обрабатываются** —
+* [x] **hii/strings: SIBT_EXT1/2/4 (0x30–0x32) не обрабатываются** —
   трактуются как unknown-opcode, walk останавливается с warn; пакет с EXT-
   блоками молча теряет все последующие строки. Контекст: writer
   (`string_pack.rs`) ведёт себя так же; в реальном firmware редкость.
+  Закрыто: hii-read-truth A1 (ветка `hii-read-truth`) — EXT-блоки
+  скипаются по Length без движения next_id; усечённый EXT = warn+stop.
 * [ ] **hii/strings + string_pack: унифицировать SIBT-код** — константы
   опкодов и u16-хелперы дублируются reader'ом и writer'ом и уже дрейфуют
   (clamp `<=` vs `<` в info_off). Контекст: вынести в общий `sibt`
   submodule при следующем касании.
-* [ ] **hii/strings: walk-сигнал «found» = `!out.is_empty()`** — пустой,
+* [x] **hii/strings: walk-сигнал «found» = `!out.is_empty()`** — пустой,
   но валидный первый string-package не останавливает обход (может
   вернуться пакет позже по дереву); guard `if let Some(pkg)` вокруг
   `parse_string_package` в walk — мёртвый (None недостижим после
   `is_string_package`). Контекст: дегенеративный случай, verbatim из
   плана фазы 3; поправить found-флагом при следующем касании файла.
-* [ ] **hii/strings: обрезанный u16-count STRINGS_\* блока молча даёт
+  Закрыто: устаревшее — полный обход всех string-пакетов уже реализован
+  (`883ca14`), walk не останавливается на первом непустом (hii-read-truth
+  A6, спека docs/superpowers/specs/2026-09-25-hii-read-truth-design.md §6).
+* [x] **hii/strings: обрезанный u16-count STRINGS_\* блока молча даёт
   count=0** — `read_u16` fallback `(0, body.len())` без warn; одиночный
   хвостовой байт UCS2-блока даёт одну пустую запись. Контекст:
   ограничено одной записью, массовая фабрикация пустых строк исправлена
   в фазе 3 (commit `f5198f9`).
+  Закрыто: hii-read-truth A2 (ветка `hii-read-truth`) — усечённые
+  u16-чтения (count/ref_id) и хвостовые <минимального объёма тела строки =
+  warn `truncated SIBT block` + stop; фальшивых пустых записей нет.
 
 ### Находки ревизии фазы 4 IFR-reader/forms (2026-08-14)
 
@@ -199,12 +207,18 @@
   путь тоже не зафиксирован). Контекст: добавить в фазу 5 вместе с
   `find_item_mut` GuidSection-arms: `find_item(&root, &t)` → найденный
   node re-парсится в тот же `FormSetInfo`.
-* [ ] **hii/forms: глобальная карта титулов из первого string-package по
+* [x] **hii/forms: глобальная карта титулов из первого string-package по
   всему образу** — StringId уникальны per package-list; в реальном образе
   с несколькими HII-файлами формы чужих файлов могут получить неверные
   титулы (cross-file id collision), не только пустые. Контекст: главный
   fidelity-риск фазы; real-image `#[ignore]` тесты фазы 5 — tripwire;
   если проявится — scoping карты per-file.
+  Закрыто: per-file scoping реализовано (forms.rs:36, тест
+  `collect_forms_titles_are_scoped_to_file`); остаток — fallback-эвристика
+  «крупнейший пул образа» (questions.rs:87–94) — known-behavior, живых
+  ложных титулов не зафиксировано; при первом живом ложном срабатывании —
+  отдельный пункт на признак `title_source` в FormInfo (hii-read-truth A6,
+  спека §6).
 * [x] **hii/ifr: walker игнорирует заявленную длину пакета в header
   bytes 0..2** — идёт до `body.len()`; при теле с хвостовыми данными
   за пределами одного пакета возможен over-walk. Контекст: контракт
@@ -1665,12 +1679,15 @@ atomic_write. После первой мутации хранимый файл �
   обе копии (raw store+0x72 → байт @0x8000D2 0→1; LZMA-секция
   @0xafb538, dec-дифф ровно 1 байт @0x76=0x2C+0x4A); flash-дифф =
   1 байт + слот 0xafb550..0xafb967, больше ничего.
-* [ ] **мелочь: string-id коллизии между списками пакетов** — `hii
+* [x] **мелочь: string-id коллизии между списками пакетов** — `hii
   string list` агрегирует строки разных package-list'ов, id уникальны
   только внутри списка (в 450x id 3/4 в списке UiApp = «Removable
   Drive»/«Hard Drive», а в опциях Setup-вопроса те же id читаются как
   Disabled/Enabled). Контекст: string list/list-scoping; проявилось
   при поиске «Above 4G» на 450x.
+  Закрыто: hii-read-truth A4 (ветка `hii-read-truth`) — StringInfo.source
+  (GUID владельца + канал) в `hii string list` text/tsv/json; одинаковые
+  id из разных package-list'ов различимы.
 
 ### E16: вставка формы на HNX — кандидат собран, ждёт железо (2026-09-03)
 
@@ -3460,10 +3477,13 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   `let _ = refresh_questions_if_needed` в `main.rs`; при ошибке RPC панель
   висит на «loading…». Показывать ошибку в status_msg. Контекст:
   `crates/uefi-tui/src/main.rs` (два call-сайта).
-* [ ] **uefi-engine: HiiListQuestions молча режет form_id u32→u16** — при
+* [x] **uefi-engine: HiiListQuestions молча режет form_id u32→u16** — при
   form_id > 65535 значение усекается без диагностики. Добавить
   валидацию/ошибку. Контекст: `crates/uefi-engine/src/rpc/server.rs`
   (handler hii_list_questions).
+  Закрыто: hii-read-truth A3 (ветка `hii-read-truth`) — u16::try_from +
+  invalid_argument "form_id out of range: {n}" в handler'е до вызова
+  list_questions.
 * [ ] **uefi-engine: collect_string_sections дублирует схему walk_sections**
   — обход секций у questions.rs и forms.rs повторяет друг друга; извлечь
   общий хелпер при появлении третьего потребителя. Контекст:
@@ -3472,10 +3492,13 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
 * [ ] **uefi-engine: hii_list_questions handler без tracing::info!
   успех-строки** — паритет с hii_question_info. Контекст:
   `crates/uefi-engine/src/rpc/server.rs` (оба handler'а рядом).
-* [ ] **uefi-engine: bare PE form-пакеты дают пустой список вопросов** —
+* [x] **uefi-engine: bare PE form-пакеты дают пустой список вопросов** —
   form_package_ranges не покрывает bare_form_packages: формы bare-канала
   видны в list-forms, вопросы по ним не возвращаются. Асимметрия уровня
   движка, не TUI. Контекст: `crates/uefi-engine/src/hii/mod.rs:209`.
+  Закрыто: hii-read-truth A5 (ветка `hii-read-truth`) — read/write-сплит:
+  list-questions/question-info/gates-list(own)/form-export на
+  form_package_ranges_read (bare включён); мутации на mutation-селекторе.
 * [x] **uefi-tui: App::forms_sanitize_cursor не используется** —
   закрыто в V2: используется на T-toggle плоского режима
   (`crates/uefi-tui/src/main.rs`, коммит Task 5 `a675780`) и как
@@ -4350,3 +4373,22 @@ Task 3 (проверено git stash). Штатная команда цикла 
 Журнал: `docs/superpowers/journals/2026-09-22-nvram-settings-diff.md`
 (селекторы IOU nat=FF/Auto vs sm=03/x8x8-из-коробки; wipe NVRAM = no-op;
 кандидат-эксперимент IOU0=x8x8 через видимую вкладку IntelRCSetup).
+
+## Отложенные миноры финального ревью hii-read-truth (2026-09-25)
+
+> Ветка `hii-read-truth`, whole-branch ревью: Ready to merge, все находки
+> Minor/plan-mandated — отложены (Б-цикл коснётся тех же файлов).
+
+* [ ] **hii/strings: мёртвый let-else в STRINGS_SCSU/SCSU_FONT телах** —
+  guard `p >= body.len()` покрывает то же условие, что None у read_scsu
+  (start >= len); мёртвые 2 из 4 arm'ов (UCS2-варианты живы: хвостовой
+  байт). Контекст: убрать при касании walk в Б-цикле.
+* [ ] **real_image.rs: тихий u32→u16 cast form_id_ifr в rk3588-гейте** —
+  анти-паттерн, закрытый A3 в handler'е; тестовому коду можно
+  `u16::try_from` со skip. Контекст: прецеденты :6013/:6084/:6384.
+* [ ] **tui strings-браузер: титул при пустом результате :filter** —
+  показывает source скрытой строки `strings[strings_cursor]`. Контекст:
+  guard «cursor входит в visible» при следующем касании render_strings.
+* [ ] **real_image.rs: ignore-подсказка rk3588-гейта с относительным
+  путём env** — из CWD теста не резолвится; запуск уже через `$PWD/...`
+  (план Task 10). Контекст: одна строка при следующем touch.

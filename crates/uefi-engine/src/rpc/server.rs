@@ -1108,7 +1108,10 @@ impl EngineService for EngineServer {
     ) -> RpcResult<HiiListQuestionsResponse> {
         let r = req.into_inner();
         let img = self.get_or_load_image(&r.image_id).await?;
-        let questions = crate::hii::list_questions(&img, &r.target, r.form_id as u16)
+        let form_id = u16::try_from(r.form_id).map_err(|_| {
+            Status::invalid_argument(format!("form_id out of range: {}", r.form_id))
+        })?;
+        let questions = crate::hii::list_questions(&img, &r.target, form_id)
             .map_err(|e| hii_error_status_ctx(e, &r.target))?;
         let _ = self.sm.touch(&img.session_id);
         Ok(Response::new(HiiListQuestionsResponse { questions }))
@@ -2008,6 +2011,42 @@ mod tests {
         let img = crate::parser::image::parse_image(&data, ImageMode::Write, "i", "s").unwrap();
         let st = form_add_status(img, "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:1", "{bad").await;
         assert_eq!(st.code(), tonic::Code::InvalidArgument);
+    }
+
+    async fn list_questions_status(img: Image, target: &str, form_id: u32) -> Status {
+        let td = TempDir::new().unwrap();
+        let db = crate::storage::open_db(&td.path().join("db.sqlite")).unwrap();
+        let sm = Arc::new(SessionManager::new(
+            db,
+            td.path().to_path_buf(),
+            Duration::from_secs(864000),
+            Duration::from_secs(3600),
+            false,
+        ));
+        let server = EngineServer {
+            sm,
+            images: Arc::new(Mutex::new(HashMap::from([("i".to_string(), img)]))),
+            data_dir: td.path().to_path_buf(),
+        };
+        server
+            .hii_list_questions(Request::new(HiiListQuestionsRequest {
+                image_id: "i".into(),
+                target: target.into(),
+                form_id,
+            }))
+            .await
+            .unwrap_err()
+    }
+
+    #[tokio::test]
+    async fn hii_list_questions_rejects_form_id_above_u16() {
+        let data = form_add_bare_flash();
+        let img = crate::parser::image::parse_image(&data, ImageMode::Write, "i", "s").unwrap();
+        let st =
+            list_questions_status(img, "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:1", 0x1_0000)
+                .await;
+        assert_eq!(st.code(), tonic::Code::InvalidArgument);
+        assert!(st.message().contains("form_id out of range: 65536"));
     }
 
     async fn form_export_call(img: Image, item_id: &str) -> Result<HiiFormExportResponse, Status> {

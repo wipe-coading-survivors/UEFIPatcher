@@ -1345,11 +1345,13 @@ mod tests {
                 language: "en-US".into(),
                 string_id: 1,
                 text: "Setup".into(),
+                source: "899407D7-99FE-43D8-9A21-79EC328CAC21/res".into(),
             },
             uefi_proto::StringInfo {
                 language: "en-US".into(),
                 string_id: 2,
                 text: "serial port".into(),
+                source: "899407D7-99FE-43D8-9A21-79EC328CAC21/res".into(),
             },
         ];
         assert_eq!(app.strings_visible().len(), 2);
@@ -1528,6 +1530,7 @@ mod tests {
                 } else {
                     format!("x{i}")
                 },
+                source: "res".into(),
             })
             .collect();
         app.forms.strings_filter = "s".into();
