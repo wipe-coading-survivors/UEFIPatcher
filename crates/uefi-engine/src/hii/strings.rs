@@ -58,7 +58,10 @@ pub fn parse_string_package(body: &[u8]) -> Option<ParsedStringPackage> {
                     warn_truncated_block(body[pos]);
                     break;
                 };
-                push(&mut strings, &mut by_id, &mut next_id, text);
+                if !push(&mut strings, &mut by_id, &mut next_id, text) {
+                    tracing::warn!("string id space exhausted; stopping string parse");
+                    break 'outer;
+                }
                 pos = p;
             }
             SIBT_STRING_SCSU_FONT => {
@@ -66,7 +69,10 @@ pub fn parse_string_package(body: &[u8]) -> Option<ParsedStringPackage> {
                     warn_truncated_block(body[pos]);
                     break;
                 };
-                push(&mut strings, &mut by_id, &mut next_id, text);
+                if !push(&mut strings, &mut by_id, &mut next_id, text) {
+                    tracing::warn!("string id space exhausted; stopping string parse");
+                    break 'outer;
+                }
                 pos = p;
             }
             SIBT_STRINGS_SCSU => {
@@ -83,7 +89,10 @@ pub fn parse_string_package(body: &[u8]) -> Option<ParsedStringPackage> {
                         break 'outer;
                     }
                     let (text, np) = read_scsu(body, p).expect("p < body.len() checked above");
-                    push(&mut strings, &mut by_id, &mut next_id, text);
+                    if !push(&mut strings, &mut by_id, &mut next_id, text) {
+                        tracing::warn!("string id space exhausted; stopping string parse");
+                        break 'outer;
+                    }
                     p = np;
                 }
                 pos = p;
@@ -102,7 +111,10 @@ pub fn parse_string_package(body: &[u8]) -> Option<ParsedStringPackage> {
                         break 'outer;
                     }
                     let (text, np) = read_scsu(body, p).expect("p < body.len() checked above");
-                    push(&mut strings, &mut by_id, &mut next_id, text);
+                    if !push(&mut strings, &mut by_id, &mut next_id, text) {
+                        tracing::warn!("string id space exhausted; stopping string parse");
+                        break 'outer;
+                    }
                     p = np;
                 }
                 pos = p;
@@ -112,7 +124,10 @@ pub fn parse_string_package(body: &[u8]) -> Option<ParsedStringPackage> {
                     warn_truncated_block(body[pos]);
                     break;
                 };
-                push(&mut strings, &mut by_id, &mut next_id, text);
+                if !push(&mut strings, &mut by_id, &mut next_id, text) {
+                    tracing::warn!("string id space exhausted; stopping string parse");
+                    break 'outer;
+                }
                 pos = p;
             }
             SIBT_STRING_UCS2_FONT => {
@@ -120,7 +135,10 @@ pub fn parse_string_package(body: &[u8]) -> Option<ParsedStringPackage> {
                     warn_truncated_block(body[pos]);
                     break;
                 };
-                push(&mut strings, &mut by_id, &mut next_id, text);
+                if !push(&mut strings, &mut by_id, &mut next_id, text) {
+                    tracing::warn!("string id space exhausted; stopping string parse");
+                    break 'outer;
+                }
                 pos = p;
             }
             SIBT_STRINGS_UCS2 => {
@@ -140,7 +158,10 @@ pub fn parse_string_package(body: &[u8]) -> Option<ParsedStringPackage> {
                         warn_truncated_block(body[pos]);
                         break 'outer;
                     };
-                    push(&mut strings, &mut by_id, &mut next_id, text);
+                    if !push(&mut strings, &mut by_id, &mut next_id, text) {
+                        tracing::warn!("string id space exhausted; stopping string parse");
+                        break 'outer;
+                    }
                     p = np;
                 }
                 pos = p;
@@ -162,7 +183,10 @@ pub fn parse_string_package(body: &[u8]) -> Option<ParsedStringPackage> {
                         warn_truncated_block(body[pos]);
                         break 'outer;
                     };
-                    push(&mut strings, &mut by_id, &mut next_id, text);
+                    if !push(&mut strings, &mut by_id, &mut next_id, text) {
+                        tracing::warn!("string id space exhausted; stopping string parse");
+                        break 'outer;
+                    }
                     p = np;
                 }
                 pos = p;
@@ -173,7 +197,10 @@ pub fn parse_string_package(body: &[u8]) -> Option<ParsedStringPackage> {
                     break;
                 };
                 let text = by_id.get(&ref_id).cloned().unwrap_or_default();
-                push(&mut strings, &mut by_id, &mut next_id, text);
+                if !push(&mut strings, &mut by_id, &mut next_id, text) {
+                    tracing::warn!("string id space exhausted; stopping string parse");
+                    break 'outer;
+                }
                 pos += 1 + 2;
             }
             SIBT_SKIP2 => {
@@ -248,15 +275,22 @@ fn warn_truncated_block(opcode: u8) {
     );
 }
 
+/// Записывает строку под next_id и инкрементирует его. false = id-пространство
+/// исчерпано (next_id == 0xFFFF): запись не создана, инкремента нет.
+/// Спека hii-write-guard §1 B1.
 fn push(
     strings: &mut Vec<(u16, String)>,
     by_id: &mut HashMap<u16, String>,
     next_id: &mut u16,
     text: String,
-) {
+) -> bool {
+    if *next_id == 0xFFFF {
+        return false;
+    }
     by_id.insert(*next_id, text.clone());
     strings.push((*next_id, text));
-    *next_id = next_id.wrapping_add(1);
+    *next_id += 1;
+    true
 }
 
 fn read_u32(body: &[u8], pos: usize) -> Option<u32> {
@@ -972,6 +1006,19 @@ mod tests {
             parsed.strings.iter().all(|(id, _)| *id != 0xFFFF),
             "блок на невалидном id 0xFFFF не листится"
         );
+    }
+
+    #[test]
+    fn parse_stops_inside_strings_block_at_0xffff() {
+        let mut sibt = vec![SIBT_SKIP2, 0xFD, 0xFF];
+        sibt.push(SIBT_STRINGS_SCSU);
+        sibt.extend_from_slice(&3u16.to_le_bytes());
+        sibt.extend_from_slice(b"aa\x00bb\x00cc\x00");
+        sibt.push(SIBT_END);
+        let pkg = make_pkg("en", &sibt);
+        let parsed = parse_string_package(&pkg).unwrap();
+        assert_eq!(parsed.strings.len(), 1);
+        assert_eq!(parsed.strings[0], (0xFFFE, "aa".to_string()));
     }
 
     #[test]
