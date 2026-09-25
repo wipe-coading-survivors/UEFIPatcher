@@ -235,7 +235,6 @@ pub(crate) fn form_package_ranges(node: &FfsNode) -> Vec<(usize, usize)> {
 /// resource-ранги + bare-ранги (exclude = resource-блобы, без дублей);
 /// RAW/0x18-ветви идентичны мутационному. Мутации сюда НЕ переключать.
 /// Спека hii-read-truth §5.
-#[allow(dead_code)]
 pub(crate) fn form_package_ranges_read(node: &FfsNode) -> Vec<(usize, usize)> {
     if node.subtype == EFI_SECTION_RAW || ifr::is_form_package(&node.body) {
         if ifr::is_form_package(&node.body) {
@@ -365,7 +364,7 @@ pub fn gates_list(image: &Image, item_id: &str) -> Result<Vec<uefi_proto::GateIn
         formset_guid: None,
     };
     let mut out = Vec::new();
-    for (start, len) in form_package_ranges(node) {
+    for (start, len) in form_package_ranges_read(node) {
         let pkg = &node.body[start..start + len];
         for gate in gates::find_gates(pkg, &gt) {
             out.push(gate_info(pkg, &gate));
@@ -687,7 +686,7 @@ fn find_question_map(
         file = &file.children[i];
     }
     let texts = questions::prompt_texts(file, &questions::image_string_fallback(&image.root));
-    for (start, len) in form_package_ranges(node) {
+    for (start, len) in form_package_ranges_read(node) {
         if let Some(map) =
             values::find_question(&node.body[start..start + len], form_id, question_id)
         {
@@ -777,7 +776,7 @@ pub fn list_questions(
     let titles = questions::prompt_texts_own(file);
     let fallback = questions::image_string_fallback(&image.root);
     let mut out = Vec::new();
-    for (start, len) in form_package_ranges(node) {
+    for (start, len) in form_package_ranges_read(node) {
         let maps = values::question_maps(&node.body[start..start + len]);
         for q in questions::questions(&node.body[start..start + len], form_id) {
             let (seed_value, ifr_default) = match maps.get(&(form_id, q.question_id)) {
@@ -3518,6 +3517,26 @@ mod tests {
             form_package_ranges(ff_node)
         );
         assert_eq!(form_package_ranges_read(ff_node).len(), 2);
+    }
+
+    #[test]
+    fn list_questions_and_question_info_see_bare_form_package_in_pe_body() {
+        let mut body = vec![0x44u8; 16];
+        body.extend(value_forms_pkg());
+        let image = vendor_image_with(0x10, body);
+        let target = "5c60f367-a505-419a-859e-2a4ff6ca6fe5:0x10:0";
+        let questions = list_questions(&image, target, 10029).unwrap();
+        assert!(
+            !questions.is_empty(),
+            "bare-таргет отдаёт вопросы (было пусто)"
+        );
+        assert_eq!(questions[0].question_id, 0x3B);
+        let item = format!("{target}#10029:0x3B");
+        let info = question_info(&image, &item).unwrap();
+        assert_eq!(
+            info.question_id, 0x3B,
+            "question_info резолвится по bare (было NotFound)"
+        );
     }
 
     #[test]

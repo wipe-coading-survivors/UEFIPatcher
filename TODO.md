@@ -3492,10 +3492,13 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
 * [ ] **uefi-engine: hii_list_questions handler без tracing::info!
   успех-строки** — паритет с hii_question_info. Контекст:
   `crates/uefi-engine/src/rpc/server.rs` (оба handler'а рядом).
-* [ ] **uefi-engine: bare PE form-пакеты дают пустой список вопросов** —
+* [x] **uefi-engine: bare PE form-пакеты дают пустой список вопросов** —
   form_package_ranges не покрывает bare_form_packages: формы bare-канала
   видны в list-forms, вопросы по ним не возвращаются. Асимметрия уровня
   движка, не TUI. Контекст: `crates/uefi-engine/src/hii/mod.rs:209`.
+  Закрыто: hii-read-truth A5 (ветка `hii-read-truth`) — read/write-сплит:
+  list-questions/question-info/gates-list(own)/form-export на
+  form_package_ranges_read (bare включён); мутации на mutation-селекторе.
 * [x] **uefi-tui: App::forms_sanitize_cursor не используется** —
   закрыто в V2: используется на T-toggle плоского режима
   (`crates/uefi-tui/src/main.rs`, коммит Task 5 `a675780`) и как

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use r_efi::hii::IFR_NUMERIC_SIZE;
 
-use super::{HiiError, form_package_ranges, ifr, parse_item_id, schema, values};
+use super::{HiiError, form_package_ranges_read, ifr, parse_item_id, schema, values};
 use crate::types::{FfsNode, FfsType, Image};
 
 /// Запись refs.entries-подсказки (спека hii-form-export §2): prompt/help
@@ -88,7 +88,7 @@ fn resolve_form<'a>(
 }
 
 fn find_form_package(node: &FfsNode, form_id: u16) -> Option<&[u8]> {
-    for (start, len) in form_package_ranges(node) {
+    for (start, len) in form_package_ranges_read(node) {
         let pkg = &node.body[start..start + len];
         if let Some(fs) = ifr::parse_form_package(pkg)
             && fs.forms.iter().any(|f| f.form_id == form_id)
