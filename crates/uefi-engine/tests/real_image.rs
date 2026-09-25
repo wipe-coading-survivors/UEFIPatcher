@@ -1073,6 +1073,92 @@ fn real_image_hii_forms_and_strings() {
 
 #[test]
 #[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
+fn real_image_hii_strings_source_tagged() {
+    let data = load_fw();
+    let img = parse_image(&data, ImageMode::Read, "img1", "s1").expect("parse_image");
+    let strings = uefi_engine::hii::strings::collect_strings(&img);
+    assert!(!strings.is_empty(), "expected strings in real image");
+    for s in &strings {
+        let chan = s
+            .source
+            .rsplit_once('/')
+            .map(|(_, c)| c)
+            .unwrap_or(s.source.as_str());
+        assert!(
+            chan == "res" || chan == "bare",
+            "source channel must be res|bare, got {}",
+            s.source
+        );
+    }
+    assert!(
+        strings.iter().any(|s| s.source.contains('/')),
+        "expected file-owned strings (GUID-prefixed source) on HNX"
+    );
+    let with_guid = strings.iter().filter(|s| s.source.contains('/')).count();
+    eprintln!(
+        "real_image hii source: {with_guid}/{} strings file-owned",
+        strings.len()
+    );
+}
+
+#[test]
+#[ignore = "requires rk3588 image; run with UEFIPATCHER_TEST_FW=refs/fw/orange-pi-5-plus-uefi-edk2-rk3588.img"]
+fn real_image_rk3588_bare_questions_resolve() {
+    let data = load_fw();
+    let img = parse_image(&data, ImageMode::Read, "rk", "s1").expect("parse_image");
+    let forms = uefi_engine::hii::forms::collect_forms(&img);
+    assert!(!forms.is_empty(), "rk3588: expected bare forms");
+    let mut forms_with_questions = 0usize;
+    let mut info_resolved = 0usize;
+    for f in &forms {
+        let Ok(qs) = uefi_engine::hii::list_questions(&img, &f.form_id, f.form_id_ifr as u16)
+        else {
+            continue;
+        };
+        if qs.is_empty() {
+            continue;
+        }
+        forms_with_questions += 1;
+        let item = format!("{}#{}:{:#x}", f.form_id, f.form_id_ifr, qs[0].question_id);
+        if uefi_engine::hii::question_info(&img, &item).is_ok() {
+            info_resolved += 1;
+        }
+    }
+    assert!(
+        forms_with_questions > 0,
+        "bare targets must expose questions (was NotFound/empty pre-fix)"
+    );
+    assert!(
+        info_resolved > 0,
+        "question_info must resolve on bare targets"
+    );
+    eprintln!(
+        "rk3588: {forms_with_questions}/{} forms with questions, {info_resolved} question_info resolved",
+        forms.len()
+    );
+}
+
+#[test]
+#[ignore = "requires external real AMI image under refs/amibcp/ (gitignored)"]
+fn real_amibcp_450x_string_id_sources_distinguishable() {
+    let data = std::fs::read(amibcp_path()).unwrap();
+    let img = parse_image(&data, ImageMode::Read, "s1", "s2").unwrap();
+    let strings = uefi_engine::hii::strings::collect_strings(&img);
+    for sid in [3u32, 4u32] {
+        let sources: std::collections::HashSet<&str> = strings
+            .iter()
+            .filter(|s| s.string_id == sid)
+            .map(|s| s.source.as_str())
+            .collect();
+        assert!(
+            sources.len() >= 2,
+            "string_id {sid} expected in >=2 package lists (UiApp vs Setup), got {sources:?}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires external real BIOS image under refs/fw/ (gitignored)"]
 fn hii_list_questions_real_image_consistent_with_question_info() {
     let data = load_fw();
     let img = parse_image(&data, ImageMode::Read, "img1", "s1").expect("parse_image");
