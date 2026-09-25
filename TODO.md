@@ -442,12 +442,16 @@
 * [ ] **string_pack: исчерпание string-id 0xFFFF** — `wrapping_add` в
   `scan_sibt`/`add_strings_to_body` заворачивает `next_id` в 0
   (невалидный HII string id); возвращать ошибку при исчерпании.
+  В цикле hii-write-guard (спека
+  docs/superpowers/specs/2026-09-25-hii-write-guard-design.md §1 B1).
 * [ ] **pe_resource: неоднозначный выбор .rsrc-секции на мусорных
   таблицах** — собственный предикат span=max(vsize,raw) first-match
   (`rsrc_raw_end`/`rsrc_virt_end`/`rsrc_grow_plan`) отличается от
   `object` min(vsize,raw) в `pe_file_range_at`; при пересекающихся
   диапазонах возможен выбор разных секций — отказывать при
   неоднозначности.
+  В цикле hii-write-guard (спека
+  docs/superpowers/specs/2026-09-25-hii-write-guard-design.md §4 B4).
 
 ### Последствия reloc-aware роста .rsrc (решение B фазы B, 2026-08-21)
 
@@ -1335,6 +1339,9 @@ atomic_write. После первой мутации хранимый файл �
   decode_expr (expr_offset/expr_end из живого обхода). Контекст: ввод
   уже wired, но приходит через guarded `find_gates`; захарденить при
   появлении иных источников Gate.
+  В цикле hii-write-guard (спека
+  docs/superpowers/specs/2026-09-25-hii-write-guard-design.md §2 B2;
+  apply_flips уже guarded — правится только план-фаза).
 * [ ] **hii: пересадка set_item_visibility на gates-слой** — REF-гейты
   (скрытие suppress'ом вокруг REF в родительской форме) остаются территорией
   unlock; расширение осознанно не вошло в цикл hii-walker-consistency
@@ -2960,17 +2967,21 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   TUI-часть закрыта циклом registry & flow polish (2026-09-18, R5):
   `export_output_path` — absolutize PATH, дефолт `cwd/<artifact_id>`.
   Осталась gateway/WebUI-часть.
-* [ ] **string_pack: shrink-путь `insert_strings_at_ids_in_resource`** —
-  (1) после усадки string-пакета внутри raw-extent .rsrc остаются
-  stale-байты старого хвоста (длины авторитетны, безвредно; zeroing хвоста
-  дало бы byte-reproducible rebuild); (2) `plan_rsrc_blob_growth`
-  возвращает None, если после HII-blob следует любой leaf ресурса —
-  отвергает представимые усадки (на HNX99TF не наблюдалось).
-* [ ] **string_pack: span-арифметика `insert_strings_at_ids`** —
+* [x] **string_pack: shrink-путь `insert_strings_at_ids_in_resource`** —
+  функции insert_strings_at_ids* удалены из кода; живой остаток один:
+  `plan_rsrc_blob_growth` возвращает None, если после HII-blob следует
+  любой leaf ресурса. Переформулировано в refusal-семантику: отказ роста
+  безопасен (невалидный рост не применяется), задокументирован как
+  known-behavior (спека hii-write-guard §6). Закрыто docs-коммитом
+  цикла hii-write-guard.
+* [x] **string_pack: span-арифметика `insert_strings_at_ids`** —
   `next_id.wrapping_add(count)` может заворачивать u16 на skip-прогонах
   через id 65536, молча роняя блок. Контекст: перевести на
   checked-арифметику с ошибкой (родственный пункт про исчерпание 0xFFFF —
   выше, «PE-resident IFR-патчинг»).
+  Закрыто: устаревшее — функции insert_strings_at_ids* удалены из кода;
+  родной пункт об исчерпании 0xFFFF живёт отдельной записью выше
+  (цикл hii-write-guard §1 B1).
 * [ ] **compress: `lzma_props_byte` молча усекает out-of-range lc/lp/pb**
   (`as u8`); `encode_raw_lzma1` без post-loop ассерта
   `total_in() == input.len()`. Контекст: `crates/uefi-engine/src/compress.rs`.
@@ -3259,6 +3270,9 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   вопроса оставляет частичное состояние (унаследовано от questions,
   refs расширяют окно). Продолжить строку существующих заметок об
   атомарности RPC.
+  В цикле hii-write-guard (спека
+  docs/superpowers/specs/2026-09-25-hii-write-guard-design.md §3 B3;
+  решение владельца — snapshot-rollback, не plan-all-then-apply).
 * [ ] **процесс rule-11: два нарушения порядка в дуге** —
   `de00f45` (docs fix Task 4) приземлился ПОСЛЕ `305b2c3` (feat),
   `3461441` (docs fix Task 5) — после `7f1ac12` (тесты); в обоих
@@ -3782,6 +3796,9 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   не менялся после fix round 1; на 450x донор один, окно не
   реализовалось на live-гейте. Сама дуга закрыта — см. запись
   «Дуга "formset-unlock / перенос IIO-бифуркации" U1–U4» ниже.
+  В цикле hii-write-guard (спека
+  docs/superpowers/specs/2026-09-25-hii-write-guard-design.md §3 B3;
+  решение владельца — snapshot-rollback, не двухпроходный план).
 * [x] **uefi-engine: кросс-формсетные REF (REF3/REF4) не поддержаны** —
   факт-фикс 2026-09-12 (при планировании дуги, сверка с UEFI 2.10
   §33.3.8.3.59 + EDK2 `UefiInternalFormRepresentation.h`): отдельный
