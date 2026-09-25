@@ -174,12 +174,15 @@
   опкодов и u16-хелперы дублируются reader'ом и writer'ом и уже дрейфуют
   (clamp `<=` vs `<` в info_off). Контекст: вынести в общий `sibt`
   submodule при следующем касании.
-* [ ] **hii/strings: walk-сигнал «found» = `!out.is_empty()`** — пустой,
+* [x] **hii/strings: walk-сигнал «found» = `!out.is_empty()`** — пустой,
   но валидный первый string-package не останавливает обход (может
   вернуться пакет позже по дереву); guard `if let Some(pkg)` вокруг
   `parse_string_package` в walk — мёртвый (None недостижим после
   `is_string_package`). Контекст: дегенеративный случай, verbatim из
   плана фазы 3; поправить found-флагом при следующем касании файла.
+  Закрыто: устаревшее — полный обход всех string-пакетов уже реализован
+  (`883ca14`), walk не останавливается на первом непустом (hii-read-truth
+  A6, спека docs/superpowers/specs/2026-09-25-hii-read-truth-design.md §6).
 * [ ] **hii/strings: обрезанный u16-count STRINGS_\* блока молча даёт
   count=0** — `read_u16` fallback `(0, body.len())` без warn; одиночный
   хвостовой байт UCS2-блока даёт одну пустую запись. Контекст:
@@ -199,12 +202,18 @@
   путь тоже не зафиксирован). Контекст: добавить в фазу 5 вместе с
   `find_item_mut` GuidSection-arms: `find_item(&root, &t)` → найденный
   node re-парсится в тот же `FormSetInfo`.
-* [ ] **hii/forms: глобальная карта титулов из первого string-package по
+* [x] **hii/forms: глобальная карта титулов из первого string-package по
   всему образу** — StringId уникальны per package-list; в реальном образе
   с несколькими HII-файлами формы чужих файлов могут получить неверные
   титулы (cross-file id collision), не только пустые. Контекст: главный
   fidelity-риск фазы; real-image `#[ignore]` тесты фазы 5 — tripwire;
   если проявится — scoping карты per-file.
+  Закрыто: per-file scoping реализовано (forms.rs:36, тест
+  `collect_forms_titles_are_scoped_to_file`); остаток — fallback-эвристика
+  «крупнейший пул образа» (questions.rs:87–94) — known-behavior, живых
+  ложных титулов не зафиксировано; при первом живом ложном срабатывании —
+  отдельный пункт на признак `title_source` в FormInfo (hii-read-truth A6,
+  спека §6).
 * [x] **hii/ifr: walker игнорирует заявленную длину пакета в header
   bytes 0..2** — идёт до `body.len()`; при теле с хвостовыми данными
   за пределами одного пакета возможен over-walk. Контекст: контракт
