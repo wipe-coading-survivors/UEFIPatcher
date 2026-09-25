@@ -1319,10 +1319,12 @@ Expected: PASS (гейты `#[ignore]` не запускаются).
 
 ```bash
 cargo test -p uefi-engine --test real_image -- --ignored real_image_hii --nocapture
-UEFIPATCHER_TEST_FW=refs/fw/orange-pi-5-plus-uefi-edk2-rk3588.img \
+UEFIPATCHER_TEST_FW="$PWD/refs/fw/orange-pi-5-plus-uefi-edk2-rk3588.img" \
   cargo test -p uefi-engine --test real_image -- --ignored real_image_rk3588_bare_questions_resolve --nocapture
 cargo test -p uefi-engine --test real_image -- --ignored real_amibcp_450x_string_id_sources_distinguishable --nocapture
 ```
+
+(Путь rk3588 — абсолютный через `$PWD`: CWD тестового процесса = crates/uefi-engine, относительный путь от корня не резолвится.)
 Expected: все PASS. Сверить счётчики `real_image_hii_forms_and_strings` с базой из Task 2 Step 2: **сдвиг = ложное срабатывание новых веток** (EXT на живых образах не встречается, §7) — при сдвиге остановиться и разбираться (systematic-debugging), НЕ коммитировать.
 
 - [ ] **Step 6: Финальный полный чек workspace**
