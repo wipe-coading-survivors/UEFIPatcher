@@ -131,7 +131,11 @@ fn push_leaf<Pe: ImageNtHeaders>(
     });
 }
 
-pub fn bare_form_packages<'a>(pe: &'a [u8], exclude: &[(usize, usize)]) -> Vec<&'a [u8]> {
+/// Ранги (off, len) bare form-пакетов в теле PE32: та же валидация
+/// кандидата, что и канал срезов (`bare_form_packages`); exclude — ранги
+/// resource-блобов, чтобы не задваивать пакеты, достигнутые обоими
+/// каналами. Только читающий путь (спека hii-read-truth §5).
+pub fn bare_form_package_ranges(pe: &[u8], exclude: &[(usize, usize)]) -> Vec<(usize, usize)> {
     let mut out = Vec::new();
     let mut pos = 0usize;
     while pos + 5 <= pe.len() {
@@ -143,7 +147,7 @@ pub fn bare_form_packages<'a>(pe: &'a [u8], exclude: &[(usize, usize)]) -> Vec<&
         {
             let covered = exclude.iter().any(|&(o, l)| o <= pos && pos < o + l);
             if !covered && parse_form_package(&pe[pos..pos + plen]).is_some() {
-                out.push(&pe[pos..pos + plen]);
+                out.push((pos, plen));
             }
             pos += plen;
         } else {
@@ -151,6 +155,13 @@ pub fn bare_form_packages<'a>(pe: &'a [u8], exclude: &[(usize, usize)]) -> Vec<&
         }
     }
     out
+}
+
+pub fn bare_form_packages<'a>(pe: &'a [u8], exclude: &[(usize, usize)]) -> Vec<&'a [u8]> {
+    bare_form_package_ranges(pe, exclude)
+        .into_iter()
+        .map(|(off, len)| &pe[off..off + len])
+        .collect()
 }
 
 struct RawShift {
