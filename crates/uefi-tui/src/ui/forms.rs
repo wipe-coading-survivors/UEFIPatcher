@@ -168,11 +168,19 @@ fn render_strings(f: &mut Frame, area: Rect, app: &mut App) {
         .filter_map(|&i| app.forms.strings.get(i))
         .map(|s| ListItem::from(format!("{}  #{:<5} {}", s.language, s.string_id, s.text)))
         .collect();
-    let title = if app.forms.strings_filter.is_empty() {
+    let mut title = if app.forms.strings_filter.is_empty() {
         "Strings".to_string()
     } else {
         format!("Strings (filter: {})", app.forms.strings_filter)
     };
+    if let Some(s) = app
+        .forms
+        .strings
+        .get(app.forms.strings_cursor)
+        .filter(|s| !s.source.is_empty())
+    {
+        title.push_str(&format!(" — {}", s.source));
+    }
     let list = List::new(items)
         .block(Block::default().borders(Borders::ALL).title(title))
         .highlight_style(Style::default().bg(Color::DarkGray));
@@ -490,7 +498,7 @@ mod tests {
                 language: "en".into(),
                 string_id: i,
                 text: format!("s{i}"),
-                source: String::new(),
+                source: "res".into(),
             })
             .collect();
         for _ in 0..20 {
@@ -502,6 +510,26 @@ mod tests {
             .draw(|f| super::render(f, f.area(), &mut app))
             .unwrap();
         assert!(app.strings_list_state.offset() > 0);
+    }
+
+    #[test]
+    fn strings_browser_shows_selected_source_in_title() {
+        let mut app = crate::app::App::new();
+        app.forms.show_strings = true;
+        app.forms.strings = vec![uefi_proto::StringInfo {
+            language: "eng".into(),
+            string_id: 1,
+            text: "Hello".into(),
+            source: "899407D7-99FE-43D8-9A21-79EC328CAC21/res".into(),
+        }];
+        app.forms.strings_cursor = 0;
+        let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+        t.draw(|f| render(f, f.area(), &mut app)).unwrap();
+        let text = panel_text(&t, 24);
+        assert!(
+            text.contains("899407D7-99FE-43D8-9A21-79EC328CAC21/res"),
+            "source выбранной строки в титуле"
+        );
     }
 
     #[test]
