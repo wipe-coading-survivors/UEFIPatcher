@@ -402,6 +402,9 @@ pub struct UnlockOutcome {
     pub applied: Vec<String>,
 }
 
+/// Атомарна целиком: при Err дерево байт-идентично состоянию до вызова —
+/// own-фаза и кросс-фаза под общим snapshot-rollback
+/// (спека hii-write-guard §3 B3, финальное ревью).
 #[tracing::instrument(level = "debug", skip(image), fields(item_id = %item_id), err)]
 pub fn unlock(image: &mut Image, item_id: &str) -> Result<UnlockOutcome, HiiError> {
     let (target, form_id, question_id) = parse_item_id(item_id)?;
@@ -411,71 +414,74 @@ pub fn unlock(image: &mut Image, item_id: &str) -> Result<UnlockOutcome, HiiErro
         question_id,
         formset_guid: None,
     };
-    let mut infos = Vec::new();
-    let mut applied = Vec::new();
-    let mutated = {
-        let node = crate::parser::target::find_item_mut(&mut image.root, &target)
-            .map_err(|_| HiiError::NotFound)?;
-        if node.node_type != FfsType::Section {
-            return Err(HiiError::NotASetupItem);
-        }
-        let ranges = form_package_ranges(node);
-        let mut body = std::mem::take(&mut node.body);
-        let mut absolute_flips: Vec<gates::PlannedFlip> = Vec::new();
-        let mut plan_err: Option<HiiError> = None;
-        for (start, len) in ranges {
-            let pkg = &body[start..start + len];
-            let found = gates::find_gates(pkg, &gt);
-            if found.is_empty() {
-                continue;
+    with_rollback(image, |image| {
+        let mut infos = Vec::new();
+        let mut applied = Vec::new();
+        let mutated = {
+            let node = crate::parser::target::find_item_mut(&mut image.root, &target)
+                .map_err(|_| HiiError::NotFound)?;
+            if node.node_type != FfsType::Section {
+                return Err(HiiError::NotASetupItem);
             }
-            match gates::plan_gates_skip_unlocked(pkg, &found) {
-                Ok(flips) => {
-                    for gate in &found {
-                        infos.push(gate_info(pkg, gate));
+            let ranges = form_package_ranges(node);
+            let mut body = std::mem::take(&mut node.body);
+            let mut absolute_flips: Vec<gates::PlannedFlip> = Vec::new();
+            let mut plan_err: Option<HiiError> = None;
+            for (start, len) in ranges {
+                let pkg = &body[start..start + len];
+                let found = gates::find_gates(pkg, &gt);
+                if found.is_empty() {
+                    continue;
+                }
+                match gates::plan_gates_skip_unlocked(pkg, &found) {
+                    Ok(flips) => {
+                        for gate in &found {
+                            infos.push(gate_info(pkg, gate));
+                        }
+                        applied.extend(flips.iter().map(flip_text));
+                        absolute_flips.extend(flips.into_iter().map(|f| gates::PlannedFlip {
+                            offset: start + f.offset,
+                            from: f.from,
+                            to: f.to,
+                        }));
                     }
-                    applied.extend(flips.iter().map(flip_text));
-                    absolute_flips.extend(flips.into_iter().map(|f| gates::PlannedFlip {
-                        offset: start + f.offset,
-                        from: f.from,
-                        to: f.to,
-                    }));
-                }
-                Err(e) => {
-                    plan_err = Some(HiiError::GateExpressionUnsupported(e));
-                    break;
+                    Err(e) => {
+                        plan_err = Some(HiiError::GateExpressionUnsupported(e));
+                        break;
+                    }
                 }
             }
-        }
-        if let Some(err) = plan_err {
-            node.body = body;
-            return Err(err);
-        }
-        if absolute_flips.is_empty() {
-            node.body = body;
-            false
-        } else {
-            let body_len = body.len();
-            if let Err(e) = gates::apply_flips(&mut body, &absolute_flips) {
+            if let Some(err) = plan_err {
                 node.body = body;
-                return Err(HiiError::GateExpressionUnsupported(e));
+                return Err(err);
             }
-            assert_eq!(body.len(), body_len, "unlock is length-preserving");
-            node.body = body;
-            true
+            if absolute_flips.is_empty() {
+                node.body = body;
+                false
+            } else {
+                let body_len = body.len();
+                if let Err(e) = gates::apply_flips(&mut body, &absolute_flips) {
+                    node.body = body;
+                    return Err(HiiError::GateExpressionUnsupported(e));
+                }
+                assert_eq!(body.len(), body_len, "unlock is length-preserving");
+                node.body = body;
+                true
+            }
+        };
+        if mutated {
+            ops::mark_rebuild_to_root_by_path(&mut image.root, &path);
         }
-    };
-    if mutated {
-        ops::mark_rebuild_to_root_by_path(&mut image.root, &path);
-    }
-    let cross_applied = apply_cross_formset_gates(image, &target, gt, &mut infos, &mut applied)?;
-    if cross_applied {
-        ops::mark_rebuild_to_root_by_path(&mut image.root, &path);
-    }
-    tracing::debug!(flips = applied.len(), "unlock done");
-    Ok(UnlockOutcome {
-        gates: infos,
-        applied,
+        let cross_applied =
+            apply_cross_formset_gates(image, &target, gt, &mut infos, &mut applied)?;
+        if cross_applied {
+            ops::mark_rebuild_to_root_by_path(&mut image.root, &path);
+        }
+        tracing::debug!(flips = applied.len(), "unlock done");
+        Ok(UnlockOutcome {
+            gates: infos,
+            applied,
+        })
     })
 }
 
@@ -3838,6 +3844,25 @@ mod tests {
     }
 
     #[test]
+    fn unlock_rolls_back_own_phase_on_cross_failure() {
+        let mut image = cross_formset::cross_fixtures::three_file_image(
+            cross_formset::cross_fixtures::donor_pkg(),
+            cross_formset::cross_fixtures::donor_true_expr_pkg(),
+            cross_formset::cross_fixtures::target_with_own_gate_pkg(),
+        );
+        let debug_before = format!("{:?}", image.root);
+        let bytes_before = crate::builder::build_image(&image).unwrap();
+        let err = unlock(&mut image, "ABBCE13D-E25A-4D9F-A1F9-2F7710786892:0x19:0#1").unwrap_err();
+        assert!(matches!(err, HiiError::GateExpressionUnsupported(_)));
+        assert_eq!(
+            format!("{:?}", image.root),
+            debug_before,
+            "own-фаза обязана откатиться вместе с кросс-фазой: ни флипов, ни rebuild-меток"
+        );
+        assert_eq!(crate::builder::build_image(&image).unwrap(), bytes_before);
+    }
+
+    #[test]
     fn gates_lists_cross_formset_gates_with_source_target() {
         let mut image = cross_formset::cross_fixtures::two_file_image();
         image.mode = ImageMode::Read;
@@ -3908,7 +3933,7 @@ mod tests {
     }
 
     #[test]
-    fn unlock_marks_own_rebuild_when_cross_donor_behind_compression() {
+    fn unlock_rolls_back_own_phase_when_cross_donor_behind_compression() {
         let g = Guid::from_str(cross_formset::cross_fixtures::RC_SET).unwrap();
         let mut p = g.to_bytes().to_vec();
         p.extend_from_slice(&7u16.to_le_bytes());
@@ -3989,11 +4014,14 @@ mod tests {
             Err(HiiError::MutationBehindCompression)
         ));
         let own = &image.root.children[0].children[1].children[0];
-        assert_ne!(own.body, own_pkg, "own-флипы применены до отказа донора");
+        assert_eq!(
+            own.body, own_pkg,
+            "own-фаза откатывается вместе с кросс-фазой: Err = ничего не применено"
+        );
         assert_eq!(
             own.action,
-            Action::Rebuild,
-            "own-путь помечен до кросс-фазы: иначе применённые флипы теряются при save"
+            Action::NoAction,
+            "rebuild-метки own-пути не переживают Err"
         );
     }
 

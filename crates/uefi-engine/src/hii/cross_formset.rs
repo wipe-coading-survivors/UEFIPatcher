@@ -254,6 +254,32 @@ pub(crate) mod cross_fixtures {
         package(&ifr)
     }
 
+    /// Пакет целевого формсета (RC_SET), форма 1 под собственным
+    /// suppress-if EqConst-гейтом: own-фаза unlock мутирует таргет ещё
+    /// до кросс-фазы. Фикстура whole-function атомарности B3
+    /// (спека hii-write-guard §3, финальное ревью).
+    pub(crate) fn target_with_own_gate_pkg() -> Vec<u8> {
+        let g = Guid::from_str(RC_SET).unwrap();
+        let mut p = g.to_bytes().to_vec();
+        p.extend_from_slice(&7u16.to_le_bytes());
+        p.extend_from_slice(&0u16.to_le_bytes());
+        p.push(0);
+        let mut ifr = opcode(IFR_FORM_SET_OP, true, &p);
+        ifr.extend(opcode(IFR_SUPPRESS_IF_OP, true, &[]));
+        ifr.extend(uint64(1));
+        ifr.extend(uint64(1));
+        ifr.extend(vec![IFR_EQUAL_OP, 0x02]);
+        ifr.extend(opcode(
+            IFR_FORM_OP,
+            true,
+            &[1u16.to_le_bytes(), 21u16.to_le_bytes()].concat(),
+        ));
+        ifr.extend(vec![IFR_END_OP, 0x02]);
+        ifr.extend(vec![IFR_END_OP, 0x02]);
+        ifr.extend(vec![IFR_END_OP, 0x02]);
+        package(&ifr)
+    }
+
     pub(crate) fn mk_node(
         guid: Option<Guid>,
         node_type: FfsType,
