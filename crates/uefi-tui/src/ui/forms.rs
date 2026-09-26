@@ -173,11 +173,12 @@ fn render_strings(f: &mut Frame, area: Rect, app: &mut App) {
     } else {
         format!("Strings (filter: {})", app.forms.strings_filter)
     };
-    if let Some(s) = app
-        .forms
-        .strings
-        .get(app.forms.strings_cursor)
-        .filter(|s| !s.source.is_empty())
+    if visible.contains(&app.forms.strings_cursor)
+        && let Some(s) = app
+            .forms
+            .strings
+            .get(app.forms.strings_cursor)
+            .filter(|s| !s.source.is_empty())
     {
         title.push_str(&format!(" — {}", s.source));
     }
@@ -240,6 +241,44 @@ pub fn render_varstores(f: &mut Frame, area: Rect, app: &mut App) {
 mod tests {
     use super::*;
     use crate::forms::FormKey;
+
+    #[test]
+    fn strings_title_hides_source_of_filtered_out_row() {
+        let mut app = crate::app::App::new();
+        app.forms.show_strings = true;
+        app.forms.strings = vec![
+            uefi_proto::StringInfo {
+                language: "en-US".into(),
+                string_id: 1,
+                text: "Alpha".into(),
+                source: "11111111-1111-1111-1111-111111111111/res".into(),
+            },
+            uefi_proto::StringInfo {
+                language: "en-US".into(),
+                string_id: 2,
+                text: "Beta".into(),
+                source: "22222222-2222-2222-2222-222222222222/res".into(),
+            },
+        ];
+        app.forms.strings_filter = "beta".into();
+        app.forms.strings_cursor = 0;
+        let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+        t.draw(|f| render(f, f.area(), &mut app)).unwrap();
+        let text = panel_text(&t, 24);
+        assert!(
+            !text.contains("11111111"),
+            "title must not show source of a row hidden by filter"
+        );
+        assert!(text.contains("filter: beta"));
+
+        app.forms.strings_cursor = 1;
+        t.draw(|f| render(f, f.area(), &mut app)).unwrap();
+        let text = panel_text(&t, 24);
+        assert!(
+            text.contains("22222222"),
+            "visible cursor row source stays in the title"
+        );
+    }
 
     fn fk(id: u32) -> FormKey {
         FormKey {
