@@ -380,6 +380,19 @@ async fn hii_verbs_visibility_setvalue_unlock() {
         .await
         .unwrap();
     assert!(app.status_msg.contains("unlock"));
+    assert!(
+        app.status_msg.contains("form-level unlock"),
+        "form-таргет: подсказка про построчные гейты"
+    );
+
+    let qitem = "11111111-2222-3333-4444-555555555555:0x19:0#10001:0x210";
+    uefi_tui::commands::execute_command(&mut app, &format!("hii unlock {qitem}"), &mut client)
+        .await
+        .unwrap();
+    assert!(
+        !app.status_msg.contains("form-level unlock"),
+        "question-таргет: note не печатается"
+    );
 
     assert!(
         uefi_tui::commands::execute_command(

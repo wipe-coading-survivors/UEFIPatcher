@@ -295,6 +295,14 @@ pub fn print_gates(item_id: &str, gates: &[GateInfo], format: OutputFormat) {
     }
 }
 
+/// Form-таргет: item_id с `#` и без `:qid` в дискриминаторе — признак
+/// form-level unlock (спека hii-errors-cleanup §4).
+fn is_form_level_item(item_id: &str) -> bool {
+    item_id
+        .rsplit_once('#')
+        .is_some_and(|(_, disc)| !disc.contains(':'))
+}
+
 pub fn print_unlock(item_id: &str, gates: &[GateInfo], applied: &[String], format: OutputFormat) {
     match format {
         OutputFormat::Json => {
@@ -311,6 +319,12 @@ pub fn print_unlock(item_id: &str, gates: &[GateInfo], applied: &[String], forma
             }
             for f in applied {
                 println!("applied {f}");
+            }
+            if is_form_level_item(item_id) {
+                println!("note: form-level unlock does not unlock per-question gates;");
+                println!(
+                    "  list: hii question gates {item_id}, unlock: hii question unlock {item_id}:<qid>"
+                );
             }
         }
     }

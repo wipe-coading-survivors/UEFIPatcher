@@ -1111,6 +1111,12 @@ pub async fn execute_command(
                     } else {
                         format!("unlock {item}: {}", r.applied_flips.join(" · "))
                     };
+                    if is_form_level_item(&item) {
+                        app.status_msg.push_str(
+                            "; note: form-level unlock does not unlock per-question gates \
+                             (list: hii question gates, unlock: hii question unlock <item>#<form>:<qid>)",
+                        );
+                    }
                     Ok(item)
                 }
                 "formset" => {
@@ -1988,6 +1994,14 @@ pub async fn refresh_registry(app: &mut App, client: &mut Client) -> Result<(), 
         app.registry.cursor = 0;
     }
     Ok(())
+}
+
+/// Form-таргет: item_id с `#` и без `:qid` в дискриминаторе — признак
+/// form-level unlock (спека hii-errors-cleanup §4).
+fn is_form_level_item(item_id: &str) -> bool {
+    item_id
+        .rsplit_once('#')
+        .is_some_and(|(_, disc)| !disc.contains(':'))
 }
 
 /// item_id выделенной формы: "<target>#<form_id>" (form_id —

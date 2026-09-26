@@ -267,7 +267,20 @@ async fn hii_gates_and_unlock_output_content() {
         .assert()
         .success()
         .stdout(predicates::str::contains("grayout"))
-        .stdout(predicates::str::contains("applied pkg+0xdd1"));
+        .stdout(predicates::str::contains("applied pkg+0xdd1"))
+        .stdout(predicates::str::contains("form-level unlock").not());
+
+    cli(&sock, cwd)
+        .args(["hii", "form", "unlock", "0#10029"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("applied pkg+0xdd1"))
+        .stdout(predicates::str::contains(
+            "note: form-level unlock does not unlock per-question gates;",
+        ))
+        .stdout(predicates::str::contains(
+            "list: hii question gates 0#10029, unlock: hii question unlock 0#10029:<qid>",
+        ));
 
     cli(&sock, cwd)
         .args(["--format", "tsv", "hii", "form", "gates", "0#42"])
