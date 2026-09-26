@@ -364,7 +364,6 @@ git commit -m "fix(uefi-engine): ensure_image_loaded — hii_unlock пережи
             after, before,
             "mutation must change persisted bytes, not just mtime"
         );
-        assert!(after.len() > before.len());
 
         drop(client);
         let (mut client2, _keep2) = spawn_engine_on(td.path()).await;
@@ -379,6 +378,12 @@ git commit -m "fix(uefi-engine): ensure_image_loaded — hii_unlock пережи
 ```
 
 Сверить поля `ImageNodeInsertRequest` по факту (если `artifact_id`/`mode` названы иначе — взять реальные имена из proto).
+
+> [Дефект плана, найден исполнением: ассерт `after.len() > before.len()`
+> неверен — insert Into размещает 32-байтовый файл в свободном месте тома
+> фиксированного размера 256 Б (байтовый дифф есть, длина не растёт).
+> len-ассерт убран; контракт — байтовый дифф + видимость файла при холодном
+> ре-открытии.]
 
 - [ ] **Step 2: Прогнать**
 
