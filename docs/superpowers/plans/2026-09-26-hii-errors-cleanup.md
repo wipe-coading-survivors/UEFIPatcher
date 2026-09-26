@@ -485,9 +485,9 @@ git commit -m "feat(uefi-engine): единый порядок ошибок HII-�
     }
 ```
 
-- [ ] **Step 2: RED → реализация**
+- [ ] **Step 2: тест → pub(crate)**
 
-Run: `cargo test -p uefi-engine is_unlocked_expr` → FAIL (приватность). В gates.rs заменить `fn is_unlocked_expr` на:
+Run: `cargo test -p uefi-engine is_unlocked_expr` → PASS сразу: tests-mod инлайн в gates.rs (descendant-модуль видит private), RED по приватности здесь не наблюдается. Приватность ломается только на sibling-потребителе — warn-циклы mod.rs из Step 3/4 не скомпилируются без pub(crate); pub(crate) вводится именно под них. В gates.rs заменить `fn is_unlocked_expr` на:
 
 ```rust
 /// Аппаратно-вскрытое выражение гейта: EqConst с a≠b (константа сдвинута)
