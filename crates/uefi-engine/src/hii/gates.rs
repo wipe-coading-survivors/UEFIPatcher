@@ -889,7 +889,12 @@ mod tests {
         let mut pkg = package(&vendor_ifr());
         pkg.truncate(pkg.len() - 3);
         let gates = find_gates(&pkg, &FORM_GATE_TARGET);
-        assert!(gates.len() <= 1);
+        assert_eq!(
+            gates.len(),
+            1,
+            "обрезка хвостовых END не прячет ранний suppress-ref гейт: \
+             walker emit'ит его на statement-опе (REF) до обрезанного хвоста"
+        );
     }
 
     fn hand_gate(expr_offset: usize, expr_end: usize, expr: GateExpr) -> Gate {
