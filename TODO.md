@@ -84,11 +84,15 @@
   `ok_or_else(|| AppError::new(ErrKind::NotFound, ...))`. Mock'и
   компенсируют возвратом `Some`, но production-сервер может race'нуть.
   Закрыто: ещё `4d1d473` (Plan A final review M1); отмечено циклом cli-polish.
-* [ ] **`write_through_persists_mutation_to_disk` тест тафтологичен** —
+* [x] **`write_through_persists_mutation_to_disk` тест тафтологичен** —
   `before==fixture_volume()` делает assertion `after != before || after
   == fixture_volume()` всегда истинным. Тест не ловит регрессию удаления
   `flush_image`. Контекст: `crates/uefi-engine/src/rpc/server.rs` tests.
   Усилить: mtime-check или реально меняющая байты мутация (`node remove`).
+  Закрыто: цикл hii-tail-sweep (`0488bda`, спека
+  `2026-09-26-hii-tail-sweep-design.md` §3) — insert 32-байтового FFS в
+  том + байтовый дифф + холодный ре-открытие вторым движком (файл виден
+  из дисковой копии); mtime-ассерты убраны как более слабые.
 * [x] **Интеграционные тесты CLI проверяют только exit-code, не stdout**
   — `cli_integration.rs`/`e2e.rs` (Task 5f.0). Регрессия в print-fn
   пройдёт незамеченной. Добавить content-assertions.
@@ -1413,13 +1417,16 @@ atomic_write. После первой мутации хранимый файл �
   Закрыто: цикл hii-errors-cleanup (спека
   docs/superpowers/specs/2026-09-26-hii-errors-cleanup-design.md
   §3).
-* [ ] **add_varstores: mode-чек до parse_item_id** — четвёртый HII-мутатор
+* [x] **add_varstores: mode-чек до parse_item_id** — четвёртый HII-мутатор
   сохранил старый порядок (Read + опечатка в target → NotWritable прячет
   опечатку); в цикл hii-errors-cleanup §1 взяли только
   set_item_visibility/set_value/unlock. Проявляется через
   `hii_form_hijack` (rpc/server.rs). Контекст: финальное ревью цикла
   hii-errors-cleanup 2026-09-26; выровнять при следующем касании.
-* [ ] **rpc: холодный кэш — hii_unlock не загружает образ с диска, соседи
+  Закрыто: цикл hii-tail-sweep (`b048033`) — ранний mode-гейт удалён,
+  порядок даёт parse_item_id + resolve_writable_path; контракт-тест
+  `add_varstores_error_order_contract`.
+* [x] **rpc: холодный кэш — hii_unlock не загружает образ с диска, соседи
   загружают** — после де-клона TODO:1369 hii_unlock на холодном кэше
   отдаёт not_found, тогда как hii_set_value/hii_form_hijack через
   get_or_load_image переживают рестарт движка с живой сессией.
@@ -1428,6 +1435,10 @@ atomic_write. После первой мутации хранимый файл �
   ревью цикла hii-errors-cleanup 2026-09-26; выровнять при чистке
   RPC-хендлеров (заодно set_value-клон ради session_id — тот же
   паттерн, что снят с unlock).
+  Закрыто: цикл hii-tail-sweep (`9f3a6ec`) — `ensure_image_loaded`
+  (cold-load без клона) выделен из get_or_load_image; unlock переживает
+  рестарт (гейты: синтетика + `hii_unlock_cold_cache_450x_noop`),
+  set_value берёт session_id из слота без клона образа.
 
 * [x] **CLI: несуществующий item_id в gates/unlock отдаёт
   `RPC_NOT_FOUND`** — найдено при ревизии u1–u5 (§13 отчёта): ошибка
@@ -4503,12 +4514,18 @@ Task 3 (проверено git stash). Штатная команда цикла 
   байт). Контекст: убрать при касании walk в Б-цикле.
   Закрыто: цикл hii-write-guard Task 3 (reader-близнец B1) — let-else
   заменён на expect с инвариантом guard'а.
-* [ ] **real_image.rs: тихий u32→u16 cast form_id_ifr в rk3588-гейте** —
+* [x] **real_image.rs: тихий u32→u16 cast form_id_ifr в rk3588-гейте** —
   анти-паттерн, закрытый A3 в handler'е; тестовому коду можно
   `u16::try_from` со skip. Контекст: прецеденты :6013/:6084/:6384.
-* [ ] **tui strings-браузер: титул при пустом результате :filter** —
+  Закрыто: цикл hii-tail-sweep (`8b9d74c`) — let-else try_from со skip.
+* [x] **tui strings-браузер: титул при пустом результате :filter** —
   показывает source скрытой строки `strings[strings_cursor]`. Контекст:
   guard «cursor входит в visible» при следующем касании render_strings.
-* [ ] **real_image.rs: ignore-подсказка rk3588-гейта с относительным
+  Закрыто: цикл hii-tail-sweep (`c61ad78`) — source в титуле только при
+  `visible.contains(&strings_cursor)`; тест
+  `strings_title_hides_source_of_filtered_out_row`.
+* [x] **real_image.rs: ignore-подсказка rk3588-гейта с относительным
   путём env** — из CWD теста не резолвится; запуск уже через `$PWD/...`
   (план Task 10). Контекст: одна строка при следующем touch.
+  Закрыто: цикл hii-tail-sweep (`8b9d74c`) — подсказка переведена на
+  `UEFIPATCHER_TEST_FW=$PWD/refs/fw/...` (запуск из корня репо).
