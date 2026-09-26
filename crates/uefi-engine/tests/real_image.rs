@@ -1102,7 +1102,7 @@ fn real_image_hii_strings_source_tagged() {
 }
 
 #[test]
-#[ignore = "requires rk3588 image; run with UEFIPATCHER_TEST_FW=refs/fw/orange-pi-5-plus-uefi-edk2-rk3588.img"]
+#[ignore = "requires rk3588 image; run from repo root with UEFIPATCHER_TEST_FW=$PWD/refs/fw/orange-pi-5-plus-uefi-edk2-rk3588.img"]
 fn real_image_rk3588_bare_questions_resolve() {
     let data = load_fw();
     let img = parse_image(&data, ImageMode::Read, "rk", "s1").expect("parse_image");
@@ -1111,8 +1111,10 @@ fn real_image_rk3588_bare_questions_resolve() {
     let mut forms_with_questions = 0usize;
     let mut info_resolved = 0usize;
     for f in &forms {
-        let Ok(qs) = uefi_engine::hii::list_questions(&img, &f.form_id, f.form_id_ifr as u16)
-        else {
+        let Ok(form_id) = u16::try_from(f.form_id_ifr) else {
+            continue;
+        };
+        let Ok(qs) = uefi_engine::hii::list_questions(&img, &f.form_id, form_id) else {
             continue;
         };
         if qs.is_empty() {
