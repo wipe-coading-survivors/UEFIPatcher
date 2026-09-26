@@ -1413,6 +1413,22 @@ atomic_write. После первой мутации хранимый файл �
   Закрыто: цикл hii-errors-cleanup (спека
   docs/superpowers/specs/2026-09-26-hii-errors-cleanup-design.md
   §3).
+* [ ] **add_varstores: mode-чек до parse_item_id** — четвёртый HII-мутатор
+  сохранил старый порядок (Read + опечатка в target → NotWritable прячет
+  опечатку); в цикл hii-errors-cleanup §1 взяли только
+  set_item_visibility/set_value/unlock. Проявляется через
+  `hii_form_hijack` (rpc/server.rs). Контекст: финальное ревью цикла
+  hii-errors-cleanup 2026-09-26; выровнять при следующем касании.
+* [ ] **rpc: холодный кэш — hii_unlock не загружает образ с диска, соседи
+  загружают** — после де-клона TODO:1369 hii_unlock на холодном кэше
+  отдаёт not_found, тогда как hii_set_value/hii_form_hijack через
+  get_or_load_image переживают рестарт движка с живой сессией.
+  Санкционировано спекой hii-errors-cleanup §Риски (fail-loud, без порчи),
+  но асимметрия соседей-мутаторов в одном файле. Контекст: финальное
+  ревью цикла hii-errors-cleanup 2026-09-26; выровнять при чистке
+  RPC-хендлеров (заодно set_value-клон ради session_id — тот же
+  паттерн, что снят с unlock).
+
 * [x] **CLI: несуществующий item_id в gates/unlock отдаёт
   `RPC_NOT_FOUND`** — найдено при ревизии u1–u5 (§13 отчёта): ошибка
   «цель не найдена» маппится в код `RPC_NOT_FOUND`, который читается
