@@ -3561,22 +3561,38 @@ mod tests {
             .join("images")
             .join(format!("{}.bin", opened.image_id));
         let before = std::fs::read(&img_path).unwrap();
-        let before_mtime = std::fs::metadata(&img_path).unwrap().modified().unwrap();
 
+        let mut ffs = vec![0u8; 32];
+        let guid = Guid::try_parse("5c60f367-a505-419a-859e-2a4ff6ca6fe5").unwrap();
+        ffs[0..16].copy_from_slice(&guid.to_bytes());
+        ffs[18] = 0x01;
+        ffs[20..23].copy_from_slice(&crate::ffs::size_to_uint24(32));
+        ffs[24] = 0xAB;
+        let ffs_path = td.path().join("insert.ffs");
+        std::fs::write(&ffs_path, &ffs).unwrap();
         client
-            .image_node_rebuild(ImageNodeRebuildRequest {
+            .image_node_insert(ImageNodeInsertRequest {
                 image_id: opened.image_id.clone(),
                 target: "0".into(),
+                ffs_path: ffs_path.to_string_lossy().to_string(),
+                artifact_id: String::new(),
+                mode: 0,
             })
             .await
             .unwrap();
 
         let after = std::fs::read(&img_path).unwrap();
-        let after_mtime = std::fs::metadata(&img_path).unwrap().modified().unwrap();
+        assert_ne!(
+            after, before,
+            "mutation must change persisted bytes, not just mtime"
+        );
+
+        drop(client);
+        let (mut client2, _keep2) = spawn_engine_on(td.path()).await;
+        let nodes = list_nodes(&mut client2, &opened.image_id).await;
         assert!(
-            after != before || after_mtime != before_mtime,
-            "write-through must rewrite disk file after mutation \
-             (bytes or mtime must change)"
+            nodes.iter().any(|n| n.r#type == FfsType::File as u32),
+            "inserted file must be visible from the disk copy after engine restart"
         );
     }
 
