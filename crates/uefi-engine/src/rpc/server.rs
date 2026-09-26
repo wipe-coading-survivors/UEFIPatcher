@@ -1067,19 +1067,20 @@ impl EngineService for EngineServer {
     #[tracing::instrument(skip(self, req), err)]
     async fn hii_unlock(&self, req: Request<HiiUnlockRequest>) -> RpcResult<HiiUnlockResponse> {
         let r = req.into_inner();
-        let img = self.get_or_load_image(&r.image_id).await?;
-        let outcome = {
+        let (outcome, session_id) = {
             let mut images = self.images.lock().await;
             let img_slot = images
                 .get_mut(&r.image_id)
                 .ok_or_else(|| Status::not_found("image not found"))?;
-            crate::hii::unlock(img_slot, &r.item_id)
-                .map_err(|e| hii_error_status_ctx(e, &r.item_id))?
+            let session_id = img_slot.session_id.clone();
+            let outcome = crate::hii::unlock(img_slot, &r.item_id)
+                .map_err(|e| hii_error_status_ctx(e, &r.item_id))?;
+            (outcome, session_id)
         };
         if !outcome.applied.is_empty() {
             self.flush_image(&r.image_id).await?;
         }
-        let _ = self.sm.touch(&img.session_id);
+        let _ = self.sm.touch(&session_id);
         tracing::info!(image_id = %r.image_id, item_id = %r.item_id, flips = outcome.applied.len(), "hii unlock");
         Ok(Response::new(HiiUnlockResponse {
             gates: outcome.gates,
@@ -2995,6 +2996,36 @@ mod tests {
             .into_inner()
             .nodes;
         assert!(!nodes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn hii_unlock_malformed_item_is_invalid_argument() {
+        let (_td, mut client) = setup().await;
+        let session = create_session(&mut client).await;
+        let opened = client
+            .image_upload(tonic::Request::new(ImageUploadRequest {
+                session_id: session.clone(),
+                data: fv_image_with_two_files(),
+                mode: 0,
+                name: "up.bin".into(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        let err = client
+            .hii_unlock(HiiUnlockRequest {
+                image_id: opened.image_id.clone(),
+                item_id: "0#nope".into(),
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+        assert!(err.message().contains("malformed item_id"));
+        let _ = client
+            .session_destroy(SessionDestroyRequest {
+                session_id: session,
+            })
+            .await;
     }
 
     #[tokio::test]
