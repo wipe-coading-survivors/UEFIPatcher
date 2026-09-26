@@ -611,6 +611,7 @@ git commit -m "feat(uefi-engine): unlock предупреждает warn'ом о
     }
 
     #[tracing_test::traced_test]
+    #[test]
     fn unlock_bare_only_pe32_warns_and_noops() {
         let mut body = vec![0x11u8; 64];
         body.extend_from_slice(RK3588_BARE_FORM);
