@@ -226,7 +226,7 @@ pub(crate) fn parse_item_id(
 - [ ] **Step 4: Тест зелёный**
 
 Run: `cargo test -p uefi-engine parse_item_id`
-Expected: PASS. (Возможный красный каскад: тесты, ассертящие NotFound на мусорном item_id — в mod.rs таких нет, только `is_err`-варианты, уже заменены.)
+Expected: PASS. (Красный каскад: `set_item_visibility_rejects_malformed_discriminator` ассертил NotFound на `#notanumber` — обновить на InvalidItemId в этом же шаге. Дефект сноски «таких тестов нет» найден при реализации, фикс плана 2026-09-26.)
 
 - [ ] **Step 5: Failing-тест RPC-маппинга**
 
