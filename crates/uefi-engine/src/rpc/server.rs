@@ -204,11 +204,11 @@ impl EngineServer {
         Ok(())
     }
 
-    async fn get_or_load_image(&self, image_id: &str) -> Result<Image, Status> {
+    async fn ensure_image_loaded(&self, image_id: &str) -> Result<(), Status> {
         {
             let images = self.images.lock().await;
-            if let Some(img) = images.get(image_id) {
-                return Ok(img.clone());
+            if images.contains_key(image_id) {
+                return Ok(());
             }
         }
         let row = self
@@ -228,11 +228,17 @@ impl EngineServer {
         };
         let img = crate::parser::image::parse_image(&bytes, mode, image_id, &row.session_id)
             .map_err(|e| Status::internal(e.to_string()))?;
-        self.images
-            .lock()
-            .await
-            .insert(image_id.into(), img.clone());
-        Ok(img)
+        self.images.lock().await.insert(image_id.into(), img);
+        Ok(())
+    }
+
+    async fn get_or_load_image(&self, image_id: &str) -> Result<Image, Status> {
+        self.ensure_image_loaded(image_id).await?;
+        let images = self.images.lock().await;
+        images
+            .get(image_id)
+            .cloned()
+            .ok_or_else(|| Status::not_found("image not found"))
     }
 
     async fn open_from_bytes(
@@ -1069,6 +1075,7 @@ impl EngineService for EngineServer {
     #[tracing::instrument(skip(self, req), err)]
     async fn hii_unlock(&self, req: Request<HiiUnlockRequest>) -> RpcResult<HiiUnlockResponse> {
         let r = req.into_inner();
+        self.ensure_image_loaded(&r.image_id).await?;
         let (outcome, session_id) = {
             let mut images = self.images.lock().await;
             let img_slot = images
@@ -1129,19 +1136,21 @@ impl EngineService for EngineServer {
         req: Request<HiiSetValueRequest>,
     ) -> RpcResult<HiiSetValueResponse> {
         let r = req.into_inner();
-        let img = self.get_or_load_image(&r.image_id).await?;
-        let outcome = {
+        self.ensure_image_loaded(&r.image_id).await?;
+        let (outcome, session_id) = {
             let mut images = self.images.lock().await;
             let img_slot = images
                 .get_mut(&r.image_id)
                 .ok_or_else(|| Status::not_found("image not found"))?;
-            crate::hii::set_value(img_slot, &r.item_id, r.value)
-                .map_err(|e| hii_error_status_ctx(e, &r.item_id))?
+            let session_id = img_slot.session_id.clone();
+            let outcome = crate::hii::set_value(img_slot, &r.item_id, r.value)
+                .map_err(|e| hii_error_status_ctx(e, &r.item_id))?;
+            (outcome, session_id)
         };
         if !outcome.applied.is_empty() {
             self.flush_image(&r.image_id).await?;
         }
-        let _ = self.sm.touch(&img.session_id);
+        let _ = self.sm.touch(&session_id);
         tracing::info!(image_id = %r.image_id, item_id = %r.item_id, value = r.value, flips = outcome.applied.len(), "hii set value");
         Ok(Response::new(HiiSetValueResponse {
             question: Some(outcome.question),
@@ -2852,6 +2861,50 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires real AMI image under refs/amibcp/ (gitignored)"]
+    async fn hii_unlock_cold_cache_450x_noop() {
+        let (td, mut client) = setup().await;
+        let orig = amibcp_450x_path();
+        let orig_bytes = std::fs::read(&orig).unwrap();
+        let session = create_session(&mut client).await;
+        let opened = client
+            .image_open(ImageOpenRequest {
+                session_id: session.clone(),
+                path: orig.to_string_lossy().to_string(),
+                mode: ImageMode::Write as i32,
+                name: "450x".into(),
+            })
+            .await
+            .unwrap()
+            .into_inner();
+        drop(client);
+        let (mut client2, _keep2) = spawn_engine_on(td.path()).await;
+        let resp = client2
+            .hii_unlock(HiiUnlockRequest {
+                image_id: opened.image_id.clone(),
+                item_id: "abbce13d-e25a-4d9f-a1f9-2f7710786892:0x10:0#1".into(),
+            })
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(
+            resp.applied_flips.is_empty(),
+            "форма #1 без гейтов: flips нет и на холодном кэше"
+        );
+        let img_path = td
+            .path()
+            .join("sessions")
+            .join(&session)
+            .join("images")
+            .join(format!("{}.bin", opened.image_id));
+        assert_eq!(
+            std::fs::read(&img_path).unwrap(),
+            orig_bytes,
+            "no-op unlock на холодном кэше не переписывает артефакт"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires real AMI image under refs/amibcp/ (gitignored)"]
     async fn hii_set_value_noop_keeps_artifact_untouched() {
         let (td, mut client) = setup().await;
         let orig = amibcp_450x_path();
@@ -3029,6 +3082,43 @@ mod tests {
                 session_id: session,
             })
             .await;
+    }
+
+    #[tokio::test]
+    async fn hii_unlock_survives_engine_restart_cold_cache() {
+        let (td, mut client) = setup().await;
+        let orig = td.path().join("v.bin");
+        std::fs::write(&orig, fixture_volume()).unwrap();
+        let session = client
+            .session_create(SessionCreateRequest::default())
+            .await
+            .unwrap()
+            .into_inner();
+        let opened = client
+            .image_open(ImageOpenRequest {
+                session_id: session.session_id.clone(),
+                path: orig.to_string_lossy().to_string(),
+                mode: ImageMode::Write as i32,
+                name: "v.bin".into(),
+            })
+            .await
+            .unwrap()
+            .into_inner();
+        drop(client);
+
+        let (mut client2, _keep2) = spawn_engine_on(td.path()).await;
+        let err = client2
+            .hii_unlock(HiiUnlockRequest {
+                image_id: opened.image_id.clone(),
+                item_id: "garbage".into(),
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.code(),
+            tonic::Code::InvalidArgument,
+            "cold cache must load the image from disk and reach item_id parsing, got: {err}"
+        );
     }
 
     #[tokio::test]
