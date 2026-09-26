@@ -991,7 +991,11 @@ mod tests {
                     ..Default::default()
                 },
             ],
-            defaults: vec![],
+            defaults: vec![DefaultEntry {
+                default_id: 0,
+                r#type: 0,
+                value: 1,
+            }],
             seed_value: None,
             seed_option: None,
         }
@@ -1060,27 +1064,14 @@ mod tests {
 
     #[test]
     fn question_info_text_keeps_sid_fallback_when_text_empty() {
-        let q = QuestionInfo {
-            form_id: 10029,
-            question_id: 0x3B,
-            kind: "one_of".into(),
-            var_store_id: 1,
-            varstore: None,
-            var_offset: 0x3A,
-            width: 1,
-            min: 0,
-            max: 0,
-            step: 0,
-            options: vec![OptionEntry {
-                string_id: 9,
-                value: 2,
-                flags: 0x00,
-                ..Default::default()
-            }],
-            defaults: vec![],
-            seed_value: None,
-            seed_option: None,
-        };
+        let mut q = mock_question();
+        q.varstore = None;
+        q.options = vec![OptionEntry {
+            string_id: 9,
+            value: 2,
+            flags: 0x00,
+            ..Default::default()
+        }];
         let text = question_info_text(&q);
         assert!(text.contains("value = 2 (string 9, flags 0x0)"));
     }
