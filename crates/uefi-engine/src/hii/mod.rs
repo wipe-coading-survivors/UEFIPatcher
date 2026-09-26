@@ -1869,9 +1869,6 @@ pub fn add_varstores(
     if varstores.is_empty() {
         return Ok(Vec::new());
     }
-    if image.mode != ImageMode::Write {
-        return Err(HiiError::NotWritable);
-    }
     let (target, _form_id, _qid) = parse_item_id(item_id)?;
     let path = resolve_writable_path(image, &target)?;
     let sd_path = ami_patcher::discover_pfs_payload_path(image)?;
@@ -3604,6 +3601,48 @@ mod tests {
             set_item_visibility(&mut w, MALFORMED_ITEM, true),
             Err(HiiError::InvalidItemId(_))
         ));
+    }
+
+    #[test]
+    fn add_varstores_error_order_contract() {
+        fn vs() -> schema::VarStoreSchema {
+            schema::VarStoreSchema {
+                id: 0x7F01,
+                guid: "EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9".into(),
+                size: 0x1670,
+                name: "IntelSetup".into(),
+                var_type: schema::VarStoreType::Efi,
+                attributes: 7,
+            }
+        }
+        let mut r = read_mode_image();
+        assert!(
+            matches!(
+                add_varstores(&mut r, MALFORMED_ITEM, &[vs()]),
+                Err(HiiError::InvalidItemId(_))
+            ),
+            "malformed item_id must not be hidden behind NotWritable"
+        );
+        assert!(
+            matches!(
+                add_varstores(&mut r, UNKNOWN_TARGET_ITEM, &[vs()]),
+                Err(HiiError::NotFound)
+            ),
+            "unknown target must surface before mode check"
+        );
+        assert!(matches!(
+            add_varstores(&mut r, VENDOR_FORM_ITEM, &[vs()]),
+            Err(HiiError::NotWritable)
+        ));
+        let mut w = vendor_image_with(0x19, vendor_forms_pkg());
+        assert!(matches!(
+            add_varstores(&mut w, MALFORMED_ITEM, &[vs()]),
+            Err(HiiError::InvalidItemId(_))
+        ));
+        assert!(
+            add_varstores(&mut w, VENDOR_FORM_ITEM, &[]).is_ok(),
+            "empty varstores keep the early Ok return"
+        );
     }
 
     #[test]
