@@ -816,6 +816,7 @@ impl EngineService for EngineServer {
         let img = self.get_or_load_image(&r.image_id).await?;
         let forms = crate::hii::forms::collect_forms(&img);
         let _ = self.sm.touch(&img.session_id);
+        tracing::info!(image_id = %r.image_id, count = forms.len(), "hii forms listed");
         Ok(Response::new(HiiListFormsResponse { forms }))
     }
 
@@ -855,6 +856,7 @@ impl EngineService for EngineServer {
         let img = self.get_or_load_image(&r.image_id).await?;
         let strings = crate::hii::strings::collect_strings(&img);
         let _ = self.sm.touch(&img.session_id);
+        tracing::info!(image_id = %r.image_id, count = strings.len(), "hii strings listed");
         Ok(Response::new(HiiListStringsResponse { strings }))
     }
 
@@ -1117,6 +1119,7 @@ impl EngineService for EngineServer {
         let questions = crate::hii::list_questions(&img, &r.target, form_id)
             .map_err(|e| hii_error_status_ctx(e, &r.target))?;
         let _ = self.sm.touch(&img.session_id);
+        tracing::info!(image_id = %r.image_id, target = %r.target, form_id = r.form_id, count = questions.len(), "hii questions listed");
         Ok(Response::new(HiiListQuestionsResponse { questions }))
     }
 
