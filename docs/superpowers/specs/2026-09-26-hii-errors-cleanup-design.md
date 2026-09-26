@@ -114,6 +114,12 @@ form-таргете.
 При живом запросе (владелец споткнётся о недостаток подсказки) — расширить
 счётчиком за счёт `list_questions` + per-question walk.
 
+Детализация текста note (план): для form-таргета `item_id ==
+<target>#<form>`, поэтому печатаются конкретные значения —
+`list: hii question gates {item_id}, unlock: hii question unlock
+{item_id}:<qid>` (плейсхолдер `<qid>` остаётся: qid неизвестен).
+TUI — та же note одной строкой в status_msg.
+
 TODO:3013 (скорректированный список qid сценария B) закрывается
 docs-коммитом как зафиксированный факт — код не меняется.
 
@@ -131,8 +137,11 @@ real_changes` — applied несёт только реальные измене�
 ### 6. Сопутствующая механика
 
 - **TODO:1374** — тест обрезанного пакета в gates.rs ассертит
-  `gates.len() <= 1`: захардкодить точное ожидание (0 гейтов,
-  under-walk-невозможность) вместо слабого предиката.
+  `gates.len() <= 1`: захардкодить точное ожидание (1 гейт —
+  suppress-ref формы 10029: walker emit'ит гейт на statement-опе
+  до обрезанного хвоста, under-walk невозможен; фикс плана
+  2026-09-26 по аудиту find_gates/emit_gates/package_bounds)
+  вместо слабого предиката.
 - **TODO:2884** — tests-mod `mock_question()` в uefi-cli/src/output.rs
   расширить DefaultEntry; удалить третий инлайн-литерал QuestionInfo.
 - **TODO:1369** — `hii_unlock` (server.rs:1069) берёт `get_or_load_image`
