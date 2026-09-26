@@ -57,6 +57,7 @@ fn hii_error_status(e: crate::hii::HiiError) -> Status {
         | crate::hii::HiiError::StringPackageNotFound
         | crate::hii::HiiError::NoSuppressScope => Status::not_found(e.to_string()),
         crate::hii::HiiError::NotASetupItem
+        | crate::hii::HiiError::InvalidItemId(_)
         | crate::hii::HiiError::InvalidSchema(_)
         | crate::hii::HiiError::HidingUnsupported => Status::invalid_argument(e.to_string()),
         crate::hii::HiiError::NotWritable
@@ -1553,6 +1554,23 @@ mod tests {
         let st = hii_error_status(crate::hii::HiiError::PeGrowthUnsupported);
         assert_eq!(st.code(), tonic::Code::FailedPrecondition);
         assert!(st.message().contains("grow"));
+    }
+
+    #[test]
+    fn hii_error_status_maps_invalid_item_id() {
+        let st = hii_error_status(crate::hii::HiiError::InvalidItemId("x#y".into()));
+        assert_eq!(st.code(), tonic::Code::InvalidArgument);
+        assert!(st.message().contains("malformed item_id"));
+    }
+
+    #[test]
+    fn hii_error_status_ctx_does_not_enrich_invalid_item_id() {
+        let st = hii_error_status_ctx(crate::hii::HiiError::InvalidItemId("x#y".into()), "0#99");
+        assert_eq!(st.code(), tonic::Code::InvalidArgument);
+        assert!(
+            !st.message().contains("0#99"),
+            "ctx-обогащение — только NotFound (спека §1)"
+        );
     }
 
     #[test]

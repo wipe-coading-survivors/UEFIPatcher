@@ -34,6 +34,8 @@ use thiserror::Error;
 pub enum HiiError {
     #[error("not found")]
     NotFound,
+    #[error("malformed item_id {0}: expected `<target>[#<form>[:<qid>]]`")]
+    InvalidItemId(String),
     #[error("not a setup item")]
     NotASetupItem,
     #[error("invalid IFR")]
@@ -172,17 +174,24 @@ fn parse_u16_loose(s: &str) -> Option<u16> {
 pub(crate) fn parse_item_id(
     item_id: &str,
 ) -> Result<(crate::types::Target, u16, Option<u16>), HiiError> {
-    let (target_str, disc) = item_id.rsplit_once('#').ok_or(HiiError::NotFound)?;
+    let (target_str, disc) = item_id
+        .rsplit_once('#')
+        .ok_or_else(|| HiiError::InvalidItemId(item_id.to_string()))?;
     let (form_str, qid_str) = match disc.split_once(':') {
         Some((f, q)) => (f, Some(q)),
         None => (disc, None),
     };
-    let form_id = form_str.parse::<u16>().map_err(|_| HiiError::NotFound)?;
+    let form_id = form_str
+        .parse::<u16>()
+        .map_err(|_| HiiError::InvalidItemId(disc.to_string()))?;
     let question_id = match qid_str {
-        Some(q) => Some(parse_u16_loose(q).ok_or(HiiError::NotFound)?),
+        Some(q) => {
+            Some(parse_u16_loose(q).ok_or_else(|| HiiError::InvalidItemId(disc.to_string()))?)
+        }
         None => None,
     };
-    let target = crate::parser::target::parse_target(target_str).map_err(|_| HiiError::NotFound)?;
+    let target = crate::parser::target::parse_target(target_str)
+        .map_err(|_| HiiError::InvalidItemId(target_str.to_string()))?;
     Ok((target, form_id, question_id))
 }
 
@@ -3008,7 +3017,7 @@ mod tests {
             true,
         )
         .unwrap_err();
-        assert!(matches!(err, HiiError::NotFound));
+        assert!(matches!(err, HiiError::InvalidItemId(_)));
     }
 
     fn ifr_op(opc: u8, scope: bool, payload: &[u8]) -> Vec<u8> {
@@ -3300,9 +3309,23 @@ mod tests {
 
     #[test]
     fn parse_item_id_rejects_garbage() {
-        assert!(parse_item_id("no-discriminator").is_err());
-        assert!(parse_item_id("5c60f367-a505-419a-859e-2a4ff6ca6fe5:0x19:0#nope").is_err());
-        assert!(parse_item_id("5c60f367-a505-419a-859e-2a4ff6ca6fe5:0x19:0#10029:zz").is_err());
+        assert!(matches!(
+            parse_item_id("no-discriminator"),
+            Err(HiiError::InvalidItemId(_))
+        ));
+        assert!(matches!(
+            parse_item_id("5c60f367-a505-419a-859e-2a4ff6ca6fe5:0x19:0#nope"),
+            Err(HiiError::InvalidItemId(_))
+        ));
+        assert!(matches!(
+            parse_item_id("5c60f367-a505-419a-859e-2a4ff6ca6fe5:0x19:0#10029:zz"),
+            Err(HiiError::InvalidItemId(_))
+        ));
+        let err = parse_item_id("5c60f367-a505-419a-859e-2a4ff6ca6fe5:0x19:0#nope").unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("expected `<target>[#<form>[:<qid>]]`")
+        );
     }
 
     #[test]
