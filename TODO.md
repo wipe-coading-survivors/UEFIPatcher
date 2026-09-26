@@ -3555,11 +3555,15 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   строит уже-expanded узлы. Нужен тест с реально свёрнутым предком
   (cursor+expansion из collapsed-состояния). Контекст: Task 4 цикла
   (`f1f93df`), `crates/uefi-tui/src/app.rs`.
-* [ ] **гигиена clippy `--all-targets` не в чек-листе** — AGENTS.md
+* [x] **гигиена clippy `--all-targets` не в чек-листе** — AGENTS.md
   «Команды проверки» содержит только `cargo clippy --all -- -D warnings`;
   identity_op-хвосты в тест-коде копятся незаметно (8 сайтов фикстур Task 6
   почищены в Task 14 цикла A). Контекст: добавить `--all-targets` в
   финальные гейты циклов (AGENTS.md).
+  Закрыто: `60d8778` — `cargo clippy --all --all-targets -- -D warnings`
+  добавлен в «Команды проверки» и правило 9 AGENTS.md (финальный гейт
+  цикла); попутно тем же коммитом — чек-лист HII-walker'ов и класс-метки
+  дефектов в TODO.
 
 ## Находки финального ревью ветки tui-forms-v1 (2026-09-11)
 
