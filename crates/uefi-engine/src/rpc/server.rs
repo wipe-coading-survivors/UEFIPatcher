@@ -1134,7 +1134,9 @@ impl EngineService for EngineServer {
             crate::hii::set_value(img_slot, &r.item_id, r.value)
                 .map_err(|e| hii_error_status_ctx(e, &r.item_id))?
         };
-        self.flush_image(&r.image_id).await?;
+        if !outcome.applied.is_empty() {
+            self.flush_image(&r.image_id).await?;
+        }
         let _ = self.sm.touch(&img.session_id);
         tracing::info!(image_id = %r.image_id, item_id = %r.item_id, value = r.value, flips = outcome.applied.len(), "hii set value");
         Ok(Response::new(HiiSetValueResponse {
@@ -2837,6 +2839,91 @@ mod tests {
             "no-op unlock не должен переписывать артефакт"
         );
         assert_eq!(stored, orig_bytes);
+        let _ = client
+            .session_destroy(SessionDestroyRequest {
+                session_id: session,
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires real AMI image under refs/amibcp/ (gitignored)"]
+    async fn hii_set_value_noop_keeps_artifact_untouched() {
+        let (td, mut client) = setup().await;
+        let orig = amibcp_450x_path();
+        let orig_bytes = std::fs::read(&orig).unwrap();
+        let session = create_session(&mut client).await;
+        let opened = client
+            .image_open(ImageOpenRequest {
+                session_id: session.clone(),
+                path: orig.to_string_lossy().to_string(),
+                mode: ImageMode::Write as i32,
+                name: "450x".into(),
+            })
+            .await
+            .unwrap()
+            .into_inner();
+        let target = "abbce13d-e25a-4d9f-a1f9-2f7710786892:0x10:0";
+        let qs = client
+            .hii_list_questions(HiiListQuestionsRequest {
+                image_id: opened.image_id.clone(),
+                target: target.into(),
+                form_id: 2,
+            })
+            .await
+            .unwrap()
+            .into_inner()
+            .questions;
+        let seeded = qs
+            .iter()
+            .find(|q| q.seed_value.is_some() || q.ifr_default.is_some())
+            .expect("на форме #2 AMI-образа есть вопрос с seed/default");
+        let value = seeded.seed_value.or(seeded.ifr_default).unwrap();
+        let item = format!("{target}#2:{:#x}", seeded.question_id);
+        let first = client
+            .hii_set_value(HiiSetValueRequest {
+                image_id: opened.image_id.clone(),
+                item_id: item.clone(),
+                value,
+            })
+            .await
+            .unwrap()
+            .into_inner();
+        let img_path = td
+            .path()
+            .join("sessions")
+            .join(&session)
+            .join("images")
+            .join(format!("{}.bin", opened.image_id));
+        let before = std::fs::read(&img_path).unwrap();
+        let mtime_before = std::fs::metadata(&img_path).unwrap().modified().unwrap();
+        let second = client
+            .hii_set_value(HiiSetValueRequest {
+                image_id: opened.image_id.clone(),
+                item_id: item.clone(),
+                value,
+            })
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(
+            second.applied_flips.is_empty(),
+            "повтор того же value — no-op"
+        );
+        let after = std::fs::read(&img_path).unwrap();
+        assert_eq!(after.len(), before.len());
+        assert_eq!(
+            after, before,
+            "no-op set_value не должен переписывать артефакт"
+        );
+        assert_eq!(
+            std::fs::metadata(&img_path).unwrap().modified().unwrap(),
+            mtime_before,
+            "mtime не тронут — flush пропущен"
+        );
+        if first.applied_flips.is_empty() {
+            assert_eq!(after, orig_bytes);
+        }
         let _ = client
             .session_destroy(SessionDestroyRequest {
                 session_id: session,
