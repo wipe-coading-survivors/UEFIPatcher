@@ -368,3 +368,27 @@ async fn hii_add_hijack_page_output_content() {
         .assert()
         .success();
 }
+
+#[test]
+fn dead_socket_transport_error_names_path_and_source() {
+    let td = TempDir::new().unwrap();
+    let cwd = td.path();
+    let dead = td.path().join("dead.sock");
+    Command::cargo_bin("uefi-cli")
+        .unwrap()
+        .current_dir(cwd)
+        .args([
+            "--sock",
+            dead.to_str().unwrap(),
+            "session",
+            "init",
+            "--force",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "transport error: cannot connect to",
+        ))
+        .stderr(predicates::str::contains(dead.display().to_string()))
+        .stderr(predicates::str::contains("(source: cli arg)"));
+}

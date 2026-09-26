@@ -5,7 +5,7 @@ use hyper_util::rt::TokioIo;
 use tonic::Request;
 use tonic::transport::{Channel, Endpoint};
 use uefi_common::error::{AppError, ErrKind};
-use uefi_common::state::{State, resolve_sock};
+use uefi_common::state::{State, resolve_sock_with_source};
 use uefi_proto::engine_service_client::EngineServiceClient;
 use uefi_proto::*;
 
@@ -27,8 +27,9 @@ fn auth_req<T>(state: &State, body: T) -> Request<T> {
 
 impl Client {
     pub async fn connect(cli_sock: Option<&str>, state: State) -> Result<Self, AppError> {
-        let sock = resolve_sock(cli_sock, &state);
-        let sock_str = sock.display().to_string();
+        let (sock, source) = resolve_sock_with_source(cli_sock, &state);
+        let sock_display = sock.display().to_string();
+        let sock_str = sock_display.clone();
         let channel = Endpoint::try_from("http://localhost")
             .map_err(|e| AppError::new(ErrKind::IoError, e.to_string()))?
             .connect_with_connector(tower::service_fn(move |_: Uri| {
@@ -38,7 +39,14 @@ impl Client {
                 }
             }))
             .await
-            .map_err(|e| AppError::new(ErrKind::RpcInternal, e.to_string()))?;
+            .map_err(|e| {
+                AppError::new(
+                    ErrKind::RpcInternal,
+                    format!(
+                        "transport error: cannot connect to {sock_display} (source: {source}): {e}"
+                    ),
+                )
+            })?;
         Ok(Self {
             inner: EngineServiceClient::new(channel),
             state,

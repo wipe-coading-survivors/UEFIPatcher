@@ -51,17 +51,44 @@ pub fn write_state(state: &State) -> Result<(), AppError> {
     Ok(())
 }
 
-pub fn resolve_sock(cli_sock: Option<&str>, state: &State) -> PathBuf {
+/// Источник резолва сокета — для диагностики transport-ошибок клиента.
+/// Спека hii-errors-cleanup §7.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SockSource {
+    CliArg,
+    Env,
+    StateFile,
+    Default,
+}
+
+impl std::fmt::Display for SockSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            SockSource::CliArg => "cli arg",
+            SockSource::Env => "env UEFIPATCHER_SOCK",
+            SockSource::StateFile => "state file",
+            SockSource::Default => "default",
+        })
+    }
+}
+
+/// Полная логика приоритета сокета (cli > env > state > default) вместе с
+/// источником. Спека hii-errors-cleanup §7.
+pub fn resolve_sock_with_source(cli_sock: Option<&str>, state: &State) -> (PathBuf, SockSource) {
     if let Some(s) = cli_sock {
-        return PathBuf::from(s);
+        return (PathBuf::from(s), SockSource::CliArg);
     }
     if let Ok(env) = std::env::var("UEFIPATCHER_SOCK") {
-        return PathBuf::from(env);
+        return (PathBuf::from(env), SockSource::Env);
     }
     if let Some(s) = &state.sock_path {
-        return PathBuf::from(s);
+        return (PathBuf::from(s), SockSource::StateFile);
     }
-    default_sock()
+    (default_sock(), SockSource::Default)
+}
+
+pub fn resolve_sock(cli_sock: Option<&str>, state: &State) -> PathBuf {
+    resolve_sock_with_source(cli_sock, state).0
 }
 
 pub fn state_dir() -> PathBuf {
@@ -213,6 +240,33 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(resolve_sock(None, &st), PathBuf::from("/from-state"));
+    }
+
+    #[test]
+    fn resolve_sock_with_source_reports_source() {
+        let _g = lock_guard();
+        let st = State {
+            sock_path: Some("/from-state".into()),
+            ..Default::default()
+        };
+        let env = env_guard("UEFIPATCHER_SOCK", "/from-env");
+        assert_eq!(
+            resolve_sock_with_source(Some("/from-cli"), &st),
+            (PathBuf::from("/from-cli"), SockSource::CliArg)
+        );
+        assert_eq!(
+            resolve_sock_with_source(None, &st),
+            (PathBuf::from("/from-env"), SockSource::Env)
+        );
+        drop(env);
+        assert_eq!(
+            resolve_sock_with_source(None, &st),
+            (PathBuf::from("/from-state"), SockSource::StateFile)
+        );
+        assert_eq!(
+            resolve_sock_with_source(None, &State::default()),
+            (default_sock(), SockSource::Default)
+        );
     }
 
     #[test]
