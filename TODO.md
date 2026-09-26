@@ -1323,6 +1323,9 @@ atomic_write. После первой мутации хранимый файл �
   Read-режиме даёт NotFound вместо NotWritable (parse item_id идёт до
   проверки режима в `resolve_writable_path`). Контекст: `hii/mod.rs`;
   проверять режим до парсинга при следующем касании.
+  В цикле hii-errors-cleanup (спека
+  docs/superpowers/specs/2026-09-26-hii-errors-cleanup-design.md
+  §1).
 * [x] **hii/gates: decoder допускает ровно один мусорный байт после
   валидного префикса операндов** — exact-consumption check снят ради
   END-quirk (scoped expression operands). Контекст: захватить
@@ -1371,9 +1374,15 @@ atomic_write. После первой мутации хранимый файл �
   (`sm.touch`), мутация идёт через повторный lock `images.get_mut`.
   Контекст: наследованный стиль хендлеров (как `hii_form_add`);
   упростить при следующем касании (доставать session_id без клона).
+  В цикле hii-errors-cleanup (спека
+  docs/superpowers/specs/2026-09-26-hii-errors-cleanup-design.md
+  §6).
 * [ ] **hii/gates: тест обрезанного пакета ассертит `gates.len() <= 1`** —
   слабый предикат: silent under-walk (0 гейтов) тоже пройдёт. Контекст:
   закрипить точное ожидаемое количество/содержимое.
+  В цикле hii-errors-cleanup (спека
+  docs/superpowers/specs/2026-09-26-hii-errors-cleanup-design.md
+  §6).
 * [x] **uefi-cli e2e: TSV-инвокация `hii form gates` ассертит только exit
   success** — содержимое колонок TSV не проверяется. Контекст: добавить
   content-ассерты stdout.
@@ -1389,6 +1398,9 @@ atomic_write. После первой мутации хранимый файл �
   (plan-sanctioned `unwrap_or_default` PE-resource-канала); безвредный
   no-op success. Контекст: задокументировать расхождение либо вернуть
   NotASetupItem.
+  В цикле hii-errors-cleanup (спека
+  docs/superpowers/specs/2026-09-26-hii-errors-cleanup-design.md
+  §3).
 * [x] **CLI: несуществующий item_id в gates/unlock отдаёт
   `RPC_NOT_FOUND`** — найдено при ревизии u1–u5 (§13 отчёта): ошибка
   «цель не найдена» маппится в код `RPC_NOT_FOUND`, который читается
@@ -1419,6 +1431,9 @@ atomic_write. После первой мутации хранимый файл �
   становится моментальной; правка в uefi-cli connect-пути,
   `uefi_common::state::resolve_sock` уже возвращает только PathBuf (нужен
   вариант, возвращающий и источник).
+  В цикле hii-errors-cleanup (спека
+  docs/superpowers/specs/2026-09-26-hii-errors-cleanup-design.md
+  §7).
 
 ### Мини-цикл «value-op» (engine): задать значение настройки — завершён (v1+v5, 2026-09-03)
 
@@ -2146,6 +2161,11 @@ u16 420→750 (= аппенднутый help id 750, форма E26/E28); поб
   `plan_gates` трактует `None` как ошибку). Для hijack-v2 в спеке
   заложен `plan_gates_skip_unlocked`; сам `unlock` op не меняется —
   при необходимости сделать его идемпотентным отдельной правкой.
+  Аудит 2026-09-26: повторный unlock уже не падает — own/кросс-фазы
+  и hijack используют plan_gates_skip_unlocked (сделано циклами
+  formset-unlock и hii-write-guard). Остаток — tracing::warn! при
+  skip вскрытого гейта; в цикле hii-errors-cleanup (спека
+  docs/superpowers/specs/2026-09-26-hii-errors-cleanup-design.md §2).
 
 **E27 собран движком (2026-09-05, Task 8 hijack-v2)**: артефакт
 `refs/amibcp/e27-hijack-v2-engine.bin` (НЕ коммитить, refs/ — данные),
@@ -2887,10 +2907,16 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   tests/mock_server.rs `mock_question()` (с defaults). Контекст:
   расширить tests-mod-фикстуру одним DefaultEntry вместо третьего
   литерала. Найдено финальным ревью cli-polish.
+  В цикле hii-errors-cleanup (спека
+  docs/superpowers/specs/2026-09-26-hii-errors-cleanup-design.md
+  §6).
 * [ ] **set_value: NotWritable проверяется до парсинга item_id** —
   Read-режим + мусорный item_id → NotWritable вместо NotFound; зеркально
   `resolve_writable_path`. Контекст: `hii/mod.rs`; выровнять при
   следующем касании (как minors unlock-op).
+  В цикле hii-errors-cleanup (спека
+  docs/superpowers/specs/2026-09-26-hii-errors-cleanup-design.md
+  §1).
 * [ ] **option-тексты в question info** — отдаются string_id без
   резолюции по string-package. Контекст: спека value-op «Отложенное»;
   при подключении TUI/WebUI.
@@ -2919,6 +2945,9 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
 * [ ] **rpc hii_set_value: flush_image (полная сборка) и на no-op** —
   зеркально hii_unlock (унаследованный шаблон). Контекст: кандидат
   в цикл чистки RPC-хендлеров.
+  В цикле hii-errors-cleanup (спека
+  docs/superpowers/specs/2026-09-26-hii-errors-cleanup-design.md
+  §5).
 
 ### R2-обновление (риск «новые формы не рендерятся»)
 
@@ -3003,6 +3032,9 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   их только построчными `unlock("…#10029:{qid}")` (по 1 флипу
   `01 00 -> ff ff` каждый). Полная страница = form-unlock + 7 вопросных
   unlock'ов; «≈10 флипов за один form-unlock» в движке недостижимо.
+  В цикле hii-errors-cleanup (спека
+  docs/superpowers/specs/2026-09-26-hii-errors-cleanup-design.md
+  §4).
 * [ ] **q61 не вскрывается движком** — у вопроса 61 (form 10029) два гейта:
   EqIdVal(0x9A,1) (flippable) И suppress с составным выражением
   `EQ(u64 1, u64 0) AND DUP EQ_ID_VAL(0x9A,1)` → `plan_gates`/`unlock`
@@ -3010,12 +3042,15 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   Итог: полная страница «все 8 вопросов вскрыты» недостижима текущим op
   unlock; q61 остаётся со locked EqIdVal-гейтом (его suppress с EQ(1,0)
   всегда false, т.е. вопрос скрыт независимо).
-* [ ] **список qid сценария B скорректирован** — план исключал 59 из
+* [x] **список qid сценария B скорректирован** — план исключал 59 из
   построчных unlock'ов при ожидании пустых `unlock_flips` у hijack; но
   hijack планирует гейты [form, q59], и без предварительного
   `unlock("…:59")` планировщик выдал бы 1 флип. Сценарий B: qid =
   [54,55,56,57,58,59,60] (по 1 флипу), q61 — ожидаемый Err, hijack → 0
   флипов (идемпотентность на живых данных доказана).
+  Закрыто: факт зафиксирован спекой hii-errors-cleanup §4
+  (docs/superpowers/specs/2026-09-26-hii-errors-cleanup-design.md);
+  код не меняется — docs-коммит цикла.
 
 ### Находки финального ревью S1 serial-console (2026-09-06)
 
@@ -3510,6 +3545,9 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
 * [ ] **uefi-engine: hii_list_questions handler без tracing::info!
   успех-строки** — паритет с hii_question_info. Контекст:
   `crates/uefi-engine/src/rpc/server.rs` (оба handler'а рядом).
+  В цикле hii-errors-cleanup (спека
+  docs/superpowers/specs/2026-09-26-hii-errors-cleanup-design.md
+  §6).
 * [x] **uefi-engine: bare PE form-пакеты дают пустой список вопросов** —
   form_package_ranges не покрывает bare_form_packages: формы bare-канала
   видны в list-forms, вопросы по ним не возвращаются. Асимметрия уровня
@@ -3564,6 +3602,9 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   read-only соседям** — hii_list_forms/hii_list_strings без info-строки;
   выровнять в лог-проходе. Контекст:
   `crates/uefi-engine/src/rpc/server.rs` (758 vs 738/763).
+  В цикле hii-errors-cleanup (спека
+  docs/superpowers/specs/2026-09-26-hii-errors-cleanup-design.md
+  §6).
 * [ ] **uefi-tui: мок не позволяет протестировать ветку unlock «no
   flippable gates»** — фикстура hii_gates_list всегда возвращает
   flippable:true; расширить при следующем касании unlock/V3.
