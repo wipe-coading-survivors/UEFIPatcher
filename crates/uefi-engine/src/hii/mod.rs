@@ -373,6 +373,9 @@ pub fn gates_list(image: &Image, item_id: &str) -> Result<Vec<uefi_proto::GateIn
     if node.node_type != FfsType::Section {
         return Err(HiiError::NotASetupItem);
     }
+    if form_package_ranges_read(node).is_empty() {
+        return Err(HiiError::NotASetupItem);
+    }
     let gt = gates::GateTarget {
         form_id,
         question_id,
@@ -433,7 +436,15 @@ pub fn unlock(image: &mut Image, item_id: &str) -> Result<UnlockOutcome, HiiErro
             if node.node_type != FfsType::Section {
                 return Err(HiiError::NotASetupItem);
             }
+            if form_package_ranges_read(node).is_empty() {
+                return Err(HiiError::NotASetupItem);
+            }
             let ranges = form_package_ranges(node);
+            if ranges.is_empty() {
+                tracing::warn!(
+                    "form packages visible via read-only bare channel; bare channel is not mutable"
+                );
+            }
             let mut body = std::mem::take(&mut node.body);
             let mut absolute_flips: Vec<gates::PlannedFlip> = Vec::new();
             let mut plan_err: Option<HiiError> = None;
@@ -3318,6 +3329,7 @@ mod tests {
 
     const VENDOR_FORM_ITEM: &str = "5c60f367-a505-419a-859e-2a4ff6ca6fe5:0x19:0#10029";
     const VENDOR_QUESTION_ITEM: &str = "5c60f367-a505-419a-859e-2a4ff6ca6fe5:0x19:0#10029:0x3B";
+    const RK3588_BARE_FORM: &[u8] = include_bytes!("../../tests/fixtures/hii_rk3588_bare_form.bin");
 
     #[test]
     fn parse_item_id_accepts_form_and_question_forms() {
@@ -3434,6 +3446,71 @@ mod tests {
             gates_list(&image, "00000000-0000-0000-0000-000000000001:0x19:0#10029"),
             Err(HiiError::NotFound)
         ));
+    }
+
+    #[test]
+    fn gates_list_non_hii_section_is_not_a_setup_item() {
+        let mut image = vendor_image_with(0x19, vec![0xDE, 0xAD, 0xBE, 0xEF]);
+        image.mode = ImageMode::Read;
+        assert!(matches!(
+            gates_list(&image, VENDOR_FORM_ITEM),
+            Err(HiiError::NotASetupItem)
+        ));
+    }
+
+    #[test]
+    fn gates_list_form_without_gates_is_ok_empty() {
+        let mut image = vendor_image_with(0x19, vendor_forms_pkg());
+        image.mode = ImageMode::Read;
+        let gates =
+            gates_list(&image, "5c60f367-a505-419a-859e-2a4ff6ca6fe5:0x19:0#10002").unwrap();
+        assert!(
+            gates.is_empty(),
+            "форма без гейтов — легитимный пустой ответ"
+        );
+    }
+
+    #[test]
+    fn unlock_non_hii_section_is_not_a_setup_item() {
+        let mut image = vendor_image_with(0x19, vec![0xDE, 0xAD, 0xBE, 0xEF]);
+        assert!(matches!(
+            unlock(&mut image, VENDOR_FORM_ITEM),
+            Err(HiiError::NotASetupItem)
+        ));
+    }
+
+    #[test]
+    fn gates_list_bare_only_pe32_is_ok() {
+        let mut body = vec![0x11u8; 64];
+        body.extend_from_slice(RK3588_BARE_FORM);
+        body.extend_from_slice(&[0x22; 32]);
+        let mut image = vendor_image_with(0x10, body);
+        image.mode = ImageMode::Read;
+        assert!(
+            gates_list(&image, "5c60f367-a505-419a-859e-2a4ff6ca6fe5:0x10:0#10029").is_ok(),
+            "bare-канал читается — пустой Ok, не ошибка"
+        );
+    }
+
+    #[tracing_test::traced_test]
+    #[test]
+    fn unlock_bare_only_pe32_warns_and_noops() {
+        let mut body = vec![0x11u8; 64];
+        body.extend_from_slice(RK3588_BARE_FORM);
+        body.extend_from_slice(&[0x22; 32]);
+        let expected = body.clone();
+        let mut image = vendor_image_with(0x10, body);
+        let outcome = unlock(
+            &mut image,
+            "5c60f367-a505-419a-859e-2a4ff6ca6fe5:0x10:0#10029",
+        )
+        .unwrap();
+        assert!(outcome.applied.is_empty());
+        assert_eq!(
+            image.root.children[0].children[0].children[0].body, expected,
+            "bare-канал не мутабелен — байты нетронуты"
+        );
+        assert!(logs_contain("bare channel is not mutable"));
     }
 
     const MALFORMED_ITEM: &str = "5c60f367-a505-419a-859e-2a4ff6ca6fe5:0x19:0#nope";
