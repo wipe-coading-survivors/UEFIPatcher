@@ -98,6 +98,9 @@ pub fn add_setup_formset(
                     string_pack::AddStringsToResourceError::GrowthUnsupported => {
                         HiiError::PeGrowthUnsupported
                     }
+                    string_pack::AddStringsToResourceError::IdExhausted { next } => {
+                        HiiError::StringIdExhausted { next }
+                    }
                 })?;
             let ifr_bytes = build_ifr(schema, &string_ids)?;
             let form_pkg_len = 4 + ifr_bytes.len();

@@ -337,11 +337,15 @@ struct StringIdExhausted {
 /// Добавляет строки в тело string-пакета, назначая последовательные id.
 /// Контракт: id выдаются только из 1..=0xFFFE; при исчерпании или
 /// нечитаемом next_id существующего пакета — Err, тело пакета не тронуто.
+/// Пустой срез — байт-в-байт no-op (u24 не пересчитывается).
 /// Спека hii-write-guard §1 B1.
 fn add_strings_to_body(
     body: &mut Vec<u8>,
     strings: &[String],
 ) -> Result<HashMap<String, u16>, StringIdExhausted> {
+    if strings.is_empty() {
+        return Ok(HashMap::new());
+    }
     let sibt_start = string_info_offset(body);
     let (mut next_id, mut end_pos) =
         scan_sibt(body, sibt_start).ok_or(StringIdExhausted {
@@ -549,14 +553,14 @@ Expected: FAIL — `parse_stops_on_skip2_id_overflow...` видит wrap (id 0 �
 
 ```rust
     'outer: while pos < body.len() {
-        if body[pos] != SIBT_END && next_id >= 0xFFFF {
+        if body[pos] != SIBT_END && next_id == 0xFFFF {
             tracing::warn!("string id space exhausted; stopping string parse");
             break;
         }
         match body[pos] {
 ```
 
-(существующая метка `'outer:` остаётся; guard гасит все string-производящие руки разом — каждая кладёт ровно один id по `next_id < 0xFFFF`.)
+(существующая метка `'outer:` остаётся; guard гасит string-производящие руки на входе в итерацию — но STRINGS-руки кладут `count` id за одну итерацию, поэтому дополнительно 3d.)
 
 3b. SKIP-руки (`:181-193`) — checked:
 
@@ -595,6 +599,54 @@ Expected: FAIL — `parse_stops_on_skip2_id_overflow...` видит wrap (id 0 �
 ```
 
 (UCS2-руки НЕ трогать — их let-else жив: хвостовой байт.)
+
+3d. Исчерпание внутри STRINGS-блоков (находка ревью Task 3): `push` (`:251`) заменить на
+
+```rust
+/// Записывает строку под next_id и инкрементирует его. false = id-пространство
+/// исчерпано (next_id == 0xFFFF): запись не создана, инкремента нет.
+/// Спека hii-write-guard §1 B1.
+fn push(
+    strings: &mut Vec<(u16, String)>,
+    by_id: &mut HashMap<u16, String>,
+    next_id: &mut u16,
+    text: String,
+) -> bool {
+    if *next_id == 0xFFFF {
+        return false;
+    }
+    by_id.insert(*next_id, text.clone());
+    strings.push((*next_id, text));
+    *next_id += 1;
+    true
+}
+```
+
+и во всех 9 call-сайтах (`:61`-`:176`, все внутри walk с меткой `'outer`):
+
+```rust
+                if !push(&mut strings, &mut by_id, &mut next_id, text) {
+                    tracing::warn!("string id space exhausted; stopping string parse");
+                    break 'outer;
+                }
+```
+
+Тест (Step 1 дополнение):
+
+```rust
+    #[test]
+    fn parse_stops_inside_strings_block_at_0xffff() {
+        let mut sibt = vec![SIBT_SKIP2, 0xFD, 0xFF];
+        sibt.push(SIBT_STRINGS_SCSU);
+        sibt.extend_from_slice(&3u16.to_le_bytes());
+        sibt.extend_from_slice(b"aa\x00bb\x00cc\x00");
+        sibt.push(SIBT_END);
+        let pkg = make_pkg("en", &sibt);
+        let parsed = parse_string_package(&pkg).unwrap();
+        assert_eq!(parsed.strings.len(), 1);
+        assert_eq!(parsed.strings[0], (0xFFFE, "aa".to_string()));
+    }
+```
 
 - [ ] **Step 4: Green**
 
@@ -974,6 +1026,24 @@ cargo test -p uefi-engine && cargo clippy -p uefi-engine -- -D warnings && cargo
 git add crates/uefi-engine/src/hii/mod.rs crates/uefi-engine/src/hii/cross_formset.rs crates/uefi-engine/src/rpc/server.rs
 git commit -m "feat(uefi-engine): hii-write-guard B3 — snapshot-rollback apply-фаз question_add и кросс-unlock"
 ```
+
+- [ ] **Step 10 (финальное ревью B3): `unlock` атомарна целиком — own-фаза + кросс-фаза под общим rollback**
+
+Находка финального ревью: own-фаза `unlock` (`:416-470`) мутирует дерево (флипы + rebuild-метки) ДО снапшота `apply_cross_formset_gates` (`:471`, снапшот на входе функции). Если own-гейты применились, а кросс-донор упал — Err с частичной own-мутацией в дереве. Спека §3:146 («Err = ничего не применено») этого не допускает.
+
+10a. Failing-тест (mod.rs, `mod tests`, рядом с `unlock_cross_phase_failure_rolls_back_all_donors`): образ `three_file_image(donor_pkg(), donor_true_expr_pkg(), target_with_own_gate_pkg())` — таргет с собственным флипаемым гейтом на вопросе (иначе own-фаза ничего не мутирует и окно не тестируется); `unlock(...)` → `Err(GateExpressionUnsupported)`; дерево (debug) и `build_image`-байты == до вызова. При необходимости — новая фикстура `cross_fixtures::target_with_own_gate_pkg()` (по образцу `target_pkg`, + suppress-if EqConst на вопросе).
+
+10b. Реализация: тело `unlock` после `resolve_writable_path` (`:408`) обернуть в `with_rollback(image, |image| { ... })` (хелпер Step 5; снапшот до первой мутации); rustdoc `unlock` дополнить строкой атомарности (как у `apply_cross_formset_gates`). Внутренний снапшот `apply_cross_formset_gates` остаётся (самостоятельный контракт функции).
+
+Сопутствующий дефект (выявлен при реализации Step 10): тест `unlock_marks_own_rebuild_when_cross_donor_behind_compression` (Task 4, ранний шаг) кодифицировал старую семантику частичной мутации («own-флипы применены до отказа донора», rebuild-метка на own-пути) — противоречит §3:146 при новом контракте целостной атомарности. Тест обновить: `Err(MutationBehindCompression)` сохраняется, но own-тело байт-идентично исходному и `action == NoAction`; переименовать в `unlock_rolls_back_own_phase_when_cross_donor_behind_compression`.
+
+10c. Гейты + коммит:
+
+```bash
+cargo test -p uefi-engine && cargo clippy -p uefi-engine -- -D warnings && cargo fmt --all -- --check
+git commit -m "fix(uefi-engine): hii-write-guard B3 — unlock атомарна целиком: own-фаза и кросс-фаза под общим snapshot-rollback (финальное ревью)"
+```
+
 
 ---
 

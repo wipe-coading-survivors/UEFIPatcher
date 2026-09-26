@@ -439,12 +439,13 @@
   walker formset_add пропускает PE32-кандидатов за non-recompressable
   обёрткой и продолжает поиск (нет годных, есть заблокированные →
   `MutationBehindCompression`).
-* [ ] **string_pack: исчерпание string-id 0xFFFF** — `wrapping_add` в
+* [x] **string_pack: исчерпание string-id 0xFFFF** — `wrapping_add` в
   `scan_sibt`/`add_strings_to_body` заворачивает `next_id` в 0
   (невалидный HII string id); возвращать ошибку при исчерпании.
   В цикле hii-write-guard (спека
   docs/superpowers/specs/2026-09-25-hii-write-guard-design.md §1 B1).
-* [ ] **pe_resource: неоднозначный выбор .rsrc-секции на мусорных
+  Закрыто: `3b76b28` — цикл hii-write-guard (спека docs/superpowers/specs/2026-09-25-hii-write-guard-design.md §1 B1).
+* [x] **pe_resource: неоднозначный выбор .rsrc-секции на мусорных
   таблицах** — собственный предикат span=max(vsize,raw) first-match
   (`rsrc_raw_end`/`rsrc_virt_end`/`rsrc_grow_plan`) отличается от
   `object` min(vsize,raw) в `pe_file_range_at`; при пересекающихся
@@ -452,6 +453,7 @@
   неоднозначности.
   В цикле hii-write-guard (спека
   docs/superpowers/specs/2026-09-25-hii-write-guard-design.md §4 B4).
+  Закрыто: `1fcab96` — цикл hii-write-guard (спека docs/superpowers/specs/2026-09-25-hii-write-guard-design.md §4 B4).
 
 ### Последствия reloc-aware роста .rsrc (решение B фазы B, 2026-08-21)
 
@@ -1334,7 +1336,7 @@ atomic_write. После первой мутации хранимый файл �
   Исправлено в `1711de9` (guard `value != 0xFFFF` в `plan_flip`, симметрично
   отказу EqConst при `a != b`; спека §4.2 и план Task 3/8 актуализированы в
   `01360e3`; реальный образ подтверждает: после unlock `flippable=false`).
-* [ ] **hii/gates: plan_flip/plan_gates/apply_flips без bounds-guard'ов на
+* [x] **hii/gates: plan_flip/plan_gates/apply_flips без bounds-guard'ов на
   hand-constructed Gate** — безопасность держится на инвариантах
   decode_expr (expr_offset/expr_end из живого обхода). Контекст: ввод
   уже wired, но приходит через guarded `find_gates`; захарденить при
@@ -1342,6 +1344,7 @@ atomic_write. После первой мутации хранимый файл �
   В цикле hii-write-guard (спека
   docs/superpowers/specs/2026-09-25-hii-write-guard-design.md §2 B2;
   apply_flips уже guarded — правится только план-фаза).
+  Закрыто: `19e2f04` — цикл hii-write-guard (спека docs/superpowers/specs/2026-09-25-hii-write-guard-design.md §2 B2).
 * [ ] **hii: пересадка set_item_visibility на gates-слой** — REF-гейты
   (скрытие suppress'ом вокруг REF в родительской форме) остаются территорией
   unlock; расширение осознанно не вошло в цикл hii-walker-consistency
@@ -3265,7 +3268,7 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   page» читается как валидация формы; фактически регистрируется
   form id без проверки IFR (by design, order form→page). Перефразировать.
   Закрыто: cli-polish — переформулировано.
-* [ ] **rpc/hii_question_add: нет отката при сбое середины цикла** —
+* [x] **rpc/hii_question_add: нет отката при сбое середины цикла** —
   check_* проходят списком, но apply — по одному; сбой после первого
   вопроса оставляет частичное состояние (унаследовано от questions,
   refs расширяют окно). Продолжить строку существующих заметок об
@@ -3273,6 +3276,7 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   В цикле hii-write-guard (спека
   docs/superpowers/specs/2026-09-25-hii-write-guard-design.md §3 B3;
   решение владельца — snapshot-rollback, не plan-all-then-apply).
+  Закрыто: `791d7e5` — цикл hii-write-guard (спека docs/superpowers/specs/2026-09-25-hii-write-guard-design.md §3 B3).
 * [ ] **процесс rule-11: два нарушения порядка в дуге** —
   `de00f45` (docs fix Task 4) приземлился ПОСЛЕ `305b2c3` (feat),
   `3461441` (docs fix Task 5) — после `7f1ac12` (тесты); в обоих
@@ -3778,7 +3782,7 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   до дуги (не регрессия, найдено финальным ревью 2026-09-12).
   Контекст: `crates/uefi-engine/src/rpc/server.rs` (flush_image).
   Кандидат-фикс: per-image сериализация RPC.
-* [ ] **uefi-engine [minor]: кросс-фаза unlock между донорами не
+* [x] **uefi-engine [minor]: кросс-фаза unlock между донорами не
   атомарна** — ранний донор может быть флипнут и помечен rebuild
   (`mark_rebuild_to_root_by_path`), пока поздний провалит планирование
   (`GateExpressionUnsupported`) → unlock вернёт Err, но частичная
@@ -3799,6 +3803,7 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   В цикле hii-write-guard (спека
   docs/superpowers/specs/2026-09-25-hii-write-guard-design.md §3 B3;
   решение владельца — snapshot-rollback, не двухпроходный план).
+  Закрыто: `791d7e5` — цикл hii-write-guard (спека docs/superpowers/specs/2026-09-25-hii-write-guard-design.md §3 B3).
 * [x] **uefi-engine: кросс-формсетные REF (REF3/REF4) не поддержаны** —
   факт-фикс 2026-09-12 (при планировании дуги, сверка с UEFI 2.10
   §33.3.8.3.59 + EDK2 `UefiInternalFormRepresentation.h`): отдельный
@@ -4396,10 +4401,12 @@ Task 3 (проверено git stash). Штатная команда цикла 
 > Ветка `hii-read-truth`, whole-branch ревью: Ready to merge, все находки
 > Minor/plan-mandated — отложены (Б-цикл коснётся тех же файлов).
 
-* [ ] **hii/strings: мёртвый let-else в STRINGS_SCSU/SCSU_FONT телах** —
+* [x] **hii/strings: мёртвый let-else в STRINGS_SCSU/SCSU_FONT телах** —
   guard `p >= body.len()` покрывает то же условие, что None у read_scsu
   (start >= len); мёртвые 2 из 4 arm'ов (UCS2-варианты живы: хвостовой
   байт). Контекст: убрать при касании walk в Б-цикле.
+  Закрыто: цикл hii-write-guard Task 3 (reader-близнец B1) — let-else
+  заменён на expect с инвариантом guard'а.
 * [ ] **real_image.rs: тихий u32→u16 cast form_id_ifr в rk3588-гейте** —
   анти-паттерн, закрытый A3 в handler'е; тестовому коду можно
   `u16::try_from` со skip. Контекст: прецеденты :6013/:6084/:6384.

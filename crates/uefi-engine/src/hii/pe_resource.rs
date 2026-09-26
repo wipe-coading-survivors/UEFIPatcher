@@ -286,18 +286,15 @@ fn rsrc_grow_plan<Pe: ImageNtHeaders>(
             )
         })
         .collect();
-    let mut rsrc_idx = None;
-    for (i, (_, va, vsize, raw_size, _)) in sections.iter().enumerate() {
-        let span = (*vsize).max(*raw_size);
-        if let Some(off) = rsrc_rva.checked_sub(*va)
-            && off < span
-        {
-            rsrc_idx = Some(i);
-            break;
-        }
-    }
-    let rsrc_idx = rsrc_idx?;
-    let (section_off, rsrc_va, rsrc_vsize, rsrc_raw_size, rsrc_raw_ptr) = sections[rsrc_idx];
+    let rsrc = resolve_rsrc_section(file, pe)?;
+    let rsrc_idx = sections.iter().position(|s| s.0 == rsrc.header_off)?;
+    let (section_off, rsrc_va, rsrc_vsize, rsrc_raw_size, rsrc_raw_ptr) = (
+        rsrc.header_off,
+        rsrc.va,
+        rsrc.vsize,
+        rsrc.raw_size,
+        rsrc.raw_ptr,
+    );
     let rsrc_raw_end = (u64::from(rsrc_raw_ptr)).checked_add(u64::from(rsrc_raw_size))?;
 
     let mut raw_ranges: Vec<(u64, u64)> = Vec::new();
@@ -508,8 +505,8 @@ fn plan_rsrc_blob_growth_for<Pe: ImageNtHeaders>(
         }
     }
     let blob_len = target.len;
-    let raw_end = rsrc_raw_end(file)?;
-    let virt_end = rsrc_virt_end(file)?;
+    let raw_end = rsrc_raw_end(file, pe)?;
+    let virt_end = rsrc_virt_end(file, pe)?;
     let file_end = u64::try_from(target.off.checked_add(blob_len)?.checked_add(added)?).ok()?;
     let virt_need = u64::from(target.rva)
         .checked_add(u64::try_from(blob_len).ok()?)?
@@ -601,7 +598,7 @@ fn append_plan_for<Pe: ImageNtHeaders>(
     let packages = parse_package_list(blob)?.packages;
     let sum = packages.iter().map(|p| p.bytes.len()).sum::<usize>();
     let insert_off = growth.blob_off.checked_add(20)?.checked_add(sum)?;
-    let insert_tail = usize::try_from(rsrc_raw_end(file)?)
+    let insert_tail = usize::try_from(rsrc_raw_end(file, pe)?)
         .ok()?
         .checked_add(growth.grow)?
         .checked_sub(pkg_len)?;
@@ -626,31 +623,23 @@ fn append_plan_for<Pe: ImageNtHeaders>(
     })
 }
 
-fn rsrc_raw_end<Pe: ImageNtHeaders>(file: &PeFile<'_, Pe>) -> Option<u64> {
-    let rsrc_dir = file
-        .data_directories()
-        .get(object::pe::IMAGE_DIRECTORY_ENTRY_RESOURCE)?;
-    let (rsrc_rva, _) = rsrc_dir.address_range();
-    if rsrc_rva == 0 {
-        return None;
-    }
-    for section in file.section_table().iter() {
-        let va = section.virtual_address.get(LittleEndian);
-        let span = section
-            .virtual_size
-            .get(LittleEndian)
-            .max(section.size_of_raw_data.get(LittleEndian));
-        if let Some(off) = rsrc_rva.checked_sub(va)
-            && off < span
-        {
-            return u64::from(section.pointer_to_raw_data.get(LittleEndian))
-                .checked_add(u64::from(section.size_of_raw_data.get(LittleEndian)));
-        }
-    }
-    None
+struct RsrcSpan {
+    header_off: usize,
+    va: u32,
+    vsize: u32,
+    raw_size: u32,
+    raw_ptr: u32,
 }
 
-fn rsrc_virt_end<Pe: ImageNtHeaders>(file: &PeFile<'_, Pe>) -> Option<u64> {
+/// Секция-носитель .rsrc одним резолвером для всех каналов мутации
+/// (rsrc_grow_plan / rsrc_raw_end / rsrc_virt_end). max-множество
+/// (rsrc_rva - va < max(vsize, raw), сегодняшний предикат — покрывает
+/// vsize>raw slack, сужать нельзя) обязано быть строго одноэлементным;
+/// min-зеркало object::pe_file_range_at (rsrc_rva - va < min(vsize, raw))
+/// при непустоте не должно выбирать другую секцию. Любая неоднозначность —
+/// warn + None, не first-match. push_leaf остаётся на object: каналы либо
+/// согласованы, либо операция отказана. Спека hii-write-guard §4 B4.
+fn resolve_rsrc_section<Pe: ImageNtHeaders>(file: &PeFile<'_, Pe>, pe: &[u8]) -> Option<RsrcSpan> {
     let rsrc_dir = file
         .data_directories()
         .get(object::pe::IMAGE_DIRECTORY_ENTRY_RESOURCE)?;
@@ -658,19 +647,69 @@ fn rsrc_virt_end<Pe: ImageNtHeaders>(file: &PeFile<'_, Pe>) -> Option<u64> {
     if rsrc_rva == 0 {
         return None;
     }
-    for section in file.section_table().iter() {
-        let va = section.virtual_address.get(LittleEndian);
-        let span = section
-            .virtual_size
-            .get(LittleEndian)
-            .max(section.size_of_raw_data.get(LittleEndian));
-        if let Some(off) = rsrc_rva.checked_sub(va)
-            && off < span
-        {
-            return u64::from(va).checked_add(u64::from(section.virtual_size.get(LittleEndian)));
-        }
+    let pe_off = read_le_u32(pe, 0x3c)? as usize;
+    let opt_off = pe_off.checked_add(24)?;
+    let opt_size = read_le_u16(pe, pe_off.checked_add(20)?)? as usize;
+    let table_off = opt_off.checked_add(opt_size)?;
+    let sections: Vec<(usize, u32, u32, u32, u32)> = file
+        .section_table()
+        .iter()
+        .enumerate()
+        .map(|(idx, s)| {
+            (
+                table_off + idx * 40,
+                s.virtual_address.get(LittleEndian),
+                s.virtual_size.get(LittleEndian),
+                s.size_of_raw_data.get(LittleEndian),
+                s.pointer_to_raw_data.get(LittleEndian),
+            )
+        })
+        .collect();
+    let in_span = |va: u32, size: u32| rsrc_rva.checked_sub(va).is_some_and(|off| off < size);
+    let max_set: Vec<usize> = sections
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| in_span(s.1, s.2.max(s.3)))
+        .map(|(i, _)| i)
+        .collect();
+    if max_set.len() != 1 {
+        tracing::warn!(
+            candidates = max_set.len(),
+            "ambiguous .rsrc section mapping"
+        );
+        return None;
     }
-    None
+    let chosen = max_set[0];
+    let min_set: Vec<usize> = sections
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| in_span(s.1, s.2.min(s.3)))
+        .map(|(i, _)| i)
+        .collect();
+    if let Some(&m) = min_set.first()
+        && m != chosen
+    {
+        tracing::warn!("rsrc section mapping diverges from object min-semantics");
+        return None;
+    }
+    let (header_off, va, vsize, raw_size, raw_ptr) = sections[chosen];
+    Some(RsrcSpan {
+        header_off,
+        va,
+        vsize,
+        raw_size,
+        raw_ptr,
+    })
+}
+
+fn rsrc_raw_end<Pe: ImageNtHeaders>(file: &PeFile<'_, Pe>, pe: &[u8]) -> Option<u64> {
+    let s = resolve_rsrc_section(file, pe)?;
+    u64::from(s.raw_ptr).checked_add(u64::from(s.raw_size))
+}
+
+fn rsrc_virt_end<Pe: ImageNtHeaders>(file: &PeFile<'_, Pe>, pe: &[u8]) -> Option<u64> {
+    let s = resolve_rsrc_section(file, pe)?;
+    u64::from(s.va).checked_add(u64::from(s.vsize))
 }
 
 fn last_raw_end<Pe: ImageNtHeaders>(file: &PeFile<'_, Pe>) -> Option<u64> {
@@ -1555,5 +1594,75 @@ mod tests {
         let parsed = parse_package_list(&pe[off..off + len]).unwrap();
         assert_eq!(parsed.packages.len(), 3);
         assert_eq!(parsed.packages.last().unwrap().bytes, &form2[..]);
+    }
+
+    fn section_hdr(name: &str, vsize: u32, va: u32, raw: u32, raw_ptr: u32) -> [u8; 40] {
+        let mut h = [0u8; 40];
+        h[..name.len()].copy_from_slice(name.as_bytes());
+        h[8..12].copy_from_slice(&vsize.to_le_bytes());
+        h[12..16].copy_from_slice(&va.to_le_bytes());
+        h[16..20].copy_from_slice(&raw.to_le_bytes());
+        h[20..24].copy_from_slice(&raw_ptr.to_le_bytes());
+        h
+    }
+
+    fn pe_with_second_section(base: Vec<u8>, hdr: &[u8; 40]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(base.len() + 40);
+        out.extend_from_slice(&base[..0x170]);
+        out.extend_from_slice(hdr);
+        out.extend_from_slice(&base[0x170..]);
+        out[0x46..0x48].copy_from_slice(&2u16.to_le_bytes());
+        let rsrc_len = (base.len() - 0x170) as u32;
+        out[0x158..0x15c].copy_from_slice(&rsrc_len.to_le_bytes());
+        out[0x15c..0x160].copy_from_slice(&0x198u32.to_le_bytes());
+        out
+    }
+
+    fn hii_base_pe() -> Vec<u8> {
+        let g = Guid::from_str(LIST_GUID).unwrap();
+        let blob = list(&g, &[&string_pkg(&["first"])]);
+        synth_hii_pe("HII", &blob)
+    }
+
+    #[test]
+    fn resolve_rsrc_section_refuses_overlapping_candidates() {
+        let pe = pe_with_second_section(
+            hii_base_pe(),
+            &section_hdr(".foo", 0x100, 0x1000, 0x100, 0x198),
+        );
+        let file = PeFile64::parse(&pe[..]).unwrap();
+        assert!(resolve_rsrc_section(&file, &pe).is_none());
+        assert!(rsrc_raw_end(&file, &pe).is_none());
+        assert!(rsrc_virt_end(&file, &pe).is_none());
+        assert!(plan_rsrc_blob_growth(&pe, 8).is_none());
+    }
+
+    #[test]
+    fn resolve_rsrc_section_refuses_neighbor_vsize_overlap() {
+        let mut base = hii_base_pe();
+        let vsize = (base.len() - 0x170) as u32 + 0x2000;
+        base[0x150..0x154].copy_from_slice(&vsize.to_le_bytes());
+        base[0xd8..0xdc].copy_from_slice(&0x2800u32.to_le_bytes());
+        let pe = pe_with_second_section(base, &section_hdr(".bar", 0x200, 0x2700, 0x200, 0x198));
+        let file = PeFile64::parse(&pe[..]).unwrap();
+        assert!(resolve_rsrc_section(&file, &pe).is_none());
+        assert!(rsrc_raw_end(&file, &pe).is_none());
+    }
+
+    #[test]
+    fn resolve_rsrc_section_allows_slack_tail_rva() {
+        let mut base = hii_base_pe();
+        let raw_len = (base.len() - 0x170) as u32;
+        base[0x150..0x154].copy_from_slice(&(raw_len + 0x800).to_le_bytes());
+        base[0xd8..0xdc].copy_from_slice(&(0x1000 + raw_len).to_le_bytes());
+        let file = PeFile64::parse(&base[..]).unwrap();
+        let span = resolve_rsrc_section(&file, &base).unwrap();
+        assert_eq!(span.raw_ptr, 0x170);
+        assert_eq!(span.raw_size, raw_len);
+        assert_eq!(rsrc_raw_end(&file, &base), Some(0x170 + u64::from(raw_len)));
+        assert_eq!(
+            rsrc_virt_end(&file, &base),
+            Some(0x1000 + u64::from(raw_len) + 0x800)
+        );
     }
 }

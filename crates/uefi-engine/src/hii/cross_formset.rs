@@ -101,7 +101,8 @@ pub(crate) mod cross_fixtures {
     use crate::types::{Action, FfsNode, FfsType, Guid, Image, ImageMode, ParsingData};
     use r_efi::hii::{
         IFR_END_OP, IFR_EQ_ID_VAL_OP, IFR_EQUAL_OP, IFR_FORM_OP, IFR_FORM_SET_OP,
-        IFR_GRAY_OUT_IF_OP, IFR_ONE_OF_OP, IFR_SUPPRESS_IF_OP, IFR_UINT64_OP, PACKAGE_FORMS,
+        IFR_GRAY_OUT_IF_OP, IFR_ONE_OF_OP, IFR_SUPPRESS_IF_OP, IFR_TRUE_OP, IFR_UINT64_OP,
+        PACKAGE_FORMS,
     };
     use std::str::FromStr;
 
@@ -253,6 +254,32 @@ pub(crate) mod cross_fixtures {
         package(&ifr)
     }
 
+    /// Пакет целевого формсета (RC_SET), форма 1 под собственным
+    /// suppress-if EqConst-гейтом: own-фаза unlock мутирует таргет ещё
+    /// до кросс-фазы. Фикстура whole-function атомарности B3
+    /// (спека hii-write-guard §3, финальное ревью).
+    pub(crate) fn target_with_own_gate_pkg() -> Vec<u8> {
+        let g = Guid::from_str(RC_SET).unwrap();
+        let mut p = g.to_bytes().to_vec();
+        p.extend_from_slice(&7u16.to_le_bytes());
+        p.extend_from_slice(&0u16.to_le_bytes());
+        p.push(0);
+        let mut ifr = opcode(IFR_FORM_SET_OP, true, &p);
+        ifr.extend(opcode(IFR_SUPPRESS_IF_OP, true, &[]));
+        ifr.extend(uint64(1));
+        ifr.extend(uint64(1));
+        ifr.extend(vec![IFR_EQUAL_OP, 0x02]);
+        ifr.extend(opcode(
+            IFR_FORM_OP,
+            true,
+            &[1u16.to_le_bytes(), 21u16.to_le_bytes()].concat(),
+        ));
+        ifr.extend(vec![IFR_END_OP, 0x02]);
+        ifr.extend(vec![IFR_END_OP, 0x02]);
+        ifr.extend(vec![IFR_END_OP, 0x02]);
+        package(&ifr)
+    }
+
     pub(crate) fn mk_node(
         guid: Option<Guid>,
         node_type: FfsType,
@@ -307,6 +334,60 @@ pub(crate) mod cross_fixtures {
             0,
             vec![],
             vec![donor_file, target_file],
+        );
+        let root = mk_node(None, FfsType::Image, 0, vec![], vec![volume]);
+        Image {
+            image_id: "img".into(),
+            session_id: "s".into(),
+            root,
+            mode: ImageMode::Write,
+        }
+    }
+
+    /// Донор с не-E12 выражением (TRUE) вокруг REF3 → RC_SET#1:
+    /// plan_flip даёт Ok(None) → кросс-фаза падает GateExpressionUnsupported.
+    /// Фикстура атомарности B3 (спека hii-write-guard §3).
+    pub(crate) fn donor_true_expr_pkg() -> Vec<u8> {
+        let mut ifr = opcode(IFR_FORM_SET_OP, true, &[0u8; 21]);
+        ifr.extend(opcode(
+            IFR_FORM_OP,
+            true,
+            &[10001u16.to_le_bytes(), 20u16.to_le_bytes()].concat(),
+        ));
+        ifr.extend(opcode(IFR_SUPPRESS_IF_OP, true, &[]));
+        ifr.extend(vec![IFR_TRUE_OP, 0x02]);
+        ifr.extend(ref3(1));
+        ifr.extend(vec![IFR_END_OP, 0x02]);
+        ifr.extend(vec![IFR_END_OP, 0x02]);
+        ifr.extend(vec![IFR_END_OP, 0x02]);
+        ifr.extend(vec![IFR_END_OP, 0x02]);
+        package(&ifr)
+    }
+
+    pub(crate) const DONOR2_FILE: &str = "A22A2A2A-1212-4C4C-9A9A-2E2E2E2E2E2E";
+
+    /// Образ с двумя донорами и таргетом (порядок обхода = порядок детей):
+    /// донор1 флипаемый, донор2 нет. Фикстура атомарности B3.
+    pub(crate) fn three_file_image(donor1: Vec<u8>, donor2: Vec<u8>, target: Vec<u8>) -> Image {
+        let mk_file = |guid: &str, body: Vec<u8>| {
+            mk_node(
+                Some(Guid::from_str(guid).unwrap()),
+                FfsType::File,
+                0x07,
+                vec![],
+                vec![mk_node(None, FfsType::Section, 0x19, body, vec![])],
+            )
+        };
+        let volume = mk_node(
+            None,
+            FfsType::Volume,
+            0,
+            vec![],
+            vec![
+                mk_file(SETUP_FILE, donor1),
+                mk_file(DONOR2_FILE, donor2),
+                mk_file(TARGET_FILE, target),
+            ],
         );
         let root = mk_node(None, FfsType::Image, 0, vec![], vec![volume]);
         Image {
