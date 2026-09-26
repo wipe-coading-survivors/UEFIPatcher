@@ -299,6 +299,12 @@ git commit -m "feat(uefi-engine): HiiError::InvalidItemId — parse_item_id ра
         image
     }
 
+    fn set_value_read_mode_image() -> Image {
+        let mut image = image_with_nvar_stores();
+        image.mode = ImageMode::Read;
+        image
+    }
+
     #[test]
     fn unlock_error_order_contract() {
         let mut r = read_mode_image();
@@ -312,7 +318,7 @@ git commit -m "feat(uefi-engine): HiiError::InvalidItemId — parse_item_id ра
 
     #[test]
     fn set_value_error_order_contract() {
-        let mut r = read_mode_image();
+        let mut r = set_value_read_mode_image();
         assert!(matches!(
             set_value(&mut r, MALFORMED_ITEM, 1),
             Err(HiiError::InvalidItemId(_))
@@ -325,7 +331,7 @@ git commit -m "feat(uefi-engine): HiiError::InvalidItemId — parse_item_id ра
             set_value(&mut r, VENDOR_QUESTION_ITEM, 1),
             Err(HiiError::NotWritable)
         ));
-        let mut w = vendor_image_with(0x19, vendor_forms_pkg());
+        let mut w = image_with_nvar_stores();
         assert!(matches!(
             set_value(&mut w, UNKNOWN_TARGET_ITEM, 1),
             Err(HiiError::NotFound)
@@ -362,6 +368,8 @@ git commit -m "feat(uefi-engine): HiiError::InvalidItemId — parse_item_id ра
         ));
     }
 ```
+
+> Дефект-фикс 2026-09-26: Read+NotWritable кейс `set_value_error_order_contract` изначально использовал `read_mode_image()` (plain `vendor_forms_pkg`), где вопрос 0x3B принципиально не резолвится: `g_one_of` даёт 12-байтный statement (payload 10 + заголовок 2), а `values::find_question` требует `len >= 13` — `find_question_map` вернул бы NotFound раньше mode-чека. Кейсы set_value переведены на `image_with_nvar_stores()` (вопрос резолвится, см. `question_info_reports_4g_like_question`); unlock/visibility остаются на plain-фикстуре — VENDOR_FORM_ITEM там резолвится.
 
 - [ ] **Step 2: RED**
 
