@@ -721,7 +721,7 @@ git commit -m "feat(uefi-engine): non-HII цель — NotASetupItem в gates_li
             .hii_list_questions(HiiListQuestionsRequest {
                 image_id: opened.image_id.clone(),
                 target: target.into(),
-                form_id: 1,
+                form_id: 2,
             })
             .await
             .unwrap()
@@ -730,9 +730,9 @@ git commit -m "feat(uefi-engine): non-HII цель — NotASetupItem в gates_li
         let seeded = qs
             .iter()
             .find(|q| q.seed_value.is_some() || q.ifr_default.is_some())
-            .expect("на форме #1 AMI-образа есть вопрос с seed/default");
+            .expect("на форме #2 AMI-образа есть вопрос с seed/default");
         let value = seeded.seed_value.or(seeded.ifr_default).unwrap();
-        let item = format!("{target}#1:{:#x}", seeded.question_id);
+        let item = format!("{target}#2:{:#x}", seeded.question_id);
         let first = client
             .hii_set_value(HiiSetValueRequest {
                 image_id: opened.image_id.clone(),
