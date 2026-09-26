@@ -443,6 +443,18 @@ pub fn unlock(image: &mut Image, item_id: &str) -> Result<UnlockOutcome, HiiErro
                 if found.is_empty() {
                     continue;
                 }
+                for gate in &found {
+                    if gates::is_unlocked_expr(&gate.expr) {
+                        let region = pkg
+                            .get(gate.expr_offset..gate.expr_end.min(pkg.len()))
+                            .unwrap_or(&[]);
+                        tracing::warn!(
+                            offset = %pkg_off(gate.scope_offset),
+                            expr = %expr_text(&gate.expr, region),
+                            "gate already unlocked — skipped"
+                        );
+                    }
+                }
                 match gates::plan_gates_skip_unlocked(pkg, &found) {
                     Ok(flips) => {
                         for gate in &found {
@@ -544,6 +556,18 @@ fn apply_cross_formset_gates(
                 let node = node_at(&image.root, &site.path);
                 node.body[site.pkg_start..site.pkg_start + site.pkg_len].to_vec()
             };
+            for gate in &site.gates {
+                if gates::is_unlocked_expr(&gate.expr) {
+                    let region = pkg
+                        .get(gate.expr_offset..gate.expr_end.min(pkg.len()))
+                        .unwrap_or(&[]);
+                    tracing::warn!(
+                        offset = %pkg_off(gate.scope_offset),
+                        expr = %expr_text(&gate.expr, region),
+                        "gate already unlocked — skipped"
+                    );
+                }
+            }
             let flips = gates::plan_gates_skip_unlocked(&pkg, &site.gates)
                 .map_err(HiiError::GateExpressionUnsupported)?;
             for gate in &site.gates {
