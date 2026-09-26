@@ -57,6 +57,7 @@ fn hii_error_status(e: crate::hii::HiiError) -> Status {
         | crate::hii::HiiError::StringPackageNotFound
         | crate::hii::HiiError::NoSuppressScope => Status::not_found(e.to_string()),
         crate::hii::HiiError::NotASetupItem
+        | crate::hii::HiiError::InvalidItemId(_)
         | crate::hii::HiiError::InvalidSchema(_)
         | crate::hii::HiiError::HidingUnsupported => Status::invalid_argument(e.to_string()),
         crate::hii::HiiError::NotWritable
@@ -815,6 +816,7 @@ impl EngineService for EngineServer {
         let img = self.get_or_load_image(&r.image_id).await?;
         let forms = crate::hii::forms::collect_forms(&img);
         let _ = self.sm.touch(&img.session_id);
+        tracing::info!(image_id = %r.image_id, count = forms.len(), "hii forms listed");
         Ok(Response::new(HiiListFormsResponse { forms }))
     }
 
@@ -854,6 +856,7 @@ impl EngineService for EngineServer {
         let img = self.get_or_load_image(&r.image_id).await?;
         let strings = crate::hii::strings::collect_strings(&img);
         let _ = self.sm.touch(&img.session_id);
+        tracing::info!(image_id = %r.image_id, count = strings.len(), "hii strings listed");
         Ok(Response::new(HiiListStringsResponse { strings }))
     }
 
@@ -1066,19 +1069,20 @@ impl EngineService for EngineServer {
     #[tracing::instrument(skip(self, req), err)]
     async fn hii_unlock(&self, req: Request<HiiUnlockRequest>) -> RpcResult<HiiUnlockResponse> {
         let r = req.into_inner();
-        let img = self.get_or_load_image(&r.image_id).await?;
-        let outcome = {
+        let (outcome, session_id) = {
             let mut images = self.images.lock().await;
             let img_slot = images
                 .get_mut(&r.image_id)
                 .ok_or_else(|| Status::not_found("image not found"))?;
-            crate::hii::unlock(img_slot, &r.item_id)
-                .map_err(|e| hii_error_status_ctx(e, &r.item_id))?
+            let session_id = img_slot.session_id.clone();
+            let outcome = crate::hii::unlock(img_slot, &r.item_id)
+                .map_err(|e| hii_error_status_ctx(e, &r.item_id))?;
+            (outcome, session_id)
         };
         if !outcome.applied.is_empty() {
             self.flush_image(&r.image_id).await?;
         }
-        let _ = self.sm.touch(&img.session_id);
+        let _ = self.sm.touch(&session_id);
         tracing::info!(image_id = %r.image_id, item_id = %r.item_id, flips = outcome.applied.len(), "hii unlock");
         Ok(Response::new(HiiUnlockResponse {
             gates: outcome.gates,
@@ -1115,6 +1119,7 @@ impl EngineService for EngineServer {
         let questions = crate::hii::list_questions(&img, &r.target, form_id)
             .map_err(|e| hii_error_status_ctx(e, &r.target))?;
         let _ = self.sm.touch(&img.session_id);
+        tracing::info!(image_id = %r.image_id, target = %r.target, form_id = r.form_id, count = questions.len(), "hii questions listed");
         Ok(Response::new(HiiListQuestionsResponse { questions }))
     }
 
@@ -1133,7 +1138,9 @@ impl EngineService for EngineServer {
             crate::hii::set_value(img_slot, &r.item_id, r.value)
                 .map_err(|e| hii_error_status_ctx(e, &r.item_id))?
         };
-        self.flush_image(&r.image_id).await?;
+        if !outcome.applied.is_empty() {
+            self.flush_image(&r.image_id).await?;
+        }
         let _ = self.sm.touch(&img.session_id);
         tracing::info!(image_id = %r.image_id, item_id = %r.item_id, value = r.value, flips = outcome.applied.len(), "hii set value");
         Ok(Response::new(HiiSetValueResponse {
@@ -1553,6 +1560,23 @@ mod tests {
         let st = hii_error_status(crate::hii::HiiError::PeGrowthUnsupported);
         assert_eq!(st.code(), tonic::Code::FailedPrecondition);
         assert!(st.message().contains("grow"));
+    }
+
+    #[test]
+    fn hii_error_status_maps_invalid_item_id() {
+        let st = hii_error_status(crate::hii::HiiError::InvalidItemId("x#y".into()));
+        assert_eq!(st.code(), tonic::Code::InvalidArgument);
+        assert!(st.message().contains("malformed item_id"));
+    }
+
+    #[test]
+    fn hii_error_status_ctx_does_not_enrich_invalid_item_id() {
+        let st = hii_error_status_ctx(crate::hii::HiiError::InvalidItemId("x#y".into()), "0#99");
+        assert_eq!(st.code(), tonic::Code::InvalidArgument);
+        assert!(
+            !st.message().contains("0#99"),
+            "ctx-обогащение — только NotFound (спека §1)"
+        );
     }
 
     #[test]
@@ -2826,6 +2850,91 @@ mod tests {
             .await;
     }
 
+    #[tokio::test]
+    #[ignore = "requires real AMI image under refs/amibcp/ (gitignored)"]
+    async fn hii_set_value_noop_keeps_artifact_untouched() {
+        let (td, mut client) = setup().await;
+        let orig = amibcp_450x_path();
+        let orig_bytes = std::fs::read(&orig).unwrap();
+        let session = create_session(&mut client).await;
+        let opened = client
+            .image_open(ImageOpenRequest {
+                session_id: session.clone(),
+                path: orig.to_string_lossy().to_string(),
+                mode: ImageMode::Write as i32,
+                name: "450x".into(),
+            })
+            .await
+            .unwrap()
+            .into_inner();
+        let target = "abbce13d-e25a-4d9f-a1f9-2f7710786892:0x10:0";
+        let qs = client
+            .hii_list_questions(HiiListQuestionsRequest {
+                image_id: opened.image_id.clone(),
+                target: target.into(),
+                form_id: 2,
+            })
+            .await
+            .unwrap()
+            .into_inner()
+            .questions;
+        let seeded = qs
+            .iter()
+            .find(|q| q.seed_value.is_some() || q.ifr_default.is_some())
+            .expect("на форме #2 AMI-образа есть вопрос с seed/default");
+        let value = seeded.seed_value.or(seeded.ifr_default).unwrap();
+        let item = format!("{target}#2:{:#x}", seeded.question_id);
+        let first = client
+            .hii_set_value(HiiSetValueRequest {
+                image_id: opened.image_id.clone(),
+                item_id: item.clone(),
+                value,
+            })
+            .await
+            .unwrap()
+            .into_inner();
+        let img_path = td
+            .path()
+            .join("sessions")
+            .join(&session)
+            .join("images")
+            .join(format!("{}.bin", opened.image_id));
+        let before = std::fs::read(&img_path).unwrap();
+        let mtime_before = std::fs::metadata(&img_path).unwrap().modified().unwrap();
+        let second = client
+            .hii_set_value(HiiSetValueRequest {
+                image_id: opened.image_id.clone(),
+                item_id: item.clone(),
+                value,
+            })
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(
+            second.applied_flips.is_empty(),
+            "повтор того же value — no-op"
+        );
+        let after = std::fs::read(&img_path).unwrap();
+        assert_eq!(after.len(), before.len());
+        assert_eq!(
+            after, before,
+            "no-op set_value не должен переписывать артефакт"
+        );
+        assert_eq!(
+            std::fs::metadata(&img_path).unwrap().modified().unwrap(),
+            mtime_before,
+            "mtime не тронут — flush пропущен"
+        );
+        if first.applied_flips.is_empty() {
+            assert_eq!(after, orig_bytes);
+        }
+        let _ = client
+            .session_destroy(SessionDestroyRequest {
+                session_id: session,
+            })
+            .await;
+    }
+
     async fn create_session(client: &mut EngineServiceClient<Channel>) -> String {
         client
             .session_create(SessionCreateRequest::default())
@@ -2890,6 +2999,36 @@ mod tests {
             .into_inner()
             .nodes;
         assert!(!nodes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn hii_unlock_malformed_item_is_invalid_argument() {
+        let (_td, mut client) = setup().await;
+        let session = create_session(&mut client).await;
+        let opened = client
+            .image_upload(tonic::Request::new(ImageUploadRequest {
+                session_id: session.clone(),
+                data: fv_image_with_two_files(),
+                mode: 0,
+                name: "up.bin".into(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        let err = client
+            .hii_unlock(HiiUnlockRequest {
+                image_id: opened.image_id.clone(),
+                item_id: "0#nope".into(),
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+        assert!(err.message().contains("malformed item_id"));
+        let _ = client
+            .session_destroy(SessionDestroyRequest {
+                session_id: session,
+            })
+            .await;
     }
 
     #[tokio::test]

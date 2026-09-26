@@ -34,6 +34,8 @@ use thiserror::Error;
 pub enum HiiError {
     #[error("not found")]
     NotFound,
+    #[error("malformed item_id {0}: expected `<target>[#<form>[:<qid>]]`")]
+    InvalidItemId(String),
     #[error("not a setup item")]
     NotASetupItem,
     #[error("invalid IFR")]
@@ -87,7 +89,8 @@ pub fn set_item_visibility(
             (target, Some(form_id))
         }
         None => (
-            crate::parser::target::parse_target(item_id).map_err(|_| HiiError::NotFound)?,
+            crate::parser::target::parse_target(item_id)
+                .map_err(|_| HiiError::InvalidItemId(item_id.to_string()))?,
             None,
         ),
     };
@@ -172,17 +175,24 @@ fn parse_u16_loose(s: &str) -> Option<u16> {
 pub(crate) fn parse_item_id(
     item_id: &str,
 ) -> Result<(crate::types::Target, u16, Option<u16>), HiiError> {
-    let (target_str, disc) = item_id.rsplit_once('#').ok_or(HiiError::NotFound)?;
+    let (target_str, disc) = item_id
+        .rsplit_once('#')
+        .ok_or_else(|| HiiError::InvalidItemId(item_id.to_string()))?;
     let (form_str, qid_str) = match disc.split_once(':') {
         Some((f, q)) => (f, Some(q)),
         None => (disc, None),
     };
-    let form_id = form_str.parse::<u16>().map_err(|_| HiiError::NotFound)?;
+    let form_id = form_str
+        .parse::<u16>()
+        .map_err(|_| HiiError::InvalidItemId(disc.to_string()))?;
     let question_id = match qid_str {
-        Some(q) => Some(parse_u16_loose(q).ok_or(HiiError::NotFound)?),
+        Some(q) => {
+            Some(parse_u16_loose(q).ok_or_else(|| HiiError::InvalidItemId(disc.to_string()))?)
+        }
         None => None,
     };
-    let target = crate::parser::target::parse_target(target_str).map_err(|_| HiiError::NotFound)?;
+    let target = crate::parser::target::parse_target(target_str)
+        .map_err(|_| HiiError::InvalidItemId(target_str.to_string()))?;
     Ok((target, form_id, question_id))
 }
 
@@ -190,11 +200,11 @@ fn resolve_writable_path(
     image: &Image,
     target: &crate::types::Target,
 ) -> Result<Vec<usize>, HiiError> {
+    let path =
+        crate::parser::target::find_item_path(&image.root, target).ok_or(HiiError::NotFound)?;
     if image.mode != ImageMode::Write {
         return Err(HiiError::NotWritable);
     }
-    let path =
-        crate::parser::target::find_item_path(&image.root, target).ok_or(HiiError::NotFound)?;
     let mut ancestor = &image.root;
     for &i in &path[..path.len() - 1] {
         ancestor = &ancestor.children[i];
@@ -363,6 +373,9 @@ pub fn gates_list(image: &Image, item_id: &str) -> Result<Vec<uefi_proto::GateIn
     if node.node_type != FfsType::Section {
         return Err(HiiError::NotASetupItem);
     }
+    if form_package_ranges_read(node).is_empty() {
+        return Err(HiiError::NotASetupItem);
+    }
     let gt = gates::GateTarget {
         form_id,
         question_id,
@@ -423,7 +436,15 @@ pub fn unlock(image: &mut Image, item_id: &str) -> Result<UnlockOutcome, HiiErro
             if node.node_type != FfsType::Section {
                 return Err(HiiError::NotASetupItem);
             }
+            if form_package_ranges_read(node).is_empty() {
+                return Err(HiiError::NotASetupItem);
+            }
             let ranges = form_package_ranges(node);
+            if ranges.is_empty() {
+                tracing::warn!(
+                    "form packages visible via read-only bare channel; bare channel is not mutable"
+                );
+            }
             let mut body = std::mem::take(&mut node.body);
             let mut absolute_flips: Vec<gates::PlannedFlip> = Vec::new();
             let mut plan_err: Option<HiiError> = None;
@@ -432,6 +453,18 @@ pub fn unlock(image: &mut Image, item_id: &str) -> Result<UnlockOutcome, HiiErro
                 let found = gates::find_gates(pkg, &gt);
                 if found.is_empty() {
                     continue;
+                }
+                for gate in &found {
+                    if gates::is_unlocked_expr(&gate.expr) {
+                        let region = pkg
+                            .get(gate.expr_offset..gate.expr_end.min(pkg.len()))
+                            .unwrap_or(&[]);
+                        tracing::warn!(
+                            offset = %pkg_off(gate.scope_offset),
+                            expr = %expr_text(&gate.expr, region),
+                            "gate already unlocked — skipped"
+                        );
+                    }
                 }
                 match gates::plan_gates_skip_unlocked(pkg, &found) {
                     Ok(flips) => {
@@ -534,6 +567,18 @@ fn apply_cross_formset_gates(
                 let node = node_at(&image.root, &site.path);
                 node.body[site.pkg_start..site.pkg_start + site.pkg_len].to_vec()
             };
+            for gate in &site.gates {
+                if gates::is_unlocked_expr(&gate.expr) {
+                    let region = pkg
+                        .get(gate.expr_offset..gate.expr_end.min(pkg.len()))
+                        .unwrap_or(&[]);
+                    tracing::warn!(
+                        offset = %pkg_off(gate.scope_offset),
+                        expr = %expr_text(&gate.expr, region),
+                        "gate already unlocked — skipped"
+                    );
+                }
+            }
             let flips = gates::plan_gates_skip_unlocked(&pkg, &site.gates)
                 .map_err(HiiError::GateExpressionUnsupported)?;
             for gate in &site.gates {
@@ -985,14 +1030,14 @@ pub(crate) fn node_at_mut<'a>(root: &'a mut FfsNode, path: &[usize]) -> &'a mut 
 
 #[tracing::instrument(level = "debug", skip(image), fields(item_id = %item_id, value), err)]
 pub fn set_value(image: &mut Image, item_id: &str, value: u64) -> Result<ValueOutcome, HiiError> {
-    if image.mode != ImageMode::Write {
-        return Err(HiiError::NotWritable);
-    }
     let (target, form_id, question_id) = parse_item_id(item_id)?;
     let Some(question_id) = question_id else {
         return Err(HiiError::NotFound);
     };
     let (map, texts) = find_question_map(image, &target, form_id, question_id)?;
+    if image.mode != ImageMode::Write {
+        return Err(HiiError::NotWritable);
+    }
     let info = question_info_proto(image, form_id, &map, &texts);
     let width = validate_set_value(&map, value)?;
     let varstore = map.varstore.as_ref().ok_or_else(|| {
@@ -3008,7 +3053,7 @@ mod tests {
             true,
         )
         .unwrap_err();
-        assert!(matches!(err, HiiError::NotFound));
+        assert!(matches!(err, HiiError::InvalidItemId(_)));
     }
 
     fn ifr_op(opc: u8, scope: bool, payload: &[u8]) -> Vec<u8> {
@@ -3284,6 +3329,7 @@ mod tests {
 
     const VENDOR_FORM_ITEM: &str = "5c60f367-a505-419a-859e-2a4ff6ca6fe5:0x19:0#10029";
     const VENDOR_QUESTION_ITEM: &str = "5c60f367-a505-419a-859e-2a4ff6ca6fe5:0x19:0#10029:0x3B";
+    const RK3588_BARE_FORM: &[u8] = include_bytes!("../../tests/fixtures/hii_rk3588_bare_form.bin");
 
     #[test]
     fn parse_item_id_accepts_form_and_question_forms() {
@@ -3300,9 +3346,23 @@ mod tests {
 
     #[test]
     fn parse_item_id_rejects_garbage() {
-        assert!(parse_item_id("no-discriminator").is_err());
-        assert!(parse_item_id("5c60f367-a505-419a-859e-2a4ff6ca6fe5:0x19:0#nope").is_err());
-        assert!(parse_item_id("5c60f367-a505-419a-859e-2a4ff6ca6fe5:0x19:0#10029:zz").is_err());
+        assert!(matches!(
+            parse_item_id("no-discriminator"),
+            Err(HiiError::InvalidItemId(_))
+        ));
+        assert!(matches!(
+            parse_item_id("5c60f367-a505-419a-859e-2a4ff6ca6fe5:0x19:0#nope"),
+            Err(HiiError::InvalidItemId(_))
+        ));
+        assert!(matches!(
+            parse_item_id("5c60f367-a505-419a-859e-2a4ff6ca6fe5:0x19:0#10029:zz"),
+            Err(HiiError::InvalidItemId(_))
+        ));
+        let err = parse_item_id("5c60f367-a505-419a-859e-2a4ff6ca6fe5:0x19:0#nope").unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("expected `<target>[#<form>[:<qid>]]`")
+        );
     }
 
     #[test]
@@ -3385,6 +3445,164 @@ mod tests {
         assert!(matches!(
             gates_list(&image, "00000000-0000-0000-0000-000000000001:0x19:0#10029"),
             Err(HiiError::NotFound)
+        ));
+    }
+
+    #[test]
+    fn gates_list_non_hii_section_is_not_a_setup_item() {
+        let mut image = vendor_image_with(0x19, vec![0xDE, 0xAD, 0xBE, 0xEF]);
+        image.mode = ImageMode::Read;
+        assert!(matches!(
+            gates_list(&image, VENDOR_FORM_ITEM),
+            Err(HiiError::NotASetupItem)
+        ));
+    }
+
+    #[test]
+    fn gates_list_form_without_gates_is_ok_empty() {
+        let mut image = vendor_image_with(0x19, vendor_forms_pkg());
+        image.mode = ImageMode::Read;
+        let gates =
+            gates_list(&image, "5c60f367-a505-419a-859e-2a4ff6ca6fe5:0x19:0#10002").unwrap();
+        assert!(
+            gates.is_empty(),
+            "форма без гейтов — легитимный пустой ответ"
+        );
+    }
+
+    #[test]
+    fn unlock_non_hii_section_is_not_a_setup_item() {
+        let mut image = vendor_image_with(0x19, vec![0xDE, 0xAD, 0xBE, 0xEF]);
+        assert!(matches!(
+            unlock(&mut image, VENDOR_FORM_ITEM),
+            Err(HiiError::NotASetupItem)
+        ));
+    }
+
+    #[test]
+    fn gates_list_bare_only_pe32_is_ok() {
+        let mut body = vec![0x11u8; 64];
+        body.extend_from_slice(RK3588_BARE_FORM);
+        body.extend_from_slice(&[0x22; 32]);
+        let mut image = vendor_image_with(0x10, body);
+        image.mode = ImageMode::Read;
+        assert!(
+            gates_list(&image, "5c60f367-a505-419a-859e-2a4ff6ca6fe5:0x10:0#10029").is_ok(),
+            "bare-канал читается — пустой Ok, не ошибка"
+        );
+    }
+
+    #[tracing_test::traced_test]
+    #[test]
+    fn unlock_bare_only_pe32_warns_and_noops() {
+        let mut body = vec![0x11u8; 64];
+        body.extend_from_slice(RK3588_BARE_FORM);
+        body.extend_from_slice(&[0x22; 32]);
+        let expected = body.clone();
+        let mut image = vendor_image_with(0x10, body);
+        let outcome = unlock(
+            &mut image,
+            "5c60f367-a505-419a-859e-2a4ff6ca6fe5:0x10:0#10029",
+        )
+        .unwrap();
+        assert!(outcome.applied.is_empty());
+        assert_eq!(
+            image.root.children[0].children[0].children[0].body, expected,
+            "bare-канал не мутабелен — байты нетронуты"
+        );
+        assert!(logs_contain("bare channel is not mutable"));
+    }
+
+    const MALFORMED_ITEM: &str = "5c60f367-a505-419a-859e-2a4ff6ca6fe5:0x19:0#nope";
+    const UNKNOWN_TARGET_ITEM: &str = "00000000-0000-0000-0000-000000000001:0x19:0#10029";
+
+    fn read_mode_image() -> Image {
+        let mut image = vendor_image_with(0x19, vendor_forms_pkg());
+        image.mode = ImageMode::Read;
+        image
+    }
+
+    fn set_value_read_mode_image() -> Image {
+        let mut image = image_with_nvar_stores();
+        image.mode = ImageMode::Read;
+        image
+    }
+
+    #[test]
+    fn unlock_error_order_contract() {
+        let mut r = read_mode_image();
+        assert!(matches!(
+            unlock(&mut r, MALFORMED_ITEM),
+            Err(HiiError::InvalidItemId(_))
+        ));
+        assert!(matches!(
+            unlock(&mut r, UNKNOWN_TARGET_ITEM),
+            Err(HiiError::NotFound)
+        ));
+        assert!(matches!(
+            unlock(&mut r, VENDOR_FORM_ITEM),
+            Err(HiiError::NotWritable)
+        ));
+        let mut w = vendor_image_with(0x19, vendor_forms_pkg());
+        assert!(matches!(
+            unlock(&mut w, UNKNOWN_TARGET_ITEM),
+            Err(HiiError::NotFound)
+        ));
+        assert!(matches!(
+            unlock(&mut w, MALFORMED_ITEM),
+            Err(HiiError::InvalidItemId(_))
+        ));
+    }
+
+    #[test]
+    fn set_value_error_order_contract() {
+        let mut r = set_value_read_mode_image();
+        assert!(matches!(
+            set_value(&mut r, MALFORMED_ITEM, 1),
+            Err(HiiError::InvalidItemId(_))
+        ));
+        assert!(matches!(
+            set_value(&mut r, UNKNOWN_TARGET_ITEM, 1),
+            Err(HiiError::NotFound)
+        ));
+        assert!(matches!(
+            set_value(&mut r, VENDOR_QUESTION_ITEM, 1),
+            Err(HiiError::NotWritable)
+        ));
+        let mut w = image_with_nvar_stores();
+        assert!(matches!(
+            set_value(&mut w, UNKNOWN_TARGET_ITEM, 1),
+            Err(HiiError::NotFound)
+        ));
+        assert!(matches!(
+            set_value(&mut w, MALFORMED_ITEM, 1),
+            Err(HiiError::InvalidItemId(_))
+        ));
+    }
+
+    #[test]
+    fn set_item_visibility_error_order_contract() {
+        let mut r = read_mode_image();
+        assert!(matches!(
+            set_item_visibility(&mut r, MALFORMED_ITEM, true),
+            Err(HiiError::InvalidItemId(_))
+        ));
+        assert!(matches!(
+            set_item_visibility(&mut r, UNKNOWN_TARGET_ITEM, true),
+            Err(HiiError::NotFound)
+        ));
+        assert!(matches!(
+            set_item_visibility(&mut r, VENDOR_FORM_ITEM, true),
+            Err(HiiError::NotWritable)
+        ));
+        let mut w = vendor_image_with(0x19, vendor_forms_pkg());
+        assert!(matches!(
+            set_item_visibility(&mut w, UNKNOWN_TARGET_ITEM, true),
+            Err(HiiError::NotFound)
+        ));
+        assert!(matches!(
+            set_item_visibility(&mut w, MALFORMED_ITEM, true),
+            Err(HiiError::InvalidItemId(_))
         ));
     }
 

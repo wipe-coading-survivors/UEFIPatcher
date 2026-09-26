@@ -390,7 +390,9 @@ pub fn plan_gates(body: &[u8], gates: &[Gate]) -> Result<Vec<PlannedFlip>, Strin
     Ok(flips)
 }
 
-fn is_unlocked_expr(expr: &GateExpr) -> bool {
+/// Аппаратно-вскрытое выражение гейта: EqConst с a≠b (константа сдвинута)
+/// или EqIdVal со значением 0xFFFF. Спека hii-errors-cleanup §2.
+pub(crate) fn is_unlocked_expr(expr: &GateExpr) -> bool {
     match expr {
         GateExpr::EqConst { a, b } => a != b,
         GateExpr::EqIdVal { value, .. } => *value == 0xFFFF,
@@ -887,7 +889,12 @@ mod tests {
         let mut pkg = package(&vendor_ifr());
         pkg.truncate(pkg.len() - 3);
         let gates = find_gates(&pkg, &FORM_GATE_TARGET);
-        assert!(gates.len() <= 1);
+        assert_eq!(
+            gates.len(),
+            1,
+            "обрезка хвостовых END не прячет ранний suppress-ref гейт: \
+             walker emit'ит его на statement-опе (REF) до обрезанного хвоста"
+        );
     }
 
     fn hand_gate(expr_offset: usize, expr_end: usize, expr: GateExpr) -> Gate {
@@ -1270,6 +1277,22 @@ mod tests {
         let q_gates = find_gates(&pkg, &QUESTION_GATE_TARGET);
         assert!(!q_gates.is_empty());
         assert!(plan_gates_skip_unlocked(&pkg, &q_gates).unwrap().is_empty());
+    }
+
+    #[test]
+    fn is_unlocked_expr_covers_all_expression_classes() {
+        assert!(is_unlocked_expr(&GateExpr::EqConst { a: 1, b: 2 }));
+        assert!(!is_unlocked_expr(&GateExpr::EqConst { a: 1, b: 1 }));
+        assert!(is_unlocked_expr(&GateExpr::EqIdVal {
+            question_id: 0x9A,
+            value: 0xFFFF
+        }));
+        assert!(!is_unlocked_expr(&GateExpr::EqIdVal {
+            question_id: 0x9A,
+            value: 1
+        }));
+        assert!(!is_unlocked_expr(&GateExpr::True));
+        assert!(!is_unlocked_expr(&GateExpr::Other));
     }
 
     #[test]

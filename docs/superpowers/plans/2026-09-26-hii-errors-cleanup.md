@@ -226,7 +226,7 @@ pub(crate) fn parse_item_id(
 - [ ] **Step 4: Тест зелёный**
 
 Run: `cargo test -p uefi-engine parse_item_id`
-Expected: PASS. (Возможный красный каскад: тесты, ассертящие NotFound на мусорном item_id — в mod.rs таких нет, только `is_err`-варианты, уже заменены.)
+Expected: PASS. (Красный каскад: `set_item_visibility_rejects_malformed_discriminator` ассертил NotFound на `#notanumber` — обновить на InvalidItemId в этом же шаге. Дефект сноски «таких тестов нет» найден при реализации, фикс плана 2026-09-26.)
 
 - [ ] **Step 5: Failing-тест RPC-маппинга**
 
@@ -299,6 +299,12 @@ git commit -m "feat(uefi-engine): HiiError::InvalidItemId — parse_item_id ра
         image
     }
 
+    fn set_value_read_mode_image() -> Image {
+        let mut image = image_with_nvar_stores();
+        image.mode = ImageMode::Read;
+        image
+    }
+
     #[test]
     fn unlock_error_order_contract() {
         let mut r = read_mode_image();
@@ -312,7 +318,7 @@ git commit -m "feat(uefi-engine): HiiError::InvalidItemId — parse_item_id ра
 
     #[test]
     fn set_value_error_order_contract() {
-        let mut r = read_mode_image();
+        let mut r = set_value_read_mode_image();
         assert!(matches!(
             set_value(&mut r, MALFORMED_ITEM, 1),
             Err(HiiError::InvalidItemId(_))
@@ -325,7 +331,7 @@ git commit -m "feat(uefi-engine): HiiError::InvalidItemId — parse_item_id ра
             set_value(&mut r, VENDOR_QUESTION_ITEM, 1),
             Err(HiiError::NotWritable)
         ));
-        let mut w = vendor_image_with(0x19, vendor_forms_pkg());
+        let mut w = image_with_nvar_stores();
         assert!(matches!(
             set_value(&mut w, UNKNOWN_TARGET_ITEM, 1),
             Err(HiiError::NotFound)
@@ -362,6 +368,8 @@ git commit -m "feat(uefi-engine): HiiError::InvalidItemId — parse_item_id ра
         ));
     }
 ```
+
+> Дефект-фикс 2026-09-26: Read+NotWritable кейс `set_value_error_order_contract` изначально использовал `read_mode_image()` (plain `vendor_forms_pkg`), где вопрос 0x3B принципиально не резолвится: `g_one_of` даёт 12-байтный statement (payload 10 + заголовок 2), а `values::find_question` требует `len >= 13` — `find_question_map` вернул бы NotFound раньше mode-чека. Кейсы set_value переведены на `image_with_nvar_stores()` (вопрос резолвится, см. `question_info_reports_4g_like_question`); unlock/visibility остаются на plain-фикстуре — VENDOR_FORM_ITEM там резолвится.
 
 - [ ] **Step 2: RED**
 
@@ -477,9 +485,9 @@ git commit -m "feat(uefi-engine): единый порядок ошибок HII-�
     }
 ```
 
-- [ ] **Step 2: RED → реализация**
+- [ ] **Step 2: тест → pub(crate)**
 
-Run: `cargo test -p uefi-engine is_unlocked_expr` → FAIL (приватность). В gates.rs заменить `fn is_unlocked_expr` на:
+Run: `cargo test -p uefi-engine is_unlocked_expr` → PASS сразу: tests-mod инлайн в gates.rs (descendant-модуль видит private), RED по приватности здесь не наблюдается. Приватность ломается только на sibling-потребителе — warn-циклы mod.rs из Step 3/4 не скомпилируются без pub(crate); pub(crate) вводится именно под них. В gates.rs заменить `fn is_unlocked_expr` на:
 
 ```rust
 /// Аппаратно-вскрытое выражение гейта: EqConst с a≠b (константа сдвинута)
@@ -597,19 +605,21 @@ git commit -m "feat(uefi-engine): unlock предупреждает warn'ом о
         let mut image = vendor_image_with(0x10, body);
         image.mode = ImageMode::Read;
         assert!(
-            gates_list(&image, VENDOR_FORM_ITEM).is_ok(),
+            gates_list(&image, "5c60f367-a505-419a-859e-2a4ff6ca6fe5:0x10:0#10029").is_ok(),
             "bare-канал читается — пустой Ok, не ошибка"
         );
     }
 
     #[tracing_test::traced_test]
+    #[test]
     fn unlock_bare_only_pe32_warns_and_noops() {
         let mut body = vec![0x11u8; 64];
         body.extend_from_slice(RK3588_BARE_FORM);
         body.extend_from_slice(&[0x22; 32]);
         let expected = body.clone();
         let mut image = vendor_image_with(0x10, body);
-        let outcome = unlock(&mut image, VENDOR_FORM_ITEM).unwrap();
+        let outcome =
+            unlock(&mut image, "5c60f367-a505-419a-859e-2a4ff6ca6fe5:0x10:0#10029").unwrap();
         assert!(outcome.applied.is_empty());
         assert_eq!(
             image.root.children[0].children[0].children[0].body, expected,
@@ -711,7 +721,7 @@ git commit -m "feat(uefi-engine): non-HII цель — NotASetupItem в gates_li
             .hii_list_questions(HiiListQuestionsRequest {
                 image_id: opened.image_id.clone(),
                 target: target.into(),
-                form_id: 1,
+                form_id: 2,
             })
             .await
             .unwrap()
@@ -720,9 +730,9 @@ git commit -m "feat(uefi-engine): non-HII цель — NotASetupItem в gates_li
         let seeded = qs
             .iter()
             .find(|q| q.seed_value.is_some() || q.ifr_default.is_some())
-            .expect("на форме #1 AMI-образа есть вопрос с seed/default");
+            .expect("на форме #2 AMI-образа есть вопрос с seed/default");
         let value = seeded.seed_value.or(seeded.ifr_default).unwrap();
-        let item = format!("{target}#1:{:#x}", seeded.question_id);
+        let item = format!("{target}#2:{:#x}", seeded.question_id);
         let first = client
             .hii_set_value(HiiSetValueRequest {
                 image_id: opened.image_id.clone(),

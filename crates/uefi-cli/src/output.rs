@@ -295,6 +295,14 @@ pub fn print_gates(item_id: &str, gates: &[GateInfo], format: OutputFormat) {
     }
 }
 
+/// Form-таргет: item_id с `#` и без `:qid` в дискриминаторе — признак
+/// form-level unlock (спека hii-errors-cleanup §4).
+fn is_form_level_item(item_id: &str) -> bool {
+    item_id
+        .rsplit_once('#')
+        .is_some_and(|(_, disc)| !disc.contains(':'))
+}
+
 pub fn print_unlock(item_id: &str, gates: &[GateInfo], applied: &[String], format: OutputFormat) {
     match format {
         OutputFormat::Json => {
@@ -311,6 +319,12 @@ pub fn print_unlock(item_id: &str, gates: &[GateInfo], applied: &[String], forma
             }
             for f in applied {
                 println!("applied {f}");
+            }
+            if is_form_level_item(item_id) {
+                println!("note: form-level unlock does not unlock per-question gates;");
+                println!(
+                    "  list: hii question gates {item_id}, unlock: hii question unlock {item_id}:<qid>"
+                );
             }
         }
     }
@@ -991,7 +1005,11 @@ mod tests {
                     ..Default::default()
                 },
             ],
-            defaults: vec![],
+            defaults: vec![DefaultEntry {
+                default_id: 0,
+                r#type: 0,
+                value: 1,
+            }],
             seed_value: None,
             seed_option: None,
         }
@@ -1060,27 +1078,14 @@ mod tests {
 
     #[test]
     fn question_info_text_keeps_sid_fallback_when_text_empty() {
-        let q = QuestionInfo {
-            form_id: 10029,
-            question_id: 0x3B,
-            kind: "one_of".into(),
-            var_store_id: 1,
-            varstore: None,
-            var_offset: 0x3A,
-            width: 1,
-            min: 0,
-            max: 0,
-            step: 0,
-            options: vec![OptionEntry {
-                string_id: 9,
-                value: 2,
-                flags: 0x00,
-                ..Default::default()
-            }],
-            defaults: vec![],
-            seed_value: None,
-            seed_option: None,
-        };
+        let mut q = mock_question();
+        q.varstore = None;
+        q.options = vec![OptionEntry {
+            string_id: 9,
+            value: 2,
+            flags: 0x00,
+            ..Default::default()
+        }];
         let text = question_info_text(&q);
         assert!(text.contains("value = 2 (string 9, flags 0x0)"));
     }
