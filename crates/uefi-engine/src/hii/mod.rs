@@ -89,7 +89,8 @@ pub fn set_item_visibility(
             (target, Some(form_id))
         }
         None => (
-            crate::parser::target::parse_target(item_id).map_err(|_| HiiError::NotFound)?,
+            crate::parser::target::parse_target(item_id)
+                .map_err(|_| HiiError::InvalidItemId(item_id.to_string()))?,
             None,
         ),
     };
@@ -199,11 +200,11 @@ fn resolve_writable_path(
     image: &Image,
     target: &crate::types::Target,
 ) -> Result<Vec<usize>, HiiError> {
+    let path =
+        crate::parser::target::find_item_path(&image.root, target).ok_or(HiiError::NotFound)?;
     if image.mode != ImageMode::Write {
         return Err(HiiError::NotWritable);
     }
-    let path =
-        crate::parser::target::find_item_path(&image.root, target).ok_or(HiiError::NotFound)?;
     let mut ancestor = &image.root;
     for &i in &path[..path.len() - 1] {
         ancestor = &ancestor.children[i];
@@ -994,14 +995,14 @@ pub(crate) fn node_at_mut<'a>(root: &'a mut FfsNode, path: &[usize]) -> &'a mut 
 
 #[tracing::instrument(level = "debug", skip(image), fields(item_id = %item_id, value), err)]
 pub fn set_value(image: &mut Image, item_id: &str, value: u64) -> Result<ValueOutcome, HiiError> {
-    if image.mode != ImageMode::Write {
-        return Err(HiiError::NotWritable);
-    }
     let (target, form_id, question_id) = parse_item_id(item_id)?;
     let Some(question_id) = question_id else {
         return Err(HiiError::NotFound);
     };
     let (map, texts) = find_question_map(image, &target, form_id, question_id)?;
+    if image.mode != ImageMode::Write {
+        return Err(HiiError::NotWritable);
+    }
     let info = question_info_proto(image, form_id, &map, &texts);
     let width = validate_set_value(&map, value)?;
     let varstore = map.varstore.as_ref().ok_or_else(|| {
@@ -3408,6 +3409,99 @@ mod tests {
         assert!(matches!(
             gates_list(&image, "00000000-0000-0000-0000-000000000001:0x19:0#10029"),
             Err(HiiError::NotFound)
+        ));
+    }
+
+    const MALFORMED_ITEM: &str = "5c60f367-a505-419a-859e-2a4ff6ca6fe5:0x19:0#nope";
+    const UNKNOWN_TARGET_ITEM: &str = "00000000-0000-0000-0000-000000000001:0x19:0#10029";
+
+    fn read_mode_image() -> Image {
+        let mut image = vendor_image_with(0x19, vendor_forms_pkg());
+        image.mode = ImageMode::Read;
+        image
+    }
+
+    fn set_value_read_mode_image() -> Image {
+        let mut image = image_with_nvar_stores();
+        image.mode = ImageMode::Read;
+        image
+    }
+
+    #[test]
+    fn unlock_error_order_contract() {
+        let mut r = read_mode_image();
+        assert!(matches!(
+            unlock(&mut r, MALFORMED_ITEM),
+            Err(HiiError::InvalidItemId(_))
+        ));
+        assert!(matches!(
+            unlock(&mut r, UNKNOWN_TARGET_ITEM),
+            Err(HiiError::NotFound)
+        ));
+        assert!(matches!(
+            unlock(&mut r, VENDOR_FORM_ITEM),
+            Err(HiiError::NotWritable)
+        ));
+        let mut w = vendor_image_with(0x19, vendor_forms_pkg());
+        assert!(matches!(
+            unlock(&mut w, UNKNOWN_TARGET_ITEM),
+            Err(HiiError::NotFound)
+        ));
+        assert!(matches!(
+            unlock(&mut w, MALFORMED_ITEM),
+            Err(HiiError::InvalidItemId(_))
+        ));
+    }
+
+    #[test]
+    fn set_value_error_order_contract() {
+        let mut r = set_value_read_mode_image();
+        assert!(matches!(
+            set_value(&mut r, MALFORMED_ITEM, 1),
+            Err(HiiError::InvalidItemId(_))
+        ));
+        assert!(matches!(
+            set_value(&mut r, UNKNOWN_TARGET_ITEM, 1),
+            Err(HiiError::NotFound)
+        ));
+        assert!(matches!(
+            set_value(&mut r, VENDOR_QUESTION_ITEM, 1),
+            Err(HiiError::NotWritable)
+        ));
+        let mut w = image_with_nvar_stores();
+        assert!(matches!(
+            set_value(&mut w, UNKNOWN_TARGET_ITEM, 1),
+            Err(HiiError::NotFound)
+        ));
+        assert!(matches!(
+            set_value(&mut w, MALFORMED_ITEM, 1),
+            Err(HiiError::InvalidItemId(_))
+        ));
+    }
+
+    #[test]
+    fn set_item_visibility_error_order_contract() {
+        let mut r = read_mode_image();
+        assert!(matches!(
+            set_item_visibility(&mut r, MALFORMED_ITEM, true),
+            Err(HiiError::InvalidItemId(_))
+        ));
+        assert!(matches!(
+            set_item_visibility(&mut r, UNKNOWN_TARGET_ITEM, true),
+            Err(HiiError::NotFound)
+        ));
+        assert!(matches!(
+            set_item_visibility(&mut r, VENDOR_FORM_ITEM, true),
+            Err(HiiError::NotWritable)
+        ));
+        let mut w = vendor_image_with(0x19, vendor_forms_pkg());
+        assert!(matches!(
+            set_item_visibility(&mut w, UNKNOWN_TARGET_ITEM, true),
+            Err(HiiError::NotFound)
+        ));
+        assert!(matches!(
+            set_item_visibility(&mut w, MALFORMED_ITEM, true),
+            Err(HiiError::InvalidItemId(_))
         ));
     }
 
