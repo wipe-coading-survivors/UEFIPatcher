@@ -605,7 +605,7 @@ git commit -m "feat(uefi-engine): unlock предупреждает warn'ом о
         let mut image = vendor_image_with(0x10, body);
         image.mode = ImageMode::Read;
         assert!(
-            gates_list(&image, VENDOR_FORM_ITEM).is_ok(),
+            gates_list(&image, "5c60f367-a505-419a-859e-2a4ff6ca6fe5:0x10:0#10029").is_ok(),
             "bare-канал читается — пустой Ok, не ошибка"
         );
     }
@@ -617,7 +617,8 @@ git commit -m "feat(uefi-engine): unlock предупреждает warn'ом о
         body.extend_from_slice(&[0x22; 32]);
         let expected = body.clone();
         let mut image = vendor_image_with(0x10, body);
-        let outcome = unlock(&mut image, VENDOR_FORM_ITEM).unwrap();
+        let outcome =
+            unlock(&mut image, "5c60f367-a505-419a-859e-2a4ff6ca6fe5:0x10:0#10029").unwrap();
         assert!(outcome.applied.is_empty());
         assert_eq!(
             image.root.children[0].children[0].children[0].body, expected,
