@@ -1,16 +1,19 @@
 use http::Uri;
 use hyper_util::rt::TokioIo;
+use serde_json::Value;
 use std::path::Path;
 use tonic::Request;
 use tonic::transport::{Channel, Endpoint};
 use tower::service_fn;
+use uefi_proto::descriptor::{DynamicMessage, MethodDescriptor, SerializeOptions};
 use uefi_proto::engine_service_client::EngineServiceClient;
 use uefi_proto::*;
 
 use crate::session::SessionMap;
 
 pub struct EngineClient {
-    inner: EngineServiceClient<Channel>,
+    typed: EngineServiceClient<Channel>,
+    grpc: tonic::client::Grpc<Channel>,
 }
 
 impl EngineClient {
@@ -25,8 +28,57 @@ impl EngineClient {
             }))
             .await?;
         Ok(Self {
-            inner: EngineServiceClient::new(channel),
+            typed: EngineServiceClient::new(channel.clone()),
+            grpc: tonic::client::Grpc::new(channel),
         })
+    }
+
+    /// Generic unary-вызов любого метода engine.EngineService: JSON → DynamicMessage →
+    /// gRPC → DynamicMessage → JSON. Auth-метадата — как у типизированных обёрток.
+    pub async fn call(
+        &mut self,
+        method: &MethodDescriptor,
+        body: Value,
+        sessions: &SessionMap,
+        session_id: &str,
+    ) -> Result<Value, tonic::Status> {
+        let token = sessions
+            .get_token(session_id)
+            .await
+            .ok_or_else(|| tonic::Status::unauthenticated("no token for session"))?;
+        let msg = DynamicMessage::deserialize(method.input(), body)
+            .map_err(|e| tonic::Status::invalid_argument(format!("request decode: {e}")))?;
+        let mut request = Request::new(msg);
+        request
+            .metadata_mut()
+            .insert("authorization", format!("Bearer {token}").parse().unwrap());
+        request
+            .metadata_mut()
+            .insert("x-session-id", session_id.parse().unwrap());
+        let path = http::uri::PathAndQuery::try_from(format!(
+            "/{}/{}",
+            uefi_proto::descriptor::SERVICE_NAME,
+            method.name()
+        ))
+        .map_err(|e| tonic::Status::internal(format!("path: {e}")))?;
+        self.grpc
+            .ready()
+            .await
+            .map_err(|e| tonic::Status::unknown(format!("service not ready: {e}")))?;
+        let resp = self
+            .grpc
+            .unary(request, path, crate::bridge::DynCodec::new(method.output()))
+            .await?;
+        let mut buf = Vec::new();
+        let mut ser = serde_json::Serializer::new(&mut buf);
+        resp.into_inner()
+            .serialize_with_options(
+                &mut ser,
+                &SerializeOptions::new().skip_default_fields(false),
+            )
+            .map_err(|e| tonic::Status::internal(format!("response encode: {e}")))?;
+        serde_json::from_slice(&buf)
+            .map_err(|e| tonic::Status::internal(format!("response encode: {e}")))
     }
 
     async fn auth_req<T>(
@@ -48,14 +100,14 @@ impl EngineClient {
 
     pub async fn session_create(&mut self, name: &str) -> Result<(String, String), tonic::Status> {
         let r = self
-            .inner
+            .typed
             .session_create(SessionCreateRequest { name: name.into() })
             .await?
             .into_inner();
         Ok((r.session_id, r.token))
     }
     pub async fn session_destroy(&mut self, id: &str) -> Result<(), tonic::Status> {
-        self.inner
+        self.typed
             .session_destroy(SessionDestroyRequest {
                 session_id: id.into(),
             })
@@ -64,7 +116,7 @@ impl EngineClient {
     }
     pub async fn sessions_list(&mut self) -> Result<Vec<SessionInfo>, tonic::Status> {
         Ok(self
-            .inner
+            .typed
             .sessions_list(SessionsListRequest {})
             .await?
             .into_inner()
@@ -85,7 +137,7 @@ impl EngineClient {
             mode,
         };
         Ok(self
-            .inner
+            .typed
             .image_open(Self::auth_req(sessions, session_id, req).await?)
             .await?
             .into_inner())
@@ -102,7 +154,7 @@ impl EngineClient {
             filter: filter.into(),
         };
         Ok(self
-            .inner
+            .typed
             .image_nodes_list(Self::auth_req(sessions, session_id, req).await?)
             .await?
             .into_inner()
@@ -127,7 +179,7 @@ impl EngineClient {
             mode,
         };
         Ok(self
-            .inner
+            .typed
             .image_node_insert(Self::auth_req(sessions, session_id, req).await?)
             .await?
             .into_inner()
@@ -144,7 +196,7 @@ impl EngineClient {
             image_id: image_id.into(),
             target: target.into(),
         };
-        self.inner
+        self.typed
             .image_node_remove(Self::auth_req(sessions, session_id, req).await?)
             .await?;
         Ok(())
@@ -168,7 +220,7 @@ impl EngineClient {
             body_only,
         };
         Ok(self
-            .inner
+            .typed
             .image_node_replace(Self::auth_req(sessions, session_id, req).await?)
             .await?
             .into_inner()
@@ -185,7 +237,7 @@ impl EngineClient {
             image_id: image_id.into(),
             target: target.into(),
         };
-        self.inner
+        self.typed
             .image_node_rebuild(Self::auth_req(sessions, session_id, req).await?)
             .await?;
         Ok(())
@@ -203,7 +255,7 @@ impl EngineClient {
             item_id: item_id.into(),
             visible,
         };
-        self.inner
+        self.typed
             .hii_set_form_visibility(Self::auth_req(sessions, session_id, req).await?)
             .await?;
         Ok(())
@@ -219,7 +271,7 @@ impl EngineClient {
             image_id: image_id.into(),
             output_path: output_path.into(),
         };
-        self.inner
+        self.typed
             .image_save(Self::auth_req(sessions, session_id, req).await?)
             .await?;
         Ok(())
@@ -238,7 +290,7 @@ impl EngineClient {
             body_only,
         };
         Ok(self
-            .inner
+            .typed
             .image_node_extract(Self::auth_req(sessions, session_id, req).await?)
             .await?
             .into_inner()
@@ -255,7 +307,7 @@ impl EngineClient {
             artifact_id: artifact_id.into(),
             output_path: output_path.into(),
         };
-        self.inner
+        self.typed
             .artifact_export(Self::auth_req(sessions, session_id, req).await?)
             .await?;
         Ok(())
@@ -271,7 +323,7 @@ impl EngineClient {
             path: path.into(),
         };
         Ok(self
-            .inner
+            .typed
             .artifact_import(Self::auth_req(sessions, session_id, req).await?)
             .await?
             .into_inner()
@@ -286,7 +338,7 @@ impl EngineClient {
             session_id: session_id.into(),
         };
         Ok(self
-            .inner
+            .typed
             .artifacts_list(Self::auth_req(sessions, session_id, req).await?)
             .await?
             .into_inner()

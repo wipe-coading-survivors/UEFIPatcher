@@ -5,7 +5,8 @@ pub use engine::*;
 
 pub mod descriptor {
     pub use prost_reflect::{
-        DescriptorPool, DynamicMessage, MessageDescriptor, MethodDescriptor, ServiceDescriptor,
+        DescriptorPool, DynamicMessage, MessageDescriptor, MethodDescriptor, SerializeOptions,
+        ServiceDescriptor,
     };
     use std::sync::OnceLock;
 

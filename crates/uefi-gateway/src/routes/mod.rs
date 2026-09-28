@@ -75,5 +75,9 @@ pub fn router(state: AppState) -> axum::Router {
             axum::routing::post(artifact::import),
         )
         .route("/api/v1/artifacts", axum::routing::get(artifact::list))
+        .route(
+            "/api/v1/rpc/:method",
+            axum::routing::post(crate::bridge::call),
+        )
         .with_state(state)
 }

@@ -2,6 +2,22 @@ use tonic::Status;
 use tonic::codec::{Codec, DecodeBuf, Decoder, EncodeBuf, Encoder};
 use uefi_proto::descriptor::{DynamicMessage, MessageDescriptor};
 
+/// POST /api/v1/rpc/{Method}: универсальный мост browser→движок.
+/// Cookie обязателен: SessionCreate/SessionsList живут в REST /session и /sessions.
+pub async fn call(
+    axum::extract::State(state): axum::extract::State<crate::routes::AppState>,
+    jar: axum_extra::extract::CookieJar,
+    axum::extract::Path(method): axum::extract::Path<String>,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> Result<axum::Json<serde_json::Value>, crate::error::AppError> {
+    let md = uefi_proto::descriptor::method(&method)
+        .ok_or_else(|| crate::error::AppError::NotFound(format!("unknown method {method}")))?;
+    let sid = crate::session::extract_session_id(&jar).ok_or(crate::error::AppError::Auth)?;
+    let mut c = state.client.lock().await;
+    let resp = c.call(&md, body, &state.sessions, &sid).await?;
+    Ok(axum::Json(resp))
+}
+
 /// Кодек DynamicMessage↔bytes: штатный ProstCodec требует Decode: Default,
 /// DynamicMessage не реализует Default (дескриптор не статичен).
 pub struct DynCodec {
