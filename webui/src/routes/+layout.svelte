@@ -6,11 +6,12 @@
     let { children } = $props();
     const sections = [
         { id: 'image', label: 'Image', ready: true },
-        { id: 'forms', label: 'Forms', ready: false },
+        { id: 'forms', label: 'Forms', ready: true },
         { id: 'nvar', label: 'NVRAM', ready: false },
         { id: 'snapshots', label: 'Snapshots', ready: false },
         { id: 'artifacts', label: 'Artifacts', ready: false },
     ];
+    const formsHref = $derived(appState.imageId ? `/forms/${appState.imageId}` : '/forms');
     onMount(async () => {
         if (!appState.sessionId) {
             try {
@@ -24,11 +25,13 @@
 
 <div class="shell">
     <nav aria-label="sections">
-        {#each sections as s}
-            {#if s.ready}
+        {#each sections as s (s.id)}
+            {#if s.ready && (s.id === 'image')}
                 <a href="/image">{s.label}</a>
+            {:else if s.ready && s.id === 'forms'}
+                <a href={formsHref}>{s.label}</a>
             {:else}
-                <span aria-disabled="true" title="not in W1">{s.label}</span>
+                <span aria-disabled="true" title="not in W2">{s.label}</span>
             {/if}
         {/each}
     </nav>
