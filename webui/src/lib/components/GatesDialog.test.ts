@@ -81,5 +81,6 @@ describe('GatesDialog', () => {
             onclose: () => {}, ondone: () => {},
         });
         await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('not found'));
+        expect(screen.queryByText('no gates')).not.toBeInTheDocument();
     });
 });

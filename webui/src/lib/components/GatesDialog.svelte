@@ -55,7 +55,7 @@
     {#if error}<p class="error" role="alert">{error}</p>{/if}
     {#if gates === null && !error}
         <p>loading…</p>
-    {:else if (gates ?? []).length === 0}
+    {:else if gates !== null && gates.length === 0}
         <p>no gates</p>
     {:else}
         <table>
