@@ -90,9 +90,12 @@ export function buildFormsets(forms: FormInfo[], edges: FormEdge[]): FormsetNode
 
 export function buildFormRows(sets: FormsetNode[], expanded: Set<string>): FormRow[] {
     const rows: FormRow[] = [];
+    const seen = new Set<string>();
     const walk = (nodes: FormNode[], guid: string, depth: number) => {
         for (const n of nodes) {
             const key = `${n.form.formsetGuid}#${n.form.formIdIfr}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
             const hasChildren = n.children.length > 0;
             const isExpanded = expanded.has(key);
             rows.push({ key, kind: 'form', formsetGuid: guid, form: n.form, depth, hasChildren, expanded: isExpanded });

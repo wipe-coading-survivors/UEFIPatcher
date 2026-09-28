@@ -111,4 +111,22 @@ describe('buildFormRows', () => {
         expect(rows[1].hasChildren).toBe(true);
         expect(rows[2].hasChildren).toBe(false);
     });
+
+    it('twin-FFS duplicate forms emit each key once (first copy wins)', () => {
+        const twinA: FormInfo = { formId: 'FS-A:0x10:0', formsetGuid: 'D', formIdIfr: 1, title: 'One', visible: true };
+        const twinB: FormInfo = { formId: 'FS-B:0x10:0', formsetGuid: 'D', formIdIfr: 1, title: 'One', visible: true };
+        const twinSets = buildFormsets([twinA, twinB], []);
+        const rows = buildFormRows(twinSets, new Set(['D']));
+        const formRows = rows.filter((r) => r.kind === 'form');
+        expect(formRows).toHaveLength(1);
+        expect(formRows[0].form?.formId).toBe('FS-A:0x10:0');
+        const keys = rows.map((r) => r.key);
+        expect(new Set(keys).size).toBe(keys.length);
+    });
+
+    it('cross-formset form rendered under source parent is not repeated in own formset', () => {
+        const crossSets = buildFormsets([form('S', 1), form('T', 5)], [edge('S', 1, 5, 'T')]);
+        const rows = buildFormRows(crossSets, new Set(['S', 'S#1', 'T']));
+        expect(rows.filter((r) => r.key === 'T#5')).toHaveLength(1);
+    });
 });
