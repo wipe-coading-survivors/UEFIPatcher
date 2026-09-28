@@ -26,14 +26,10 @@ services:
       - "8080:8080"
     depends_on:
       - engine
-  webui:
-    build:
-      context: ..
-      dockerfile: docker/webui.containerfile
-    ports:
-      - "3000:3000"
-    depends_on:
-      - gateway
+# Artifact upload/download идут через файловые пути в tmp (bytes-in/out):
+# engine и gateway должны видеть общий tmp. До реализации bytes-out RPC
+# (TODO.md: webui-parity, bytes-out экстраполяция) контейнерный запуск
+# требует общего volume между сервисами.
 volumes:
   uefi-data:
   uefi-sock:

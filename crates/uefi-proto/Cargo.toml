@@ -8,6 +8,7 @@ license.workspace = true
 tonic.workspace = true
 prost.workspace = true
 serde.workspace = true
+prost-reflect = { version = "0.14", features = ["serde"] }
 
 [build-dependencies]
 tonic-build = "0.12"

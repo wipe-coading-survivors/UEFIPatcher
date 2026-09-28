@@ -5,6 +5,7 @@ use std::path::PathBuf;
 pub struct Config {
     pub listen: SocketAddr,
     pub sock_path: PathBuf,
+    pub webui_dir: PathBuf,
 }
 
 pub fn load_config() -> Result<Config> {
@@ -14,7 +15,14 @@ pub fn load_config() -> Result<Config> {
     let sock_path = std::env::var("UEFIPATCHER_SOCK")
         .map(PathBuf::from)
         .unwrap_or_else(|_| uefi_common::state::default_sock());
-    Ok(Config { listen, sock_path })
+    let webui_dir = std::env::var("UEFIPATCHER_WEBUI_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("webui/build"));
+    Ok(Config {
+        listen,
+        sock_path,
+        webui_dir,
+    })
 }
 
 #[cfg(test)]
@@ -76,5 +84,17 @@ mod tests {
         let _l = env_guard("UEFIPATCHER_GATEWAY_LISTEN", None);
         let cfg = load_config().unwrap();
         assert_eq!(cfg.sock_path, PathBuf::from("/explicit/uefipatcher.sock"));
+    }
+
+    #[test]
+    fn webui_dir_default_and_env() {
+        let _g = lock_guard();
+        let _w = env_guard("UEFIPATCHER_WEBUI_DIR", None);
+        let cfg = load_config().unwrap();
+        assert_eq!(cfg.webui_dir, PathBuf::from("webui/build"));
+
+        let _w = env_guard("UEFIPATCHER_WEBUI_DIR", Some("/explicit/webui"));
+        let cfg = load_config().unwrap();
+        assert_eq!(cfg.webui_dir, PathBuf::from("/explicit/webui"));
     }
 }

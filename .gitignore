@@ -11,6 +11,8 @@ __pycache__/
 /webui/.svelte-kit/
 /webui/build/
 /webui/dist/
+/webui/test-results/
+/webui/playwright-report/
 
 # IDE
 .idea/

@@ -1,7 +1,3 @@
-pub mod artifact;
-pub mod edit;
-pub mod hii;
-pub mod image;
 pub mod session;
 pub mod upload;
 
@@ -29,51 +25,19 @@ pub fn router(state: AppState) -> axum::Router {
             axum::routing::post(session::create).delete(session::destroy),
         )
         .route("/api/v1/sessions", axum::routing::get(session::list))
-        .route("/api/v1/image/open", axum::routing::post(image::open))
+        .route(
+            "/api/v1/rpc/:method",
+            axum::routing::post(crate::bridge::call),
+        )
         .route("/api/v1/image/upload", axum::routing::post(upload::upload))
-        .route("/api/v1/image/:id/dump", axum::routing::get(image::dump))
-        .route("/api/v1/image/:id/items", axum::routing::get(image::items))
-        .route("/api/v1/image/:id/save", axum::routing::post(image::save))
+        .route(
+            "/api/v1/artifact/upload",
+            axum::routing::post(upload::artifact_upload),
+        )
         .route(
             "/api/v1/image/:id/download",
             axum::routing::get(upload::download),
         )
-        .route(
-            "/api/v1/image/:id/insert",
-            axum::routing::post(edit::insert),
-        )
-        .route(
-            "/api/v1/image/:id/remove",
-            axum::routing::post(edit::remove),
-        )
-        .route(
-            "/api/v1/image/:id/replace",
-            axum::routing::post(edit::replace),
-        )
-        .route(
-            "/api/v1/image/:id/rebuild",
-            axum::routing::post(edit::rebuild),
-        )
-        .route(
-            "/api/v1/image/:id/set-visibility",
-            axum::routing::post(hii::set_visibility),
-        )
-        .route(
-            "/api/v1/image/:id/setup-items",
-            axum::routing::get(hii::list_items),
-        )
-        .route(
-            "/api/v1/image/:id/extract",
-            axum::routing::post(artifact::extract),
-        )
-        .route(
-            "/api/v1/artifact/:id/export",
-            axum::routing::post(artifact::export),
-        )
-        .route(
-            "/api/v1/artifact/import",
-            axum::routing::post(artifact::import),
-        )
-        .route("/api/v1/artifacts", axum::routing::get(artifact::list))
+        .layer(axum::extract::DefaultBodyLimit::max(64 * 1024 * 1024))
         .with_state(state)
 }

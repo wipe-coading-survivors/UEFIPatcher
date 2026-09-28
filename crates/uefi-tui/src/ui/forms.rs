@@ -302,7 +302,7 @@ mod tests {
 
     fn row_of(t: &ratatui::Terminal<ratatui::backend::TestBackend>, y: u16) -> String {
         (0..80)
-            .map(|x| t.backend().buffer().get(x, y).symbol().to_string())
+            .map(|x| t.backend().buffer()[(x, y)].symbol().to_string())
             .collect()
     }
 
@@ -581,7 +581,7 @@ mod tests {
         let text: String = (0..24)
             .map(|y| {
                 (0..96)
-                    .map(|x| t.backend().buffer().get(x, y).symbol().to_string())
+                    .map(|x| t.backend().buffer()[(x, y)].symbol().to_string())
                     .collect::<String>()
             })
             .collect::<Vec<_>>()

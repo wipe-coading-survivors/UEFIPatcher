@@ -182,7 +182,7 @@ mod tests {
         let text: String = (0..30)
             .map(|y| {
                 (0..100)
-                    .map(|x| t.backend().buffer().get(x, y).symbol().to_string())
+                    .map(|x| t.backend().buffer()[(x, y)].symbol().to_string())
                     .collect::<String>()
             })
             .collect::<Vec<_>>()
@@ -202,7 +202,7 @@ mod tests {
         let text: String = (0..24)
             .map(|y| {
                 (0..80)
-                    .map(|x| t.backend().buffer().get(x, y).symbol().to_string())
+                    .map(|x| t.backend().buffer()[(x, y)].symbol().to_string())
                     .collect::<String>()
             })
             .collect::<Vec<_>>()
@@ -232,7 +232,7 @@ mod tests {
         let text: String = (0..24)
             .map(|y| {
                 (0..80)
-                    .map(|x| t.backend().buffer().get(x, y).symbol().to_string())
+                    .map(|x| t.backend().buffer()[(x, y)].symbol().to_string())
                     .collect::<String>()
             })
             .collect::<Vec<_>>()

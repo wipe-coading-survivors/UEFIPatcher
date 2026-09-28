@@ -1,5 +1,8 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let out_dir = std::env::var("OUT_DIR")?;
+    let descriptor_path = std::path::Path::new(&out_dir).join("engine.binDescriptor");
     tonic_build::configure()
+        .file_descriptor_set_path(&descriptor_path)
         .message_attribute("engine.Node", "#[derive(serde::Serialize)]")
         .message_attribute("engine.ImageInfo", "#[derive(serde::Serialize)]")
         .message_attribute("engine.FormInfo", "#[derive(serde::Serialize)]")
