@@ -49,7 +49,7 @@ test('unlock + set-value + download ≡ CLI hii form unlock + question set-value
 
     await formRow.locator(`button[aria-label="gates ${FORM_KEY}"]`).click();
     await page.getByRole('button', { name: 'Unlock' }).click();
-    await expect(page.getByText(/unlocked: \d+ flips applied/)).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText(/unlocked: [1-9]\d* flips applied/)).toBeVisible({ timeout: 30_000 });
     await page.getByRole('button', { name: 'Done' }).click();
 
     await formRow.locator('.label').click();
@@ -79,5 +79,6 @@ test('unlock + set-value + download ≡ CLI hii form unlock + question set-value
     cli(['hii', 'question', 'set-value', Q_ITEM, '1']);
     cli(['image', 'save', CLI_OUT]);
 
+    expect(sha256(WEB_OUT)).not.toBe(sha256(IMAGE));
     expect(sha256(WEB_OUT)).toBe(sha256(CLI_OUT));
 });
