@@ -4541,7 +4541,7 @@ Task 3 (проверено git stash). Штатная команда цикла 
 * [ ] **pod.yaml webui-контейнер** — docker/uefipatcher-pod.yaml декларирует uefipatcher-webui:latest, образ больше не собирается (Task 6, спека webui-parity §Архитектура).
 * [ ] **.dockerignore** — не исключает webui/node_modules, webui/build, refs/, .git → загрязняет build-context gateway-образа (Task 6).
 * [ ] **тест-хрупкость** — FixedRequest shim в webui/src/lib/test/setup.ts зависит от jsdom internals (_bytes/_buffer) — проверить при апгрейде vitest/jsdom (Task 8).
-* [ ] **E2E no-op replace** — fixture = bytes самого узла: round-trip валиден, но size-changing payload уселял бы гейт (W2, Task 14).
+* [ ] **E2E no-op replace** — fixture = bytes самого узла: round-trip валиден, но size-changing payload усилял бы гейт (W2, Task 14).
 * [ ] класс: silent-data — **webui/forms: buildFormsets структурные дубли (twin-FFS)** — дедуп
   ключей есть только на уровне строк (buildFormRows first-wins, `5d73349`); формсеты/поддерева
   twin-FFS HII-модулей дублируются, плюс нюанс hidden-subtree: кросс-формсетный REF-leaf дубль
@@ -4562,10 +4562,13 @@ Task 3 (проверено git stash). Штатная команда цикла 
   sha256(WEB_OUT) != sha256(IMAGE) (равенство WEB==CLI проходит и на непромученных байтах);
   `\d+ flips` матчит 0 (гейт «unlocked: N flips» проходит без единого флипа). Контекст:
   план Task 9.
-* [ ] класс: silent-data — **webui forms: keyed-each ключи предполагают сквозную уникальность**
+* [ ] класс: silent-data — **webui: keyed-each ключи предполагают сквозную уникальность**
   — Strings-браузер `${language}:${stringId}` коллидирует при multi-source дублях
   string-пакетов; QuestionTable предполагает уникальность qid в форме (engine-контракт, UI не
-  проверяет). Контекст: план Task 6/7; прецедент-дедуп buildFormRows `5d73349`.
+  проверяет); SetValueDialog options ключ `o.value` (дубли значений one_of-опций); GatesDialog
+  applied-flips ключ `f` (повтор строк-описателей флипов) — тот же класс silent-краха
+  keyed-each, что бил уже дважды. Контекст: план Task 4–7; прецедент-дедуп buildFormRows
+  `5d73349`.
 * [ ] класс: limitation — **webui GatesDialog: Unlock остаётся активным после успеха** —
   повторный unlock возможен (engine идемпотентен, UI состояние не отражает). Контекст: план
   Task 4.
@@ -4574,3 +4577,15 @@ Task 3 (проверено git stash). Штатная команда цикла 
   «invalid or missing session», UI не ретраит). E2E-спеки закрыты ожиданием #status-session
   (`6ebbb4c`); продуктовый гвард (дизейбл до сессии / retry) не делался. Контекст: спека
   webui-parity §W2, гейт Task 10.
+* [ ] класс: limitation — **webui forms: buildFormsets — досыпанные чисто-цикловые корни без
+  детей** — формы чистого цикла (все с входящими рёбрами) досыпаются корнями с `children: []`
+  (второй проход buildFormsets), поддерево не аттачится; TUI `build_tree_rows` в том же случае
+  эммитит полное поддерево (emit_form) — расхождение паритета WebUI-дерева с TUI. Контекст:
+  webui/src/lib/forms.ts buildFormsets; план 2026-09-28-webui-w2 Task 2.
+* [ ] класс: limitation — **webui forms: косметика дерева (батч)** — formset-строка всегда
+  `hasChildren: true`, даже на пустом формсете (buildFormRows); вложенный expand-баттон формы
+  без `type="button"` (FormsTree; у formset-expand есть); неймспейс-микс FormRow: `row.key`
+  строится из собственного формсета формы, `row.formsetGuid` — из обходимого сета (для
+  кросс-детей различаются) — потребители должны пользоваться `row.key`. Контекст:
+  webui/src/lib/forms.ts buildFormRows, webui/src/lib/components/FormsTree.svelte; план
+  2026-09-28-webui-w2 Task 2/3.
