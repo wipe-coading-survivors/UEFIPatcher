@@ -4558,10 +4558,12 @@ Task 3 (проверено git stash). Штатная команда цикла 
 * [ ] класс: errors — **webui SetValueDialog: `question: undefined` → вечный loading** —
   engine отвечает NotFound-ошибкой, диалог без вопроса остаётся в спиннере; показать ошибку.
   Контекст: план Task 5.
-* [ ] класс: errors — **webui E2E: vacuous-pass belt усилить** — добавить assert
+* [x] класс: errors — **webui E2E: vacuous-pass belt усилить** — добавить assert
   sha256(WEB_OUT) != sha256(IMAGE) (равенство WEB==CLI проходит и на непромученных байтах);
   `\d+ flips` матчит 0 (гейт «unlocked: N flips» проходит без единого флипа). Контекст:
   план Task 9.
+  Закрыто: финальное ревью W2 (коммит `78206b7`) — `[1-9]\d* flips` +
+  `expect(sha256(WEB_OUT)).not.toBe(sha256(IMAGE))` в forms.spec.ts.
 * [ ] класс: silent-data — **webui: keyed-each ключи предполагают сквозную уникальность**
   — Strings-браузер `${language}:${stringId}` коллидирует при multi-source дублях
   string-пакетов; QuestionTable предполагает уникальность qid в форме (engine-контракт, UI не
@@ -4586,6 +4588,24 @@ Task 3 (проверено git stash). Штатная команда цикла 
   `hasChildren: true`, даже на пустом формсете (buildFormRows); вложенный expand-баттон формы
   без `type="button"` (FormsTree; у formset-expand есть); неймспейс-микс FormRow: `row.key`
   строится из собственного формсета формы, `row.formsetGuid` — из обходимого сета (для
-  кросс-детей различаются) — потребители должны пользоваться `row.key`. Контекст:
+  кросс-детей различаются) — потребители должны пользоваться `row.key`; `revokeObjectURL`
+  синхронно сразу после `a.click()` (image/[id] и forms/[id] +page.svelte); StringsPanel
+  «0 of 0» при загрузке без loading-стейта. Контекст:
   webui/src/lib/forms.ts buildFormRows, webui/src/lib/components/FormsTree.svelte; план
   2026-09-28-webui-w2 Task 2/3.
+* [ ] класс: limitation — **webui forms: multi-parent REF-цели — first-wins оставляет только
+  первое вхождение** — TUI `build_tree_rows` показывает форму под каждым родителем
+  (`crates/uefi-tui/src/forms.rs:78` «кратные родители — у каждого»), webui first-wins дедуп
+  (`5d73349`) оставляет только первое вхождение; плюс cross-formset dual-root: leaf в дереве
+  источника скрывает root-строку и всё поддерево в своём формсете — TUI-parity расхождение.
+  Контекст: webui/src/lib/forms.ts buildFormRows/buildFormsets; план 2026-09-28-webui-w2
+  Task 2/9.
+* [ ] класс: limitation — **webui forms: dangling REF-цели молча пропускаются** — forms.ts
+  `if (!tf) continue` роняет строку без следа, TUI рендерит DanglingRef-строки («!»
+  в колонке form id). Контекст: webui/src/lib/forms.ts:54,
+  crates/uefi-tui/src/forms.rs:79; план 2026-09-28-webui-w2 Task 2.
+
+> **Примечание (intentional-расхождение, не «чинить»)** — при cross-edge S→T#5 и локальной
+> S#5 webui вкладывает foreign-форму листом и держит локальную корнем (TUI наоборот
+> вкладывает локальную) — осознанное поведение webui, не «чинить» в сторону TUI. Контекст:
+> webui/src/lib/forms.ts buildFormsets; спека 2026-09-28-webui-parity-design.md §W2.
