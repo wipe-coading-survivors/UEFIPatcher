@@ -4531,7 +4531,7 @@ Task 3 (проверено git stash). Штатная команда цикла 
   Закрыто: цикл hii-tail-sweep (`8b9d74c`) — подсказка переведена на
   `UEFIPATCHER_TEST_FW=$PWD/refs/fw/...` (запуск из корня репо).
 
-## WebUI Parity — отложенное (после W1)
+## WebUI Parity — отложенное (после W1/W2)
 
 * [ ] **bytes-out экстраполяция** — download без temp-файла шлюза (RPC с bytes-ответом)
   и общий bytes-in/out для контейнерного окружения; upload-side уже на ImageUpload RPC
@@ -4541,4 +4541,36 @@ Task 3 (проверено git stash). Штатная команда цикла 
 * [ ] **pod.yaml webui-контейнер** — docker/uefipatcher-pod.yaml декларирует uefipatcher-webui:latest, образ больше не собирается (Task 6, спека webui-parity §Архитектура).
 * [ ] **.dockerignore** — не исключает webui/node_modules, webui/build, refs/, .git → загрязняет build-context gateway-образа (Task 6).
 * [ ] **тест-хрупкость** — FixedRequest shim в webui/src/lib/test/setup.ts зависит от jsdom internals (_bytes/_buffer) — проверить при апгрейде vitest/jsdom (Task 8).
-* [ ] **E2E no-op replace** — fixture = bytes самого узла: round-trip валиден, но size-changing payload усилял бы гейт (W2, Task 14).
+* [ ] **E2E no-op replace** — fixture = bytes самого узла: round-trip валиден, но size-changing payload уселял бы гейт (W2, Task 14).
+* [ ] класс: silent-data — **webui/forms: buildFormsets структурные дубли (twin-FFS)** — дедуп
+  ключей есть только на уровне строк (buildFormRows first-wins, `5d73349`); формсеты/поддерева
+  twin-FFS HII-модулей дублируются, плюс нюанс hidden-subtree: кросс-формсетный REF-leaf дубль
+  подавляет собственное вхождение формсета с детьми. Контекст: спека webui-parity §W2, план
+  2026-09-28-webui-w2 Task 2/9.
+* [ ] класс: errors — **webui: Svelte 5 тихий крах keyed-each без error boundary** — дубли
+  ключей роняют each молча (пустое дерево, без ошибки в UI); нужен error boundary/logger.
+  Контекст: живой прецедент twin-FFS валит дерево форм (план Task 9, фиксы 5d73349/6ebbb4c —
+  точечные, класс остаётся).
+* [ ] класс: limitation — **webui dialogs: stale-promise гонки в $effect** — GatesDialog/
+  SetValueDialog не отменяют in-flight промисы при повторном открытии; page-level
+  stale-error assignment без гварда (transient UI). Контекст: план Task 4/5/8 — монотонные
+  токены есть только на loadQuestions/refresh.
+* [ ] класс: errors — **webui SetValueDialog: `question: undefined` → вечный loading** —
+  engine отвечает NotFound-ошибкой, диалог без вопроса остаётся в спиннере; показать ошибку.
+  Контекст: план Task 5.
+* [ ] класс: errors — **webui E2E: vacuous-pass belt усилить** — добавить assert
+  sha256(WEB_OUT) != sha256(IMAGE) (равенство WEB==CLI проходит и на непромученных байтах);
+  `\d+ flips` матчит 0 (гейт «unlocked: N flips» проходит без единого флипа). Контекст:
+  план Task 9.
+* [ ] класс: silent-data — **webui forms: keyed-each ключи предполагают сквозную уникальность**
+  — Strings-браузер `${language}:${stringId}` коллидирует при multi-source дублях
+  string-пакетов; QuestionTable предполагает уникальность qid в форме (engine-контракт, UI не
+  проверяет). Контекст: план Task 6/7; прецедент-дедуп buildFormRows `5d73349`.
+* [ ] класс: limitation — **webui GatesDialog: Unlock остаётся активным после успеха** —
+  повторный unlock возможен (engine идемпотентен, UI состояние не отражает). Контекст: план
+  Task 4.
+* [ ] класс: errors — **webui: действия до завершения session-bootstrap → 401 без retry** —
+  onMount createSession гоняется с кликами (Upload активен без сессии; gateway отвечает Auth
+  «invalid or missing session», UI не ретраит). E2E-спеки закрыты ожиданием #status-session
+  (`6ebbb4c`); продуктовый гвард (дизейбл до сессии / retry) не делался. Контекст: спека
+  webui-parity §W2, гейт Task 10.
