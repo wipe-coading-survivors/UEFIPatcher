@@ -26,14 +26,6 @@ services:
       - "8080:8080"
     depends_on:
       - engine
-  webui:
-    build:
-      context: ..
-      dockerfile: docker/webui.containerfile
-    ports:
-      - "3000:3000"
-    depends_on:
-      - gateway
 volumes:
   uefi-data:
   uefi-sock:
