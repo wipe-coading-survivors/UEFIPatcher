@@ -71,6 +71,12 @@
 - **Spec**: `docs/superpowers/specs/2026-07-22-uefi-webui-design.md`
 - **Plan**: `docs/superpowers/plans/2026-07-22-uefi-webui.md`
 - **Статус**: план реализации готов (12 задач TDD), к исполнению.
+- **Статус W1 (дуга webui-parity)**: реализован (2026-09-28) — мост prost-reflect,
+  upload bytes→ImageUpload, static-host, каркас shell + раздел Image (дерево/inspector/
+  операции/search/save/download), E2E sha256-паритет с CLI. Спека
+  `docs/superpowers/specs/2026-09-28-webui-parity-design.md`, план
+  `docs/superpowers/plans/2026-09-28-webui-w1.md`. Далее: W2 (Forms), W3 (NVRAM/
+  Snapshots/Artifacts/добавление).
 - **Что включено**: крейт `uefi-gateway` (axum REST+WS, cookie→gRPC metadata, upload/download, artifact endpoints); `webui/` (SvelteKit SPA, tree-view, details, операции, setup add-formset); контейнеризация (`<component>.containerfile`, `registry.fedoraproject.org/fedora:44`, `rust-builder.containerfile`); тесты.
 
 ### Цикл 6 — Расширенный Setup (план готов, к реализации)

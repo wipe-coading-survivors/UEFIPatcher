@@ -602,14 +602,15 @@
 > gateway client переименован, `/find` и `/dump/ws` маршруты удалены,
 > `/dump` возвращает `{nodes}`, WebUI `findItem()` убран (был green до и
 > после). Глубокий rework — ниже.
+> Закрыто циклом webui-w1 (2026-09-28, спека 2026-09-28-webui-parity-design.md): мост /api/v1/rpc/{Method} заменил REST-маршруты, /dump display-bug закрыт иерархическим деревом, addFormSet-404 ушёл вместе со setup-страницей.
 
-* [ ] **Gateway: новые маршруты** — `/api/v1/image/:id/dump` → `/nodes`;
+* [x] **Gateway: новые маршруты** — `/api/v1/image/:id/dump` → `/nodes`;
   удалить `/dump`; добавить `/api/v1/images` (ImagesList),
   `/api/v1/image/:id/forms`, `/api/v1/image/:id/strings`,
   `/api/v1/image/:id/status`, `DELETE /api/v1/image/:id` (ImageClose).
-* [ ] **Gateway: `routes/hii.rs`** (ex-`setup.rs`, переименован фазой 2
+* [x] **Gateway: `routes/hii.rs`** (ex-`setup.rs`, переименован фазой 2
   Плана B, `d4423fc`) — добавить `forms`, `strings` handlers.
-* [ ] **WebUI: полный fix** — обновить все fetch-вызовы под новые маршруты,
+* [x] **WebUI: полный fix** — обновить все fetch-вызовы под новые маршруты,
   подключить forms/strings listing, починить существующие баги (dead
   `dumpTree` import, unused `openImage` name field, a11y warnings).
   Дополнено актуализацией 2026-08-22: `addFormSet()` в `api.ts` зовёт
@@ -4529,3 +4530,17 @@ Task 3 (проверено git stash). Штатная команда цикла 
   (план Task 10). Контекст: одна строка при следующем touch.
   Закрыто: цикл hii-tail-sweep (`8b9d74c`) — подсказка переведена на
   `UEFIPATCHER_TEST_FW=$PWD/refs/fw/...` (запуск из корня репо).
+
+## WebUI Parity — отложенное (после W1)
+
+* [ ] **bytes-out экстраполяция** — download без temp-файла шлюза (RPC с bytes-ответом)
+  и общий bytes-in/out для контейнерного окружения; upload-side уже на ImageUpload RPC
+  (спека 2026-09-28-webui-parity-design.md §Отложенное).
+* [ ] **Command palette (Ctrl+K)** — web-аналог командности TUI (IDE-стайл), вне W1–W3
+  (спека §Интеракция).
+* [ ] **pod.yaml webui-контейнер** — docker/uefipatcher-pod.yaml декларирует uefipatcher-webui:latest, образ больше не собирается (Task 6, спека webui-parity §Архитектура).
+* [ ] **.dockerignore** — не исключает webui/node_modules, webui/build, refs/, .git → загрязняет build-context gateway-образа (Task 6).
+* [ ] **класс: write-path** — Insert/Replace-диалоги без busy-гварда на submit: double-click в async-окне дублирует мутацию (Task 12, план-сниппет опускал гвард; ConfirmDialog имеет).
+* [ ] **класс: errors** — onDownload на /image/[id] без catch: unhandled rejection при сетевой ошибке (Task 13).
+* [ ] **тест-хрупкость** — FixedRequest shim в webui/src/lib/test/setup.ts зависит от jsdom internals (_bytes/_buffer) — проверить при апгрейде vitest/jsdom (Task 8).
+* [ ] **E2E no-op replace** — fixture = bytes самого узла: round-trip валиден, но size-changing payload усилял бы гейт (W2, Task 14).
