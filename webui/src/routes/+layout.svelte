@@ -1,12 +1,17 @@
 <script lang="ts">
-    import { sessionStore } from '$lib/stores';
+    import { appState } from '$lib/state.svelte';
+    import { createSession } from '$lib/api';
+    import { onMount } from 'svelte';
     let { children } = $props();
+    onMount(async () => {
+        if (!appState.sessionId) {
+            try {
+                appState.sessionId = await createSession();
+            } catch {
+                appState.sessionId = null;
+            }
+        }
+    });
 </script>
 
-<header>
-    <h1>UEFIPatcher</h1>
-    {#if $sessionStore}
-        <span>Session: {$sessionStore.slice(0, 8)}...</span>
-    {/if}
-</header>
-<main>{@render children()}</main>
+{@render children?.()}

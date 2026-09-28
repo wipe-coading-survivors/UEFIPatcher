@@ -1,82 +1,169 @@
-import { imageStore, sessionStore, treeStore, type TreeNode } from './stores';
+import type {
+    Empty, ImageOpenResponse, ImagesListResponse, ImageNodesResponse,
+    Node as EngineNode, ArtifactImportResponse,
+} from './proto/engine';
 
 const API = '/api/v1';
 
-async function req(path: string, opts: RequestInit = {}): Promise<any> {
-    const resp = await fetch(`${API}${path}`, { ...opts, headers: { 'Content-Type': 'application/json', ...opts.headers } });
+export type { EngineNode };
+
+export class ApiError extends Error {
+    constructor(
+        public code: string,
+        message: string,
+        public status: number,
+    ) {
+        super(message);
+    }
+}
+
+async function req(path: string, opts: RequestInit = {}): Promise<Response> {
+    const resp = await fetch(`${API}${path}`, opts);
     if (!resp.ok) {
         const body = await resp.json().catch(() => ({ error: resp.statusText }));
-        throw new Error(body.error || resp.statusText);
+        throw new ApiError(body.code ?? 'UNKNOWN', body.error ?? resp.statusText, resp.status);
     }
-    return resp.json();
+    return resp;
 }
 
-export async function createSession() {
-    const r = await req('/session', { method: 'POST', body: '{}' });
-    sessionStore.set(r.session_id);
-    return r;
+export async function bridge<Req, Resp>(method: string, body: Req): Promise<Resp> {
+    const resp = await req(`/rpc/${method}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+    });
+    return resp.json() as Promise<Resp>;
 }
 
-export async function destroySession() {
+export async function createSession(): Promise<string> {
+    const resp = await req('/session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+    });
+    const r = (await resp.json()) as { session_id: string };
+    return r.session_id;
+}
+
+export async function destroySession(): Promise<void> {
     await req('/session', { method: 'DELETE' });
-    sessionStore.set(null);
-    imageStore.set(null);
-    treeStore.set([]);
 }
 
-export async function openImage(path: string, mode: string = 'read') {
-    const r = await req('/image/open', { method: 'POST', body: JSON.stringify({ path, mode }) });
-    imageStore.set(r.image_id);
-    return r;
-}
-
-export async function uploadImage(file: File): Promise<string> {
+export async function uploadImage(
+    file: File,
+    mode: 'read' | 'write' = 'read',
+): Promise<{ imageId: string; rootGuid: string; name: string }> {
     const form = new FormData();
     form.append('file', file);
-    const resp = await fetch(`${API}/image/upload`, { method: 'POST', body: form });
-    if (!resp.ok) throw new Error('upload failed');
-    const r = await resp.json();
-    return r.path;
+    form.append('mode', mode);
+    const resp = await req('/image/upload', { method: 'POST', body: form });
+    const r = (await resp.json()) as { image_id: string; root_guid: string; name: string };
+    return { imageId: r.image_id, rootGuid: r.root_guid, name: r.name };
 }
 
-export async function dumpTree(imageId: string, format: string = 'text') {
-    return req(`/image/${imageId}/dump?format=${format}`);
-}
-
-export async function listItems(imageId: string, filter: string = '') {
-    return req(`/image/${imageId}/items?filter=${filter}`);
-}
-
-export async function insert(imageId: string, target: string, ffsPath: string, mode: string = 'into') {
-    return req(`/image/${imageId}/insert`, { method: 'POST', body: JSON.stringify({ target, ffs_path: ffsPath, mode }) });
-}
-
-export async function remove(imageId: string, target: string) {
-    return req(`/image/${imageId}/remove`, { method: 'POST', body: JSON.stringify({ target }) });
-}
-
-export async function replace(imageId: string, target: string, dataPath: string, bodyOnly: boolean = false) {
-    return req(`/image/${imageId}/replace`, { method: 'POST', body: JSON.stringify({ target, data_path: dataPath, body_only: bodyOnly }) });
-}
-
-export async function rebuild(imageId: string, target: string) {
-    return req(`/image/${imageId}/rebuild`, { method: 'POST', body: JSON.stringify({ target }) });
-}
-
-export async function setVisibility(imageId: string, itemId: string, visible: boolean) {
-    return req(`/image/${imageId}/set-visibility`, { method: 'POST', body: JSON.stringify({ item_id: itemId, visible }) });
-}
-
-export async function saveImage(imageId: string, outputPath: string) {
-    return req(`/image/${imageId}/save`, { method: 'POST', body: JSON.stringify({ output_path: outputPath }) });
+export async function uploadArtifact(file: File): Promise<{ artifactId: string }> {
+    const form = new FormData();
+    form.append('file', file);
+    const resp = await req('/artifact/upload', { method: 'POST', body: form });
+    const r = (await resp.json()) as { artifact_id: string };
+    return { artifactId: r.artifact_id };
 }
 
 export async function downloadImage(imageId: string): Promise<Blob> {
-    const resp = await fetch(`${API}/image/${imageId}/download`);
-    if (!resp.ok) throw new Error('download failed');
+    const resp = await req(`/image/${imageId}/download`);
     return resp.blob();
 }
 
-export async function addFormSet(imageId: string, schemaJson: string, targetFfsGuid: string = '') {
-    return req(`/image/${imageId}/add-formset`, { method: 'POST', body: JSON.stringify({ schema_json: schemaJson, target_ffs_guid: targetFfsGuid }) });
-}
+export const imagesList = (sessionId: string) =>
+    bridge<{ sessionId: string }, ImagesListResponse>('ImagesList', { sessionId });
+
+export const imageOpen = (
+    sessionId: string,
+    path: string,
+    mode: 0 | 1,
+    name = '',
+) => bridge<{ sessionId: string; path: string; mode: number; name: string }, ImageOpenResponse>(
+    'ImageOpen',
+    { sessionId, path, mode, name },
+);
+
+export const imageClose = (imageId: string) =>
+    bridge<{ imageId: string }, Empty>('ImageClose', { imageId });
+
+export const listNodes = (imageId: string, filter = '') =>
+    bridge<{ imageId: string; filter: string }, ImageNodesResponse>('ImageNodesList', {
+        imageId,
+        filter,
+    });
+
+export const searchNodes = (
+    imageId: string,
+    query: string,
+    modes: number[] = [0],
+    limit = 100,
+) =>
+    bridge<
+        { imageId: string; query: string; modes: number[]; limit: number },
+        ImageNodesResponse
+    >('ImageNodesSearch', { imageId, query, modes, limit });
+
+export const insertNode = (
+    imageId: string,
+    target: string,
+    mode: number,
+    source: { artifactId?: string; ffsPath?: string },
+) =>
+    bridge<
+        {
+            imageId: string;
+            target: string;
+            mode: number;
+            artifactId: string;
+            ffsPath: string;
+        },
+        { itemId: string }
+    >('ImageNodeInsert', {
+        imageId,
+        target,
+        mode,
+        artifactId: source.artifactId ?? '',
+        ffsPath: source.ffsPath ?? '',
+    });
+
+export const removeNode = (imageId: string, target: string) =>
+    bridge<{ imageId: string; target: string }, Empty>('ImageNodeRemove', { imageId, target });
+
+export const replaceNode = (
+    imageId: string,
+    target: string,
+    source: { artifactId?: string; ffsPath?: string },
+    bodyOnly: boolean,
+) =>
+    bridge<
+        {
+            imageId: string;
+            target: string;
+            artifactId: string;
+            ffsPath: string;
+            bodyOnly: boolean;
+        },
+        { itemId: string }
+    >('ImageNodeReplace', {
+        imageId,
+        target,
+        artifactId: source.artifactId ?? '',
+        ffsPath: source.ffsPath ?? '',
+        bodyOnly,
+    });
+
+export const rebuildNode = (imageId: string, target: string) =>
+    bridge<{ imageId: string; target: string }, Empty>('ImageNodeRebuild', { imageId, target });
+
+export const extractNode = (imageId: string, target: string, bodyOnly: boolean) =>
+    bridge<
+        { imageId: string; target: string; bodyOnly: boolean },
+        { artifactId: string }
+    >('ImageNodeExtract', { imageId, target, bodyOnly });
+
+export const saveImage = (imageId: string, outputPath: string) =>
+    bridge<{ imageId: string; outputPath: string }, Empty>('ImageSave', { imageId, outputPath });
