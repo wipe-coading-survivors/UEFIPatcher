@@ -122,6 +122,8 @@
             a.download = 'patched.bin';
             a.click();
             URL.revokeObjectURL(url);
+        } catch (e) {
+            error = e instanceof Error ? e.message : String(e);
         } finally {
             busy = false;
         }

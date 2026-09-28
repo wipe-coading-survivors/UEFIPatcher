@@ -4540,7 +4540,5 @@ Task 3 (проверено git stash). Штатная команда цикла 
   (спека §Интеракция).
 * [ ] **pod.yaml webui-контейнер** — docker/uefipatcher-pod.yaml декларирует uefipatcher-webui:latest, образ больше не собирается (Task 6, спека webui-parity §Архитектура).
 * [ ] **.dockerignore** — не исключает webui/node_modules, webui/build, refs/, .git → загрязняет build-context gateway-образа (Task 6).
-* [ ] **класс: write-path** — Insert/Replace-диалоги без busy-гварда на submit: double-click в async-окне дублирует мутацию (Task 12, план-сниппет опускал гвард; ConfirmDialog имеет).
-* [ ] **класс: errors** — onDownload на /image/[id] без catch: unhandled rejection при сетевой ошибке (Task 13).
 * [ ] **тест-хрупкость** — FixedRequest shim в webui/src/lib/test/setup.ts зависит от jsdom internals (_bytes/_buffer) — проверить при апгрейде vitest/jsdom (Task 8).
 * [ ] **E2E no-op replace** — fixture = bytes самого узла: round-trip валиден, но size-changing payload усилял бы гейт (W2, Task 14).

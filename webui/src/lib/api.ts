@@ -1,6 +1,6 @@
 import type {
     Empty, ImageOpenResponse, ImagesListResponse, ImageNodesResponse,
-    Node as EngineNode, ArtifactImportResponse,
+    Node as EngineNode,
 } from './proto/engine';
 
 const API = '/api/v1';

@@ -7,8 +7,10 @@
     let mode = $state(InsertMode.INTO);
     let file = $state<File | null>(null);
     let error = $state('');
+    let busy = $state(false);
 
     async function submit() {
+        busy = true;
         error = '';
         try {
             const artifactId = (await uploadArtifact(file!)).artifactId;
@@ -16,6 +18,8 @@
             ondone();
         } catch (e) {
             error = e instanceof Error ? e.message : String(e);
+        } finally {
+            busy = false;
         }
     }
 </script>
@@ -30,5 +34,5 @@
     <label for="ins-file">FFS file</label>
     <input id="ins-file" type="file" onchange={(e) => (file = e.currentTarget.files?.[0] ?? null)} />
     {#if error}<p class="error" role="alert">{error}</p>{/if}
-    <button onclick={submit} disabled={!file}>Insert</button>
+    <button onclick={submit} disabled={!file || busy}>Insert</button>
 </Modal>

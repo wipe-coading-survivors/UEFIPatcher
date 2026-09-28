@@ -26,6 +26,10 @@ services:
       - "8080:8080"
     depends_on:
       - engine
+# Artifact upload/download идут через файловые пути в tmp (bytes-in/out):
+# engine и gateway должны видеть общий tmp. До реализации bytes-out RPC
+# (TODO.md: webui-parity, bytes-out экстраполяция) контейнерный запуск
+# требует общего volume между сервисами.
 volumes:
   uefi-data:
   uefi-sock:
