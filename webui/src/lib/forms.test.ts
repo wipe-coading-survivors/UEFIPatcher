@@ -53,6 +53,18 @@ describe('buildFormsets', () => {
         expect(sets[1].children.map((n) => n.form.formIdIfr)).toEqual([5]);
     });
 
+    it('cross-formset target is a leaf even when source set has same formIdIfr with children', () => {
+        const forms = [form('S', 1), form('S', 5), form('S', 6), form('T', 5, 'Foreign')];
+        const sets = buildFormsets(forms, [edge('S', 1, 5, 'T'), edge('S', 5, 6)]);
+        const foreign = sets[0].children[0].children[0];
+        expect(foreign.form.formsetGuid).toBe('T');
+        expect(foreign.children).toHaveLength(0);
+        const local = sets[0].children[1];
+        expect(local.form.formIdIfr).toBe(5);
+        expect(local.children).toHaveLength(1);
+        expect(local.children[0].form.formIdIfr).toBe(6);
+    });
+
     it('dedups repeated edges', () => {
         const forms = [form('S', 1), form('S', 2)];
         const sets = buildFormsets(forms, [edge('S', 1, 2), edge('S', 1, 2)]);

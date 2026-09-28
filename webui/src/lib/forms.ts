@@ -67,7 +67,8 @@ export function buildFormsets(forms: FormInfo[], edges: FormEdge[]): FormsetNode
                 const childKey = `${en.form.formsetGuid}#${en.form.formIdIfr}`;
                 seen.add(childKey);
                 const next = new Set(onPath).add(en.key);
-                res.push({ form: en.form, children: attach(children.get(en.form.formIdIfr) ?? [], next) });
+                const kids = en.form.formsetGuid === guid ? children.get(en.form.formIdIfr) ?? [] : [];
+                res.push({ form: en.form, children: attach(kids, next) });
             }
             return res;
         };
