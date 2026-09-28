@@ -51,6 +51,40 @@ describe('forms page', () => {
         expect(screen.getByRole('heading', { name: /form 10029/ })).toBeInTheDocument();
     });
 
+    it('late response does not overwrite newer selection', async () => {
+        mockAll();
+        server.use(
+            http.post('*/api/v1/rpc/HiiListQuestions', ({ request }) =>
+                request.json().then(async (b) => {
+                    if ((b as { formId: number }).formId === 10002) {
+                        await new Promise((r) => setTimeout(r, 150));
+                        return HttpResponse.json({
+                            questions: [
+                                { questionId: 0x3b, kind: 'one_of', prompt: 'Above 4G Decoding',
+                                  varStoreId: 1, varOffset: 0x3a, width: 1 },
+                            ],
+                        });
+                    }
+                    return HttpResponse.json({
+                        questions: [
+                            { questionId: 0x55, kind: 'one_of', prompt: 'Fast Question',
+                              varStoreId: 1, varOffset: 0x55, width: 1 },
+                        ],
+                    });
+                })),
+        );
+        render(Page, { data: { imageId: 'i-1' } });
+        await waitFor(() => expect(screen.getByText(/Advanced/)).toBeInTheDocument());
+        fireEvent.click(screen.getByText(/Advanced/));
+        fireEvent.click(screen.getByText(/PCI Subsystem/));
+        await waitFor(() => expect(screen.getByRole('heading', { name: /form 10029/ })).toBeInTheDocument());
+        await waitFor(() => expect(screen.getByText('Fast Question')).toBeInTheDocument());
+        await new Promise((r) => setTimeout(r, 250));
+        expect(screen.queryByText('Above 4G Decoding')).not.toBeInTheDocument();
+        expect(screen.getByText('Fast Question')).toBeInTheDocument();
+        expect(screen.getByRole('heading', { name: /form 10029/ })).toBeInTheDocument();
+    });
+
     it('Show fires HiiSetFormVisibility and refreshes forms', async () => {
         const bodies: unknown[] = [];
         server.use(

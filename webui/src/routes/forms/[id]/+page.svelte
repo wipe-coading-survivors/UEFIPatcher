@@ -24,13 +24,17 @@
         | null = $state(null);
     let error = $state('');
     let busy = $state(false);
+    let refreshSeq = 0;
+    let questionsSeq = 0;
 
     const selectedKey = $derived(selected ? `${selected.formsetGuid}#${selected.formIdIfr}` : null);
 
     async function refresh() {
+        const seq = ++refreshSeq;
         error = '';
         try {
             const [fr, tr] = await Promise.all([listForms(imageId), formTree(imageId)]);
+            if (seq !== refreshSeq) return;
             sets = buildFormsets(fr.forms ?? [], tr.edges ?? []);
             if (!expandedInit) {
                 expanded = new Set(sets.map((s) => s.guid));
@@ -54,10 +58,12 @@
     });
 
     async function loadQuestions(form: FormInfo) {
+        const seq = ++questionsSeq;
         error = '';
         questions = [];
         try {
             const r = await listQuestions(imageId, form.formId, form.formIdIfr);
+            if (seq !== questionsSeq) return;
             questions = r.questions ?? [];
         } catch (e) {
             error = e instanceof Error ? e.message : String(e);
