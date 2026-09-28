@@ -47,7 +47,7 @@ mod tests {
 
     fn row(terminal: &Terminal<TestBackend>, y: u16) -> String {
         (0..40)
-            .map(|x| terminal.backend().buffer().get(x, y).symbol().to_string())
+            .map(|x| terminal.backend().buffer()[(x, y)].symbol().to_string())
             .collect()
     }
 

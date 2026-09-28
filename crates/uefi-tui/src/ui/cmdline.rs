@@ -85,11 +85,9 @@ mod tests {
         app.cmdline.set_str("abc");
         app.cmdline.left();
         let t = draw(&app);
-        assert_eq!(t.backend().buffer().get(4, 1).symbol(), "c");
+        assert_eq!(t.backend().buffer()[(4, 1)].symbol(), "c");
         assert!(
-            t.backend()
-                .buffer()
-                .get(4, 1)
+            t.backend().buffer()[(4, 1)]
                 .modifier
                 .contains(Modifier::REVERSED)
         );
@@ -102,9 +100,7 @@ mod tests {
         app.cmdline.set_str("ab");
         let t = draw(&app);
         assert!(
-            t.backend()
-                .buffer()
-                .get(4, 1)
+            t.backend().buffer()[(4, 1)]
                 .modifier
                 .contains(Modifier::REVERSED)
         );
@@ -116,19 +112,15 @@ mod tests {
         app.mode = crate::app::Mode::Command;
         app.cmdline.set_str("0123456789abcdefghij");
         let t = draw(&app);
-        assert_eq!(t.backend().buffer().get(1, 1).symbol(), ":");
-        assert_eq!(t.backend().buffer().get(17, 1).symbol(), "j");
+        assert_eq!(t.backend().buffer()[(1, 1)].symbol(), ":");
+        assert_eq!(t.backend().buffer()[(17, 1)].symbol(), "j");
         assert!(
-            !t.backend()
-                .buffer()
-                .get(17, 1)
+            !t.backend().buffer()[(17, 1)]
                 .modifier
                 .contains(Modifier::REVERSED)
         );
         assert!(
-            t.backend()
-                .buffer()
-                .get(18, 1)
+            t.backend().buffer()[(18, 1)]
                 .modifier
                 .contains(Modifier::REVERSED)
         );

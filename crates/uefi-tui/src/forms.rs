@@ -797,8 +797,10 @@ mod tests {
             form_id_ifr: 1,
             title: "Main".into(),
         };
-        let mut forms = crate::app::FormsData::default();
-        forms.questions_key = Some(key.clone());
+        let mut forms = crate::app::FormsData {
+            questions_key: Some(key.clone()),
+            ..Default::default()
+        };
         let rows = vec![FormsRow::Form {
             key: key.clone(),
             visible: true,
