@@ -36,6 +36,7 @@ test.setTimeout(300_000);
 
 test('unlock + set-value + download ≡ CLI hii form unlock + question set-value + save', async ({ page }) => {
     await page.goto('/image');
+    await expect(page.locator('#status-session')).not.toHaveText('no session', { timeout: 30_000 });
     await page.locator('input#file').setInputFiles(IMAGE);
     await page.getByRole('button', { name: 'Upload' }).click();
     await expect(page.locator('[role=treeitem]').first()).toBeVisible({ timeout: 120_000 });

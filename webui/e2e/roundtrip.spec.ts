@@ -34,6 +34,7 @@ test.beforeAll(() => {
 
 test('upload → replace → download ≡ CLI replace → save', async ({ page }) => {
     await page.goto('/image');
+    await expect(page.locator('#status-session')).not.toHaveText('no session', { timeout: 30_000 });
     await page.locator('input#file').setInputFiles(IMAGE);
     await page.getByRole('button', { name: 'Upload' }).click();
 
