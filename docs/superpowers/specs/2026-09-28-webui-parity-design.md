@@ -254,3 +254,48 @@ W2/W3 — аддендумы к нему по итогам ступеней (п�
   formset-unlock (gates/unlock), nvar-op, hii-*-циклы.
 - Инвалидация: при добавлении новых RPC движка WebUI получает их через мост
   автоматически (нужен только UI-раздел).
+
+## Аддендум W1 (2026-09-28) — ступень закрыта
+
+Исполнена 2026-09-28: PR #30 (`80bc55b`), план
+`docs/superpowers/plans/2026-09-28-webui-w1.md` (15/15 задач). Все гейты
+зелёные (cargo test/clippy/fmt, svelte-check, vitest, Playwright E2E);
+владелец подтвердил выполнение. TODO-раздел «Gateway + WebUI rework» закрыт
+(`20a09ea`), отложенное (bytes-out, palette) — TODO.md «WebUI Parity —
+отложенное».
+
+**Исполнено:** мост `/api/v1/rpc/{Method}` (DynCodec, prost-reflect,
+auth-инъекция, 404 несуществующего метода без обращения к движку);
+upload bytes→`ImageUpload` без temp-файлов; hand-written REST удалён
+(routes: session/upload/health + мост); static-host (gateway-образ собирает
+и раздаёт webui, nginx из compose выпилен); ts-proto генерация + typed
+api-клиент + runes-state; shell (sidebar, W2/W3 disabled), лендинг Image,
+дерево с иерархией по `path` (плоский `/dump` display-bug закрыт),
+Inspector + диалоги операций, страница `/image/[id]` (операции, search,
+save/download); Playwright E2E round-trip с sha256-паритетом против uefi-cli
+на живом образе HNX99TF (гейт W1 пройден, `fda9aba`).
+
+**Отклонения от спеки (легитимные):**
+- `POST /api/v1/artifact/upload` (multipart → `ArtifactImport`) — добавлен
+  в W1 Task 4: артефакт-импорту нужен bytes-in, симметрично image-upload;
+  потребитель — W3 (раздел Artifacts).
+- Docker: gateway-образ сам собирает webui (context = корень репо) и раздаёт
+  статику; отдельного webui-образа/nginx нет.
+
+**Уроки (учтены в W2/W3):**
+- `ImageNodesSearch` матчит только Section-узлы (Region-узлы не ищутся),
+  path-режима нет — поиск по имени.
+- Мутации идут через `ensure_mutable`: цель через `FfsType::Region`
+  (например ME) → `OpsError::ImmutableRegion`; тестовые цели — узлы
+  мутабельного тома (рефенс W1 E2E: `4/2`).
+- Playwright: `webServer` стартует до `globalSetup` — шлюз обязан
+  retry-коннект к движку; vitest требует `exclude: ['e2e/**']`.
+- SvelteKit+vitest: `+*.test.ts` ломают routes-analysis (имя
+  `page.test.ts`); `$app/navigation` — alias-стаб; без `svelteTesting()`
+  svelte резолвится в серверный рантайм.
+- svelte-dialog: render-пропы обязаны оборачивать props в `{ props: ... }`.
+
+**Вход в W2:** Forms — дерево форм (`HiiListForms` + REF-рёбра
+`HiiFormTree`), вопросы (`HiiListQuestions`/`HiiQuestionInfo`), strings
+(`HiiListStrings`), правки visibility/unlock/set-value. Гейт W2 — E2E
+unlock + set-value + save на живом образе с вердиктом движком/CLI.
