@@ -109,6 +109,65 @@ async fn bridge_roundtrip_images_list() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn upload_image_opens_in_engine() {
+    let (_td, base) = setup_gateway().await;
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{base}/api/v1/session"))
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    let sid = resp.json::<serde_json::Value>().await.unwrap()["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let part = reqwest::multipart::Part::bytes(b"bios-image-bytes").file_name("test.bin");
+    let form = reqwest::multipart::Form::new()
+        .part("file", part)
+        .text("mode", "write");
+    let resp = client
+        .post(format!("{base}/api/v1/image/upload"))
+        .header("cookie", format!("uefipatcher_session={sid}"))
+        .multipart(form)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(body["image_id"].as_str().is_some());
+    assert_eq!(body["name"], "test.bin");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn upload_artifact_returns_id() {
+    let (_td, base) = setup_gateway().await;
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{base}/api/v1/session"))
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    let sid = resp.json::<serde_json::Value>().await.unwrap()["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let part = reqwest::multipart::Part::bytes(vec![0xAA, 0xBB]).file_name("blob.bin");
+    let form = reqwest::multipart::Form::new().part("file", part);
+    let resp = client
+        .post(format!("{base}/api/v1/artifact/upload"))
+        .header("cookie", format!("uefipatcher_session={sid}"))
+        .multipart(form)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(body["artifact_id"].as_str().is_some());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn bridge_bad_field_type_400() {
     let (_td, base) = setup_gateway().await;
     let client = reqwest::Client::new();

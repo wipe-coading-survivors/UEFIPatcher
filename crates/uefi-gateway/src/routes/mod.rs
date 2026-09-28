@@ -74,10 +74,15 @@ pub fn router(state: AppState) -> axum::Router {
             "/api/v1/artifact/import",
             axum::routing::post(artifact::import),
         )
+        .route(
+            "/api/v1/artifact/upload",
+            axum::routing::post(upload::artifact_upload),
+        )
         .route("/api/v1/artifacts", axum::routing::get(artifact::list))
         .route(
             "/api/v1/rpc/:method",
             axum::routing::post(crate::bridge::call),
         )
+        .layer(axum::extract::DefaultBodyLimit::max(64 * 1024 * 1024))
         .with_state(state)
 }

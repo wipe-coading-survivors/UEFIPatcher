@@ -142,6 +142,26 @@ impl EngineClient {
             .await?
             .into_inner())
     }
+    pub async fn image_upload(
+        &mut self,
+        sessions: &SessionMap,
+        session_id: &str,
+        data: Vec<u8>,
+        name: &str,
+        mode: i32,
+    ) -> Result<ImageOpenResponse, tonic::Status> {
+        let req = ImageUploadRequest {
+            session_id: session_id.into(),
+            data,
+            mode,
+            name: name.into(),
+        };
+        Ok(self
+            .typed
+            .image_upload(Self::auth_req(sessions, session_id, req).await?)
+            .await?
+            .into_inner())
+    }
     pub async fn image_nodes_list(
         &mut self,
         sessions: &SessionMap,
