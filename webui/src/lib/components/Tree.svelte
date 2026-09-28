@@ -15,6 +15,14 @@
     } = $props();
 
     let menuFor: TreeNode | null = $state(null);
+    let menuX = $state(0);
+    let menuY = $state(0);
+
+    function openMenu(node: TreeNode, e: MouseEvent) {
+        menuFor = node;
+        menuX = Math.min(e.clientX, window.innerWidth - 140);
+        menuY = Math.min(e.clientY, window.innerHeight - 180);
+    }
 
     const menuActions = [
         { id: 'insert', label: 'Insert…' },
@@ -43,7 +51,7 @@
                 onclick={() => onselect(row.node)}
                 oncontextmenu={(e) => {
                     e.preventDefault();
-                    menuFor = row.node;
+                    openMenu(row.node, e);
                 }}
             >
                 {nodeLabel(row.node)}
@@ -53,7 +61,7 @@
 </ul>
 
 {#if menuFor}
-    <div class="ctxmenu" role="menu">
+    <div class="ctxmenu" role="menu" style="left: {menuX}px; top: {menuY}px">
         {#each menuActions as a (a.id)}
             <button role="menuitem" onclick={() => { oncontext(menuFor!, a.id); menuFor = null; }}>
                 {a.label}
