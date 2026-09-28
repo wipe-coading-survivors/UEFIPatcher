@@ -43,11 +43,3 @@ pub fn make_session_cookie(session_id: &str) -> Cookie<'static> {
         .path("/")
         .build()
 }
-
-pub fn make_image_cookie(image_id: &str) -> Cookie<'static> {
-    Cookie::build(("uefipatcher_image", image_id.to_string()))
-        .http_only(true)
-        .same_site(SameSite::Strict)
-        .path("/")
-        .build()
-}

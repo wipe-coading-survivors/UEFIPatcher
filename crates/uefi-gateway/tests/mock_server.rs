@@ -86,7 +86,9 @@ impl EngineService for MockEngine {
     ) -> Result<Response<ImagesListResponse>, Status> {
         Ok(Response::new(ImagesListResponse { images: vec![] }))
     }
-    async fn image_save(&self, _req: Request<ImageSaveRequest>) -> Result<Response<Empty>, Status> {
+    async fn image_save(&self, req: Request<ImageSaveRequest>) -> Result<Response<Empty>, Status> {
+        let r = req.into_inner();
+        std::fs::write(&r.output_path, b"saved-by-mock").ok();
         Ok(Response::new(Empty {}))
     }
     async fn image_status(
