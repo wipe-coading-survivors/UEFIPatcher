@@ -47,7 +47,7 @@ describe('GatesDialog', () => {
         expect(ondone).toHaveBeenCalled();
     });
 
-    it('no flippable gates disables Unlock; empty gates shows no gates', async () => {
+    it('no flippable gates disables Unlock', async () => {
         server.use(
             http.post('*/api/v1/rpc/HiiGatesList', () =>
                 HttpResponse.json({ gates: [{ ...gate(), flippable: false }] })),
@@ -57,6 +57,18 @@ describe('GatesDialog', () => {
             onclose: () => {}, ondone: () => {},
         });
         await waitFor(() => expect(screen.getByRole('button', { name: 'Unlock' })).toBeDisabled());
+    });
+
+    it('empty gates shows no gates', async () => {
+        server.use(
+            http.post('*/api/v1/rpc/HiiGatesList', () =>
+                HttpResponse.json({ gates: [] })),
+        );
+        render(GatesDialog, {
+            imageId: 'i-1', itemId: 'X:0x10:0#10029', title: 'Gates',
+            onclose: () => {}, ondone: () => {},
+        });
+        await waitFor(() => expect(screen.getByText('no gates')).toBeInTheDocument());
     });
 
     it('engine error renders inline', async () => {
