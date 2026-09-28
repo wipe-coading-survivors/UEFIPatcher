@@ -8,6 +8,7 @@ export default defineConfig({
     resolve: {
         alias: {
             $lib: path.resolve('./src/lib'),
+            '$app/navigation': path.resolve('./src/lib/test/navigation.ts'),
         },
     },
     test: {
