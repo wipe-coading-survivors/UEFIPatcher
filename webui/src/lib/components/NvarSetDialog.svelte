@@ -68,7 +68,7 @@
         <label>width <input id="nvar-width" type="number" min="1" max="8" bind:value={width} /></label>
         {#if error}<p class="error" role="alert">{error}</p>{/if}
         {#if result}
-            <p role="status">applied {result.applied.length} stores (of {result.stores.length}): {result.applied.join(' · ') || 'none'}</p>
+            <p role="status">applied {result.applied.length} of {result.stores.length} stores: {result.applied.join(' · ') || 'none'}</p>
         {/if}
         <button type="submit" disabled={busy}>Apply</button>
         {#if result}

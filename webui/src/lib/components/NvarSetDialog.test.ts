@@ -50,7 +50,7 @@ describe('NvarSetDialog', () => {
         await user.clear(screen.getByLabelText('value'));
         await user.type(screen.getByLabelText('value'), '1');
         await user.click(screen.getByRole('button', { name: 'Apply' }));
-        await waitFor(() => expect(screen.getByText(/applied 2 stores/)).toBeInTheDocument());
+        await waitFor(() => expect(screen.getByText(/applied 2 of 2 stores/)).toBeInTheDocument());
         expect(captured).toEqual({
             imageId: 'i-1',
             name: 'Setup',
