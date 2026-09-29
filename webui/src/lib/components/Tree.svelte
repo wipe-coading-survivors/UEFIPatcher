@@ -1,5 +1,6 @@
 <script lang="ts">
     import { nodeLabel, type TreeNode } from '../tree';
+    import ContextMenu from './ContextMenu.svelte';
     let {
         rows,
         selectedPath,
@@ -61,13 +62,15 @@
 </ul>
 
 {#if menuFor}
-    <div class="ctxmenu" role="menu" style="left: {menuX}px; top: {menuY}px">
-        {#each menuActions as a (a.id)}
-            <button role="menuitem" onclick={() => { oncontext(menuFor!, a.id); menuFor = null; }}>
-                {a.label}
-            </button>
-        {/each}
-    </div>
+    <ContextMenu
+        x={menuX}
+        y={menuY}
+        items={menuActions}
+        onpick={(id) => {
+            if (menuFor) oncontext(menuFor, id);
+        }}
+        onclose={() => (menuFor = null)}
+    />
 {/if}
 
 <style>
@@ -75,5 +78,4 @@
     li { display: flex; align-items: center; gap: 4px; padding: 1px 0; }
     li[aria-selected='true'] .label { background: #2c5d8f; border-radius: 4px; }
     .label { cursor: pointer; padding: 1px 6px; background: none; border: none; color: inherit; font: inherit; text-align: left; }
-    .ctxmenu { position: fixed; background: #23262e; border: 1px solid #3a3f49; border-radius: 6px; display: flex; flex-direction: column; padding: 4px; z-index: 10; }
 </style>

@@ -38,4 +38,23 @@ describe('Tree', () => {
         fireEvent.click(screen.getByRole('menuitem', { name: 'Extract…' }));
         expect(oncontext).toHaveBeenCalledWith(expect.objectContaining({ path: '0' }), 'extract');
     });
+
+    it('replaces open menu when contextmenu fires on another node', () => {
+        const oncontext = vi.fn();
+        const rows = buildRows(roots, new Set(['', '0']));
+        render(Tree, { rows, selectedPath: null, onselect: () => {}, oncontext, ontoggle: () => {} });
+        fireEvent.contextMenu(screen.getByText('ME'));
+        fireEvent.contextMenu(screen.getByText('FV1'));
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Remove…' }));
+        expect(oncontext).toHaveBeenCalledTimes(1);
+        expect(oncontext).toHaveBeenCalledWith(expect.objectContaining({ path: '0/1' }), 'remove');
+    });
+
+    it('closes menu on Escape', async () => {
+        render(Tree, { rows: buildRows(roots, new Set(['', '0'])), selectedPath: null, onselect: () => {}, oncontext: () => {}, ontoggle: () => {} });
+        fireEvent.contextMenu(screen.getByText('ME'));
+        expect(screen.getByRole('menu')).toBeInTheDocument();
+        await fireEvent.keyDown(window, { key: 'Escape' });
+        await vi.waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument());
+    });
 });
