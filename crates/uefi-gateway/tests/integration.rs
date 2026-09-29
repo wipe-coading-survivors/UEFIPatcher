@@ -300,6 +300,34 @@ async fn artifact_download_streams_export_bytes() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn artifact_download_crafted_id_is_rejected_not_panic() {
+    let (_td, base) = setup_gateway().await;
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{base}/api/v1/session"))
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    let sid = resp.json::<serde_json::Value>().await.unwrap()["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let resp = client
+        .get(format!("{base}/api/v1/artifact/a%0d%0ab/download"))
+        .header("cookie", format!("uefipatcher_session={sid}"))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        resp.status() == StatusCode::BAD_REQUEST
+            || resp.status() == StatusCode::INTERNAL_SERVER_ERROR
+    );
+    let body = resp.text().await.unwrap();
+    assert!(!body.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn bridge_bad_field_type_400() {
     let (_td, base) = setup_gateway().await;
     let client = reqwest::Client::new();
