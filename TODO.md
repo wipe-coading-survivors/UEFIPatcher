@@ -4666,3 +4666,22 @@ Task 3 (проверено git stash). Штатная команда цикла 
 * [ ] **data-dependent E2E** — guid-prefill Setup, 8-hex row-фильтр,
   treeitem-по-expand сломаются первыми при смене референс-образа.
   Класс: limitation.
+
+> Находки ручного прогона владельца (2026-09-29, аддендум W3):
+
+* [ ] **Image: sidebar-пункт ведёт на upload-индекс при открытом образе**
+  (`+layout.svelte` `href()` спец-кейс `image` → всегда `/image`) — после
+  возврата из Forms/NVRAM вид образа доступен только через `Open` в таблице
+  «Open images»; на индексе нет Download/Save. Рекомендованное поведение:
+  как Forms — `imageHref = /image/${imageId}` при открытом образе, кнопка
+  «Switch/upload…» на виде для возврата к индексу. Класс: errors.
+* [ ] **Image View: контекстное меню не закрывается** — `Tree.svelte`
+  `.ctxmenu` гасится только кликом по пункту (`menuFor = null` в onclick);
+  клик по свободному месту рабочей области и Escape меню оставляют.
+  Фикс: `<svelte:window onclick / onkeydown-Escape>` → `menuFor = null`.
+  Класс: errors.
+* [ ] **Forms View и NVRAM без контекстных меню** — parity-gap с Image View
+  (`oncontextmenu` есть только в `Tree.svelte`); действия доступны только
+  кнопками (тулбар add-ops, Set value/Gates, `Set…`). Эскиз: right-click по
+  форме → Set value/Gates/Export/Add question/Add page/Hijack; по вопросу →
+  Set value/Gates; по NVRAM-переменной → Set…/Copy hex. Класс: limitation.

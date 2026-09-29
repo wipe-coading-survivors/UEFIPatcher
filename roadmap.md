@@ -92,8 +92,10 @@
   `/api/v1/artifact/:id/download`. E2E-гейты W3 зелёные: nvar-set ≡ CLI
   sha256, snapshot restore ≡ original, artifact ≡ CLI export, question add ≡
   CLI. Спека `docs/superpowers/specs/2026-09-28-webui-parity-design.md`
-  (§W3 + аддендумы W1/W2), план `docs/superpowers/plans/2026-09-29-webui-w3.md`.
-  Ручной прогон владельца → аддендум W3 (закрытие дуги W1–W3).
+  (§W3 + аддендумы W1/W2/W3), план `docs/superpowers/plans/2026-09-29-webui-w3.md`.
+  Ручной прогон владельца выполнен (2026-09-29): функционально — дуга
+  работает (pod-контейнер, hostPort-фикс); UX-находки — TODO «после W3»;
+  аддендум W3 записан — дуга W1–W3 закрыта.
 - **Что включено**: крейт `uefi-gateway` (axum REST+WS, cookie→gRPC metadata, upload/download, artifact endpoints); `webui/` (SvelteKit SPA, tree-view, details, операции, setup add-formset); контейнеризация (`<component>.containerfile`, `registry.fedoraproject.org/fedora:44`, `rust-builder.containerfile`); тесты.
 
 ### Цикл 6 — Расширенный Setup (план готов, к реализации)

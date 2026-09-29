@@ -361,3 +361,61 @@ Playwright E2E `e2e/forms.spec.ts`.
 **Вход в W3:** NVRAM / Snapshots / Artifacts / добавление — разделы
 sidemenu, артефакт-импорт уже имеет bytes-in (`ArtifactImport`,
 аддендум W1).
+
+## Аддендум W3 (2026-09-29) — дуга W1–W3 закрыта
+
+Исполнена 2026-09-29: PR #32 (`422b7f4`), план
+`docs/superpowers/plans/2026-09-29-webui-w3.md` (13/13 задач, TDD,
+субагент-исполнение с task-review на каждую + whole-branch ревью с
+фикс-волной). Все гейты зелёные (cargo test 1164/0 +69 ignored,
+clippy/fmt, svelte-check 0/0, vitest 89/89, build); Playwright 6/6 на
+живом образе HNX99TF — sha256-паритет четырёх блоков: nvar-set ≡ CLI,
+snapshot restore ≡ original, artifact download ≡ CLI export, question
+add ≡ CLI. Rust тронут точечно: REST
+`GET /api/v1/artifact/:id/download` (валидация id в
+Content-Disposition, фикс-волна ревью).
+
+**Исполнено:** api-обёртки 14 W3-RPC + artifact download; `nvar.ts`
+(base64/hexDump/parseNum/hexN, BigInt-точность uint64); layout —
+`<svelte:boundary>` error boundary + sidebar NVRAM/Snapshots/Artifacts
++ snapshot-индикатор со сбросом при смене образа; `/nvar/[id]`
+(stores/vars/hex-dump + NvarSetDialog, hex/decimal нормализация);
+`/snapshots/[id]` (create/list/restore-confirm + snapshotCount sync);
+`/artifacts` (list/import/download/export с ошибками в модалке);
+SchemaDialog/ExportDialog + Forms add-ops тулбар
+(formset/form/question/page/hijack/export); index-страницы `/nvar`,
+`/snapshots` (graceful no-image — фикс-волна); E2E-гейты W3.
+
+**Ручной прогон владельца (2026-09-29):** функционально — дуга
+работает (upload → NVRAM/Forms/мутации → download через
+pod-контейнер, hostPort-фикс `563724a`). UX-находки — TODO.md
+«WebUI Parity — отложенное (после W3)», блок «Находки ручного
+прогона»: sidebar-Image ведёт на upload-индекс при открытом образе
+(нет Download/Save без повторного Open); контекстное меню Image View
+не гасится кликом вне/Escape; Forms/NVRAM без контекстных меню
+(parity-gap). Чинятся отдельно.
+
+**Уроки W3 (для будущих webui-циклов):**
+- jsdom 25 без `Blob.text()` → FileReader (error-канал в role=alert);
+  `URL.createObjectURL` в jsdom есть, но `a.click()` даёт ожидаемый
+  navigation-noise.
+- @testing-library/svelte v5: компонент с пропом `target` рендерится
+  только через props-ворапер (mount-option конфликт); рендер страниц —
+  `render(Page, { props: { data } })`.
+- msw per-test `server.listen()/close()` каскадит падения («already
+  enabled network») — паттерн `beforeAll(listen)/afterEach(reset)/
+  afterAll(close)` обязателен в планах.
+- svelte-check типизирует параметр `failed`-сниппета boundary как
+  `unknown` — cast `(message as Error)`; `$state(prefill.x)` даёт
+  `state_referenced_locally` warning → прагма (или $effect-паттерн).
+- ts-proto `bytes`-поля приходят base64-строкой (proto3-JSON), тип —
+  `Uint8Array`: row-типы + `as unknown as` отражают рантайм-истину.
+- LSP svelte-language-server даёт stale-диагностику по свежим
+  экспортам — гейт только `npm run check`.
+- Плановый код верифицируется прогонами: 12 docs-fix коммитов плана
+  (rule 11) за цикл — вербатим-сниппеты планов деградируют о
+  тест-инфраструктуру быстрее, чем о продукт.
+
+**Закрытие дуги W1–W3:** WebUI паритетен CLI по всем гейтам дуги
+(roundtrip, forms, nvar, snapshots, artifacts, add-ops). Дальше —
+по roadmap (цикл 6 / W3.1 UX-правки по TODO отдельно).
