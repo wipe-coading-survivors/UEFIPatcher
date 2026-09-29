@@ -85,6 +85,15 @@
   (§W2 + аддендумы W1/W2), план `docs/superpowers/plans/2026-09-28-webui-w2.md`.
   Отложенное — TODO.md «после W1/W2». Далее: W3 (NVRAM/Snapshots/Artifacts/
   добавление).
+- **Статус W3 (дуга webui-parity)**: код завершён (2026-09-29) — разделы NVRAM
+  (stores/vars/hex + set), Snapshots (create/list/restore + индикатор),
+  Artifacts (list/import/download/export); add-ops диалоги в Forms
+  (formset/form/question/page/hijack/export); error boundary;
+  `/api/v1/artifact/:id/download`. E2E-гейты W3 зелёные: nvar-set ≡ CLI
+  sha256, snapshot restore ≡ original, artifact ≡ CLI export, question add ≡
+  CLI. Спека `docs/superpowers/specs/2026-09-28-webui-parity-design.md`
+  (§W3 + аддендумы W1/W2), план `docs/superpowers/plans/2026-09-29-webui-w3.md`.
+  Ручной прогон владельца → аддендум W3 (закрытие дуги W1–W3).
 - **Что включено**: крейт `uefi-gateway` (axum REST+WS, cookie→gRPC metadata, upload/download, artifact endpoints); `webui/` (SvelteKit SPA, tree-view, details, операции, setup add-formset); контейнеризация (`<component>.containerfile`, `registry.fedoraproject.org/fedora:44`, `rust-builder.containerfile`); тесты.
 
 ### Цикл 6 — Расширенный Setup (план готов, к реализации)

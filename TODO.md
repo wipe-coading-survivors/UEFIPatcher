@@ -4618,3 +4618,18 @@ Task 3 (проверено git stash). Штатная команда цикла 
 > S#5 webui вкладывает foreign-форму листом и держит локальную корнем (TUI наоборот
 > вкладывает локальную) — осознанное поведение webui, не «чинить» в сторону TUI. Контекст:
 > webui/src/lib/forms.ts buildFormsets; спека 2026-09-28-webui-parity-design.md §W2.
+
+## WebUI Parity — отложенное (после W3)
+
+> Дуга W1–W3 закрыта кодом; ниже — осознанные ограничения (класс: limitation,
+> если не указано иное).
+
+* [ ] **CLI import-макро (envelope meta/refs + varstore-planning) не
+  портрирован в WebUI** — SchemaDialog шлёт schema_json напрямую в
+  HiiFormAdd/HiiQuestionAdd; пре-чеки родителя/qid/таргетов и двухфазный
+  отчёт — только в uefi-common/CLI. Класс: limitation.
+* [ ] **NvarSet — width без hex, offset/value без выбора системы счисления в
+  UI-подсказке** (принимает 0x-hex и decimal молча). Класс: limitation.
+* [ ] **Snapshot restore без вердикта о незасейвленных правках** — restore
+  откатывает байты образа в сессии движка; WebUI не предупреждает о
+  unsaved download-артефактах. Класс: limitation.
