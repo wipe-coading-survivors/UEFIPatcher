@@ -4538,8 +4538,10 @@ Task 3 (проверено git stash). Штатная команда цикла 
   (спека 2026-09-28-webui-parity-design.md §Отложенное).
 * [ ] **Command palette (Ctrl+K)** — web-аналог командности TUI (IDE-стайл), вне W1–W3
   (спека §Интеракция).
-* [ ] **pod.yaml webui-контейнер** — docker/uefipatcher-pod.yaml декларирует uefipatcher-webui:latest, образ больше не собирается (Task 6, спека webui-parity §Архитектура).
-* [ ] **.dockerignore** — не исключает webui/node_modules, webui/build, refs/, .git → загрязняет build-context gateway-образа (Task 6).
+* [x] **pod.yaml webui-контейнер** — docker/uefipatcher-pod.yaml декларирует uefipatcher-webui:latest, образ больше не собирается (Task 6, спека webui-parity §Архитектура).
+  Закрыто: `d1d6bed` — webui-контейнер удалён из pod.yaml (статику раздаёт gateway, аддендум W1); подтверждено ручным прогоном владельца.
+* [x] **.dockerignore** — не исключает webui/node_modules, webui/build, refs/, .git → загрязняет build-context gateway-образа (Task 6).
+  Закрыто: `d1d6bed` — добавлены webui/node_modules/ и webui/build/ (refs/.git уже были); заодно чинит gateway:11 `COPY webui/ .`, перезаписывавший npm ci-слой локальными node_modules.
 * [ ] **тест-хрупкость** — FixedRequest shim в webui/src/lib/test/setup.ts зависит от jsdom internals (_bytes/_buffer) — проверить при апгрейде vitest/jsdom (Task 8).
 * [ ] **E2E no-op replace** — fixture = bytes самого узла: round-trip валиден, но size-changing payload усилял бы гейт (W2, Task 14).
 * [ ] класс: silent-data — **webui/forms: buildFormsets структурные дубли (twin-FFS)** — дедуп
