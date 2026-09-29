@@ -4,7 +4,6 @@ body { margin: 0; font-family: system-ui, sans-serif; background: #16181d; color
 nav { width: 180px; padding: 12px; border-right: 1px solid #2c3038; display: flex; flex-direction: column; gap: 4px; }
 nav a, nav span { padding: 6px 10px; border-radius: 6px; text-decoration: none; color: #d7dae0; }
 nav a:hover { background: #23262e; }
-nav span[aria-disabled='true'] { opacity: 0.4; cursor: not-allowed; }
 .main { flex: 1; display: flex; flex-direction: column; }
 header { display: flex; gap: 16px; padding: 8px 16px; border-bottom: 1px solid #2c3038; font-size: 13px; color: #9aa0aa; }
 main { flex: 1; padding: 16px; }

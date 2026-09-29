@@ -25,6 +25,10 @@
             }
         }
     });
+    $effect(() => {
+        appState.imageId;
+        appState.snapshotCount = 0;
+    });
 </script>
 
 <div class="shell">

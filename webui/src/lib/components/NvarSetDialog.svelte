@@ -45,7 +45,7 @@
         }
         busy = true;
         try {
-            result = await nvarSet(imageId, name.trim(), guid.trim(), off, val, width);
+            result = await nvarSet(imageId, name.trim(), guid.trim(), off, val, width || 1);
         } catch (e) {
             error = e instanceof Error ? e.message : String(e);
         } finally {

@@ -79,4 +79,26 @@ describe('NvarSetDialog', () => {
         expect(screen.getByRole('alert')).toHaveTextContent(/offset/);
         expect(calls).toHaveLength(0);
     });
+
+    it('falls back to width=1 when width input cleared', async () => {
+        let captured: unknown = null;
+        server.use(
+            http.post('*/api/v1/rpc/NvarSet', async ({ request }) => {
+                captured = await request.json();
+                return HttpResponse.json({ applied: ['0/28'], stores: ['0/28'] });
+            }),
+        );
+        const user = userEvent.setup();
+        render(NvarSetDialog, {
+            props: { imageId: 'i-1', prefill, onclose: () => {}, ondone: () => {} },
+        });
+        await user.clear(screen.getByLabelText('offset'));
+        await user.type(screen.getByLabelText('offset'), '0x3A');
+        await user.clear(screen.getByLabelText('value'));
+        await user.type(screen.getByLabelText('value'), '1');
+        await user.clear(screen.getByLabelText('width'));
+        await user.click(screen.getByRole('button', { name: 'Apply' }));
+        await waitFor(() => expect(screen.getByText(/applied 1 of 1 stores/)).toBeInTheDocument());
+        expect((captured as { width: number }).width).toBe(1);
+    });
 });
