@@ -36,11 +36,6 @@ spec:
       volumeMounts:
         - name: uefi-sock
           mountPath: /run/uefipatcher
-    - name: webui
-      image: uefipatcher-webui:latest
-      ports:
-        - containerPort: 3000
-          #hostPort: 3000
   volumes:
     - name: uefi-data
       emptyDir: {}
