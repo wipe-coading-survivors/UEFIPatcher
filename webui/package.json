@@ -8,6 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "check": "svelte-check",
+    "icons": "node scripts/make-icons.mjs",
     "proto": "protoc --plugin=./node_modules/.bin/protoc-gen-ts_proto --ts_proto_out=./src/lib/proto --ts_proto_opt=forceLong=string --proto_path=../crates/uefi-proto/proto engine.proto",
     "test": "vitest run",
     "test:e2e": "playwright test"
@@ -21,8 +22,10 @@
     "@testing-library/svelte": "^5.4.0",
     "@testing-library/user-event": "^14.6.7",
     "@types/node": "^22.0.0",
+    "fflate": "^0.8.3",
     "jsdom": "^25.0.0",
     "msw": "^2.15.0",
+    "subset-font": "^2.9.0",
     "svelte": "^5.0.0",
     "svelte-check": "^4.0.0",
     "ts-proto": "^2.12.0",

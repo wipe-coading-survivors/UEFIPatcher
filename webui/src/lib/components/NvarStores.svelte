@@ -1,5 +1,6 @@
 <script lang="ts">
     import { hexN } from '../nvar';
+    import { storeIcon } from '../icons';
     let {
         stores,
         selected,
@@ -19,7 +20,7 @@
         <tbody>
             {#each stores as s (s.path)}
                 <tr class:selected={s.path === selected}>
-                    <td><button type="button" aria-label="store {s.path}" onclick={() => onselect(s.path)}>{s.path}</button></td>
+                    <td><button type="button" aria-label="store {s.path}" onclick={() => onselect(s.path)}><span class="nf" aria-hidden="true">{storeIcon(true, 66, 0)}</span>{s.path}</button></td>
                     <td>{s.desc}</td>
                     <td>{s.vars}</td>
                     <td>{s.records}</td>

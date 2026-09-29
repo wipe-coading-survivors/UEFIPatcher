@@ -1,5 +1,6 @@
 <script lang="ts">
     import type { QuestionSummary } from '../proto/engine';
+    import { questionIcon } from '../icons';
     let {
         questions,
         onsetvalue,
@@ -32,7 +33,7 @@
             {#each questions as q (q.questionId)}
                 <tr oncontextmenu={(e) => { e.preventDefault(); oncontext?.(q, e); }}>
                     <td><code>{hex(q.questionId)}</code></td>
-                    <td>{q.kind}</td>
+                    <td>{q.kind}<span class="nf" aria-hidden="true">{questionIcon(q.kind)}</span></td>
                     <td>{q.prompt}</td>
                     <td>{q.varStoreId}@0x{q.varOffset.toString(16).toUpperCase()}</td>
                     <td>{q.width}</td>

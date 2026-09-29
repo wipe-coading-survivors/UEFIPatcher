@@ -1,3 +1,12 @@
+@font-face {
+    font-family: 'NF';
+    src: url('/icons.woff2') format('woff2');
+    font-weight: normal;
+    font-style: normal;
+    font-display: block;
+}
+.nf { font-family: 'NF', monospace; }
+
 :root { color-scheme: dark; }
 body { margin: 0; font-family: system-ui, sans-serif; background: #16181d; color: #d7dae0; }
 .shell { display: flex; min-height: 100vh; }

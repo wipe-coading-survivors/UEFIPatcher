@@ -57,4 +57,11 @@ describe('Tree', () => {
         await fireEvent.keyDown(window, { key: 'Escape' });
         await vi.waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument());
     });
+
+    it('renders aria-hidden store icon per row', () => {
+        render(Tree, { rows: buildRows(roots, new Set(['', '0'])), selectedPath: null, onselect: () => {}, oncontext: () => {}, ontoggle: () => {} });
+        const icons = document.querySelectorAll('span.nf');
+        expect(icons.length).toBeGreaterThan(0);
+        expect(icons[0]).toHaveAttribute('aria-hidden', 'true');
+    });
 });

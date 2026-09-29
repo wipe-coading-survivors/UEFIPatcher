@@ -1,5 +1,6 @@
 <script lang="ts">
     import { nodeLabel, type TreeNode } from '../tree';
+    import { storeIcon } from '../icons';
     import ContextMenu from './ContextMenu.svelte';
     let {
         rows,
@@ -55,6 +56,7 @@
                     openMenu(row.node, e);
                 }}
             >
+                <span class="nf" aria-hidden="true">{storeIcon(row.node.isNvar, row.node.type, row.node.subtype)}</span>
                 {nodeLabel(row.node)}
             </button>
         </li>
