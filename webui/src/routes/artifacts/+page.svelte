@@ -16,6 +16,7 @@
     let busy = $state(false);
     let exportId: string | null = $state(null);
     let exportPath = $state('');
+    let exportError = $state('');
     let loadSeq = 0;
 
     async function refresh() {
@@ -73,8 +74,15 @@
 
     async function doExport() {
         if (!exportId || !exportPath.trim()) return;
-        await artifactExport(exportId, exportPath.trim());
-        notice = `exported ${exportId} to ${exportPath.trim()}`;
+        exportError = '';
+        try {
+            await artifactExport(exportId, exportPath.trim());
+            notice = `exported ${exportId} to ${exportPath.trim()}`;
+        } catch (e) {
+            exportError = e instanceof Error ? e.message : String(e);
+            return;
+        }
+        exportId = null;
     }
 
     async function onDownloadImage() {
@@ -105,8 +113,9 @@
     {#if notice}<p role="status">{notice}</p>{/if}
     {#if exportId}
         <Modal title="Export artifact" onclose={() => (exportId = null)}>
-            <form onsubmit={(e) => { e.preventDefault(); doExport().then(() => { exportId = null; }); }}>
+            <form onsubmit={(e) => { e.preventDefault(); doExport(); }}>
                 <label>server output path <input id="art-export-path" bind:value={exportPath} placeholder="/tmp/artifact.bin" /></label>
+                {#if exportError}<p class="error" role="alert">{exportError}</p>{/if}
                 <button type="submit">Export</button>
                 <button type="button" onclick={() => (exportId = null)}>Cancel</button>
             </form>

@@ -60,4 +60,29 @@ describe('/artifacts page', () => {
         await user.upload(screen.getByLabelText('artifact file'), file);
         await waitFor(() => expect(screen.getByText('a-2')).toBeInTheDocument());
     });
+
+    it('renders ArtifactExport failure as alert inside the open dialog', async () => {
+        appState.sessionId = 's-1';
+        server.use(
+            http.post('*/api/v1/rpc/ArtifactsList', () =>
+                HttpResponse.json({
+                    artifacts: [{ artifactId: 'a-1', kind: 'body', size: '128', createdAt: '1759000000', source: '4/2' }],
+                }),
+            ),
+            http.post('*/api/v1/rpc/ArtifactExport', () =>
+                HttpResponse.json({ error: 'no such artifact', code: 'NOT_FOUND' }, { status: 400 }),
+            ),
+        );
+        const user = userEvent.setup();
+        render(Page);
+        await waitFor(() => expect(screen.getByText('a-1')).toBeInTheDocument());
+
+        await user.click(screen.getByRole('button', { name: 'export a-1' }));
+        await user.type(screen.getByLabelText('server output path'), '/tmp/out.bin');
+        await user.click(screen.getByRole('button', { name: 'Export' }));
+
+        const alert = await screen.findByRole('alert');
+        expect(alert).toHaveTextContent(/no such artifact/);
+        expect(screen.getByLabelText('server output path')).toBeInTheDocument();
+    });
 });
