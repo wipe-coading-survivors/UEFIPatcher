@@ -175,4 +175,20 @@ impl EngineClient {
             .into_inner()
             .artifact_id)
     }
+    pub async fn artifact_export(
+        &mut self,
+        sessions: &SessionMap,
+        session_id: &str,
+        artifact_id: &str,
+        output_path: &str,
+    ) -> Result<(), tonic::Status> {
+        let req = ArtifactExportRequest {
+            artifact_id: artifact_id.into(),
+            output_path: output_path.into(),
+        };
+        self.typed
+            .artifact_export(Self::auth_req(sessions, session_id, req).await?)
+            .await?;
+        Ok(())
+    }
 }

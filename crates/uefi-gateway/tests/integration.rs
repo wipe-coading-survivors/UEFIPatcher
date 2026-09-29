@@ -256,6 +256,50 @@ async fn upload_artifact_returns_id() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn artifact_download_streams_export_bytes() {
+    let (_td, base) = setup_gateway().await;
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{base}/api/v1/session"))
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    let sid = resp.json::<serde_json::Value>().await.unwrap()["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let part = reqwest::multipart::Part::bytes(b"artifact-bytes".to_vec()).file_name("a.bin");
+    let form = reqwest::multipart::Form::new().part("file", part);
+    let resp = client
+        .post(format!("{base}/api/v1/artifact/upload"))
+        .header("cookie", format!("uefipatcher_session={sid}"))
+        .multipart(form)
+        .send()
+        .await
+        .unwrap();
+    let artifact_id = resp.json::<serde_json::Value>().await.unwrap()["artifact_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let resp = client
+        .get(format!("{base}/api/v1/artifact/{artifact_id}/download"))
+        .header("cookie", format!("uefipatcher_session={sid}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        *resp
+            .headers()
+            .get(reqwest::header::CONTENT_DISPOSITION)
+            .unwrap(),
+        format!("attachment; filename=\"artifact-{artifact_id}.bin\"")
+    );
+    assert_eq!(resp.bytes().await.unwrap(), b"artifact-by-mock".as_slice());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn bridge_bad_field_type_400() {
     let (_td, base) = setup_gateway().await;
     let client = reqwest::Client::new();
