@@ -4,6 +4,8 @@
     import StringsPanel from '$lib/components/StringsPanel.svelte';
     import GatesDialog from '$lib/components/GatesDialog.svelte';
     import SetValueDialog from '$lib/components/SetValueDialog.svelte';
+    import SchemaDialog from '$lib/components/SchemaDialog.svelte';
+    import ExportDialog from '$lib/components/ExportDialog.svelte';
     import { downloadImage, formTree, listForms, listQuestions, setFormVisibility } from '$lib/api';
     import { buildFormRows, buildFormsets, formItemId, questionItemId, type FormRow } from '$lib/forms';
     import type { FormInfo } from '$lib/proto/engine';
@@ -21,6 +23,8 @@
     let dialog:
         | { kind: 'gates'; itemId: string; title: string }
         | { kind: 'setvalue'; itemId: string; prompt: string }
+        | { kind: 'schema'; op: 'formset' | 'form' | 'question' | 'page' | 'hijack'; target: string }
+        | { kind: 'export'; itemId: string }
         | null = $state(null);
     let error = $state('');
     let busy = $state(false);
@@ -118,6 +122,20 @@
         };
     }
 
+    function onschema(op: 'formset' | 'form' | 'question' | 'page' | 'hijack') {
+        dialog = { kind: 'schema', op, target: selected ? selected.formId : '' };
+    }
+
+    function onaddquestion() {
+        if (!selected) return;
+        dialog = { kind: 'schema', op: 'question', target: formItemId(selected) };
+    }
+
+    function onexport() {
+        if (!selected) return;
+        dialog = { kind: 'export', itemId: formItemId(selected) };
+    }
+
     async function ondialogdone() {
         await refresh();
         if (selected) await loadQuestions(selected);
@@ -146,6 +164,10 @@
     <GatesDialog {imageId} itemId={dialog.itemId} title={dialog.title} onclose={() => (dialog = null)} ondone={ondialogdone} />
 {:else if dialog?.kind === 'setvalue'}
     <SetValueDialog {imageId} itemId={dialog.itemId} prompt={dialog.prompt} onclose={() => (dialog = null)} ondone={ondialogdone} />
+{:else if dialog?.kind === 'schema'}
+    <SchemaDialog {imageId} op={dialog.op} target={dialog.target} onclose={() => (dialog = null)} ondone={ondialogdone} />
+{:else if dialog?.kind === 'export'}
+    <ExportDialog {imageId} itemId={dialog.itemId} onclose={() => (dialog = null)} />
 {/if}
 
 <div class="cols">
@@ -153,6 +175,13 @@
         <FormsTree {rows} {selectedKey} {onselect} ongates={ongatesForm} onshow={onshow} {ontoggle} />
     </section>
     <section aria-label="form details">
+        <div role="toolbar" aria-label="hii add operations">
+            <button onclick={() => onschema('formset')}>Add formset…</button>
+            <button onclick={() => onschema('form')} disabled={!selected}>Add form…</button>
+            <button onclick={() => onschema('page')} disabled={!selected}>Add page…</button>
+            <button onclick={() => onschema('hijack')} disabled={!selected}>Hijack…</button>
+            <button onclick={onexport} disabled={!selected}>Export form…</button>
+        </div>
         {#if selected}
             <h2>form {selected.formIdIfr} {selected.title}</h2>
             <div role="tablist">
@@ -162,7 +191,7 @@
                 <button onclick={onDownload} disabled={busy}>Download</button>
             </div>
             {#if tab === 'questions'}
-                <QuestionTable {questions} onsetvalue={onsetvalue} ongates={ongatesQ} />
+                <QuestionTable {questions} onsetvalue={onsetvalue} ongates={ongatesQ} onadd={onaddquestion} />
             {:else}
                 <StringsPanel {imageId} />
             {/if}
@@ -176,5 +205,6 @@
     .cols { display: grid; grid-template-columns: 1fr 2fr; gap: 16px; }
     .error { color: #e06c75; }
     [role='tablist'] { display: flex; gap: 8px; margin: 8px 0; }
+    [role='toolbar'] { display: flex; gap: 8px; margin: 8px 0; }
     [role='tab'][aria-selected='true'] { border-bottom: 2px solid #7aa7d9; }
 </style>

@@ -1,5 +1,6 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
+import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
 import Page from './+page.svelte';
@@ -126,5 +127,46 @@ describe('forms page', () => {
         fireEvent.click(screen.getByText(/Advanced/));
         fireEvent.click(screen.getByRole('tab', { name: 'Strings' }));
         await waitFor(() => expect(screen.getByText('Hello')).toBeInTheDocument());
+    });
+
+    it('Add question opens SchemaDialog with form target and applies', async () => {
+        server.use(
+            http.post('*/api/v1/rpc/HiiListForms', () =>
+                HttpResponse.json({
+                    forms: [
+                        {
+                            formId: `${S1}:0x10:0`,
+                            formsetGuid: S1,
+                            formIdIfr: 10009,
+                            title: 'Serial Port Configuration',
+                            visible: true,
+                        },
+                    ],
+                }),
+            ),
+            http.post('*/api/v1/rpc/HiiFormTree', () => HttpResponse.json({ edges: [] })),
+            http.post('*/api/v1/rpc/HiiListQuestions', () => HttpResponse.json({ questions: [] })),
+            http.post('*/api/v1/rpc/HiiQuestionAdd', () =>
+                HttpResponse.json({
+                    questions: [{ questionId: 600, stringIds: {}, spfRecordOffset: 0 }],
+                    refs: [],
+                }),
+            ),
+        );
+        const user = userEvent.setup();
+        render(Page, { data: { imageId: 'i-1' } });
+        const row = await screen.findByText(/10009/);
+        await user.click(row);
+        await waitFor(() => expect(screen.getByRole('heading', { name: /form 10009/ })).toBeInTheDocument());
+        await user.click(screen.getByRole('button', { name: 'add question' }));
+        await waitFor(() =>
+            expect((screen.getByLabelText('target') as HTMLInputElement).value).toBe(`${S1}:0x10:0#10009`),
+        );
+        await user.upload(
+            screen.getByLabelText('schema file'),
+            new File([JSON.stringify({ questions: [] })], 'schema.json'),
+        );
+        await user.click(screen.getByRole('button', { name: 'Apply' }));
+        await waitFor(() => expect(screen.getByText(/questions added: 600/)).toBeInTheDocument());
     });
 });

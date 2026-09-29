@@ -4,14 +4,20 @@
         questions,
         onsetvalue,
         ongates,
+        onadd,
     }: {
         questions: QuestionSummary[];
         onsetvalue: (q: QuestionSummary) => void;
         ongates: (q: QuestionSummary) => void;
+        onadd: () => void;
     } = $props();
 
     const hex = (qid: number) => `0x${qid.toString(16).toUpperCase()}`;
 </script>
+
+<button type="button" class="act" aria-label="add question" onclick={() => onadd()}>
+    Add question…
+</button>
 
 {#if questions.length === 0}
     <p>no questions</p>
