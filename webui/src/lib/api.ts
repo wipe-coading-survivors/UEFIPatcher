@@ -1,5 +1,5 @@
 import type {
-    Empty, ImageOpenResponse, ImagesListResponse, ImageNodesResponse,
+    Empty, ImagesListResponse, ImageNodesResponse,
     Node as EngineNode,
     FormInfo, FormEdge, GateInfo, QuestionInfo, QuestionSummary, StringInfo,
     NvarStoreInfo, ImageSnapshotInfo, ArtifactInfo,
@@ -79,16 +79,6 @@ export async function downloadImage(imageId: string): Promise<Blob> {
 
 export const imagesList = (sessionId: string) =>
     bridge<{ sessionId: string }, ImagesListResponse>('ImagesList', { sessionId });
-
-export const imageOpen = (
-    sessionId: string,
-    path: string,
-    mode: 0 | 1,
-    name = '',
-) => bridge<{ sessionId: string; path: string; mode: number; name: string }, ImageOpenResponse>(
-    'ImageOpen',
-    { sessionId, path, mode, name },
-);
 
 export const imageClose = (imageId: string) =>
     bridge<{ imageId: string }, Empty>('ImageClose', { imageId });

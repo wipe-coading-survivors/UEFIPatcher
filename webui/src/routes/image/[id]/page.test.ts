@@ -1,8 +1,11 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
-import { render, screen, waitFor } from '@testing-library/svelte';
+import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import Page from './+page.svelte';
+
+vi.mock('$app/navigation', () => ({ goto: vi.fn() }));
+import { goto } from '$app/navigation';
 
 const server = setupServer(
     http.post('*/api/v1/rpc/ImageNodesList', () =>
@@ -29,5 +32,11 @@ describe('image page', () => {
         expect(screen.getByPlaceholderText('search nodes')).toBeInTheDocument();
         expect(screen.getByRole('button', { name: 'Download' })).toBeInTheDocument();
         expect(screen.getByRole('button', { name: 'Save…' })).toBeInTheDocument();
+    });
+
+    it('switch button navigates to image index', async () => {
+        render(Page, { props: { data: { imageId: 'i-1' } } });
+        await fireEvent.click(screen.getByRole('button', { name: 'Switch/upload…' }));
+        await waitFor(() => expect(goto).toHaveBeenCalledWith('/image'));
     });
 });

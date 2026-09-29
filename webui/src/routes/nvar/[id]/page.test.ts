@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/svelte';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
 import Page from './+page.svelte';
@@ -40,9 +40,12 @@ const server = setupServer(
     }),
 );
 
+beforeAll(() => server.listen());
+afterEach(() => server.resetHandlers());
+afterAll(() => server.close());
+
 describe('/nvar/[id] page', () => {
     it('lists stores, loads vars with hex dump on select', async () => {
-        server.listen();
         const { userEvent } = await import('@testing-library/user-event');
         const user = userEvent.setup();
         render(Page, { props: { data: { imageId: 'i-1' } } });
@@ -52,6 +55,17 @@ describe('/nvar/[id] page', () => {
         await user.click(screen.getByRole('button', { name: 'Setup' }));
         await waitFor(() => expect(screen.getByText(/00000000/)).toBeInTheDocument());
         expect(screen.getByText(/01 02 03/)).toBeInTheDocument();
-        server.close();
+    });
+
+    it('var context menu Copy hex reports unavailable without clipboard', async () => {
+        const { userEvent } = await import('@testing-library/user-event');
+        const user = userEvent.setup();
+        render(Page, { props: { data: { imageId: 'i-1' } } });
+        await waitFor(() => expect(screen.getByRole('button', { name: 'store 0/28' })).toBeInTheDocument());
+        await user.click(screen.getByRole('button', { name: 'store 0/28' }));
+        await waitFor(() => expect(screen.getByText('Setup')).toBeInTheDocument());
+        await fireEvent.contextMenu(screen.getByText('Setup').closest('tr')!);
+        await user.click(await screen.findByRole('menuitem', { name: 'Copy hex' }));
+        await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(/unavailable|copied/));
     });
 });

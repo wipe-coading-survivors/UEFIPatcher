@@ -2,12 +2,10 @@
     import { goto } from '$app/navigation';
     import { onMount } from 'svelte';
     import { appState } from '$lib/state.svelte';
-    import { imageClose, imageOpen, imagesList, uploadImage } from '$lib/api';
+    import { imageClose, imagesList, uploadImage } from '$lib/api';
 
     let file: File | null = null;
     let mode: 'read' | 'write' = 'write';
-    let path = '';
-    let openMode: 'read' | 'write' = 'write';
     let images: { imageId: string; name: string }[] = [];
     let error = '';
 
@@ -27,18 +25,6 @@
         error = '';
         try {
             const r = await uploadImage(file, mode);
-            appState.imageId = r.imageId;
-            await goto(`/image/${r.imageId}`);
-        } catch (e) {
-            error = e instanceof Error ? e.message : String(e);
-        }
-    }
-
-    async function onOpen() {
-        if (!appState.sessionId || !path) return;
-        error = '';
-        try {
-            const r = await imageOpen(appState.sessionId, path, openMode === 'write' ? 1 : 0);
             appState.imageId = r.imageId;
             await goto(`/image/${r.imageId}`);
         } catch (e) {
@@ -74,16 +60,6 @@
         <option value="read">read</option>
     </select>
     <button onclick={onUpload} disabled={!file}>Upload</button>
-</section>
-
-<section aria-label="open">
-    <h2>Open by server path</h2>
-    <input type="text" placeholder="/path/to/image.bin" bind:value={path} />
-    <select aria-label="open mode" bind:value={openMode}>
-        <option value="write">write</option>
-        <option value="read">read</option>
-    </select>
-    <button onclick={onOpen} disabled={!path}>Open</button>
 </section>
 
 <section aria-label="open images">

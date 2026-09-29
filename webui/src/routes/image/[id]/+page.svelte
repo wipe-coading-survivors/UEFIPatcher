@@ -8,6 +8,7 @@
     import {
         downloadImage, extractNode, listNodes, rebuildNode, removeNode, saveImage, searchNodes,
     } from '$lib/api';
+    import { goto } from '$app/navigation';
     import { appState } from '$lib/state.svelte';
     import { buildRows, buildTree, type TreeNode } from '$lib/tree';
 
@@ -150,6 +151,7 @@
     <button onclick={() => onSearch()}>Search</button>
     <button onclick={onDownload} disabled={busy}>Download</button>
     <button onclick={() => (saveOpen = true)}>Save…</button>
+    <button onclick={() => goto('/image')}>Switch/upload…</button>
 </div>
 
 {#if results}

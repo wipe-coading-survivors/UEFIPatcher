@@ -6,6 +6,7 @@
     import SetValueDialog from '$lib/components/SetValueDialog.svelte';
     import SchemaDialog from '$lib/components/SchemaDialog.svelte';
     import ExportDialog from '$lib/components/ExportDialog.svelte';
+    import ContextMenu from '$lib/components/ContextMenu.svelte';
     import { downloadImage, formTree, listForms, listQuestions, setFormVisibility } from '$lib/api';
     import { buildFormRows, buildFormsets, formItemId, questionItemId, type FormRow } from '$lib/forms';
     import type { FormInfo } from '$lib/proto/engine';
@@ -30,6 +31,49 @@
     let busy = $state(false);
     let refreshSeq = 0;
     let questionsSeq = 0;
+    let ctx: {
+        x: number;
+        y: number;
+        kind: 'form' | 'question';
+        form: FormInfo | null;
+        question: import('$lib/proto/engine').QuestionSummary | null;
+    } | null = $state(null);
+    const formMenuItems = [
+        { id: 'gates', label: 'Gates…' },
+        { id: 'export', label: 'Export form…' },
+        { id: 'addquestion', label: 'Add question…' },
+        { id: 'addpage', label: 'Add page…' },
+        { id: 'hijack', label: 'Hijack…' },
+    ];
+    const questionMenuItems = [
+        { id: 'setvalue', label: 'Set value…' },
+        { id: 'gates', label: 'Gates…' },
+    ];
+
+    function openFormMenu(form: FormInfo, e: MouseEvent) {
+        ctx = { x: e.clientX, y: e.clientY, kind: 'form', form, question: null };
+    }
+
+    function openQuestionMenu(q: import('$lib/proto/engine').QuestionSummary, e: MouseEvent) {
+        if (!selected) return;
+        ctx = { x: e.clientX, y: e.clientY, kind: 'question', form: null, question: q };
+    }
+
+    function onmenupick(id: string) {
+        const c = ctx;
+        ctx = null;
+        if (!c) return;
+        if (c.kind === 'form' && c.form) {
+            if (id === 'gates') ongatesForm(c.form);
+            else if (id === 'export') dialog = { kind: 'export', itemId: formItemId(c.form) };
+            else if (id === 'addquestion') dialog = { kind: 'schema', op: 'question', target: formItemId(c.form) };
+            else if (id === 'addpage') dialog = { kind: 'schema', op: 'page', target: c.form.formId };
+            else if (id === 'hijack') dialog = { kind: 'schema', op: 'hijack', target: c.form.formId };
+        } else if (c.kind === 'question' && c.question) {
+            if (id === 'setvalue') onsetvalue(c.question);
+            else if (id === 'gates') ongatesQ(c.question);
+        }
+    }
 
     const selectedKey = $derived(selected ? `${selected.formsetGuid}#${selected.formIdIfr}` : null);
 
@@ -172,7 +216,7 @@
 
 <div class="cols">
     <section aria-label="forms tree">
-        <FormsTree {rows} {selectedKey} {onselect} ongates={ongatesForm} onshow={onshow} {ontoggle} />
+        <FormsTree {rows} {selectedKey} {onselect} ongates={ongatesForm} onshow={onshow} {ontoggle} oncontext={openFormMenu} />
     </section>
     <section aria-label="form details">
         <div role="toolbar" aria-label="hii add operations">
@@ -191,7 +235,7 @@
                 <button onclick={onDownload} disabled={busy}>Download</button>
             </div>
             {#if tab === 'questions'}
-                <QuestionTable {questions} onsetvalue={onsetvalue} ongates={ongatesQ} onadd={onaddquestion} />
+                <QuestionTable {questions} onsetvalue={onsetvalue} ongates={ongatesQ} onadd={onaddquestion} oncontext={openQuestionMenu} />
             {:else}
                 <StringsPanel {imageId} />
             {/if}
@@ -199,6 +243,15 @@
             <p>select a form</p>
         {/if}
     </section>
+    {#if ctx}
+        <ContextMenu
+            x={ctx.x}
+            y={ctx.y}
+            items={ctx.kind === 'form' ? formMenuItems : questionMenuItems}
+            onpick={onmenupick}
+            onclose={() => (ctx = null)}
+        />
+    {/if}
 </div>
 
 <style>

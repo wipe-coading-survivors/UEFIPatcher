@@ -36,6 +36,16 @@ describe('QuestionTable', () => {
         expect(ongates).toHaveBeenCalledWith(expect.objectContaining({ questionId: 0x3b }));
     });
 
+    it('fires oncontext on question row right-click', () => {
+        const oncontext = vi.fn();
+        render(QuestionTable, { questions: [q()], onsetvalue: () => {}, ongates: () => {}, onadd: () => {}, oncontext });
+        fireEvent.contextMenu(screen.getByText('Above 4G Decoding').closest('tr')!);
+        expect(oncontext).toHaveBeenCalledWith(
+            expect.objectContaining({ questionId: 0x3b }),
+            expect.any(MouseEvent),
+        );
+    });
+
     it('empty state', () => {
         render(QuestionTable, { questions: [], onsetvalue: () => {}, ongates: () => {}, onadd: () => {} });
         expect(screen.getByText('no questions')).toBeInTheDocument();

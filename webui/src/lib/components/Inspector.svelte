@@ -1,7 +1,10 @@
 <script lang="ts">
     import type { TreeNode } from '../tree';
     let { node }: { node: TreeNode | null } = $props();
-    const actionNames: Record<number, string> = { 52: 'insert', 53: 'replace', 54: 'remove', 55: 'rebuild' };
+    const ACTION_NO = 50;
+    const actionNames: Record<number, string> = {
+        51: 'create', 52: 'insert', 53: 'replace', 54: 'remove', 55: 'rebuild', 56: 'rebase',
+    };
 </script>
 
 {#if node}
@@ -15,7 +18,7 @@
         <dt>size</dt><dd>{node.size}</dd>
         {#if node.region}<dt>region</dt><dd>{node.region}</dd>{/if}
         {#if node.isNvar}<dt>nvar</dt><dd>yes</dd>{/if}
-        {#if node.action}<dt>status</dt><dd class="pending">pending: {actionNames[node.action] ?? node.action}</dd>{/if}
+        {#if node.action && node.action !== ACTION_NO}<dt>status</dt><dd class="pending">pending: {actionNames[node.action] ?? node.action}</dd>{/if}
     </dl>
 {:else}
     <p>select a node</p>
