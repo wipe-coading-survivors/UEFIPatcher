@@ -2,6 +2,7 @@
     import './app.css';
     import { appState } from '$lib/state.svelte';
     import { createSession } from '$lib/api';
+    import { sectionHref } from '$lib/nav';
     import { onMount } from 'svelte';
     let { children } = $props();
     const sections = [
@@ -11,11 +12,7 @@
         { id: 'snapshots', label: 'Snapshots' },
         { id: 'artifacts', label: 'Artifacts' },
     ];
-    const formsHref = $derived(appState.imageId ? `/forms/${appState.imageId}` : '/forms');
-    const href = (id: string) =>
-        id === 'image' || id === 'artifacts' || !appState.imageId
-            ? `/${id}`
-            : `/${id}/${appState.imageId}`;
+    const href = (id: string) => sectionHref(id, appState.imageId);
     onMount(async () => {
         if (!appState.sessionId) {
             try {
@@ -34,11 +31,7 @@
 <div class="shell">
     <nav aria-label="sections">
         {#each sections as s (s.id)}
-            {#if s.id === 'forms'}
-                <a href={formsHref}>{s.label}</a>
-            {:else}
-                <a href={href(s.id)}>{s.label}</a>
-            {/if}
+            <a href={href(s.id)}>{s.label}</a>
         {/each}
     </nav>
     <div class="main">
