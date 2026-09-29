@@ -93,9 +93,18 @@
   sha256, snapshot restore ≡ original, artifact ≡ CLI export, question add ≡
   CLI. Спека `docs/superpowers/specs/2026-09-28-webui-parity-design.md`
   (§W3 + аддендумы W1/W2/W3), план `docs/superpowers/plans/2026-09-29-webui-w3.md`.
-  Ручной прогон владельца выполнен (2026-09-29): функционально — дуга
-  работает (pod-контейнер, hostPort-фикс); UX-находки — TODO «после W3»;
-  аддендум W3 записан — дуга W1–W3 закрыта.
+   Ручной прогон владельца выполнен (2026-09-29): функционально — дуга
+   работает (pod-контейнер, hostPort-фикс); UX-находки — TODO «после W3»;
+   аддендум W3 записан — дуга W1–W3 закрыта.
+- **Статус W4 (дуга webui-parity, UX-полиш)**: закрыта (2026-09-29, PR #33
+   `390b642`) — sidebar deep-links (`sectionHref`), единый ContextMenu
+   (гашение пункт/вне/Escape) на Tree/Forms/NVRAM, woff2-пиктограммы
+   (зеркало theme.rs), Inspector без ложного pending:50, Open-by-path
+   удалён. Гейты: vitest 121/121, svelte-check 0/0, Playwright ux 6/6 на
+   живом образе. Ручной прогон владельца (2026-09-29): 3 находки
+   (прокрутка панелей, статичные треугольники, отсутствие мета-деталей
+   формы) — закрыты пост-мердж фиксами `5e41493`+`616ca5a` (ux.spec 10/10);
+   вердикт — аддендумом W4 в спеке. Дуга W1–W4 закрыта.
 - **Что включено**: крейт `uefi-gateway` (axum REST+WS, cookie→gRPC metadata, upload/download, artifact endpoints); `webui/` (SvelteKit SPA, tree-view, details, операции, setup add-formset); контейнеризация (`<component>.containerfile`, `registry.fedoraproject.org/fedora:44`, `rust-builder.containerfile`); тесты.
 
 ### Цикл 6 — Расширенный Setup (план готов, к реализации)

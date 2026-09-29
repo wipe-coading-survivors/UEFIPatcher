@@ -572,3 +572,23 @@ Forms/NVRAM (единый ContextMenu) + левое выравнивание, W4
 недоступен, не существует. Поэтому пункты меню W4 реализованы без
 disabled-состояния (компонент ContextMenu поддерживает `disabled?`,
 поставщики меню его не задают).
+
+## Аддендум W4 — вердикт ручного прогона (2026-09-29)
+
+Владелец прогнал W4 (Task 10 Step 7 плана). Вердикт: принято с тремя
+UX-находками, все закрыты пост-мердж фиксами в тот же день:
+
+1. Нет прокрутки в панелях (дерево Image с сотнями узлов, детали
+   Forms) — страница скроллилась целиком, детали уезжали. Фикс
+   `616ca5a`: `max-height: calc(100vh - 220px); overflow-y: auto` на
+   treepane/aside (Image) и обе секции Forms.
+2. Треугольники expand в Image View статичные (в Forms на формсетах
+   динамичные, на формах нет). Фикс `5e41493`: `buildRows` несёт
+   `expanded`, Tree/FormsTree рендерят ▾/▸ + `aria-expanded`.
+3. Нет деталей самой формы (id, formset) в отличие от TUI. Фикс
+   `616ca5a`: `dl.form-meta` (Form/Form ID/FormSet/Target) — паритет
+   с `form_panel` uefi-tui (`crates/uefi-tui/src/forms.rs`).
+
+Гейты после фикс-волны: vitest 125/125, svelte-check 0/0, build,
+Playwright ux.spec 10/10 на живом образе. Дуга W1–W4 закрыта;
+отложенное — TODO.md «после W4».
