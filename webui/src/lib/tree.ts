@@ -21,12 +21,13 @@ export function buildTree(nodes: EngineNode[]): TreeNode[] {
 export function buildRows(
     roots: TreeNode[],
     expanded: Set<string>,
-): { node: TreeNode; depth: number; hasChildren: boolean }[] {
-    const rows: { node: TreeNode; depth: number; hasChildren: boolean }[] = [];
+): { node: TreeNode; depth: number; hasChildren: boolean; expanded: boolean }[] {
+    const rows: { node: TreeNode; depth: number; hasChildren: boolean; expanded: boolean }[] = [];
     const walk = (nodes: TreeNode[], depth: number) => {
         for (const node of nodes) {
-            rows.push({ node, depth, hasChildren: node.children.length > 0 });
-            if (expanded.has(node.path)) walk(node.children, depth + 1);
+            const isExpanded = expanded.has(node.path);
+            rows.push({ node, depth, hasChildren: node.children.length > 0, expanded: isExpanded });
+            if (isExpanded) walk(node.children, depth + 1);
         }
     };
     walk(roots, 0);

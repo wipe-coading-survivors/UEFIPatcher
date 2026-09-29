@@ -73,6 +73,34 @@ describe('FormsTree', () => {
         );
     });
 
+    it('form row triangle reflects expanded state', () => {
+        const parentSets = buildFormsets(
+            [form('S1', 1, 'Root'), form('S1', 2, 'Child')],
+            [{ formsetGuid: 'S1', parentFormId: 1, formId: 2, targetFormsetGuid: '' }],
+        );
+        const { rerender } = render(FormsTree, {
+            rows: buildFormRows(parentSets, new Set(['S1'])),
+            selectedKey: null,
+            onselect: () => {},
+            ongates: () => {},
+            onshow: () => {},
+            ontoggle: () => {},
+        });
+        const btn = screen.getByLabelText('expand S1#1');
+        expect(btn).toHaveTextContent('▸');
+        expect(btn).toHaveAttribute('aria-expanded', 'false');
+        rerender({
+            rows: buildFormRows(parentSets, new Set(['S1', 'S1#1'])),
+            selectedKey: null,
+            onselect: () => {},
+            ongates: () => {},
+            onshow: () => {},
+            ontoggle: () => {},
+        });
+        expect(screen.getByLabelText('expand S1#1')).toHaveTextContent('▾');
+        expect(screen.getByLabelText('expand S1#1')).toHaveAttribute('aria-expanded', 'true');
+    });
+
     it('no show button for visible forms', () => {
         const rows = buildFormRows(sets, new Set(['S1']));
         render(FormsTree, { rows, selectedKey: null, onselect: () => {}, ongates: () => {}, onshow: () => {}, ontoggle: () => {} });

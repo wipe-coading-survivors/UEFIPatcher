@@ -58,6 +58,22 @@ describe('Tree', () => {
         await vi.waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument());
     });
 
+    it('expand triangle reflects collapsed state', () => {
+        render(Tree, { rows: buildRows(roots, new Set([''])), selectedPath: null, onselect: () => {}, oncontext: () => {}, ontoggle: () => {} });
+        const btn = screen.getByLabelText('expand 0');
+        expect(btn).toHaveTextContent('▸');
+        expect(btn).toHaveAttribute('aria-expanded', 'false');
+    });
+
+    it('expand triangle reflects expanded state', () => {
+        render(Tree, { rows: buildRows(roots, new Set(['', '0'])), selectedPath: null, onselect: () => {}, oncontext: () => {}, ontoggle: () => {} });
+        const [root, me] = screen.getAllByRole('button', { name: /expand/ });
+        expect(root).toHaveTextContent('▾');
+        expect(root).toHaveAttribute('aria-expanded', 'true');
+        expect(me).toHaveTextContent('▾');
+        expect(me).toHaveAttribute('aria-expanded', 'true');
+    });
+
     it('renders aria-hidden store icon per row', () => {
         render(Tree, { rows: buildRows(roots, new Set(['', '0'])), selectedPath: null, onselect: () => {}, oncontext: () => {}, ontoggle: () => {} });
         const icons = document.querySelectorAll('span.nf');

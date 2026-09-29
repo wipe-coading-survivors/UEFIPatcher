@@ -9,7 +9,7 @@
         oncontext,
         ontoggle,
     }: {
-        rows: { node: TreeNode; depth: number; hasChildren: boolean }[];
+        rows: { node: TreeNode; depth: number; hasChildren: boolean; expanded: boolean }[];
         selectedPath: string | null;
         onselect: (node: TreeNode) => void;
         oncontext: (node: TreeNode, action: string) => void;
@@ -43,8 +43,8 @@
             style="padding-left: {row.depth * 16}px"
         >
             {#if row.hasChildren}
-                <button aria-label="expand {row.node.path}" onclick={() => ontoggle(row.node.path)}>
-                    ▸
+                <button aria-label="expand {row.node.path}" aria-expanded={row.expanded} onclick={() => ontoggle(row.node.path)}>
+                    {row.expanded ? '▾' : '▸'}
                 </button>
             {/if}
             <button

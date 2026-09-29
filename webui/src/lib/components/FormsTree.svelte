@@ -41,7 +41,9 @@
                 style="padding-left: {row.depth * 16}px"
             >
                 {#if row.hasChildren}
-                    <button aria-label="expand {row.key}" onclick={() => ontoggle(row.key)}>▸</button>
+                    <button aria-label="expand {row.key}" aria-expanded={row.expanded} onclick={() => ontoggle(row.key)}>
+                        {row.expanded ? '▾' : '▸'}
+                    </button>
                 {/if}
                 <button
                     type="button"
