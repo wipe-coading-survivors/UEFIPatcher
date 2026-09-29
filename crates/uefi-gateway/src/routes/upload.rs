@@ -1,7 +1,7 @@
 use axum::Json;
 use axum::body::Body;
 use axum::extract::{Multipart, Path, State};
-use axum::http::header;
+use axum::http::{HeaderValue, header};
 use axum::response::Response;
 use axum_extra::extract::CookieJar;
 use serde_json::{Value, json};
@@ -116,6 +116,31 @@ pub async fn download(
             header::CONTENT_DISPOSITION,
             "attachment; filename=\"patched.bin\"",
         )
+        .body(Body::from(data))
+        .unwrap())
+}
+
+pub async fn artifact_download(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(id): Path<String>,
+) -> Result<Response<Body>, AppError> {
+    let sid = extract_session_id(&jar).ok_or(AppError::Auth)?;
+    let content_disposition =
+        HeaderValue::from_str(&format!("attachment; filename=\"artifact-{id}.bin\""))
+            .map_err(|e| AppError::Internal(format!("invalid artifact id in filename: {e}")))?;
+    let out_path = format!("/tmp/uefipatcher-artifact-dl-{}.bin", Uuid::new_v4());
+    let mut c = state.client.lock().await;
+    c.artifact_export(&state.sessions, &sid, &id, &out_path)
+        .await
+        .map_err(AppError::from)?;
+    let data = tokio::fs::read(&out_path)
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    let _ = tokio::fs::remove_file(&out_path).await;
+    Ok(Response::builder()
+        .header(header::CONTENT_TYPE, "application/octet-stream")
+        .header(header::CONTENT_DISPOSITION, content_disposition)
         .body(Body::from(data))
         .unwrap())
 }

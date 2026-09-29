@@ -19,6 +19,7 @@ describe('QuestionTable', () => {
             questions: [q(), q({ questionId: 0x3c, kind: 'numeric', prompt: 'Fan speed', seedValue: '60000' })],
             onsetvalue: () => {},
             ongates: () => {},
+            onadd: () => {},
         });
         expect(screen.getByText('0x3B')).toBeInTheDocument();
         expect(screen.getByText('Above 4G Decoding')).toBeInTheDocument();
@@ -28,7 +29,7 @@ describe('QuestionTable', () => {
     it('fires set/gates with the row question', () => {
         const onsetvalue = vi.fn();
         const ongates = vi.fn();
-        render(QuestionTable, { questions: [q()], onsetvalue, ongates });
+        render(QuestionTable, { questions: [q()], onsetvalue, ongates, onadd: () => {} });
         fireEvent.click(screen.getByRole('button', { name: 'set 0x3B' }));
         expect(onsetvalue).toHaveBeenCalledWith(expect.objectContaining({ questionId: 0x3b }));
         fireEvent.click(screen.getByRole('button', { name: 'gates 0x3B' }));
@@ -36,7 +37,7 @@ describe('QuestionTable', () => {
     });
 
     it('empty state', () => {
-        render(QuestionTable, { questions: [], onsetvalue: () => {}, ongates: () => {} });
+        render(QuestionTable, { questions: [], onsetvalue: () => {}, ongates: () => {}, onadd: () => {} });
         expect(screen.getByText('no questions')).toBeInTheDocument();
     });
 });

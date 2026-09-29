@@ -6,6 +6,9 @@ import {
     removeNode, uploadImage,
     formTree, gatesList, hiiUnlock, listForms, listQuestions, listStrings,
     questionInfo, setFormVisibility, setValue,
+    artifactExport, artifactsList, downloadArtifact, formAdd, formExport, formHijack,
+    formSetAdd, nvarList, nvarSet, pageAdd, questionAdd,
+    snapshotCreate, snapshotRestore, snapshotsList,
 } from './api';
 
 const server = setupServer();
@@ -123,5 +126,70 @@ describe('api client', () => {
         );
         const r = await setValue('i-1', 'x', '18446744073709551615');
         expect(r.stores).toEqual(['a']);
+    });
+
+    it('w3 wrappers send camelCase bodies to bridge methods', async () => {
+        const calls: { method: string; body: unknown }[] = [];
+        const handler = (method: string) =>
+            http.post(`*/api/v1/rpc/${method}`, async ({ request }) => {
+                calls.push({ method, body: await request.json() });
+                return HttpResponse.json({});
+            });
+        server.use(
+            handler('NvarList'), handler('NvarSet'),
+            handler('ImageSnapshotCreate'), handler('ImageSnapshotsList'), handler('ImageSnapshotRestore'),
+            handler('ArtifactsList'), handler('ArtifactExport'),
+            handler('HiiFormSetAdd'), handler('HiiFormAdd'), handler('HiiQuestionAdd'),
+            handler('HiiPageAdd'), handler('HiiFormHijack'), handler('HiiFormExport'),
+        );
+        await nvarList('i-1');
+        await nvarList('i-1', '0/2', true);
+        await nvarSet('i-1', 'Setup', 'EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9', '58', '1', 1);
+        await nvarSet('i-1', 'Setup', '', '0', '0', 1);
+        await snapshotCreate('i-1', 'pre');
+        await snapshotsList('i-1');
+        await snapshotRestore('i-1', 'snap-1');
+        await artifactsList('s-1');
+        await artifactExport('a-1', '/tmp/a.bin');
+        await formSetAdd('i-1', '{}');
+        await formSetAdd('i-1', '{}', '899407D7-99FE-43D8-9A21-79EC328CAC21');
+        await formAdd('i-1', 'G:0x10:0', '{}');
+        await questionAdd('i-1', 'G:0x10:0#10009', '{}');
+        await pageAdd('i-1', 'G:0x10:0', '{}');
+        await formHijack('i-1', 'G:0x10:0', '{}');
+        await formHijack('i-1', 'G:0x10:0', '{}', 'SETUP-DATA-GUID');
+        await formExport('i-1', 'G:0x10:0#10029');
+        expect(calls).toEqual([
+            { method: 'NvarList', body: { imageId: 'i-1', includeData: false } },
+            { method: 'NvarList', body: { imageId: 'i-1', path: '0/2', includeData: true } },
+            { method: 'NvarSet', body: { imageId: 'i-1', name: 'Setup', guid: 'EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9', offset: '58', value: '1', width: 1 } },
+            { method: 'NvarSet', body: { imageId: 'i-1', name: 'Setup', offset: '0', value: '0', width: 1 } },
+            { method: 'ImageSnapshotCreate', body: { imageId: 'i-1', name: 'pre' } },
+            { method: 'ImageSnapshotsList', body: { imageId: 'i-1' } },
+            { method: 'ImageSnapshotRestore', body: { imageId: 'i-1', snapshotId: 'snap-1' } },
+            { method: 'ArtifactsList', body: { sessionId: 's-1' } },
+            { method: 'ArtifactExport', body: { artifactId: 'a-1', outputPath: '/tmp/a.bin' } },
+            { method: 'HiiFormSetAdd', body: { imageId: 'i-1', schemaJson: '{}', targetFfsGuid: '' } },
+            { method: 'HiiFormSetAdd', body: { imageId: 'i-1', schemaJson: '{}', targetFfsGuid: '899407D7-99FE-43D8-9A21-79EC328CAC21' } },
+            { method: 'HiiFormAdd', body: { imageId: 'i-1', target: 'G:0x10:0', schemaJson: '{}' } },
+            { method: 'HiiQuestionAdd', body: { imageId: 'i-1', target: 'G:0x10:0#10009', schemaJson: '{}' } },
+            { method: 'HiiPageAdd', body: { imageId: 'i-1', target: 'G:0x10:0', schemaJson: '{}' } },
+            { method: 'HiiFormHijack', body: { imageId: 'i-1', target: 'G:0x10:0', schemaJson: '{}', setupdataGuid: '' } },
+            { method: 'HiiFormHijack', body: { imageId: 'i-1', target: 'G:0x10:0', schemaJson: '{}', setupdataGuid: 'SETUP-DATA-GUID' } },
+            { method: 'HiiFormExport', body: { imageId: 'i-1', itemId: 'G:0x10:0#10029' } },
+        ]);
+    });
+
+    it('downloadArtifact fetches binary blob from REST route', async () => {
+        server.use(
+            http.get('*/api/v1/artifact/:id/download', () =>
+                new HttpResponse(new Blob(['x']), {
+                    status: 200,
+                    headers: { 'Content-Type': 'application/octet-stream' },
+                }),
+            ),
+        );
+        const blob = await downloadArtifact('a-1');
+        expect(blob.size).toBeGreaterThanOrEqual(0);
     });
 });

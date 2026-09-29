@@ -35,6 +35,10 @@ pub fn router(state: AppState) -> axum::Router {
             axum::routing::post(upload::artifact_upload),
         )
         .route(
+            "/api/v1/artifact/:id/download",
+            axum::routing::get(upload::artifact_download),
+        )
+        .route(
             "/api/v1/image/:id/download",
             axum::routing::get(upload::download),
         )

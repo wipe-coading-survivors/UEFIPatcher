@@ -180,8 +180,10 @@ impl EngineService for MockEngine {
     }
     async fn artifact_export(
         &self,
-        _req: Request<ArtifactExportRequest>,
+        req: Request<ArtifactExportRequest>,
     ) -> Result<Response<Empty>, Status> {
+        let r = req.into_inner();
+        std::fs::write(&r.output_path, b"artifact-by-mock").ok();
         Ok(Response::new(Empty {}))
     }
     async fn hii_list_forms(

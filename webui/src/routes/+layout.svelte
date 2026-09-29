@@ -5,13 +5,17 @@
     import { onMount } from 'svelte';
     let { children } = $props();
     const sections = [
-        { id: 'image', label: 'Image', ready: true },
-        { id: 'forms', label: 'Forms', ready: true },
-        { id: 'nvar', label: 'NVRAM', ready: false },
-        { id: 'snapshots', label: 'Snapshots', ready: false },
-        { id: 'artifacts', label: 'Artifacts', ready: false },
+        { id: 'image', label: 'Image' },
+        { id: 'forms', label: 'Forms' },
+        { id: 'nvar', label: 'NVRAM' },
+        { id: 'snapshots', label: 'Snapshots' },
+        { id: 'artifacts', label: 'Artifacts' },
     ];
     const formsHref = $derived(appState.imageId ? `/forms/${appState.imageId}` : '/forms');
+    const href = (id: string) =>
+        id === 'image' || id === 'artifacts' || !appState.imageId
+            ? `/${id}`
+            : `/${id}/${appState.imageId}`;
     onMount(async () => {
         if (!appState.sessionId) {
             try {
@@ -21,17 +25,19 @@
             }
         }
     });
+    $effect(() => {
+        appState.imageId;
+        appState.snapshotCount = 0;
+    });
 </script>
 
 <div class="shell">
     <nav aria-label="sections">
         {#each sections as s (s.id)}
-            {#if s.ready && (s.id === 'image')}
-                <a href="/image">{s.label}</a>
-            {:else if s.ready && s.id === 'forms'}
+            {#if s.id === 'forms'}
                 <a href={formsHref}>{s.label}</a>
             {:else}
-                <span aria-disabled="true" title="not in W2">{s.label}</span>
+                <a href={href(s.id)}>{s.label}</a>
             {/if}
         {/each}
     </nav>
@@ -42,7 +48,16 @@
             </span>
             <span id="status-image">{appState.imageId ?? 'no image'}</span>
             {#if appState.pending}<span id="status-pending" title="pending actions">●</span>{/if}
+            {#if appState.snapshotCount > 0}
+                <span id="status-snapshots" title="image snapshots">▣ {appState.snapshotCount}</span>
+            {/if}
         </header>
-        <main>{@render children?.()}</main>
+        <svelte:boundary>
+            <main>{@render children?.()}</main>
+            {#snippet failed(message, reset)}
+                <p class="error" role="alert">section crashed: {(message as Error).message}</p>
+                <button onclick={reset}>Reset section</button>
+            {/snippet}
+        </svelte:boundary>
     </div>
 </div>
