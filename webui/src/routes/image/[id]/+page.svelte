@@ -202,3 +202,12 @@
         <button onclick={onSave} disabled={!savePath}>Save</button>
     </Modal>
 {/if}
+
+<style>
+    .workbench {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 16px;
+        align-items: start;
+    }
+</style>
