@@ -5,11 +5,13 @@
         selected,
         onselect,
         onset,
+        oncontext,
     }: {
         vars: VarRow[];
         selected: VarRow | null;
         onselect: (v: VarRow) => void;
         onset: (v: VarRow) => void;
+        oncontext?: (v: VarRow, e: MouseEvent) => void;
     } = $props();
     const dump = $derived(selected ? hexDump(decodeBase64(selected.data)) : []);
 </script>
@@ -21,7 +23,7 @@
         <thead><tr><th>name</th><th>guid</th><th>offset</th><th>size</th><th>attrs</th><th>depth</th><th></th></tr></thead>
         <tbody>
             {#each vars as v (`${v.name}#${v.offset}`)}
-                <tr class:selected={selected === v}>
+                <tr class:selected={selected === v} oncontextmenu={(e) => { e.preventDefault(); oncontext?.(v, e); }}>
                     <td><button type="button" class="label" onclick={() => onselect(v)}>{v.name}</button></td>
                     <td><code>{v.guid}</code></td>
                     <td>{hexN(v.offset)}</td>
