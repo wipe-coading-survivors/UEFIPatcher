@@ -35,6 +35,13 @@ describe('image landing', () => {
         await waitFor(() => expect(screen.getByText('live.bin')).toBeInTheDocument());
     });
 
+    it('no server-path open section (W4-5)', async () => {
+        render(Page);
+        await waitFor(() => expect(screen.getByText('live.bin')).toBeInTheDocument());
+        expect(screen.queryByRole('heading', { name: 'Open by server path' })).not.toBeInTheDocument();
+        expect(screen.queryByPlaceholderText('/path/to/image.bin')).not.toBeInTheDocument();
+    });
+
     it('upload navigates to image page', async () => {
         server.use(
             http.post('*/api/v1/image/upload', () =>

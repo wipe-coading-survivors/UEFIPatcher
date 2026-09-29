@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
 import {
-    ApiError, bridge, createSession, listNodes, imageOpen as apiOpen,
+    ApiError, bridge, createSession, listNodes,
     removeNode, uploadImage,
     formTree, gatesList, hiiUnlock, listForms, listQuestions, listStrings,
     questionInfo, setFormVisibility, setValue,
@@ -54,17 +54,6 @@ describe('api client', () => {
         );
         const r = await uploadImage(new File([new Uint8Array([1, 2])], 'bios.bin'), 'write');
         expect(r.imageId).toBe('i-9');
-    });
-
-    it('api helpers send camelCase bodies', async () => {
-        server.use(
-            http.post('*/api/v1/rpc/ImageOpen', async ({ request }) => {
-                const body = await request.json();
-                expect(body).toEqual({ sessionId: 's-1', path: '/fw/x.bin', mode: 1, name: '' });
-                return HttpResponse.json({ imageId: 'i-2', rootGuid: '', name: '' });
-            }),
-        );
-        await apiOpen('s-1', '/fw/x.bin', 1);
     });
 
     it('removeNode sends imageId+target', async () => {
