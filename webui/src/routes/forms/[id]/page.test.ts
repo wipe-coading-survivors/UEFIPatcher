@@ -117,6 +117,32 @@ describe('forms page', () => {
         await waitFor(() => expect(screen.getByText(/unlocked: 1 flips applied/)).toBeInTheDocument());
     });
 
+    it('form context menu opens gates dialog', async () => {
+        mockAll();
+        render(Page, { data: { imageId: 'i-1' } });
+        await waitFor(() => expect(screen.getByText(/Advanced/)).toBeInTheDocument());
+        fireEvent.contextMenu(screen.getByText(/Advanced/));
+        await fireEvent.click(screen.getByRole('menuitem', { name: 'Gates…' }));
+        await waitFor(() => expect(screen.getByText(/Gates: form 10002/)).toBeInTheDocument());
+    });
+
+    it('question context menu offers Set value', async () => {
+        mockAll({
+            HiiQuestionInfo: () => HttpResponse.json({
+                question: { formId: 10029, questionId: 0x3b, kind: 'one_of', varStoreId: 1,
+                    varstore: undefined, varOffset: 0x3a, width: 1, min: '0', max: '1', step: '0',
+                    options: [], defaults: [] },
+            }),
+        });
+        render(Page, { data: { imageId: 'i-1' } });
+        await waitFor(() => expect(screen.getByText(/PCI Subsystem/)).toBeInTheDocument());
+        fireEvent.click(screen.getByText(/PCI Subsystem/));
+        await waitFor(() => expect(screen.getByText('Above 4G Decoding')).toBeInTheDocument());
+        fireEvent.contextMenu(screen.getByText('Above 4G Decoding').closest('tr')!);
+        await fireEvent.click(screen.getByRole('menuitem', { name: 'Set value…' }));
+        await waitFor(() => expect(screen.getByText('Above 4G Decoding', { selector: 'h2, h3, label, .prompt, dialog *' })).toBeVisible());
+    });
+
     it('strings tab renders panel', async () => {
         mockAll({
             HiiListStrings: () =>

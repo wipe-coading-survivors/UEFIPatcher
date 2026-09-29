@@ -54,6 +54,25 @@ describe('FormsTree', () => {
         expect(ontoggle).toHaveBeenCalledWith('S1');
     });
 
+    it('fires oncontext on form row right-click', () => {
+        const oncontext = vi.fn();
+        const rows = buildFormRows(sets, new Set(['S1']));
+        render(FormsTree, {
+            rows,
+            selectedKey: null,
+            onselect: () => {},
+            ongates: () => {},
+            onshow: () => {},
+            ontoggle: () => {},
+            oncontext,
+        });
+        fireEvent.contextMenu(screen.getByText(/Main/));
+        expect(oncontext).toHaveBeenCalledWith(
+            expect.objectContaining({ formIdIfr: 1 }),
+            expect.any(MouseEvent),
+        );
+    });
+
     it('no show button for visible forms', () => {
         const rows = buildFormRows(sets, new Set(['S1']));
         render(FormsTree, { rows, selectedKey: null, onselect: () => {}, ongates: () => {}, onshow: () => {}, ontoggle: () => {} });

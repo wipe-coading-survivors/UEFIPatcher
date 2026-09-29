@@ -8,6 +8,7 @@
         ongates,
         onshow,
         ontoggle,
+        oncontext,
     }: {
         rows: FormRow[];
         selectedKey: string | null;
@@ -15,6 +16,7 @@
         ongates: (form: FormInfo) => void;
         onshow: (form: FormInfo) => void;
         ontoggle: (key: string) => void;
+        oncontext?: (form: FormInfo, e: MouseEvent) => void;
     } = $props();
 </script>
 
@@ -41,7 +43,15 @@
                 {#if row.hasChildren}
                     <button aria-label="expand {row.key}" onclick={() => ontoggle(row.key)}>▸</button>
                 {/if}
-                <button type="button" class="label" onclick={() => onselect(row.form!)}>
+                <button
+                    type="button"
+                    class="label"
+                    onclick={() => onselect(row.form!)}
+                    oncontextmenu={(e) => {
+                        e.preventDefault();
+                        oncontext?.(row.form!, e);
+                    }}
+                >
                     {row.form.formIdIfr} {row.form.title}
                 </button>
                 {#if !row.form.visible}

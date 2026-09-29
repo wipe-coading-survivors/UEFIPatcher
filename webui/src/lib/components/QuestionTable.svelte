@@ -5,11 +5,13 @@
         onsetvalue,
         ongates,
         onadd,
+        oncontext,
     }: {
         questions: QuestionSummary[];
         onsetvalue: (q: QuestionSummary) => void;
         ongates: (q: QuestionSummary) => void;
         onadd: () => void;
+        oncontext?: (q: QuestionSummary, e: MouseEvent) => void;
     } = $props();
 
     const hex = (qid: number) => `0x${qid.toString(16).toUpperCase()}`;
@@ -28,7 +30,7 @@
         </thead>
         <tbody>
             {#each questions as q (q.questionId)}
-                <tr>
+                <tr oncontextmenu={(e) => { e.preventDefault(); oncontext?.(q, e); }}>
                     <td><code>{hex(q.questionId)}</code></td>
                     <td>{q.kind}</td>
                     <td>{q.prompt}</td>
