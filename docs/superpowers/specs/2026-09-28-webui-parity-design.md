@@ -464,9 +464,15 @@ RPC нет):
 
 | Цель (right-click) | Действия |
 |---|---|
-| Forms: форма | Set value, Gates, Export, Add question, Add page, Hijack |
+| Forms: форма | Gates, Export, Add question, Add page, Hijack |
 | Forms: вопрос | Set value, Gates |
 | NVRAM: переменная | Set…, Copy hex |
+
+Уточнение к эскизу владельца (docs-fix 2026-09-29): Set value на
+строке формы убран из матрицы — в контракте движка `HiiSetValue`
+принимает item_id **вопроса** (`uefi-engine` QuestionItemId),
+форм-уровневого set-value нет; TUI-паритет — set-value на вопросе
+(Enter), на форме его тоже нет.
 
 Disabled-пункты — по тем же условиям, что тулбар-кнопки (напр. Hijack
 только на живой форме). Copy hex — `navigator.clipboard` + toast
@@ -500,9 +506,11 @@ TUI + вторая таблица соответствий).
 - CSS: `@font-face` NF + span.nf с `content`-кодпоинтом; иконки
   строго `aria-hidden` (декоративность — контракт E2E-селекторов
   W1–W3 не меняется).
-- Применение (граница W4): дерево образа (type_icon), Forms
-  (formset/form/вопросы), NVRAM (store). Artifacts/snapshots —
-  без иконок (не в TUI-таблицах).
+- Применение (граница W4, уточнение docs-fix 2026-09-29 — зеркало TUI
+  только там, где иконки есть в `theme.rs`/`forms.rs`): дерево образа
+  (type_icon/store_icon), Forms — **вопросы** (question_icon; у
+  формсетов/форм иконок в TUI нет — паритет), NVRAM — сторы (F0C7).
+  Artifacts/snapshots — без иконок (не в TUI-таблицах).
 
 ### W4-5. Индекс Image: удалить «Open by server path»
 
