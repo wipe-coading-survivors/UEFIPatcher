@@ -4633,3 +4633,36 @@ Task 3 (проверено git stash). Штатная команда цикла 
 * [ ] **Snapshot restore без вердикта о незасейвленных правках** — restore
   откатывает байты образа в сессии движка; WebUI не предупреждает о
   unsaved download-артефактах. Класс: limitation.
+
+> Миноры финального ревью W3 (2026-09-29), не вошедшие в фиксы:
+
+* [ ] **temp-file leak при read-fail** — artifact_download и image download
+  (upload.rs): `tokio::fs::read(&out_path)` падает до `remove_file` →
+  осевший `/tmp/uefipatcher-{artifact-dl,download}-<uuid>.bin`; чинить оба
+  роута вместе. Класс: write-path.
+* [ ] **мёртвая кнопка `Import…` (artifacts) без onclick** — клик ничего не
+  делает; импорт по onchange файлового инпута. Класс: errors (misleading UI).
+* [ ] **nvar/[id]/page.test.ts — per-test server.listen/close без
+  try/finally** — падение теста до close оставляет msw-хендлеры живыми;
+  унифицировать под beforeAll/afterAll-паттерн остальных page-тестов.
+  Класс: limitation.
+* [ ] **a11y: aria-label="add question" ≠ видимый текст `Add question…`**
+  (WCAG 2.5.3 Label-in-Name) — voice-пользователь, произносящий видимую
+  надпись, кнопку не активирует. Класс: limitation.
+* [ ] **тест-гигиена (сводно)** — `blob.size >= 0` таутология; Content-Type
+  не ассертится в gateway integration (download-маршруты); mock
+  `fs::write(...).ok()` глушит собственные отказы; `FORMSET_IFR` unused.
+  Класс: limitation.
+* [ ] **ExportDialog lossy keyed by string** — дубликаты строк-описателей
+  дадут keyed-each key-collision (тот же класс, что QuestionTable/Strings).
+  Класс: limitation.
+* [ ] **cross-session: artifact_download принимает любую живую сессию**
+  (artifact UUID как capability, без привязки к сессии-владельцу) —
+  консистентно с image-download; осознанное поведение. Класс: limitation.
+* [ ] **UI-шероховатости (сводно)** — busy-gaps (download/export без
+  disable), Close/Done без disabled при busy, stale exportError между
+  диалогами, hexN/decodeBase64 на мусоре вне контракта, Number(uint64) в
+  fmtDate/fmtSize, revokeObjectURL синхронно после click. Класс: limitation.
+* [ ] **data-dependent E2E** — guid-prefill Setup, 8-hex row-фильтр,
+  treeitem-по-expand сломаются первыми при смене референс-образа.
+  Класс: limitation.
