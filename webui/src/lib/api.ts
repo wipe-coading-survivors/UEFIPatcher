@@ -2,6 +2,8 @@ import type {
     Empty, ImageOpenResponse, ImagesListResponse, ImageNodesResponse,
     Node as EngineNode,
     FormInfo, FormEdge, GateInfo, QuestionInfo, QuestionSummary, StringInfo,
+    NvarStoreInfo, ImageSnapshotInfo, ArtifactInfo,
+    HiiQuestionAddResponse, HiiPageAddResponse, HiiFormHijackResponse, HiiFormExportResponse,
 } from './proto/engine';
 
 const API = '/api/v1';
@@ -213,3 +215,96 @@ export const setValue = (imageId: string, itemId: string, value: string) =>
         { imageId: string; itemId: string; value: string },
         { question?: QuestionInfo; appliedFlips: string[]; stores: string[] }
     >('HiiSetValue', { imageId, itemId, value });
+
+export const nvarList = (imageId: string, path?: string, includeData = false) =>
+    bridge<{ imageId: string; path?: string; includeData: boolean }, { stores: NvarStoreInfo[] }>(
+        'NvarList',
+        { imageId, path, includeData },
+    );
+
+export const nvarSet = (
+    imageId: string,
+    name: string,
+    guid: string,
+    offset: string,
+    value: string,
+    width: number,
+) =>
+    bridge<
+        { imageId: string; name: string; guid?: string; offset: string; value: string; width: number },
+        { applied: string[]; stores: string[] }
+    >('NvarSet', {
+        imageId,
+        name,
+        guid: guid || undefined,
+        offset,
+        value,
+        width,
+    });
+
+export const snapshotCreate = (imageId: string, name: string) =>
+    bridge<{ imageId: string; name: string }, { snapshotId: string; createdAt: string }>(
+        'ImageSnapshotCreate',
+        { imageId, name },
+    );
+
+export const snapshotsList = (imageId: string) =>
+    bridge<{ imageId: string }, { snapshots: ImageSnapshotInfo[] }>('ImageSnapshotsList', {
+        imageId,
+    });
+
+export const snapshotRestore = (imageId: string, snapshotId: string) =>
+    bridge<{ imageId: string; snapshotId: string }, Record<string, never>>(
+        'ImageSnapshotRestore',
+        { imageId, snapshotId },
+    );
+
+export const artifactsList = (sessionId: string) =>
+    bridge<{ sessionId: string }, { artifacts: ArtifactInfo[] }>('ArtifactsList', { sessionId });
+
+export const artifactExport = (artifactId: string, outputPath: string) =>
+    bridge<{ artifactId: string; outputPath: string }, Record<string, never>>('ArtifactExport', {
+        artifactId,
+        outputPath,
+    });
+
+export async function downloadArtifact(artifactId: string): Promise<Blob> {
+    const resp = await req(`/artifact/${artifactId}/download`);
+    return resp.blob();
+}
+
+export const formSetAdd = (imageId: string, schemaJson: string, targetFfsGuid = '') =>
+    bridge<
+        { imageId: string; schemaJson: string; targetFfsGuid: string },
+        { newFfsId: string; insertedFormIds: number[]; stringIds: Record<string, number> }
+    >('HiiFormSetAdd', { imageId, schemaJson, targetFfsGuid });
+
+export const formAdd = (imageId: string, target: string, schemaJson: string) =>
+    bridge<
+        { imageId: string; target: string; schemaJson: string },
+        { insertedFormIds: number[]; stringIds: Record<string, number> }
+    >('HiiFormAdd', { imageId, target, schemaJson });
+
+export const questionAdd = (imageId: string, target: string, schemaJson: string) =>
+    bridge<
+        { imageId: string; target: string; schemaJson: string },
+        HiiQuestionAddResponse
+    >('HiiQuestionAdd', { imageId, target, schemaJson });
+
+export const pageAdd = (imageId: string, target: string, schemaJson: string) =>
+    bridge<
+        { imageId: string; target: string; schemaJson: string },
+        HiiPageAddResponse
+    >('HiiPageAdd', { imageId, target, schemaJson });
+
+export const formHijack = (imageId: string, target: string, schemaJson: string, setupdataGuid = '') =>
+    bridge<
+        { imageId: string; target: string; schemaJson: string; setupdataGuid: string },
+        HiiFormHijackResponse
+    >('HiiFormHijack', { imageId, target, schemaJson, setupdataGuid });
+
+export const formExport = (imageId: string, itemId: string) =>
+    bridge<
+        { imageId: string; itemId: string },
+        HiiFormExportResponse
+    >('HiiFormExport', { imageId, itemId });
