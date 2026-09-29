@@ -77,6 +77,13 @@
   `docs/superpowers/specs/2026-09-28-webui-parity-design.md`, план
   `docs/superpowers/plans/2026-09-28-webui-w1.md`. Далее: W2 (Forms), W3 (NVRAM/
   Snapshots/Artifacts/добавление).
+- **Статус W2 (дуга webui-parity)**: код завершён (2026-09-28) — раздел Forms:
+  REF-дерево формсетов/форм, таблица вопросов с set-value/gates/unlock,
+  visibility-show, strings-браузер; E2E-гейт unlock+set-value+sha256-паритет
+  с CLI зелёный. Спека `docs/superpowers/specs/2026-09-28-webui-parity-design.md`
+  (§W2 + аддендум W1), план `docs/superpowers/plans/2026-09-28-webui-w2.md`.
+  Ручной прогон владельца → аддендум W2. Далее: W3 (NVRAM/Snapshots/Artifacts/
+  добавление).
 - **Что включено**: крейт `uefi-gateway` (axum REST+WS, cookie→gRPC metadata, upload/download, artifact endpoints); `webui/` (SvelteKit SPA, tree-view, details, операции, setup add-formset); контейнеризация (`<component>.containerfile`, `registry.fedoraproject.org/fedora:44`, `rust-builder.containerfile`); тесты.
 
 ### Цикл 6 — Расширенный Setup (план готов, к реализации)

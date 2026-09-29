@@ -4531,7 +4531,7 @@ Task 3 (проверено git stash). Штатная команда цикла 
   Закрыто: цикл hii-tail-sweep (`8b9d74c`) — подсказка переведена на
   `UEFIPATCHER_TEST_FW=$PWD/refs/fw/...` (запуск из корня репо).
 
-## WebUI Parity — отложенное (после W1)
+## WebUI Parity — отложенное (после W1/W2)
 
 * [ ] **bytes-out экстраполяция** — download без temp-файла шлюза (RPC с bytes-ответом)
   и общий bytes-in/out для контейнерного окружения; upload-side уже на ImageUpload RPC
@@ -4542,3 +4542,70 @@ Task 3 (проверено git stash). Штатная команда цикла 
 * [ ] **.dockerignore** — не исключает webui/node_modules, webui/build, refs/, .git → загрязняет build-context gateway-образа (Task 6).
 * [ ] **тест-хрупкость** — FixedRequest shim в webui/src/lib/test/setup.ts зависит от jsdom internals (_bytes/_buffer) — проверить при апгрейде vitest/jsdom (Task 8).
 * [ ] **E2E no-op replace** — fixture = bytes самого узла: round-trip валиден, но size-changing payload усилял бы гейт (W2, Task 14).
+* [ ] класс: silent-data — **webui/forms: buildFormsets структурные дубли (twin-FFS)** — дедуп
+  ключей есть только на уровне строк (buildFormRows first-wins, `5d73349`); формсеты/поддерева
+  twin-FFS HII-модулей дублируются, плюс нюанс hidden-subtree: кросс-формсетный REF-leaf дубль
+  подавляет собственное вхождение формсета с детьми. Контекст: спека webui-parity §W2, план
+  2026-09-28-webui-w2 Task 2/9.
+* [ ] класс: errors — **webui: Svelte 5 тихий крах keyed-each без error boundary** — дубли
+  ключей роняют each молча (пустое дерево, без ошибки в UI); нужен error boundary/logger.
+  Контекст: живой прецедент twin-FFS валит дерево форм (план Task 9, фиксы 5d73349/6ebbb4c —
+  точечные, класс остаётся).
+* [ ] класс: limitation — **webui dialogs: stale-promise гонки в $effect** — GatesDialog/
+  SetValueDialog не отменяют in-flight промисы при повторном открытии; page-level
+  stale-error assignment без гварда (transient UI). Контекст: план Task 4/5/8 — монотонные
+  токены есть только на loadQuestions/refresh.
+* [ ] класс: errors — **webui SetValueDialog: `question: undefined` → вечный loading** —
+  engine отвечает NotFound-ошибкой, диалог без вопроса остаётся в спиннере; показать ошибку.
+  Контекст: план Task 5.
+* [x] класс: errors — **webui E2E: vacuous-pass belt усилить** — добавить assert
+  sha256(WEB_OUT) != sha256(IMAGE) (равенство WEB==CLI проходит и на непромученных байтах);
+  `\d+ flips` матчит 0 (гейт «unlocked: N flips» проходит без единого флипа). Контекст:
+  план Task 9.
+  Закрыто: финальное ревью W2 (коммит `78206b7`) — `[1-9]\d* flips` +
+  `expect(sha256(WEB_OUT)).not.toBe(sha256(IMAGE))` в forms.spec.ts.
+* [ ] класс: silent-data — **webui: keyed-each ключи предполагают сквозную уникальность**
+  — Strings-браузер `${language}:${stringId}` коллидирует при multi-source дублях
+  string-пакетов; QuestionTable предполагает уникальность qid в форме (engine-контракт, UI не
+  проверяет); SetValueDialog options ключ `o.value` (дубли значений one_of-опций); GatesDialog
+  applied-flips ключ `f` (повтор строк-описателей флипов) — тот же класс silent-краха
+  keyed-each, что бил уже дважды. Контекст: план Task 4–7; прецедент-дедуп buildFormRows
+  `5d73349`.
+* [ ] класс: limitation — **webui GatesDialog: Unlock остаётся активным после успеха** —
+  повторный unlock возможен (engine идемпотентен, UI состояние не отражает). Контекст: план
+  Task 4.
+* [ ] класс: errors — **webui: действия до завершения session-bootstrap → 401 без retry** —
+  onMount createSession гоняется с кликами (Upload активен без сессии; gateway отвечает Auth
+  «invalid or missing session», UI не ретраит). E2E-спеки закрыты ожиданием #status-session
+  (`6ebbb4c`); продуктовый гвард (дизейбл до сессии / retry) не делался. Контекст: спека
+  webui-parity §W2, гейт Task 10.
+* [ ] класс: limitation — **webui forms: buildFormsets — досыпанные чисто-цикловые корни без
+  детей** — формы чистого цикла (все с входящими рёбрами) досыпаются корнями с `children: []`
+  (второй проход buildFormsets), поддерево не аттачится; TUI `build_tree_rows` в том же случае
+  эммитит полное поддерево (emit_form) — расхождение паритета WebUI-дерева с TUI. Контекст:
+  webui/src/lib/forms.ts buildFormsets; план 2026-09-28-webui-w2 Task 2.
+* [ ] класс: limitation — **webui forms: косметика дерева (батч)** — formset-строка всегда
+  `hasChildren: true`, даже на пустом формсете (buildFormRows); вложенный expand-баттон формы
+  без `type="button"` (FormsTree; у formset-expand есть); неймспейс-микс FormRow: `row.key`
+  строится из собственного формсета формы, `row.formsetGuid` — из обходимого сета (для
+  кросс-детей различаются) — потребители должны пользоваться `row.key`; `revokeObjectURL`
+  синхронно сразу после `a.click()` (image/[id] и forms/[id] +page.svelte); StringsPanel
+  «0 of 0» при загрузке без loading-стейта. Контекст:
+  webui/src/lib/forms.ts buildFormRows, webui/src/lib/components/FormsTree.svelte; план
+  2026-09-28-webui-w2 Task 2/3.
+* [ ] класс: limitation — **webui forms: multi-parent REF-цели — first-wins оставляет только
+  первое вхождение** — TUI `build_tree_rows` показывает форму под каждым родителем
+  (`crates/uefi-tui/src/forms.rs:78` «кратные родители — у каждого»), webui first-wins дедуп
+  (`5d73349`) оставляет только первое вхождение; плюс cross-formset dual-root: leaf в дереве
+  источника скрывает root-строку и всё поддерево в своём формсете — TUI-parity расхождение.
+  Контекст: webui/src/lib/forms.ts buildFormRows/buildFormsets; план 2026-09-28-webui-w2
+  Task 2/9.
+* [ ] класс: limitation — **webui forms: dangling REF-цели молча пропускаются** — forms.ts
+  `if (!tf) continue` роняет строку без следа, TUI рендерит DanglingRef-строки («!»
+  в колонке form id). Контекст: webui/src/lib/forms.ts:54,
+  crates/uefi-tui/src/forms.rs:79; план 2026-09-28-webui-w2 Task 2.
+
+> **Примечание (intentional-расхождение, не «чинить»)** — при cross-edge S→T#5 и локальной
+> S#5 webui вкладывает foreign-форму листом и держит локальную корнем (TUI наоборот
+> вкладывает локальную) — осознанное поведение webui, не «чинить» в сторону TUI. Контекст:
+> webui/src/lib/forms.ts buildFormsets; спека 2026-09-28-webui-parity-design.md §W2.

@@ -4,6 +4,8 @@ import { setupServer } from 'msw/node';
 import {
     ApiError, bridge, createSession, listNodes, imageOpen as apiOpen,
     removeNode, uploadImage,
+    formTree, gatesList, hiiUnlock, listForms, listQuestions, listStrings,
+    questionInfo, setFormVisibility, setValue,
 } from './api';
 
 const server = setupServer();
@@ -76,5 +78,50 @@ describe('api client', () => {
         const e = new ApiError('X', 'msg', 500);
         expect(e).toBeInstanceOf(Error);
         expect(e.message).toBe('msg');
+    });
+
+    it('hii wrappers send camelCase bodies to bridge methods', async () => {
+        const calls: { method: string; body: unknown }[] = [];
+        const handler = (method: string) =>
+            http.post(`*/api/v1/rpc/${method}`, async ({ request }) => {
+                calls.push({ method, body: await request.json() });
+                return HttpResponse.json({});
+            });
+        server.use(
+            handler('HiiListForms'), handler('HiiFormTree'), handler('HiiListQuestions'),
+            handler('HiiQuestionInfo'), handler('HiiListStrings'), handler('HiiSetFormVisibility'),
+            handler('HiiGatesList'), handler('HiiUnlock'), handler('HiiSetValue'),
+        );
+        await listForms('i-1');
+        await formTree('i-1');
+        await listQuestions('i-1', 'G:0x10:0', 10029);
+        await questionInfo('i-1', 'G:0x10:0#10029:0x3B');
+        await listStrings('i-1');
+        await setFormVisibility('i-1', 'G:0x10:0#10029', true);
+        await gatesList('i-1', 'G:0x10:0#10029');
+        await hiiUnlock('i-1', 'G:0x10:0#10029');
+        await setValue('i-1', 'G:0x10:0#10029:0x3B', '1');
+        expect(calls).toEqual([
+            { method: 'HiiListForms', body: { imageId: 'i-1' } },
+            { method: 'HiiFormTree', body: { imageId: 'i-1' } },
+            { method: 'HiiListQuestions', body: { imageId: 'i-1', target: 'G:0x10:0', formId: 10029 } },
+            { method: 'HiiQuestionInfo', body: { imageId: 'i-1', itemId: 'G:0x10:0#10029:0x3B' } },
+            { method: 'HiiListStrings', body: { imageId: 'i-1' } },
+            { method: 'HiiSetFormVisibility', body: { imageId: 'i-1', itemId: 'G:0x10:0#10029', visible: true } },
+            { method: 'HiiGatesList', body: { imageId: 'i-1', itemId: 'G:0x10:0#10029' } },
+            { method: 'HiiUnlock', body: { imageId: 'i-1', itemId: 'G:0x10:0#10029' } },
+            { method: 'HiiSetValue', body: { imageId: 'i-1', itemId: 'G:0x10:0#10029:0x3B', value: '1' } },
+        ]);
+    });
+
+    it('setValue value is a decimal string (proto3-JSON uint64)', async () => {
+        server.use(
+            http.post('*/api/v1/rpc/HiiSetValue', async ({ request }) => {
+                expect(await request.json()).toMatchObject({ value: '18446744073709551615' });
+                return HttpResponse.json({ appliedFlips: [], stores: ['a'] });
+            }),
+        );
+        const r = await setValue('i-1', 'x', '18446744073709551615');
+        expect(r.stores).toEqual(['a']);
     });
 });

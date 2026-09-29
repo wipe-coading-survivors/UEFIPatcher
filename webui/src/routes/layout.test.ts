@@ -13,7 +13,7 @@ describe('shell layout', () => {
         for (const label of ['Image', 'Forms', 'NVRAM', 'Snapshots', 'Artifacts']) {
             expect(getByText(label)).toBeInTheDocument();
         }
-        expect(getByText('Forms').closest('a,span')).toHaveAttribute('aria-disabled', 'true');
+        expect(getByText('Forms').closest('a,span')).toBeInstanceOf(HTMLAnchorElement);
         expect(getByText('NVRAM').closest('a,span')).toHaveAttribute('aria-disabled', 'true');
         expect(getByText('Snapshots').closest('a,span')).toHaveAttribute('aria-disabled', 'true');
         expect(getByText('Artifacts').closest('a,span')).toHaveAttribute('aria-disabled', 'true');

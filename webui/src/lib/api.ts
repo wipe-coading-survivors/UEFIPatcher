@@ -1,6 +1,7 @@
 import type {
     Empty, ImageOpenResponse, ImagesListResponse, ImageNodesResponse,
     Node as EngineNode,
+    FormInfo, FormEdge, GateInfo, QuestionInfo, QuestionSummary, StringInfo,
 } from './proto/engine';
 
 const API = '/api/v1';
@@ -167,3 +168,48 @@ export const extractNode = (imageId: string, target: string, bodyOnly: boolean) 
 
 export const saveImage = (imageId: string, outputPath: string) =>
     bridge<{ imageId: string; outputPath: string }, Empty>('ImageSave', { imageId, outputPath });
+
+export const listForms = (imageId: string) =>
+    bridge<{ imageId: string }, { forms: FormInfo[] }>('HiiListForms', { imageId });
+
+export const formTree = (imageId: string) =>
+    bridge<{ imageId: string }, { edges: FormEdge[] }>('HiiFormTree', { imageId });
+
+export const listQuestions = (imageId: string, target: string, formId: number) =>
+    bridge<{ imageId: string; target: string; formId: number }, { questions: QuestionSummary[] }>(
+        'HiiListQuestions',
+        { imageId, target, formId },
+    );
+
+export const questionInfo = (imageId: string, itemId: string) =>
+    bridge<{ imageId: string; itemId: string }, { question?: QuestionInfo }>('HiiQuestionInfo', {
+        imageId,
+        itemId,
+    });
+
+export const listStrings = (imageId: string) =>
+    bridge<{ imageId: string }, { strings: StringInfo[] }>('HiiListStrings', { imageId });
+
+export const setFormVisibility = (imageId: string, itemId: string, visible: boolean) =>
+    bridge<{ imageId: string; itemId: string; visible: boolean }, Empty>(
+        'HiiSetFormVisibility',
+        { imageId, itemId, visible },
+    );
+
+export const gatesList = (imageId: string, itemId: string) =>
+    bridge<{ imageId: string; itemId: string }, { gates: GateInfo[] }>('HiiGatesList', {
+        imageId,
+        itemId,
+    });
+
+export const hiiUnlock = (imageId: string, itemId: string) =>
+    bridge<{ imageId: string; itemId: string }, { gates: GateInfo[]; appliedFlips: string[] }>(
+        'HiiUnlock',
+        { imageId, itemId },
+    );
+
+export const setValue = (imageId: string, itemId: string, value: string) =>
+    bridge<
+        { imageId: string; itemId: string; value: string },
+        { question?: QuestionInfo; appliedFlips: string[]; stores: string[] }
+    >('HiiSetValue', { imageId, itemId, value });
