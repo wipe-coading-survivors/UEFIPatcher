@@ -554,3 +554,13 @@ Rebuild=55, Rebase=56 (enum `uefi-engine/src/types.rs:23-31`);
 По закрытии W4 закрываются: три «Находки ручного прогона» (после W3)
 + «пиктограммы как в TUI» (после W1/W2). Остальное разделов
 «WebUI Parity — отложенное» — вне W4.
+
+## Аддендум W4 — закрытие (2026-09-29)
+
+Исполнен по плану `docs/superpowers/plans/2026-09-29-webui-w4.md`: W4-1
+sidebar/вид образа + Switch/upload…, W4-2 гашение меню, W4-3 меню
+Forms/NVRAM (единый ContextMenu) + левое выравнивание, W4-4 woff2-сабсет
+(icons.ts = зеркало theme.rs), W4-5 Open-by-path удалён, W4-6 pending:50.
+Гейты: vitest, svelte-check, build, Playwright ux.spec 6/6 + полная
+регрессия. Закрытые TODO — разделы WebUI Parity (пиктограммы, находки
+ручного прогона, msw-гигиена nvar page-теста).

@@ -4533,13 +4533,14 @@ Task 3 (проверено git stash). Штатная команда цикла 
 
 ## WebUI Parity — отложенное (после W1/W2)
 
-* [ ] **пиктограммы как в TUI (кандидат W3)** — зеркало `uefi-tui/theme.rs`
+* [x] **пиктограммы как в TUI (кандидат W3)** — зеркало `uefi-tui/theme.rs`
   (`type_icon`/`store_icon`/`question_icon`, Nerd Font PUA-глифы: F2DB/F1C0/F15B/
   F1C9/F023/F1C6/F031/EAE8/F016/EB7D/F10C/F492/F0C7/F0CA/F14A/F1EC) в webui:
   либо сабсет-woff2 тех же кодпоинтов (~10KB, паритет байт-в-байт), либо SVG-сет
   (lucide/tabler) с маппинг-таблицей. Иконки `aria-hidden` (декоративные),
   текстовые aria-контракты E2E не трогать. Предложено владельцем при ручном
   прогоне W2 (2026-09-29).
+  Закрыто: W4 (commits Task 1–10).
 * [ ] **bytes-out экстраполяция** — download без temp-файла шлюза (RPC с bytes-ответом)
   и общий bytes-in/out для контейнерного окружения; upload-side уже на ImageUpload RPC
   (спека 2026-09-28-webui-parity-design.md §Отложенное).
@@ -4642,10 +4643,11 @@ Task 3 (проверено git stash). Штатная команда цикла 
   роута вместе. Класс: write-path.
 * [ ] **мёртвая кнопка `Import…` (artifacts) без onclick** — клик ничего не
   делает; импорт по onchange файлового инпута. Класс: errors (misleading UI).
-* [ ] **nvar/[id]/page.test.ts — per-test server.listen/close без
+* [x] **nvar/[id]/page.test.ts — per-test server.listen/close без
   try/finally** — падение теста до close оставляет msw-хендлеры живыми;
   унифицировать под beforeAll/afterAll-паттерн остальных page-тестов.
   Класс: limitation.
+  Закрыто: W4 (Task 5).
 * [ ] **a11y: aria-label="add question" ≠ видимый текст `Add question…`**
   (WCAG 2.5.3 Label-in-Name) — voice-пользователь, произносящий видимую
   надпись, кнопку не активирует. Класс: limitation.
@@ -4669,19 +4671,22 @@ Task 3 (проверено git stash). Штатная команда цикла 
 
 > Находки ручного прогона владельца (2026-09-29, аддендум W3):
 
-* [ ] **Image: sidebar-пункт ведёт на upload-индекс при открытом образе**
+* [x] **Image: sidebar-пункт ведёт на upload-индекс при открытом образе**
   (`+layout.svelte` `href()` спец-кейс `image` → всегда `/image`) — после
   возврата из Forms/NVRAM вид образа доступен только через `Open` в таблице
   «Open images»; на индексе нет Download/Save. Рекомендованное поведение:
   как Forms — `imageHref = /image/${imageId}` при открытом образе, кнопка
   «Switch/upload…» на виде для возврата к индексу. Класс: errors.
-* [ ] **Image View: контекстное меню не закрывается** — `Tree.svelte`
+  Закрыто: W4.
+* [x] **Image View: контекстное меню не закрывается** — `Tree.svelte`
   `.ctxmenu` гасится только кликом по пункту (`menuFor = null` в onclick);
   клик по свободному месту рабочей области и Escape меню оставляют.
   Фикс: `<svelte:window onclick / onkeydown-Escape>` → `menuFor = null`.
   Класс: errors.
-* [ ] **Forms View и NVRAM без контекстных меню** — parity-gap с Image View
+  Закрыто: W4.
+* [x] **Forms View и NVRAM без контекстных меню** — parity-gap с Image View
   (`oncontextmenu` есть только в `Tree.svelte`); действия доступны только
   кнопками (тулбар add-ops, Set value/Gates, `Set…`). Эскиз: right-click по
   форме → Set value/Gates/Export/Add question/Add page/Hijack; по вопросу →
   Set value/Gates; по NVRAM-переменной → Set…/Copy hex. Класс: limitation.
+  Закрыто: W4.
