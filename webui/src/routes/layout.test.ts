@@ -4,18 +4,23 @@ import { createRawSnippet } from 'svelte';
 import Layout from './+layout.svelte';
 
 describe('shell layout', () => {
-    it('renders nav sections, future ones disabled', () => {
+    it('renders all five nav sections as links', () => {
         const { getByText } = render(Layout, {
             children: createRawSnippet(() => ({
                 render: () => '<main data-testid="children"></main>',
             })),
         });
         for (const label of ['Image', 'Forms', 'NVRAM', 'Snapshots', 'Artifacts']) {
-            expect(getByText(label)).toBeInTheDocument();
+            expect(getByText(label).closest('a,span')).toBeInstanceOf(HTMLAnchorElement);
         }
-        expect(getByText('Forms').closest('a,span')).toBeInstanceOf(HTMLAnchorElement);
-        expect(getByText('NVRAM').closest('a,span')).toHaveAttribute('aria-disabled', 'true');
-        expect(getByText('Snapshots').closest('a,span')).toHaveAttribute('aria-disabled', 'true');
-        expect(getByText('Artifacts').closest('a,span')).toHaveAttribute('aria-disabled', 'true');
+    });
+
+    it('snapshot indicator hidden without snapshots', () => {
+        const { queryByText } = render(Layout, {
+            children: createRawSnippet(() => ({
+                render: () => '<main data-testid="children"></main>',
+            })),
+        });
+        expect(queryByText(/▣/)).toBeNull();
     });
 });

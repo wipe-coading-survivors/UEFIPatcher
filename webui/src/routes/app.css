@@ -8,3 +8,4 @@ nav span[aria-disabled='true'] { opacity: 0.4; cursor: not-allowed; }
 .main { flex: 1; display: flex; flex-direction: column; }
 header { display: flex; gap: 16px; padding: 8px 16px; border-bottom: 1px solid #2c3038; font-size: 13px; color: #9aa0aa; }
 main { flex: 1; padding: 16px; }
+.error { color: #e06c75; }
