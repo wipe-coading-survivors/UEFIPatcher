@@ -299,3 +299,65 @@ save/download); Playwright E2E round-trip с sha256-паритетом прот�
 `HiiFormTree`), вопросы (`HiiListQuestions`/`HiiQuestionInfo`), strings
 (`HiiListStrings`), правки visibility/unlock/set-value. Гейт W2 — E2E
 unlock + set-value + save на живом образе с вердиктом движком/CLI.
+
+## Аддендум W2 (2026-09-29) — ступень закрыта
+
+Исполнена 2026-09-29: PR #31 (`3d954b4`), план
+`docs/superpowers/plans/2026-09-28-webui-w2.md` (10/10 задач; Rust не
+тронут — все 9 HII-RPC уже проксированы мостом W1). Все гейты зелёные
+(cargo test 1162/0, clippy/fmt, svelte-check 0/0, vitest 63/63,
+Playwright 2/2); E2E-гейт W2 пройден на живом образе HNX99TF —
+sha256-паритет WebUI-прогонки (unlock формы 10029 + set-value `0x3B=1`
++ download) и CLI-последовательности, byte-strict (+belt `[1-9]` flips,
+`not.toBe(IMAGE)`). Владелец закрыл ступень по итогам зелёных гейтов
+(мерж + аддендум); отложенное — TODO.md «WebUI Parity — отложенное
+(после W1/W2)» с классами отказов.
+
+**Исполнено:** api-обёртки 9 HII-RPC (proto3-JSON uint64 строкой);
+`forms.ts` — item-id конвенции движка (форма `target#<dec-form-id>`,
+вопрос `…#<form>:0x<QID-HEX-UPPER>`) + REF-дерево формсетов (корни без
+входящих intra-формсетных рёбер, REF-цели — чайлды, cross-formset-цели —
+листья в дереве источника + корень в своём формсете, дедуб рёбер,
+циклы через on-path, first-wins дедуб ключей строк); компоненты
+FormsTree (gates/show/expand, aria-контракты), GatesDialog (unlock +
+applied flips), SetValueDialog (oneof-select/numeric-input,
+decimal-only валидация `/^\d+$/`), QuestionTable, StringsPanel
+(фильтр text/lang/id); страницы `/forms` + `/forms/[id]` (оркестратор,
+stale-response гварды монотонным токеном) + sidebar Forms enable;
+Playwright E2E `e2e/forms.spec.ts`.
+
+**Отклонения от спеки (легитимные):**
+- `buildFormRows` first-wins дедуб ключей строк — сверх спеки: на живом
+  образе Setup HII-модуль лежит в twin-FFS файлах, дубли
+  `<formsetGuid>#<formIdIfr>` молча валили Svelte keyed each пустым
+  деревом (5d73349, +2 репро-теста).
+- REF-дерево — зеркало TUI с тремя осознанными расхождениями
+  (multi-parent «у каждого» → first-wins одно вхождение; dangling-цели
+  пропускаются вместо DanglingRef-строк; dosed pure-cycle корни без
+  детей) — класс limitation, TODO.md.
+- E2E-флоу экспандит host-формы (вложенность 10000→10002→10029) кликом
+  по aria-контракту `expand <key>` — авто-экспанд только формсетов.
+
+**Уроки (учтены в W3):**
+- Keyed-each дубли ключей = silent-crash класс (бил дважды: twin-FFS,
+  кросс-формсетные REF) — до W3 нужен error boundary; известные
+  векторы: strings `lang:id`, oneof `o.value`, applied-flips по значению.
+- Svelte 5: union-аннотация на `let` + `$state` даёт never-narrowing
+  (нужен `$state<T|null>(null)`); select `bind:value` требует
+  инициализации значения (иначе `''` не матчит опции); Map/Set нельзя
+  через пропсы.
+- testing-library: `getByText` в негативных ассертах кидает исключение
+  на отсутствующем элементе — только `queryByText`.
+- Playwright параллельные workers: E2E_DIR общий → CLI-стейт
+  `.uefipatcher` коллидирует между session-init — каждому спеку свой
+  cwd; `sel.count()`-ветвление гонит против async-загрузки —
+  `expect(sel.or(input)).toBeVisible()`.
+- Продуктовая гонка session-bootstrap (upload до createSession → 401
+  Auth без retry) — E2E закрыт сентинелом `#status-session`, гвард в
+  продукте — TODO (класс: errors).
+- msw-сниппеты планов обязаны включать server.listen/close; спеки
+  страницы — `page.test.ts`.
+
+**Вход в W3:** NVRAM / Snapshots / Artifacts / добавление — разделы
+sidemenu, артефакт-импорт уже имеет bytes-in (`ArtifactImport`,
+аддендум W1).
