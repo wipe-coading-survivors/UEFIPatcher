@@ -73,3 +73,45 @@ test('tree rows render NF icons', async ({ page }) => {
     await expect(icon).toBeVisible();
     await expect(icon).toHaveCSS('font-family', /NF/);
 });
+
+test('image panes scroll independently of the page', async ({ page }) => {
+    await upload(page);
+    const tree = page.locator('.treepane');
+    const aside = page.locator('.workbench aside');
+    for (const pane of [tree, aside]) {
+        await expect(pane).toHaveCSS('overflow-y', 'auto');
+        const max = await pane.evaluate((el) => el.clientHeight);
+        expect(max).toBeLessThan(page.viewportSize()!.height);
+    }
+});
+
+test('expand triangles toggle with node state', async ({ page }) => {
+    await upload(page);
+    const first = page.locator('[role=treeitem] button[aria-label^="expand"]').first();
+    await expect(first).toHaveAttribute('aria-expanded', 'true');
+    await first.click();
+    await expect(first).toHaveAttribute('aria-expanded', 'false');
+    await expect(first).toHaveText('▸');
+});
+
+test('forms panes scroll independently of the page', async ({ page }) => {
+    await upload(page);
+    await page.getByRole('link', { name: 'Forms' }).click();
+    const treePane = page.locator('section[aria-label="forms tree"]');
+    const detailsPane = page.locator('section[aria-label="form details"]');
+    for (const pane of [treePane, detailsPane]) {
+        await expect(pane).toHaveCSS('overflow-y', 'auto', { timeout: 60_000 });
+    }
+});
+
+test('form details header shows meta (Form ID, FormSet, Target)', async ({ page }) => {
+    await upload(page);
+    await page.getByRole('link', { name: 'Forms' }).click();
+    const row = page.locator('[data-testid=formstree] li[role=treeitem] .label').first();
+    await row.click();
+    const meta = page.locator('dl.form-meta');
+    await expect(meta).toBeVisible({ timeout: 60_000 });
+    await expect(meta).toContainText('Form ID');
+    await expect(meta).toContainText('FormSet');
+    await expect(meta).toContainText('Target');
+});

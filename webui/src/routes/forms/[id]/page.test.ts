@@ -52,6 +52,24 @@ describe('forms page', () => {
         expect(screen.getByRole('heading', { name: /form 10029/ })).toBeInTheDocument();
     });
 
+    it('selected form shows meta details (Form ID, FormSet, Target)', async () => {
+        mockAll();
+        render(Page, { data: { imageId: 'i-1' } });
+        await waitFor(() => expect(screen.getByText(/Advanced/)).toBeInTheDocument());
+        fireEvent.click(screen.getByText(/PCI Subsystem/));
+        const meta = await waitFor(() => {
+            const el = document.querySelector('dl.form-meta');
+            expect(el).not.toBeNull();
+            return el!;
+        });
+        expect(meta).toHaveTextContent('Form ID');
+        expect(meta).toHaveTextContent('10029');
+        expect(meta).toHaveTextContent('FormSet');
+        expect(meta).toHaveTextContent(S1);
+        expect(meta).toHaveTextContent('Target');
+        expect(meta).toHaveTextContent(`${S1}:0x10:0#10029`);
+    });
+
     it('late response does not overwrite newer selection', async () => {
         mockAll();
         server.use(

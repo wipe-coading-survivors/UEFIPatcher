@@ -228,6 +228,12 @@
         </div>
         {#if selected}
             <h2>form {selected.formIdIfr} {selected.title}</h2>
+            <dl class="form-meta">
+                <dt>Form</dt><dd>{selected.title}</dd>
+                <dt>Form ID</dt><dd>{selected.formIdIfr}</dd>
+                <dt>FormSet</dt><dd>{selected.formsetGuid}</dd>
+                <dt>Target</dt><dd>{formItemId(selected)}</dd>
+            </dl>
             <div role="tablist">
                 <button role="tab" aria-selected={tab === 'questions'} onclick={() => (tab = 'questions')}>Questions</button>
                 <button role="tab" aria-selected={tab === 'strings'} onclick={() => (tab = 'strings')}>Strings</button>
@@ -255,9 +261,13 @@
 </div>
 
 <style>
-    .cols { display: grid; grid-template-columns: 1fr 2fr; gap: 16px; }
+    .cols { display: grid; grid-template-columns: 1fr 2fr; gap: 16px; align-items: start; }
+    .cols > section { max-height: calc(100vh - 220px); overflow-y: auto; }
     .error { color: #e06c75; }
     [role='tablist'] { display: flex; gap: 8px; margin: 8px 0; }
     [role='toolbar'] { display: flex; gap: 8px; margin: 8px 0; }
     [role='tab'][aria-selected='true'] { border-bottom: 2px solid #7aa7d9; }
+    .form-meta { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; margin: 4px 0 8px; font-size: 13px; }
+    .form-meta dt { color: #9aa0aa; }
+    .form-meta dd { margin: 0; word-break: break-all; }
 </style>

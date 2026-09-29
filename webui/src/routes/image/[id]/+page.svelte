@@ -212,4 +212,9 @@
         gap: 16px;
         align-items: start;
     }
+    .treepane,
+    .workbench aside {
+        max-height: calc(100vh - 220px);
+        overflow-y: auto;
+    }
 </style>
