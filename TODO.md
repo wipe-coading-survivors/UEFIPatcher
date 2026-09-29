@@ -4690,3 +4690,23 @@ Task 3 (проверено git stash). Штатная команда цикла 
   форме → Set value/Gates/Export/Add question/Add page/Hijack; по вопросу →
   Set value/Gates; по NVRAM-переменной → Set…/Copy hex. Класс: limitation.
   Закрыто: W4.
+
+## WebUI Parity — отложенное (после W4)
+
+> Миноры финального ревью W4 (2026-09-29), не вошедшие в фиксы:
+
+* [ ] класс: limitation — **webui Copy hex (nvar page) — clipboard требует
+  secure context** — `navigator.clipboard` недоступен на HTTP-LAN
+  развёртываниях (UEFIPATCHER_GATEWAY_LISTEN 0.0.0.0:8080) — деградирует
+  до «clipboard unavailable»; возможный фолбэк — показывать hex в
+  выделяемом `<pre>` при ошибке. Также: catch-ветка без тестового покрытия
+  (userEvent.setup() стабит clipboard — нужен детерминированный rejecting
+  stub), notice не сбрасывается между действиями.
+* [ ] **тест синхронности scripts/make-icons.mjs ↔ src/lib/icons.ts
+  (ICON_CODEPOINTS)** — третья несвязанная копия списка кодпоинтов (после
+  theme.rs и icons.ts); дрейф даст молчаливый tofu (кодпоинт выпадет из
+  woff2-сабсета). Вариант: ?raw-импорт скрипта в icons.test.ts.
+* [ ] **e2e/ux.spec.ts: inspector-тест не ассертит рендер панели** перед
+  проверкой отсутствия «pending:» — вакуумно-зелёный при сломанном
+  инспекторе (отсутствие текста проходит и на пустой панели); добавить
+  positive-ассерт содержимого инспектора.
