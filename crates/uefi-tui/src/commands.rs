@@ -25,6 +25,36 @@ fn auth_req<T>(state: &State, body: T) -> Request<T> {
     req
 }
 
+/// Ленивая сессия (спека tui-live §1): создаётся при первой нужде,
+/// персистится ТОЛЬКО в момент создания; живой существующий state
+/// не перезаписывается.
+async fn create_and_persist_session(client: &mut Client) -> Result<(), String> {
+    let resp = client
+        .inner
+        .session_create(tonic::Request::new(SessionCreateRequest {
+            name: String::new(),
+        }))
+        .await
+        .map_err(|e| e.message().to_string())?
+        .into_inner();
+    client.state.session_id = Some(resp.session_id);
+    client.state.token = Some(resp.token);
+    uefi_common::state::write_state(&client.state)
+        .map_err(|e| format!("session created but state not saved: {e}"))?;
+    Ok(())
+}
+
+pub async fn ensure_session(client: &mut Client) -> Result<(), String> {
+    if client.state.session_id.is_none() {
+        create_and_persist_session(client).await?;
+    }
+    Ok(())
+}
+
+fn session_gone(err: &str) -> bool {
+    err.contains("session not found")
+}
+
 pub async fn connect(cli_sock: Option<&str>, state: State) -> Result<Client, String> {
     let sock = resolve_sock(cli_sock, &state);
     let sock_str = sock.display().to_string();
@@ -619,6 +649,7 @@ pub async fn execute_command(
                 .get(1)
                 .ok_or("usage: :open PATH [--mode read|write]")?;
             let mode = if parts.contains(&"write") { 1 } else { 0 };
+            ensure_session(client).await?;
             let sid = client.state.session_id.clone().ok_or("no session")?;
             let req = ImageOpenRequest {
                 session_id: sid,
@@ -626,12 +657,27 @@ pub async fn execute_command(
                 mode,
                 name: String::new(),
             };
-            let r = client
-                .inner
-                .image_open(auth_req(&client.state, req))
-                .await
-                .map_err(|e| e.message().to_string())?
-                .into_inner();
+            let r = match client.inner.image_open(auth_req(&client.state, req)).await {
+                Ok(r) => r.into_inner(),
+                Err(e) if session_gone(e.message()) => {
+                    client.state.session_id = None;
+                    create_and_persist_session(client).await?;
+                    let sid = client.state.session_id.clone().ok_or("no session")?;
+                    let req = ImageOpenRequest {
+                        session_id: sid,
+                        path: path.to_string(),
+                        mode,
+                        name: String::new(),
+                    };
+                    client
+                        .inner
+                        .image_open(auth_req(&client.state, req))
+                        .await
+                        .map_err(|e| e.message().to_string())?
+                        .into_inner()
+                }
+                Err(e) => return Err(e.message().to_string()),
+            };
             app.image_loaded = true;
             app.status_msg = format!("opened image {}", r.image_id);
             let dump = client
@@ -663,8 +709,18 @@ pub async fn execute_command(
                 .file_name()
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_default();
+            ensure_session(client).await?;
             let sid = client.state.session_id.clone().ok_or("no session")?;
-            let resp = client.image_upload(&sid, bytes, mode, &name).await?;
+            let resp = match client.image_upload(&sid, bytes.clone(), mode, &name).await {
+                Ok(r) => r,
+                Err(e) if session_gone(&e) => {
+                    client.state.session_id = None;
+                    create_and_persist_session(client).await?;
+                    let sid = client.state.session_id.clone().ok_or("no session")?;
+                    client.image_upload(&sid, bytes, mode, &name).await?
+                }
+                Err(e) => return Err(e),
+            };
             app.active_image_id = Some(resp.image_id.clone());
             client.state.active_image_id = Some(resp.image_id.clone());
             app.image_loaded = true;
@@ -782,22 +838,37 @@ pub async fn execute_command(
         }
         "import" => {
             let file = parts.get(1).ok_or("usage: :import FILE")?;
+            ensure_session(client).await?;
             let sid = client.state.session_id.clone().ok_or("no session")?;
-            let req = ArtifactImportRequest {
+            let make = |sid: String| ArtifactImportRequest {
                 session_id: sid,
                 path: file.to_string(),
             };
-            let r = client
+            let r = match client
                 .inner
-                .artifact_import(auth_req(&client.state, req))
+                .artifact_import(auth_req(&client.state, make(sid)))
                 .await
-                .map_err(|e| e.message().to_string())?
-                .into_inner();
+            {
+                Ok(r) => r.into_inner(),
+                Err(e) if session_gone(e.message()) => {
+                    client.state.session_id = None;
+                    create_and_persist_session(client).await?;
+                    let sid = client.state.session_id.clone().ok_or("no session")?;
+                    client
+                        .inner
+                        .artifact_import(auth_req(&client.state, make(sid)))
+                        .await
+                        .map_err(|e| e.message().to_string())?
+                        .into_inner()
+                }
+                Err(e) => return Err(e.message().to_string()),
+            };
             app.status_msg = format!("imported artifact {}", r.artifact_id);
             let _ = refresh_registry(app, client).await;
             Ok(r.artifact_id)
         }
         "artifacts" => {
+            ensure_session(client).await?;
             let sid = client.state.session_id.clone().ok_or("no session")?;
             let req = ArtifactsListRequest { session_id: sid };
             let r = client
@@ -939,6 +1010,7 @@ pub async fn execute_command(
         }
         "switch" => {
             let id = parts.get(1).ok_or("usage: :switch ID")?.to_string();
+            ensure_session(client).await?;
             let dump = client
                 .inner
                 .image_nodes_list(auth_req(
@@ -957,6 +1029,9 @@ pub async fn execute_command(
             client.state.active_image_id = Some(id.clone());
             app.image_loaded = true;
             app.status_msg = format!("switched to {id}");
+            if let Err(e) = uefi_common::state::write_state(&client.state) {
+                app.status_msg = format!("warning: state not saved: {e}");
+            }
             let _ = refresh_registry(app, client).await;
             if app.view == View::Forms {
                 refresh_forms(app, client).await?;
@@ -2190,19 +2265,33 @@ pub async fn reopen(
         }
         ReopenPlan::OpenWrite => {}
     }
+    ensure_session(client).await?;
     let sid = client.state.session_id.clone().ok_or("no session")?;
-    let req = ImageOpenRequest {
+    let make = |sid: String| ImageOpenRequest {
         session_id: sid,
         path: im.path.clone(),
         mode: 1,
         name: String::new(),
     };
-    let r = client
+    let r = match client
         .inner
-        .image_open(auth_req(&client.state, req))
+        .image_open(auth_req(&client.state, make(sid)))
         .await
-        .map_err(|e| e.message().to_string())?
-        .into_inner();
+    {
+        Ok(r) => r.into_inner(),
+        Err(e) if session_gone(e.message()) => {
+            client.state.session_id = None;
+            create_and_persist_session(client).await?;
+            let sid = client.state.session_id.clone().ok_or("no session")?;
+            client
+                .inner
+                .image_open(auth_req(&client.state, make(sid)))
+                .await
+                .map_err(|e| e.message().to_string())?
+                .into_inner()
+        }
+        Err(e) => return Err(e.message().to_string()),
+    };
     let dump = client
         .inner
         .image_nodes_list(auth_req(

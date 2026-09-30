@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
@@ -30,6 +31,7 @@ const MOCK_FORM_EXPORT_SCHEMA_JSON: &str = concat!(
 pub struct MockEngine {
     pub sessions: Arc<Mutex<HashMap<String, String>>>,
     pub schema_calls: Arc<Mutex<Vec<SchemaCall>>>,
+    pub enforce_sessions: Arc<AtomicBool>,
 }
 
 impl MockEngine {
@@ -91,8 +93,14 @@ impl EngineService for MockEngine {
     }
     async fn image_open(
         &self,
-        _req: Request<ImageOpenRequest>,
+        req: Request<ImageOpenRequest>,
     ) -> Result<Response<ImageOpenResponse>, Status> {
+        let r = req.into_inner();
+        if self.enforce_sessions.load(Ordering::SeqCst)
+            && !self.sessions.lock().await.contains_key(&r.session_id)
+        {
+            return Err(Status::not_found("session not found"));
+        }
         Ok(Response::new(ImageOpenResponse {
             image_id: uuid::Uuid::new_v4().to_string(),
             root_guid: String::new(),
@@ -101,8 +109,14 @@ impl EngineService for MockEngine {
     }
     async fn image_upload(
         &self,
-        _req: Request<ImageUploadRequest>,
+        req: Request<ImageUploadRequest>,
     ) -> Result<Response<ImageOpenResponse>, Status> {
+        let r = req.into_inner();
+        if self.enforce_sessions.load(Ordering::SeqCst)
+            && !self.sessions.lock().await.contains_key(&r.session_id)
+        {
+            return Err(Status::not_found("session not found"));
+        }
         Ok(Response::new(ImageOpenResponse {
             image_id: "mock-upload".into(),
             root_guid: String::new(),
@@ -273,8 +287,14 @@ impl EngineService for MockEngine {
     }
     async fn artifact_import(
         &self,
-        _req: Request<ArtifactImportRequest>,
+        req: Request<ArtifactImportRequest>,
     ) -> Result<Response<ArtifactImportResponse>, Status> {
+        let r = req.into_inner();
+        if self.enforce_sessions.load(Ordering::SeqCst)
+            && !self.sessions.lock().await.contains_key(&r.session_id)
+        {
+            return Err(Status::not_found("session not found"));
+        }
         Ok(Response::new(ArtifactImportResponse {
             artifact_id: uuid::Uuid::new_v4().to_string(),
         }))
@@ -692,6 +712,33 @@ impl EngineService for MockEngine {
     }
 }
 
+#[allow(dead_code)]
+#[allow(clippy::type_complexity)]
+pub async fn start_mock_full(
+    sock: &Path,
+) -> (
+    JoinHandle<()>,
+    Arc<Mutex<Vec<SchemaCall>>>,
+    Arc<AtomicBool>,
+    Arc<Mutex<HashMap<String, String>>>,
+) {
+    let _ = std::fs::remove_file(sock);
+    let listener = tokio::net::UnixListener::bind(sock).unwrap();
+    let incoming = UnixListenerStream::new(listener);
+    let mock = MockEngine::default();
+    let schema_calls = mock.schema_calls.clone();
+    let enforce = mock.enforce_sessions.clone();
+    let sessions = mock.sessions.clone();
+    let handle = tokio::spawn(async move {
+        Server::builder()
+            .add_service(EngineServiceServer::new(mock))
+            .serve_with_incoming(incoming)
+            .await
+            .unwrap();
+    });
+    (handle, schema_calls, enforce, sessions)
+}
+
 pub async fn start_mock(sock: &Path) -> (JoinHandle<()>, Arc<Mutex<Vec<SchemaCall>>>) {
     let _ = std::fs::remove_file(sock);
     let listener = tokio::net::UnixListener::bind(sock).unwrap();
@@ -717,7 +764,7 @@ mod tests {
     use tonic::transport::Endpoint;
     use tower::service_fn;
     use uefi_proto::engine_service_client::EngineServiceClient;
-    use uefi_tui::app::{App, Focus, RegistryRow};
+    use uefi_tui::app::App;
     use uefi_tui::commands;
 
     #[tokio::test]
@@ -940,41 +987,6 @@ mod tests {
             .unwrap();
         assert_eq!(app.registry.images.len(), 1);
         assert_eq!(app.registry.artifacts.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn smoke_open_collapse_switch_registry_pick() {
-        let td = TempDir::new().unwrap();
-        let sock = td.path().join("mock.sock");
-        let _handle = start_mock(&sock).await;
-        let state = uefi_common::state::State {
-            session_id: Some("s1".into()),
-            token: Some("t1".into()),
-            ..Default::default()
-        };
-        let mut client = commands::connect(Some(sock.to_str().unwrap()), state)
-            .await
-            .unwrap();
-        let mut app = App::new();
-        commands::execute_command(&mut app, "open /tmp/mock.bin", &mut client)
-            .await
-            .unwrap();
-        // default: only root expanded, volumes collapsed
-        assert!(app.tree[0].expanded);
-        assert!(!app.tree[1].expanded);
-        app.toggle_expand_selected();
-        assert!(!app.tree[app.selected_tree_idx().unwrap()].expanded);
-        commands::execute_command(&mut app, "switch mock-img-1", &mut client)
-            .await
-            .unwrap();
-        assert_eq!(app.active_image_id.as_deref(), Some("mock-img-1"));
-        app.focus_next();
-        app.focus_next();
-        assert_eq!(app.focus, Focus::Registry);
-        assert!(matches!(
-            app.current_registry_row(),
-            Some(RegistryRow::Artifact(0)) | Some(RegistryRow::Image(_))
-        ));
     }
 
     #[tokio::test]

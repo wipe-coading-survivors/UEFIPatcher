@@ -1023,3 +1023,36 @@ async fn hii_hijack_with_and_without_setupdata_guid() {
         "без FILE — usage-ошибка"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn smoke_open_collapse_switch_registry_pick() {
+    let td = TempDir::new().unwrap();
+    let sock = td.path().join("test.sock");
+    let _handle = mock_server::start_mock(&sock).await;
+    let state = uefi_common::State {
+        session_id: Some("s1".into()),
+        token: Some("t1".into()),
+        active_image_id: None,
+        sock_path: Some(sock.display().to_string()),
+    };
+    let mut client = uefi_tui::commands::connect(None, state).await.unwrap();
+    let mut app = uefi_tui::app::App::new();
+    uefi_tui::commands::execute_command(&mut app, "open /tmp/mock.bin", &mut client)
+        .await
+        .unwrap();
+    assert!(app.tree[0].expanded);
+    assert!(!app.tree[1].expanded);
+    app.toggle_expand_selected();
+    assert!(!app.tree[app.selected_tree_idx().unwrap()].expanded);
+    uefi_tui::commands::execute_command(&mut app, "switch mock-img-1", &mut client)
+        .await
+        .unwrap();
+    assert_eq!(app.active_image_id.as_deref(), Some("mock-img-1"));
+    app.focus_next();
+    app.focus_next();
+    assert_eq!(app.focus, uefi_tui::app::Focus::Registry);
+    assert!(matches!(
+        app.current_registry_row(),
+        Some(uefi_tui::app::RegistryRow::Artifact(0)) | Some(uefi_tui::app::RegistryRow::Image(_))
+    ));
+}
