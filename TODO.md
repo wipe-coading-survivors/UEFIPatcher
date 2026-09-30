@@ -3694,7 +3694,8 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   QuestionInfo + рендер `current: 0x5 "Auto"` в TUI.
   Контекст: `uefi-engine/src/hii/mod.rs` set_value (plans.from), спека §3.2.
   Закрыто циклом tui-live (2026-09-30, §3): superseded seed_value (nvar-op) + HiiGetValue RPC (engine/CLI/TUI/WebUI); seed_lookup получил барьер-паритет с set_value.
-* [ ] **uefi-tui: gate `current_for_this`/`info_for_this` не проверяет qid** — при смене вопроса внутри формы и ошибке ленивого fetch (ошибки глотаются `let _ =`) рендерится Current/инфо предыдущего вопроса. План-мандат цикла tui-live (зеркало question_info-паттерна); лечится добавлением qid в ключ gate. Контекст: `crates/uefi-tui/src/forms.rs` (form_panel), `commands.rs` (call-сайты `let _ = refresh_*`).
+* [x] **uefi-tui: gate `current_for_this`/`info_for_this` не проверяет qid** — при смене вопроса внутри формы и ошибке ленивого fetch (ошибки глотаются `let _ =`) рендерится Current/инфо предыдущего вопроса. План-мандат цикла tui-live (зеркало question_info-паттерна); лечится добавлением qid в ключ gate. Контекст: `crates/uefi-tui/src/forms.rs` (form_panel), `commands.rs` (call-сайты `let _ = refresh_*`).
+  Закрыто фикс-пакетом tui-fixes (2026-10-01): gate сравнивает полный ключ (FormKey, qid) с выбранным вопросом.
 
 ## Находки финального ревью ветки tui-forms-v3 (2026-09-11)
 

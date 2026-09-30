@@ -339,14 +339,18 @@ pub fn form_panel(forms: &FormsData, rows: &[FormsRow], cursor: usize) -> FormPa
         }
     }
 
-    let info_for_this = forms
-        .question_info_key
-        .as_ref()
-        .is_some_and(|(k, _)| k == key);
-    let current_for_this = forms
-        .current_value_key
-        .as_ref()
-        .is_some_and(|(k, _)| k == key);
+    let sel_qid: Option<u32> = if forms.questions_key.as_ref() == Some(key) {
+        forms
+            .questions
+            .get(forms.question_cursor)
+            .map(|q| q.question_id)
+    } else {
+        None
+    };
+    let info_for_this =
+        sel_qid.is_some_and(|qid| forms.question_info_key.as_ref() == Some(&(key.clone(), qid)));
+    let current_for_this =
+        sel_qid.is_some_and(|qid| forms.current_value_key.as_ref() == Some(&(key.clone(), qid)));
     let cv = if current_for_this {
         forms.current_value.as_ref()
     } else {
@@ -810,6 +814,69 @@ mod tests {
     }
 
     #[test]
+    fn form_panel_bottom_gate_matches_selected_qid() {
+        let mut app = crate::app::App::new();
+        app.forms.forms = vec![uefi_proto::FormInfo {
+            form_id: "t1".into(),
+            formset_guid: "S".into(),
+            form_id_ifr: 1,
+            title: "Main".into(),
+            visible: true,
+        }];
+        app.forms.expanded = ["S".into()].into();
+        let rows = app.forms_rows();
+        let key = FormKey {
+            target: "t1".into(),
+            formset_guid: "S".into(),
+            form_id_ifr: 1,
+            title: "Main".into(),
+        };
+        app.forms.questions_key = Some(key.clone());
+        app.forms.questions = vec![
+            uefi_proto::QuestionSummary {
+                question_id: 0x210,
+                prompt: "Cores".into(),
+                kind: "numeric".into(),
+                ..Default::default()
+            },
+            uefi_proto::QuestionSummary {
+                question_id: 0x211,
+                prompt: "HT".into(),
+                kind: "checkbox".into(),
+                ..Default::default()
+            },
+        ];
+        app.forms.question_cursor = 1;
+        app.forms.question_info_key = Some((key.clone(), 0x210));
+        app.forms.current_value_key = Some((key.clone(), 0x210));
+        app.forms.question_info = Some(uefi_proto::QuestionInfo {
+            question_id: 0x210,
+            kind: "numeric".into(),
+            var_store_id: 2,
+            var_offset: 0x37,
+            width: 1,
+            min: 1,
+            max: 8,
+            step: 1,
+            ..Default::default()
+        });
+        app.forms.current_value = Some(uefi_proto::HiiGetValueResponse {
+            value: Some(4),
+            ..Default::default()
+        });
+        let p = form_panel(&app.forms, &rows, 1);
+        assert_eq!(
+            p.bottom,
+            vec!["(loading…)".to_string()],
+            "стейл-кэш вопроса A (qid 0x210) под курсором на B (0x211) не рендерится"
+        );
+        app.forms.question_cursor = 0;
+        let p = form_panel(&app.forms, &rows, 1);
+        assert!(p.bottom[0].contains("Question q0x210"));
+        assert!(p.bottom.iter().any(|l| l.contains("Current: 4")));
+    }
+
+    #[test]
     fn question_bottom_branches_and_path_row() {
         let key = FormKey {
             target: "t1".into(),
@@ -819,6 +886,11 @@ mod tests {
         };
         let mut forms = crate::app::FormsData {
             questions_key: Some(key.clone()),
+            questions: vec![uefi_proto::QuestionSummary {
+                question_id: 0x220,
+                kind: "one_of".into(),
+                ..Default::default()
+            }],
             ..Default::default()
         };
         let rows = vec![FormsRow::Form {
