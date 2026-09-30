@@ -335,6 +335,8 @@ enum HiiQuestionCmd {
     Info { item_id: String },
     #[command(about = "seed a default value via NVAR StdDefaults stores")]
     SetValue { item_id: String, value: String },
+    #[command(about = "read current value bytes from NVAR StdDefaults stores")]
+    Value { item_id: String },
     #[command(about = "insert a OneOf question into a live form")]
     Add {
         item_id: String,
@@ -547,6 +549,9 @@ async fn dispatch(cli: &Cli, format: output::OutputFormat) -> Result<(), error::
                 HiiQuestionCmd::SetValue { item_id, value } => {
                     let v = commands::hii::parse_u64_loose(value)?;
                     commands::hii::question_set_value(item_id, v, sock, format).await
+                }
+                HiiQuestionCmd::Value { item_id } => {
+                    commands::hii::question_value(item_id, sock, format).await
                 }
                 HiiQuestionCmd::Add { item_id, file } => {
                     commands::hii::question_add(item_id, file, sock, format).await

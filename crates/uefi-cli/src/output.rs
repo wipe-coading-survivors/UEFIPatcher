@@ -1,6 +1,7 @@
 use uefi_proto::{
-    FormInfo, GateInfo, HiiFormHijackResponse, HiiPageAddResponse, HiiQuestionAddOutcome,
-    ImageInfo, Node, QuestionInfo, QuestionSummary, SessionInfo, StringInfo, VarStoreInfo,
+    FormInfo, GateInfo, HiiFormHijackResponse, HiiGetValueResponse, HiiPageAddResponse,
+    HiiQuestionAddOutcome, ImageInfo, Node, QuestionInfo, QuestionSummary, SessionInfo, StringInfo,
+    VarStoreInfo,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -365,6 +366,54 @@ pub fn print_question_info(q: &QuestionInfo, format: OutputFormat) {
         }
         OutputFormat::Text => print!("{}", question_info_text(q)),
     }
+}
+
+pub fn print_question_value(v: &HiiGetValueResponse, format: OutputFormat) {
+    match format {
+        OutputFormat::Json => {
+            let s = serde_json::to_string_pretty(&serde_json::json!({
+                "value": v.value,
+                "option": v.option,
+                "storePath": v.store_path,
+                "varOffset": v.var_offset,
+                "width": v.width,
+            }))
+            .unwrap_or_else(|_| "{}".into());
+            println!("{s}");
+        }
+        OutputFormat::Tsv => {
+            println!("value\toption\tstore_path\tvar_offset\twidth");
+            println!(
+                "{}\t{}\t{}\t{}\t{}",
+                v.value.map(|x| x.to_string()).unwrap_or_else(|| "-".into()),
+                v.option.as_deref().unwrap_or("-"),
+                v.store_path.as_deref().unwrap_or("-"),
+                v.var_offset
+                    .map(|x| x.to_string())
+                    .unwrap_or_else(|| "-".into()),
+                v.width.map(|x| x.to_string()).unwrap_or_else(|| "-".into()),
+            );
+        }
+        OutputFormat::Text => print!("{}", question_value_text(v)),
+    }
+}
+
+fn question_value_text(v: &HiiGetValueResponse) -> String {
+    let mut s = String::from("current value\n");
+    match (v.value, v.option.as_deref()) {
+        (Some(x), opt) => s.push_str(&format!(
+            "value = {x}{}\n",
+            opt.map(|o| format!(" ({o})")).unwrap_or_default()
+        )),
+        (None, _) => s.push_str("value = -\n"),
+    }
+    if let Some(p) = v.store_path.as_deref() {
+        s.push_str(&format!("store path = {p}\n"));
+    }
+    if let (Some(o), Some(w)) = (v.var_offset, v.width) {
+        s.push_str(&format!("offset {o:#x}, width {w}\n"));
+    }
+    s
 }
 
 fn question_info_text(q: &QuestionInfo) -> String {

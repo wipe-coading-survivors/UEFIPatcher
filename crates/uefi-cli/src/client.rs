@@ -412,6 +412,22 @@ impl Client {
             .ok_or_else(|| AppError::new(ErrKind::RpcNotFound, "empty question info"))
     }
 
+    pub async fn hii_get_value(
+        &mut self,
+        image_id: &str,
+        item_id: &str,
+    ) -> Result<HiiGetValueResponse, AppError> {
+        let req = HiiGetValueRequest {
+            image_id: image_id.into(),
+            item_id: item_id.into(),
+        };
+        Ok(self
+            .inner
+            .hii_get_value(auth_req(&self.state, req))
+            .await?
+            .into_inner())
+    }
+
     pub async fn hii_set_value(
         &mut self,
         image_id: &str,
