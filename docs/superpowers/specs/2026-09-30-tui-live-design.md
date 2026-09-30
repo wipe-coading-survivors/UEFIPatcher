@@ -32,6 +32,10 @@
 
 После успешного `image_nodes_list` в `:switch` — `state::write_state(&client.state)` с обновлённым `active_image_id` (CLI в этом CWD видит активный образ). Ошибка записи — warn в status_msg, команда остаётся успешной (переключение уже применено; принцип «no partial states» не нарушен — это кэш-файл, не данные образа).
 
+### Аддендум живого гейта (2026-10-01): персист active на open/upload/reopen/close
+
+Находка владельца: TUI-only поток (два `:open`) оставлял state без `active_image_id` → CLI `NO_ACTIVE_IMAGE`, рестарт TUI терял активный образ. Причина — паритет-разрыв: CLI `image open`/`upload`/`switch`/`close`-активного персистят active (commands/image.rs), а TUI персистил только при создании сессии и `:switch`. Решение: `:open`/`:upload`/`reopen` персистят `active_image_id` сразу после установки (best-effort warn, как `:switch`); `:close` закрывающего активный образ — персистит очистку. Статус-бар показывает полный uuid (конвенция R1) вместо 8-символьного обрубка.
+
 ### Тесты
 
 - Unit/integration (mock): старт без state → `:open` работает, `.uefipatcher` создан; существующий живой state → `SessionCreate` не вызывается; мёртвая сессия (mock отвечает NOT_FOUND) → ре-создание + retry, state перезаписан; транспортная ошибка → исходная ошибка, без создания.
