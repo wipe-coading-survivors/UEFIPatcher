@@ -86,7 +86,7 @@ message HiiGetValueResponse {
 }
 ```
 
-Записи нет → все поля None (не ошибка). Порядок ошибок: InvalidItemId → NotFound (чек-лист AGENTS.md).
+Стора вообще нет → все поля None (не ошибка). Доступный стор есть, но записи с именем+размером варстора нет → `ValueOpUnsupported` (диагностический паритет с set_value — уточнение финального ревью, аддендум 2026-09-30). Порядок ошибок: InvalidItemId → NotFound (чек-лист AGENTS.md).
 
 ### C3. Engine-хендлер
 
