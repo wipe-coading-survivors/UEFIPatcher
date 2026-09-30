@@ -796,7 +796,8 @@ pub struct GetValueOutcome {
 
 /// Точечный read-back текущего значения вопроса (спека tui-live §3 C3):
 /// доступные StdDefaults-копии (тот же селектор, что у set_value), первый
-/// хит; стора/записи нет → value/option/store_path None — это не ошибка.
+/// хит; стора нет → value/option/store_path None — это не ошибка; доступный
+/// стор без записи name+size → ValueOpUnsupported (паритет диагностики с set_value).
 /// Read-only, любой ImageMode; живой NVRAM платформы — out-of-scope.
 pub fn get_value(image: &Image, item_id: &str) -> Result<GetValueOutcome, HiiError> {
     let (target, form_id, question_id) = parse_item_id(item_id)?;

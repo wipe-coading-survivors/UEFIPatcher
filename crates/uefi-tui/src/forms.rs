@@ -453,23 +453,22 @@ fn question_bottom(
         _ => {}
     }
     match cv {
-        Some(v) if v.value.is_some() => {
-            let opt = v
-                .option
-                .as_deref()
-                .map(|o| format!(" ({o})"))
-                .unwrap_or_default();
-            let store = v
-                .store_path
-                .as_deref()
-                .map(|p| format!(" @ {p}"))
-                .unwrap_or_default();
-            lines.push(format!(
-                "  Current: {}{opt}{store}",
-                v.value.unwrap_or_default()
-            ));
-        }
-        Some(_) => lines.push("  Current: —".into()),
+        Some(v) => match v.value {
+            Some(val) => {
+                let opt = v
+                    .option
+                    .as_deref()
+                    .map(|o| format!(" ({o})"))
+                    .unwrap_or_default();
+                let store = v
+                    .store_path
+                    .as_deref()
+                    .map(|p| format!(" @ {p}"))
+                    .unwrap_or_default();
+                lines.push(format!("  Current: {val}{opt}{store}"));
+            }
+            None => lines.push("  Current: —".into()),
+        },
         None => lines.push("  Current: …".into()),
     }
     let ifr = qi
