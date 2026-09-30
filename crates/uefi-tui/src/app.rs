@@ -544,6 +544,7 @@ impl App {
     }
 
     pub fn forms_question_page_down(&mut self) {
+        self.forms.bottom_cursor = 0;
         let n = self.forms.questions.len();
         if n == 0 {
             return;
@@ -556,6 +557,7 @@ impl App {
     }
 
     pub fn forms_question_page_up(&mut self) {
+        self.forms.bottom_cursor = 0;
         self.forms.question_cursor =
             crate::ui::scroll::page_up(self.forms.question_cursor, self.forms_question_page_size());
     }

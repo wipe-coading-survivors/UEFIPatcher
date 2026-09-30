@@ -512,6 +512,13 @@ mod tests {
             "курсор без клампа в состоянии — кламп на рендере"
         );
 
+        app.forms.bottom_cursor = 5;
+        app.forms_question_page_down();
+        assert_eq!(
+            app.forms.bottom_cursor, 0,
+            "сброс и на постраничной смене вопроса"
+        );
+
         app.forms_question_cursor_up();
         t.draw(|f| render(f, f.area(), &mut app)).unwrap();
         assert_eq!(app.forms.bottom_cursor, 0, "сброс при смене вопроса");
