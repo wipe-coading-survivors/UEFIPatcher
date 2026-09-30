@@ -65,6 +65,8 @@ EX-COMMANDS
   :remove [TARGET]
   :rebuild [TARGET]
   :switch ID | :close [ID]
+  :reopen [--mode read]       переоткрыть образ из строки-курсора Registry в write
+                               (без --mode — write; read — обратно в read-only)
   :forms                      переключить Forms-view (требует активный образ)
   :image                      обратно в Image-view
   :hii set-value ITEM VALUE   (ITEM = target#form[:qid], form — десятичное)

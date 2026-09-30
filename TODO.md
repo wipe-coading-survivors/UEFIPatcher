@@ -4724,3 +4724,13 @@ Task 3 (проверено git stash). Штатная команда цикла 
 
 * [ ] **uefi-engine: seed_lookup — ручной дубль барьер-селектора** — параллельная рекурсия с collect_std_defaults_hits (различие: пропуск стора без записи vs ошибка). Два источника истины «доступного стора» разъедутся снова; извлечь общий спуск (барьер + детект store-body) в один хелпер. Контекст: `crates/uefi-engine/src/hii/mod.rs` (seed_lookup, collect_std_defaults_hits); финальное ревью tui-live.
 * [ ] **uefi-tui: refresh_forms чистит current_value, но не question_info** — асимметрия инвалидации: после :switch/ре-входа возможен стейл question_info при том же ключе формы (у Current кэш чистится). Симметризовать (добавить очистку question_info/question_info_key в refresh_forms). Контекст: `crates/uefi-tui/src/commands.rs` (refresh_forms); финальное ревью tui-live.
+
+## Находки живого гейта tui-live №2 (2026-10-01, владелец)
+
+* [ ] **класс: limitation: uefi-tui пути с пробелами в :open/:upload/:extract/:import** —
+  парсер команд режет по `split_whitespace`, `parts[1]` = первый токен: образ
+  «450x - копия» даёт file-not-found (владелец подтвердил; ошибка чистая,
+  active при этом не пишется — корректно). Нужно квотирование или
+  rest-of-line для path-аргументов (образец грамматики — `--file`-флаги,
+  которые идут одним токеном). Контекст: `crates/uefi-tui/src/commands.rs`
+  (`split_whitespace` + path-ветки).
