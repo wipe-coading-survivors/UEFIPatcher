@@ -3670,8 +3670,8 @@ mod tests {
             "read-back == seed (паритет источника)"
         );
         assert!(v.store_path.is_some(), "источник сообщается");
-        assert_eq!(v.var_offset, u32::from(q.var_offset));
-        assert_eq!(v.width, u32::from(q.width));
+        assert_eq!(v.var_offset, q.var_offset);
+        assert_eq!(v.width, q.width);
     }
 
     #[test]
