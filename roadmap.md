@@ -511,8 +511,20 @@ V1 просмотр → V2 правки на месте → V3 schema-опера
 `HiiListQuestions` (B/V1), `ImageUpload` (A7). HII-мутационная база — дуги
 hijack/setup-new-page.
 
-## Дуга formset-unlock (U1–U4) — кросс-формсетные гейты и перенос IIO-бифуркации (2026-09-12)
+## Мини-цикл tui-live — ленивая сессия, скролл низа Forms, HiiGetValue (2026-09-30)
 
+Живые болячки TUI из TODO (3444/3586/3686). Спека
+`docs/superpowers/specs/2026-09-30-tui-live-design.md` + план
+`docs/superpowers/plans/2026-09-30-tui-live.md` (9 задач, TDD,
+субагент-исполнение). Реализовано: `ensure_session` (ленивая сессия +
+revive по engine-`NOT_FOUND` + персист active на open/upload/switch/
+reopen/close — паритет с CLI, аддендум живого гейта), J/K-пейджер нижней
+зоны Forms с индикатором `[a..b/N]`, барьер-паритет `seed_lookup`,
+RPC `HiiGetValue` (engine + CLI `hii question value` + TUI `Current`
++ WebUI current-строка; gateway — generic bridge без кода). Гейт
+владельца ПРОШЁЛ (3 раунда). PR #34 смержен (2026-10-01), ветка удалена.
+
+## Дуга formset-unlock (U1–U4) — кросс-формсетные гейты и перенос IIO-бифуркации (2026-09-12)
 Спека `docs/superpowers/specs/2026-09-12-formset-unlock-design.md` +
 план `docs/superpowers/plans/2026-09-12-formset-unlock.md` (9 задач,
 TDD). Источник — live-сессия 450x (TODO.md, раздел 2026-09-12):
