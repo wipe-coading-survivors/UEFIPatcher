@@ -256,6 +256,18 @@ impl EngineService for MockEngine {
     ) -> Result<Response<HiiQuestionInfoResponse>, Status> {
         Ok(Response::new(HiiQuestionInfoResponse::default()))
     }
+    async fn hii_get_value(
+        &self,
+        _req: Request<HiiGetValueRequest>,
+    ) -> Result<Response<HiiGetValueResponse>, Status> {
+        Ok(Response::new(HiiGetValueResponse {
+            value: Some(1),
+            option: Some("Enabled".into()),
+            store_path: Some("0/0/0".into()),
+            var_offset: Some(0x5F),
+            width: Some(1),
+        }))
+    }
     async fn hii_list_questions(
         &self,
         _req: Request<HiiListQuestionsRequest>,
