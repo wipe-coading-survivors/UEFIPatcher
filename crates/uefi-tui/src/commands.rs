@@ -2505,6 +2505,7 @@ pub async fn refresh_forms(app: &mut App, client: &mut Client) -> Result<(), Str
     app.forms.cursor = 0;
     app.forms.questions.clear();
     app.forms.questions_key = None;
+    app.forms.bottom_cursor = 0;
     app.forms.strings.clear();
     app.forms.strings_filter.clear();
     app.forms.strings_cursor = 0;
@@ -2558,6 +2559,7 @@ pub async fn reload_forms(app: &mut App, client: &mut Client) -> Result<(), Stri
     app.forms.question_cursor = 0;
     app.forms.question_info = None;
     app.forms.question_info_key = None;
+    app.forms.bottom_cursor = 0;
     app.forms.varstores_target = None;
     match sel {
         Some((guid, fid)) => {

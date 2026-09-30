@@ -92,6 +92,8 @@ pub struct FormsData {
     pub varstores_cursor: usize,
     pub varstores_viewport: usize,
     pub questions_state: ratatui::widgets::ListState,
+    pub bottom_cursor: usize,
+    pub bottom_viewport: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -513,12 +515,22 @@ impl App {
         if n > 0 && self.forms.question_cursor + 1 < n {
             self.forms.question_cursor += 1;
         }
+        self.forms.bottom_cursor = 0;
     }
 
     pub fn forms_question_cursor_up(&mut self) {
         if self.forms.question_cursor > 0 {
             self.forms.question_cursor -= 1;
         }
+        self.forms.bottom_cursor = 0;
+    }
+
+    pub fn forms_bottom_down(&mut self) {
+        self.forms.bottom_cursor += 1;
+    }
+
+    pub fn forms_bottom_up(&mut self) {
+        self.forms.bottom_cursor = self.forms.bottom_cursor.saturating_sub(1);
     }
 
     pub fn forms_question_page_size(&self) -> usize {

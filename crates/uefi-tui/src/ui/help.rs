@@ -47,7 +47,7 @@ FORMS VIEW (Tab / Shift-Tab, :forms / :image)
   S              strings-браузер (повторно — закрыть; Esc тоже)
   /              открыть strings + промпт фильтра (:filter TEXT)
   Ctrl-hjkl      focus List <-> Details
-  Details focus: j/k выбор вопроса · PgUp/PgDn страница · Enter → :hii set-value <item> <value>
+  Details focus: j/k выбор вопроса · J/K скролл деталей · PgUp/PgDn страница · Enter → :hii set-value <item> <value>
   Tab            обратно в Image-view
 
 COMMAND / INSERT
@@ -139,7 +139,7 @@ mod tests {
     #[test]
     fn help_documents_forms_details_paging() {
         assert!(HELP.contains(
-            "Details focus: j/k выбор вопроса · PgUp/PgDn страница · Enter → :hii set-value <item> <value>"
+            "Details focus: j/k выбор вопроса · J/K скролл деталей · PgUp/PgDn страница · Enter → :hii set-value <item> <value>"
         ));
     }
 

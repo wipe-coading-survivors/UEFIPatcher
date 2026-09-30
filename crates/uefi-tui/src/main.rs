@@ -386,6 +386,12 @@ async fn handle_normal_forms(app: &mut App, ev: &AppEvent, client: &mut Option<c
                 let _ = commands::refresh_question_info_if_needed(app, c).await;
             }
         }
+        AppEvent::Key('J') if !app.forms.show_strings && !app.forms.show_varstores => {
+            app.forms_bottom_down();
+        }
+        AppEvent::Key('K') if !app.forms.show_strings && !app.forms.show_varstores => {
+            app.forms_bottom_up();
+        }
         AppEvent::Enter
             if app.forms.focus == FormsFocus::Details
                 && !app.forms.show_strings
