@@ -4716,3 +4716,11 @@ Task 3 (проверено git stash). Штатная команда цикла 
   проверкой отсутствия «pending:» — вакуумно-зелёный при сломанном
   инспекторе (отсутствие текста проходит и на пустой панели); добавить
   positive-ассерт содержимого инспектора.
+
+## Отложенное финального ревью tui-live (2026-10-01)
+
+> Фоллоу-апы финального ревью ветки `feat/tui-live` (спека
+> `2026-09-30-tui-live-design.md`).
+
+* [ ] **uefi-engine: seed_lookup — ручной дубль барьер-селектора** — параллельная рекурсия с collect_std_defaults_hits (различие: пропуск стора без записи vs ошибка). Два источника истины «доступного стора» разъедутся снова; извлечь общий спуск (барьер + детект store-body) в один хелпер. Контекст: `crates/uefi-engine/src/hii/mod.rs` (seed_lookup, collect_std_defaults_hits); финальное ревью tui-live.
+* [ ] **uefi-tui: refresh_forms чистит current_value, но не question_info** — асимметрия инвалидации: после :switch/ре-входа возможен стейл question_info при том же ключе формы (у Current кэш чистится). Симметризовать (добавить очистку question_info/question_info_key в refresh_forms). Контекст: `crates/uefi-tui/src/commands.rs` (refresh_forms); финальное ревью tui-live.
