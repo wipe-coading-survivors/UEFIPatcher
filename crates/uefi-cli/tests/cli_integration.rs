@@ -308,6 +308,54 @@ async fn hii_question_info_and_set_value_flow() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn hii_question_value_flow() {
+    let (td, sock) = setup_env().await;
+    let cwd = td.path();
+
+    cli(&sock, cwd).args(["session", "init"]).assert().success();
+    cli(&sock, cwd)
+        .args(["image", "open", "/dev/null", "--mode", "write"])
+        .assert()
+        .success();
+
+    cli(&sock, cwd)
+        .args(["hii", "question", "value", "0#10029:0x3B"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("value = 1 (Enabled)"))
+        .stdout(predicates::str::contains("store path = 0/0/0/0"))
+        .stdout(predicates::str::contains("offset 0x3a, width 1"));
+
+    cli(&sock, cwd)
+        .args([
+            "--format",
+            "tsv",
+            "hii",
+            "question",
+            "value",
+            "0#10029:0x3B",
+        ])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "value\toption\tstore_path\tvar_offset\twidth",
+        ));
+
+    cli(&sock, cwd)
+        .args([
+            "--format",
+            "json",
+            "hii",
+            "question",
+            "value",
+            "0#10029:0x3B",
+        ])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("\"storePath\""));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn form_add_flow() {
     let (td, sock) = setup_env().await;
     let cwd = td.path();

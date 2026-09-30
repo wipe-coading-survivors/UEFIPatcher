@@ -343,11 +343,20 @@ pub fn form_panel(forms: &FormsData, rows: &[FormsRow], cursor: usize) -> FormPa
         .question_info_key
         .as_ref()
         .is_some_and(|(k, _)| k == key);
+    let current_for_this = forms
+        .current_value_key
+        .as_ref()
+        .is_some_and(|(k, _)| k == key);
+    let cv = if current_for_this {
+        forms.current_value.as_ref()
+    } else {
+        None
+    };
     let bottom = if info_for_this {
         forms
             .question_info
             .as_ref()
-            .map(question_bottom)
+            .map(|qi| question_bottom(qi, cv))
             .unwrap_or_else(|| vec!["(loading…)".into()])
     } else {
         vec!["(loading…)".into()]
@@ -407,7 +416,10 @@ fn question_line(q: &uefi_proto::QuestionSummary) -> Line<'static> {
     }
 }
 
-fn question_bottom(qi: &uefi_proto::QuestionInfo) -> Vec<String> {
+fn question_bottom(
+    qi: &uefi_proto::QuestionInfo,
+    cv: Option<&uefi_proto::HiiGetValueResponse>,
+) -> Vec<String> {
     let icon = crate::theme::question_icon(&qi.kind);
     let mut lines = vec![
         format!("{icon} Question q{:#x} ({}):", qi.question_id, qi.kind),
@@ -440,16 +452,24 @@ fn question_bottom(qi: &uefi_proto::QuestionInfo) -> Vec<String> {
         }
         _ => {}
     }
-    match qi.seed_value {
-        Some(v) => {
-            let opt = qi
-                .seed_option
-                .as_deref()
-                .map(|o| format!(" ({o})"))
-                .unwrap_or_default();
-            lines.push(format!("  Value (NVAR seed): {v}{opt}"));
-        }
-        None => lines.push("  Value (NVAR seed): —".into()),
+    match cv {
+        Some(v) => match v.value {
+            Some(val) => {
+                let opt = v
+                    .option
+                    .as_deref()
+                    .map(|o| format!(" ({o})"))
+                    .unwrap_or_default();
+                let store = v
+                    .store_path
+                    .as_deref()
+                    .map(|p| format!(" @ {p}"))
+                    .unwrap_or_default();
+                lines.push(format!("  Current: {val}{opt}{store}"));
+            }
+            None => lines.push("  Current: —".into()),
+        },
+        None => lines.push("  Current: …".into()),
     }
     let ifr = qi
         .defaults
@@ -871,7 +891,7 @@ mod tests {
         assert_eq!(
             p.bottom.len(),
             4,
-            "заголовок + store + Value (NVAR seed) + IFR default"
+            "заголовок + store + Current + IFR default"
         );
     }
 
@@ -953,15 +973,13 @@ mod tests {
     }
 
     #[test]
-    fn question_bottom_seed_and_ifr_lines() {
+    fn question_bottom_current_and_ifr_lines() {
         let qi = uefi_proto::QuestionInfo {
             question_id: 0x22d,
             kind: "checkbox".into(),
             var_store_id: 1,
             var_offset: 0x3A,
             width: 1,
-            seed_value: Some(1),
-            seed_option: Some("Enabled".into()),
             defaults: vec![uefi_proto::DefaultEntry {
                 default_id: 0,
                 r#type: 1,
@@ -969,18 +987,31 @@ mod tests {
             }],
             ..Default::default()
         };
-        let lines = question_bottom(&qi);
+        let cv = uefi_proto::HiiGetValueResponse {
+            value: Some(1),
+            option: Some("Enabled".into()),
+            store_path: Some("1/13/2/1".into()),
+            var_offset: Some(0x3A),
+            width: Some(1),
+        };
+        let lines = question_bottom(&qi, Some(&cv));
         assert!(
             lines
                 .iter()
-                .any(|l| l.contains("Value (NVAR seed): 1 (Enabled)"))
+                .any(|l| l.contains("Current: 1 (Enabled) @ 1/13/2/1"))
         );
         assert!(lines.iter().any(|l| l.contains("IFR default: 0")));
-        let empty = question_bottom(&uefi_proto::QuestionInfo {
-            kind: "numeric".into(),
-            ..Default::default()
-        });
-        assert!(empty.iter().any(|l| l.contains("Value (NVAR seed): —")));
+        let lines = question_bottom(&qi, Some(&uefi_proto::HiiGetValueResponse::default()));
+        assert!(lines.iter().any(|l| l.contains("Current: —")));
+        let lines = question_bottom(&qi, None);
+        assert!(lines.iter().any(|l| l.contains("Current: …")));
+        let empty = question_bottom(
+            &uefi_proto::QuestionInfo {
+                kind: "numeric".into(),
+                ..Default::default()
+            },
+            None,
+        );
         assert!(empty.iter().any(|l| l.contains("IFR default: —")));
     }
 }

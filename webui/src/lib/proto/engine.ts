@@ -548,6 +548,19 @@ export interface HiiSetValueResponse {
   stores: string[];
 }
 
+export interface HiiGetValueRequest {
+  imageId: string;
+  itemId: string;
+}
+
+export interface HiiGetValueResponse {
+  value?: string | undefined;
+  option?: string | undefined;
+  storePath?: string | undefined;
+  varOffset?: number | undefined;
+  width?: number | undefined;
+}
+
 export interface QuestionSummary {
   questionId: number;
   kind: string;
@@ -8371,6 +8384,240 @@ export const HiiSetValueResponse: MessageFns<HiiSetValueResponse> = {
   },
 };
 
+function createBaseHiiGetValueRequest(): HiiGetValueRequest {
+  return { imageId: "", itemId: "" };
+}
+
+export const HiiGetValueRequest: MessageFns<HiiGetValueRequest> = {
+  encode(message: HiiGetValueRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.imageId !== "") {
+      writer.uint32(10).string(message.imageId);
+    }
+    if (message.itemId !== "") {
+      writer.uint32(18).string(message.itemId);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): HiiGetValueRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const previousRecursionDepth = (reader as any).__tsProtoDecodeDepth ?? 0;
+    if (previousRecursionDepth >= 100) {
+      throw new globalThis.Error("protobuf decode recursion limit exceeded");
+    }
+    (reader as any).__tsProtoDecodeDepth = previousRecursionDepth + 1;
+    try {
+      const end = length === undefined ? reader.len : reader.pos + length;
+      const message = createBaseHiiGetValueRequest();
+      while (reader.pos < end) {
+        const tag = reader.uint32();
+        switch (tag >>> 3) {
+          case 1: {
+            if (tag !== 10) {
+              break;
+            }
+
+            message.imageId = reader.string();
+            continue;
+          }
+          case 2: {
+            if (tag !== 18) {
+              break;
+            }
+
+            message.itemId = reader.string();
+            continue;
+          }
+        }
+        if ((tag & 7) === 4 || tag === 0) {
+          break;
+        }
+        reader.skip(tag & 7);
+      }
+      return message;
+    } finally {
+      (reader as any).__tsProtoDecodeDepth = previousRecursionDepth;
+    }
+  },
+
+  fromJSON(object: any): HiiGetValueRequest {
+    return {
+      imageId: isSet(object.imageId)
+        ? globalThis.String(object.imageId)
+        : isSet(object.image_id)
+        ? globalThis.String(object.image_id)
+        : "",
+      itemId: isSet(object.itemId)
+        ? globalThis.String(object.itemId)
+        : isSet(object.item_id)
+        ? globalThis.String(object.item_id)
+        : "",
+    };
+  },
+
+  toJSON(message: HiiGetValueRequest): unknown {
+    const obj: any = {};
+    if (message.imageId !== "") {
+      obj.imageId = message.imageId;
+    }
+    if (message.itemId !== "") {
+      obj.itemId = message.itemId;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<HiiGetValueRequest>, I>>(base?: I): HiiGetValueRequest {
+    return HiiGetValueRequest.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<HiiGetValueRequest>, I>>(object: I): HiiGetValueRequest {
+    const message = createBaseHiiGetValueRequest();
+    message.imageId = object.imageId ?? "";
+    message.itemId = object.itemId ?? "";
+    return message;
+  },
+};
+
+function createBaseHiiGetValueResponse(): HiiGetValueResponse {
+  return { value: undefined, option: undefined, storePath: undefined, varOffset: undefined, width: undefined };
+}
+
+export const HiiGetValueResponse: MessageFns<HiiGetValueResponse> = {
+  encode(message: HiiGetValueResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.value !== undefined) {
+      writer.uint32(8).uint64(message.value);
+    }
+    if (message.option !== undefined) {
+      writer.uint32(18).string(message.option);
+    }
+    if (message.storePath !== undefined) {
+      writer.uint32(26).string(message.storePath);
+    }
+    if (message.varOffset !== undefined) {
+      writer.uint32(32).uint32(message.varOffset);
+    }
+    if (message.width !== undefined) {
+      writer.uint32(40).uint32(message.width);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): HiiGetValueResponse {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const previousRecursionDepth = (reader as any).__tsProtoDecodeDepth ?? 0;
+    if (previousRecursionDepth >= 100) {
+      throw new globalThis.Error("protobuf decode recursion limit exceeded");
+    }
+    (reader as any).__tsProtoDecodeDepth = previousRecursionDepth + 1;
+    try {
+      const end = length === undefined ? reader.len : reader.pos + length;
+      const message = createBaseHiiGetValueResponse();
+      while (reader.pos < end) {
+        const tag = reader.uint32();
+        switch (tag >>> 3) {
+          case 1: {
+            if (tag !== 8) {
+              break;
+            }
+
+            message.value = reader.uint64().toString();
+            continue;
+          }
+          case 2: {
+            if (tag !== 18) {
+              break;
+            }
+
+            message.option = reader.string();
+            continue;
+          }
+          case 3: {
+            if (tag !== 26) {
+              break;
+            }
+
+            message.storePath = reader.string();
+            continue;
+          }
+          case 4: {
+            if (tag !== 32) {
+              break;
+            }
+
+            message.varOffset = reader.uint32();
+            continue;
+          }
+          case 5: {
+            if (tag !== 40) {
+              break;
+            }
+
+            message.width = reader.uint32();
+            continue;
+          }
+        }
+        if ((tag & 7) === 4 || tag === 0) {
+          break;
+        }
+        reader.skip(tag & 7);
+      }
+      return message;
+    } finally {
+      (reader as any).__tsProtoDecodeDepth = previousRecursionDepth;
+    }
+  },
+
+  fromJSON(object: any): HiiGetValueResponse {
+    return {
+      value: isSet(object.value) ? globalThis.String(object.value) : undefined,
+      option: isSet(object.option) ? globalThis.String(object.option) : undefined,
+      storePath: isSet(object.storePath)
+        ? globalThis.String(object.storePath)
+        : isSet(object.store_path)
+        ? globalThis.String(object.store_path)
+        : undefined,
+      varOffset: isSet(object.varOffset)
+        ? globalThis.Number(object.varOffset)
+        : isSet(object.var_offset)
+        ? globalThis.Number(object.var_offset)
+        : undefined,
+      width: isSet(object.width) ? globalThis.Number(object.width) : undefined,
+    };
+  },
+
+  toJSON(message: HiiGetValueResponse): unknown {
+    const obj: any = {};
+    if (message.value !== undefined) {
+      obj.value = message.value;
+    }
+    if (message.option !== undefined) {
+      obj.option = message.option;
+    }
+    if (message.storePath !== undefined) {
+      obj.storePath = message.storePath;
+    }
+    if (message.varOffset !== undefined) {
+      obj.varOffset = Math.round(message.varOffset);
+    }
+    if (message.width !== undefined) {
+      obj.width = Math.round(message.width);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<HiiGetValueResponse>, I>>(base?: I): HiiGetValueResponse {
+    return HiiGetValueResponse.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<HiiGetValueResponse>, I>>(object: I): HiiGetValueResponse {
+    const message = createBaseHiiGetValueResponse();
+    message.value = object.value ?? undefined;
+    message.option = object.option ?? undefined;
+    message.storePath = object.storePath ?? undefined;
+    message.varOffset = object.varOffset ?? undefined;
+    message.width = object.width ?? undefined;
+    return message;
+  },
+};
+
 function createBaseQuestionSummary(): QuestionSummary {
   return {
     questionId: 0,
@@ -10806,6 +11053,7 @@ export interface EngineService {
   HiiQuestionInfo(request: HiiQuestionInfoRequest): Promise<HiiQuestionInfoResponse>;
   HiiListQuestions(request: HiiListQuestionsRequest): Promise<HiiListQuestionsResponse>;
   HiiSetValue(request: HiiSetValueRequest): Promise<HiiSetValueResponse>;
+  HiiGetValue(request: HiiGetValueRequest): Promise<HiiGetValueResponse>;
   HiiQuestionAdd(request: HiiQuestionAddRequest): Promise<HiiQuestionAddResponse>;
   HiiPageAdd(request: HiiPageAddRequest): Promise<HiiPageAddResponse>;
   NvarList(request: NvarListRequest): Promise<NvarListResponse>;
@@ -10855,6 +11103,7 @@ export class EngineServiceClientImpl implements EngineService {
     this.HiiQuestionInfo = this.HiiQuestionInfo.bind(this);
     this.HiiListQuestions = this.HiiListQuestions.bind(this);
     this.HiiSetValue = this.HiiSetValue.bind(this);
+    this.HiiGetValue = this.HiiGetValue.bind(this);
     this.HiiQuestionAdd = this.HiiQuestionAdd.bind(this);
     this.HiiPageAdd = this.HiiPageAdd.bind(this);
     this.NvarList = this.NvarList.bind(this);
@@ -11059,6 +11308,12 @@ export class EngineServiceClientImpl implements EngineService {
     const data = HiiSetValueRequest.encode(request).finish();
     const promise = this.rpc.request(this.service, "HiiSetValue", data);
     return promise.then((data) => HiiSetValueResponse.decode(new BinaryReader(data)));
+  }
+
+  HiiGetValue(request: HiiGetValueRequest): Promise<HiiGetValueResponse> {
+    const data = HiiGetValueRequest.encode(request).finish();
+    const promise = this.rpc.request(this.service, "HiiGetValue", data);
+    return promise.then((data) => HiiGetValueResponse.decode(new BinaryReader(data)));
   }
 
   HiiQuestionAdd(request: HiiQuestionAddRequest): Promise<HiiQuestionAddResponse> {

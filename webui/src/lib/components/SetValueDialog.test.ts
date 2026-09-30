@@ -29,12 +29,17 @@ describe('SetValueDialog', () => {
                 bodies.push(await request.json());
                 return HttpResponse.json({ appliedFlips: [], stores: ['s1', 's2'] });
             }),
+            http.post('*/api/v1/rpc/HiiGetValue', () =>
+                HttpResponse.json({ value: '1', option: 'Enabled', storePath: '0/0/0' })),
         );
         render(SetValueDialog, {
             imageId: 'i-1', itemId: 'X:0x10:0#10029:0x3B', prompt: 'Above 4G Decoding',
             onclose: () => {}, ondone: () => {},
         });
         const sel = await screen.findByRole('combobox', { name: 'value' });
+        await waitFor(() =>
+            expect(screen.getByText(/current 1 \(Enabled\) @ 0\/0\/0/)).toBeInTheDocument(),
+        );
         expect(sel).toBeInTheDocument();
         fireEvent.change(sel, { target: { value: '1' } });
         fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
@@ -81,5 +86,18 @@ describe('SetValueDialog', () => {
         const done = await screen.findByRole('button', { name: 'Done' });
         fireEvent.click(done);
         expect(ondone).toHaveBeenCalled();
+    });
+
+    it('shows current dash when store has no record', async () => {
+        server.use(
+            http.post('*/api/v1/rpc/HiiQuestionInfo', () =>
+                HttpResponse.json(oneof([{ value: '0', text: 'Off' }, { value: '1', text: 'On' }]))),
+            http.post('*/api/v1/rpc/HiiGetValue', () => HttpResponse.json({})),
+        );
+        render(SetValueDialog, {
+            imageId: 'i-1', itemId: 'X#1:0x5', prompt: 'q',
+            onclose: () => {}, ondone: () => {},
+        });
+        await waitFor(() => expect(screen.getByText(/current —/)).toBeInTheDocument());
     });
 });

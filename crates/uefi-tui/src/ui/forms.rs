@@ -95,10 +95,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
     let panel = crate::forms::form_panel(&app.forms, &rows, app.forms.cursor);
     let block = Block::default()
         .borders(Borders::ALL)
-        .title("Form")
         .border_style(focus_style(!list_focus));
     let inner = block.inner(cols[1]);
-    f.render_widget(block, cols[1]);
     let cap = 3.max(inner.height as usize * 45 / 100) as u16;
     let mut header_h = (panel.header.len() as u16).min(inner.height);
     let mut bottom_h = (panel.bottom.len() as u16).min(cap);
@@ -111,6 +109,20 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
     if inner.height < header_h + bottom_h + 1 {
         bottom_h = bottom_h.min(inner.height.saturating_sub(header_h + 1));
     }
+    let len = panel.bottom.len();
+    let vis = bottom_h as usize;
+    let start = if len > vis {
+        app.forms.bottom_cursor.min(len - vis)
+    } else {
+        0
+    };
+    let indicator = if len > vis {
+        format!("[{}..{}/{}]", start + 1, start + vis, len)
+    } else {
+        String::new()
+    };
+    let block = block.title(format!("Form {indicator}"));
+    f.render_widget(block, cols[1]);
     let zones = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -121,7 +133,12 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
         .split(inner);
     f.render_widget(Paragraph::new(panel.header.join("\n")), zones[0]);
     render_middle(f, zones[1], app, &panel);
-    f.render_widget(Paragraph::new(panel.bottom.join("\n")), zones[2]);
+    app.forms.bottom_viewport = vis;
+    let end = (start + vis).min(len);
+    f.render_widget(
+        Paragraph::new(panel.bottom[start..end].join("\n")),
+        zones[2],
+    );
 }
 
 fn render_middle(f: &mut Frame, mid: Rect, app: &mut App, panel: &crate::forms::FormPanel) {
@@ -452,6 +469,59 @@ mod tests {
             "вопросы не выдавлены низом-переростком"
         );
         assert!(text.contains("Form:    Main"), "шапка на месте");
+    }
+
+    #[test]
+    fn bottom_pager_scrolls_indicator_and_clamps() {
+        let mut app = app_with_form(6);
+        app.forms.question_cursor = 0;
+        let mut options = Vec::new();
+        for i in 0..12u64 {
+            options.push(uefi_proto::OptionEntry {
+                value: i,
+                string_id: 0,
+                text: format!("opt{i}"),
+                ..Default::default()
+            });
+        }
+        app.forms.question_info = Some(uefi_proto::QuestionInfo {
+            question_id: 0x210,
+            kind: "one_of".into(),
+            var_store_id: 2,
+            var_offset: 0x40,
+            width: 1,
+            options,
+            ..Default::default()
+        });
+        app.forms.question_info_key = Some((fk(1), 0x210));
+        let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 20)).unwrap();
+        t.draw(|f| render(f, f.area(), &mut app)).unwrap();
+        let text = panel_text(&t, 20);
+        assert!(text.contains("[1.."), "индикатор диапазона присутствует");
+        assert!(text.contains("]"), "индикатор закрыт");
+
+        for _ in 0..30 {
+            app.forms_bottom_down();
+        }
+        t.draw(|f| render(f, f.area(), &mut app)).unwrap();
+        let text = panel_text(&t, 20);
+        assert!(text.contains("opt11"), "хвост достижим скроллом");
+        assert!(!text.contains("opt0"), "окно сдвинулось");
+        assert!(
+            app.forms.bottom_cursor <= 30,
+            "курсор без клампа в состоянии — кламп на рендере"
+        );
+
+        app.forms.bottom_cursor = 5;
+        app.forms_question_page_down();
+        assert_eq!(
+            app.forms.bottom_cursor, 0,
+            "сброс и на постраничной смене вопроса"
+        );
+
+        app.forms_question_cursor_up();
+        t.draw(|f| render(f, f.area(), &mut app)).unwrap();
+        assert_eq!(app.forms.bottom_cursor, 0, "сброс при смене вопроса");
     }
 
     #[test]

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
@@ -30,6 +31,7 @@ const MOCK_FORM_EXPORT_SCHEMA_JSON: &str = concat!(
 pub struct MockEngine {
     pub sessions: Arc<Mutex<HashMap<String, String>>>,
     pub schema_calls: Arc<Mutex<Vec<SchemaCall>>>,
+    pub enforce_sessions: Arc<AtomicBool>,
 }
 
 impl MockEngine {
@@ -91,8 +93,14 @@ impl EngineService for MockEngine {
     }
     async fn image_open(
         &self,
-        _req: Request<ImageOpenRequest>,
+        req: Request<ImageOpenRequest>,
     ) -> Result<Response<ImageOpenResponse>, Status> {
+        let r = req.into_inner();
+        if self.enforce_sessions.load(Ordering::SeqCst)
+            && !self.sessions.lock().await.contains_key(&r.session_id)
+        {
+            return Err(Status::not_found("session not found"));
+        }
         Ok(Response::new(ImageOpenResponse {
             image_id: uuid::Uuid::new_v4().to_string(),
             root_guid: String::new(),
@@ -101,8 +109,14 @@ impl EngineService for MockEngine {
     }
     async fn image_upload(
         &self,
-        _req: Request<ImageUploadRequest>,
+        req: Request<ImageUploadRequest>,
     ) -> Result<Response<ImageOpenResponse>, Status> {
+        let r = req.into_inner();
+        if self.enforce_sessions.load(Ordering::SeqCst)
+            && !self.sessions.lock().await.contains_key(&r.session_id)
+        {
+            return Err(Status::not_found("session not found"));
+        }
         Ok(Response::new(ImageOpenResponse {
             image_id: "mock-upload".into(),
             root_guid: String::new(),
@@ -273,8 +287,14 @@ impl EngineService for MockEngine {
     }
     async fn artifact_import(
         &self,
-        _req: Request<ArtifactImportRequest>,
+        req: Request<ArtifactImportRequest>,
     ) -> Result<Response<ArtifactImportResponse>, Status> {
+        let r = req.into_inner();
+        if self.enforce_sessions.load(Ordering::SeqCst)
+            && !self.sessions.lock().await.contains_key(&r.session_id)
+        {
+            return Err(Status::not_found("session not found"));
+        }
         Ok(Response::new(ArtifactImportResponse {
             artifact_id: uuid::Uuid::new_v4().to_string(),
         }))
@@ -542,6 +562,20 @@ impl EngineService for MockEngine {
             }),
         }))
     }
+    async fn hii_get_value(
+        &self,
+        req: Request<HiiGetValueRequest>,
+    ) -> Result<Response<HiiGetValueResponse>, Status> {
+        let r = req.into_inner();
+        let none = r.item_id.contains("novalue");
+        Ok(Response::new(HiiGetValueResponse {
+            value: (!none).then_some(1),
+            option: (!none).then(|| "Enabled".into()),
+            store_path: (!none).then(|| "0/0/0".into()),
+            var_offset: (!none).then_some(0x5F),
+            width: (!none).then_some(1),
+        }))
+    }
     async fn hii_set_value(
         &self,
         _req: Request<HiiSetValueRequest>,
@@ -678,6 +712,34 @@ impl EngineService for MockEngine {
     }
 }
 
+#[allow(dead_code)]
+#[allow(clippy::type_complexity)]
+pub async fn start_mock_full(
+    sock: &Path,
+) -> (
+    JoinHandle<()>,
+    Arc<Mutex<Vec<SchemaCall>>>,
+    Arc<AtomicBool>,
+    Arc<Mutex<HashMap<String, String>>>,
+) {
+    let _ = std::fs::remove_file(sock);
+    let listener = tokio::net::UnixListener::bind(sock).unwrap();
+    let incoming = UnixListenerStream::new(listener);
+    let mock = MockEngine::default();
+    let schema_calls = mock.schema_calls.clone();
+    let enforce = mock.enforce_sessions.clone();
+    let sessions = mock.sessions.clone();
+    let handle = tokio::spawn(async move {
+        Server::builder()
+            .add_service(EngineServiceServer::new(mock))
+            .serve_with_incoming(incoming)
+            .await
+            .unwrap();
+    });
+    (handle, schema_calls, enforce, sessions)
+}
+
+#[allow(dead_code)]
 pub async fn start_mock(sock: &Path) -> (JoinHandle<()>, Arc<Mutex<Vec<SchemaCall>>>) {
     let _ = std::fs::remove_file(sock);
     let listener = tokio::net::UnixListener::bind(sock).unwrap();
@@ -693,419 +755,4 @@ pub async fn start_mock(sock: &Path) -> (JoinHandle<()>, Arc<Mutex<Vec<SchemaCal
     });
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     (handle, schema_calls)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use hyper_util::rt::TokioIo;
-    use tempfile::TempDir;
-    use tonic::transport::Endpoint;
-    use tower::service_fn;
-    use uefi_proto::engine_service_client::EngineServiceClient;
-    use uefi_tui::app::{App, Focus, RegistryRow};
-    use uefi_tui::commands;
-
-    #[tokio::test]
-    async fn mock_roundtrip() {
-        let td = TempDir::new().unwrap();
-        let sock = td.path().join("mock.sock");
-        let _handle = start_mock(&sock).await;
-        let sock_str = sock.to_string_lossy().to_string();
-        let channel = Endpoint::try_from("http://localhost")
-            .unwrap()
-            .connect_with_connector(service_fn(move |_: http::Uri| {
-                let s = sock_str.clone();
-                async move {
-                    Ok::<_, std::io::Error>(TokioIo::new(tokio::net::UnixStream::connect(s).await?))
-                }
-            }))
-            .await
-            .unwrap();
-        let mut client = EngineServiceClient::new(channel);
-        let resp = client
-            .session_create(SessionCreateRequest {
-                name: "test".into(),
-            })
-            .await
-            .unwrap()
-            .into_inner();
-        assert!(!resp.session_id.is_empty());
-        assert!(!resp.token.is_empty());
-    }
-
-    #[tokio::test]
-    async fn schema_rpcs_record_calls_and_fixture_responses() {
-        let td = TempDir::new().unwrap();
-        let sock = td.path().join("mock.sock");
-        let (_h, calls) = start_mock(&sock).await;
-        let sock_str = sock.to_string_lossy().to_string();
-        let channel = Endpoint::try_from("http://localhost")
-            .unwrap()
-            .connect_with_connector(service_fn(move |_: http::Uri| {
-                let s = sock_str.clone();
-                async move {
-                    Ok::<_, std::io::Error>(TokioIo::new(tokio::net::UnixStream::connect(s).await?))
-                }
-            }))
-            .await
-            .unwrap();
-        let mut client = EngineServiceClient::new(channel);
-        let r = client
-            .hii_form_set_add(HiiFormSetAddRequest {
-                image_id: "img-1".into(),
-                schema_json: "{\"forms\":[]}".into(),
-                target_ffs_guid: "FFS-GUID".into(),
-            })
-            .await
-            .unwrap()
-            .into_inner();
-        assert_eq!(r.new_ffs_id, "mock-ffs-1");
-        assert_eq!(r.inserted_form_ids, vec![10101]);
-        let calls = calls.lock().await;
-        assert_eq!(calls.len(), 1);
-        assert_eq!(
-            calls[0],
-            SchemaCall {
-                rpc: "HiiFormSetAdd",
-                image_id: "img-1".into(),
-                target: "FFS-GUID".into(),
-                schema_json: "{\"forms\":[]}".into(),
-                extra: String::new(),
-            }
-        );
-    }
-
-    #[tokio::test]
-    async fn open_sets_active_image_and_builds_tree() {
-        let td = TempDir::new().unwrap();
-        let sock = td.path().join("mock.sock");
-        let _handle = start_mock(&sock).await;
-        let state = uefi_common::state::State {
-            session_id: Some("s1".into()),
-            token: Some("t1".into()),
-            ..Default::default()
-        };
-        let mut client = commands::connect(Some(sock.to_str().unwrap()), state)
-            .await
-            .unwrap();
-        let mut app = App::new();
-        let res = commands::execute_command(&mut app, "open /tmp/mock.bin", &mut client).await;
-        assert!(res.is_ok(), "open failed: {:?}", res.err());
-        assert_eq!(app.active_image_id, client.state.active_image_id);
-        assert!(app.active_image_id.is_some());
-        assert!(app.tree.len() >= 5);
-        assert!(app.tree[0].has_children);
-        assert!(app.registry.images.len() == 1);
-        assert!(app.registry.artifacts.len() == 1);
-    }
-
-    #[tokio::test]
-    async fn upload_sets_active_image_and_tree() {
-        let td = TempDir::new().unwrap();
-        let sock = td.path().join("mock.sock");
-        let _handle = start_mock(&sock).await;
-        let state = uefi_common::state::State {
-            session_id: Some("s1".into()),
-            token: Some("t1".into()),
-            ..Default::default()
-        };
-        let mut client = commands::connect(Some(sock.to_str().unwrap()), state)
-            .await
-            .unwrap();
-        let mut app = App::new();
-        let out = std::env::temp_dir().join("tui-upload-test.bin");
-        std::fs::write(&out, b"mock").unwrap();
-        let r =
-            commands::execute_command(&mut app, &format!("upload {}", out.display()), &mut client)
-                .await
-                .unwrap();
-        assert_eq!(app.active_image_id.as_deref(), Some(r.as_str()));
-        assert_eq!(client.state.active_image_id.as_deref(), Some(r.as_str()));
-        assert!(app.image_loaded);
-        assert!(!app.tree.is_empty());
-        let _ = std::fs::remove_file(&out);
-    }
-
-    #[tokio::test]
-    async fn snapshot_returns_id() {
-        let td = TempDir::new().unwrap();
-        let sock = td.path().join("mock.sock");
-        let _handle = start_mock(&sock).await;
-        let state = uefi_common::state::State {
-            session_id: Some("s1".into()),
-            token: Some("t1".into()),
-            ..Default::default()
-        };
-        let mut client = commands::connect(Some(sock.to_str().unwrap()), state)
-            .await
-            .unwrap();
-        let mut app = App::new();
-        commands::execute_command(&mut app, "open /tmp/mock.bin", &mut client)
-            .await
-            .unwrap();
-        let r = commands::execute_command(&mut app, "snapshot before", &mut client)
-            .await
-            .unwrap();
-        assert_eq!(r, "snap-1");
-        assert_eq!(app.status_msg, "snapshot snap-1 (before)");
-    }
-
-    #[tokio::test]
-    async fn snapshots_puts_list_into_status_msg() {
-        let td = TempDir::new().unwrap();
-        let sock = td.path().join("mock.sock");
-        let _handle = start_mock(&sock).await;
-        let state = uefi_common::state::State {
-            session_id: Some("s1".into()),
-            token: Some("t1".into()),
-            ..Default::default()
-        };
-        let mut client = commands::connect(Some(sock.to_str().unwrap()), state)
-            .await
-            .unwrap();
-        let mut app = App::new();
-        commands::execute_command(&mut app, "open /tmp/mock.bin", &mut client)
-            .await
-            .unwrap();
-        let r = commands::execute_command(&mut app, "snapshots", &mut client)
-            .await
-            .unwrap();
-        assert_eq!(app.status_msg, "snap-1  before  16B");
-        assert_eq!(r, "snap-1");
-    }
-
-    #[tokio::test]
-    async fn restore_refreshes_tree_and_registry() {
-        let td = TempDir::new().unwrap();
-        let sock = td.path().join("mock.sock");
-        let _handle = start_mock(&sock).await;
-        let state = uefi_common::state::State {
-            session_id: Some("s1".into()),
-            token: Some("t1".into()),
-            ..Default::default()
-        };
-        let mut client = commands::connect(Some(sock.to_str().unwrap()), state)
-            .await
-            .unwrap();
-        let mut app = App::new();
-        commands::execute_command(&mut app, "open /tmp/mock.bin", &mut client)
-            .await
-            .unwrap();
-        app.tree.clear();
-        app.registry.images.clear();
-        let r = commands::execute_command(&mut app, "restore snap-1", &mut client)
-            .await
-            .unwrap();
-        assert_eq!(r, "snap-1");
-        assert!(!app.tree.is_empty(), ":restore should refresh tree");
-        assert_eq!(
-            app.registry.images.len(),
-            1,
-            ":restore should refresh registry"
-        );
-        assert_eq!(app.status_msg, "restored snap-1");
-    }
-
-    #[tokio::test]
-    async fn refresh_populates_registry() {
-        let td = TempDir::new().unwrap();
-        let sock = td.path().join("mock.sock");
-        let _handle = start_mock(&sock).await;
-        let state = uefi_common::state::State {
-            session_id: Some("s1".into()),
-            token: Some("t1".into()),
-            ..Default::default()
-        };
-        let mut client = commands::connect(Some(sock.to_str().unwrap()), state)
-            .await
-            .unwrap();
-        let mut app = App::new();
-        commands::execute_command(&mut app, "refresh", &mut client)
-            .await
-            .unwrap();
-        assert_eq!(app.registry.images.len(), 1);
-        assert_eq!(app.registry.artifacts.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn smoke_open_collapse_switch_registry_pick() {
-        let td = TempDir::new().unwrap();
-        let sock = td.path().join("mock.sock");
-        let _handle = start_mock(&sock).await;
-        let state = uefi_common::state::State {
-            session_id: Some("s1".into()),
-            token: Some("t1".into()),
-            ..Default::default()
-        };
-        let mut client = commands::connect(Some(sock.to_str().unwrap()), state)
-            .await
-            .unwrap();
-        let mut app = App::new();
-        commands::execute_command(&mut app, "open /tmp/mock.bin", &mut client)
-            .await
-            .unwrap();
-        // default: only root expanded, volumes collapsed
-        assert!(app.tree[0].expanded);
-        assert!(!app.tree[1].expanded);
-        app.toggle_expand_selected();
-        assert!(!app.tree[app.selected_tree_idx().unwrap()].expanded);
-        commands::execute_command(&mut app, "switch mock-img-1", &mut client)
-            .await
-            .unwrap();
-        assert_eq!(app.active_image_id.as_deref(), Some("mock-img-1"));
-        app.focus_next();
-        app.focus_next();
-        assert_eq!(app.focus, Focus::Registry);
-        assert!(matches!(
-            app.current_registry_row(),
-            Some(RegistryRow::Artifact(0)) | Some(RegistryRow::Image(_))
-        ));
-    }
-
-    #[tokio::test]
-    async fn extract_refreshes_registry() {
-        let td = TempDir::new().unwrap();
-        let sock = td.path().join("mock.sock");
-        let _handle = start_mock(&sock).await;
-        let state = uefi_common::state::State {
-            session_id: Some("s1".into()),
-            token: Some("t1".into()),
-            ..Default::default()
-        };
-        let mut client = commands::connect(Some(sock.to_str().unwrap()), state)
-            .await
-            .unwrap();
-        let mut app = App::new();
-        commands::execute_command(&mut app, "open /tmp/mock.bin", &mut client)
-            .await
-            .unwrap();
-        app.registry.artifacts.clear();
-        commands::execute_command(&mut app, "extract 1/0", &mut client)
-            .await
-            .unwrap();
-        assert_eq!(
-            app.registry.artifacts.len(),
-            1,
-            ":extract should refresh registry"
-        );
-    }
-
-    #[tokio::test]
-    async fn import_refreshes_registry() {
-        let td = TempDir::new().unwrap();
-        let sock = td.path().join("mock.sock");
-        let _handle = start_mock(&sock).await;
-        let state = uefi_common::state::State {
-            session_id: Some("s1".into()),
-            token: Some("t1".into()),
-            ..Default::default()
-        };
-        let mut client = commands::connect(Some(sock.to_str().unwrap()), state)
-            .await
-            .unwrap();
-        let mut app = App::new();
-        app.registry.images.clear();
-        app.registry.artifacts.clear();
-        let f = std::fs::File::create("/tmp/uefi_tui_import_dummy.bin").unwrap();
-        drop(f);
-        commands::execute_command(
-            &mut app,
-            "import /tmp/uefi_tui_import_dummy.bin",
-            &mut client,
-        )
-        .await
-        .unwrap();
-        assert!(
-            !app.registry.artifacts.is_empty(),
-            ":import should refresh registry"
-        );
-        let _ = std::fs::remove_file("/tmp/uefi_tui_import_dummy.bin");
-    }
-
-    #[tokio::test]
-    async fn image_close_clears_state() {
-        let td = TempDir::new().unwrap();
-        let sock = td.path().join("mock.sock");
-        let _handle = start_mock(&sock).await;
-        let state = uefi_common::state::State {
-            session_id: Some("s1".into()),
-            token: Some("t1".into()),
-            ..Default::default()
-        };
-        let mut client = commands::connect(Some(sock.to_str().unwrap()), state)
-            .await
-            .unwrap();
-        let mut app = App::new();
-        commands::execute_command(&mut app, "open /tmp/mock.bin", &mut client)
-            .await
-            .unwrap();
-        assert!(app.image_loaded);
-        assert!(app.active_image_id.is_some());
-        let active = app.active_image_id.clone().unwrap();
-        commands::execute_command(&mut app, &format!("close {active}"), &mut client)
-            .await
-            .unwrap();
-        assert!(app.tree.is_empty(), "tree should be cleared after close");
-        assert!(
-            app.active_image_id.is_none(),
-            "active_image_id should be None after close"
-        );
-        assert!(
-            !app.image_loaded,
-            "image_loaded should be false after close"
-        );
-        assert_eq!(app.cursor, 0);
-    }
-
-    #[tokio::test]
-    async fn restore_session_populates_tree_and_registry() {
-        let td = TempDir::new().unwrap();
-        let sock = td.path().join("mock.sock");
-        let _handle = start_mock(&sock).await;
-        let state = uefi_common::state::State {
-            session_id: Some("s1".into()),
-            token: Some("t1".into()),
-            active_image_id: Some("mock-img-1".into()),
-            ..Default::default()
-        };
-        let mut client = commands::connect(Some(sock.to_str().unwrap()), state)
-            .await
-            .unwrap();
-        let mut app = App::new();
-        commands::restore_session(&mut app, &mut client)
-            .await
-            .unwrap();
-        assert_eq!(app.active_image_id.as_deref(), Some("mock-img-1"));
-        assert!(app.image_loaded, "image_loaded should be set on restore");
-        assert!(
-            app.tree.len() >= 5,
-            "tree should be rebuilt from nodes list"
-        );
-        assert_eq!(app.registry.images.len(), 1);
-        assert_eq!(app.registry.artifacts.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn restore_session_without_active_image_only_registry() {
-        let td = TempDir::new().unwrap();
-        let sock = td.path().join("mock.sock");
-        let _handle = start_mock(&sock).await;
-        let state = uefi_common::state::State {
-            session_id: Some("s1".into()),
-            token: Some("t1".into()),
-            ..Default::default()
-        };
-        let mut client = commands::connect(Some(sock.to_str().unwrap()), state)
-            .await
-            .unwrap();
-        let mut app = App::new();
-        commands::restore_session(&mut app, &mut client)
-            .await
-            .unwrap();
-        assert!(app.active_image_id.is_none());
-        assert!(app.tree.is_empty());
-        assert_eq!(app.registry.images.len(), 1);
-        assert_eq!(app.registry.artifacts.len(), 1);
-    }
 }

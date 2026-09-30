@@ -3441,12 +3441,14 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
 > TODO-пункта не имели, статус трекается в roadmap. Ниже — остаточные миноры
 > из per-task ревью цикла.
 
-* [ ] **uefi-tui не создаёт сессию сам** — при старте TUI коннектится к
+* [x] **uefi-tui не создаёт сессию сам** — при старте TUI коннектится к
   движку, но `session_create` не вызывает; `:open`/`:upload` падают с
   «no session», пока сессию кто-то не создал. Воркараунд: инициализировать
   сессию через `uefi-cli`, затем работать в TUI. Контекст: живое
   использование 2026-09-11; надо звать `session_create` при первом
   `:open`/`:upload` (или на старте) в `commands.rs`.
+  Закрыто циклом tui-live (2026-09-30, спека 2026-09-30-tui-live-design.md §1): ensure_session лениво на :open/:upload/:import/:artifacts/:switch/reopen, revive мёртвой сессии по engine-NOT_FOUND, персист при создании и :switch.
+* [ ] **uefi-tui: tui_integration-тесты пишут `.uefipatcher` в CWD тест-бинарника** — `:switch` персистит state (цикл tui-live); тесты, гоняющие switch, оставляют gitignored-файл в crates/uefi-tui/. Будущий тест, читающий state в том же бинарнике, получит CWD-гонку (класс бага, уже ловленный в Task 5 для session_bootstrap). Контекст: `crates/uefi-tui/tests/tui_integration.rs` (switch-тесты), `state::write_state`.
 * [x] **Метка «NVRAM store» для RAW-файла AMI NVRAM** — закрыто: body-проб
   + Node.is_nvar, флоппи-глиф (цикл nvar-op) — первый том
   BIOS-окна на Huananzhi/AMI-образах (FFS2 @0x800000, 256KB) содержит
@@ -3583,10 +3585,12 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
 > только Minor. Must-fix Finding 1 (комплишен `:forms`/`:f`/`:filter` в
 > COMMANDS) исправлен fix-коммитом этой же ветки; ниже — отложенные миноры.
 
-* [ ] **uefi-tui (Forms V2): детали-панель не скроллит длинные списки
+* [x] **uefi-tui (Forms V2): детали-панель не скроллит длинные списки
   вопросов** — Paragraph без scroll, j/k в Details ничего не делают; на
   HNX99TF ~31 вопрос/форма в среднем — хвост списка не виден. Нужен scroll.
   Контекст: `crates/uefi-tui/src/ui` (Forms details-рендер).
+  Закрыто циклом tui-live (2026-09-30, §2): список вопросов скроллился уже с three-zone; нижняя зона — J/K-пейджер с индикатором [a..b/N] и сбросом при смене вопроса.
+* [ ] класс: limitation — **uefi-tui: индикатор нижней зоны `[a..b/N]` при вырожденной высоте** — при bottom_h=0 (терминал ~5 строк, все сжатия three-zone) индикатор рендерится как `[1..0/N]` (b < a): гейт только `len > vis`, без `vis > 0`. Недостижимо в текущих тестах, косметика. Контекст: `crates/uefi-tui/src/ui/forms.rs` (render, indicator); цикл tui-live Task 6, ревью.
 * [ ] **uefi-tui (Forms V2): ошибка ленивого fetch'а вопросов глотается** —
   `let _ = refresh_questions_if_needed` в `main.rs`; при ошибке RPC панель
   висит на «loading…». Показывать ошибку в status_msg. Контекст:
@@ -3683,12 +3687,14 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
 > Живой прогон владельца на HNX99TF. Часть закрыта в ветке `feat/tui-forms-v2`
 > (раунды 2–3 — см. аддендум плана); здесь — оставшееся.
 
-* [ ] **Текущее значение вопроса не отображается** — в Details видны
+* [x] **Текущее значение вопроса не отображается** — в Details видны
   диапазон/опции, но не текущие байты (ни до, ни после set-value). Нужен
   read-back: движок умеет читать (set_value смотрит `from`-байты), но RPC
   get-value нет; кандидат в V3 — `HiiGetValue` или поле `current` в
   QuestionInfo + рендер `current: 0x5 "Auto"` в TUI.
   Контекст: `uefi-engine/src/hii/mod.rs` set_value (plans.from), спека §3.2.
+  Закрыто циклом tui-live (2026-09-30, §3): superseded seed_value (nvar-op) + HiiGetValue RPC (engine/CLI/TUI/WebUI); seed_lookup получил барьер-паритет с set_value.
+* [ ] **uefi-tui: gate `current_for_this`/`info_for_this` не проверяет qid** — при смене вопроса внутри формы и ошибке ленивого fetch (ошибки глотаются `let _ =`) рендерится Current/инфо предыдущего вопроса. План-мандат цикла tui-live (зеркало question_info-паттерна); лечится добавлением qid в ключ gate. Контекст: `crates/uefi-tui/src/forms.rs` (form_panel), `commands.rs` (call-сайты `let _ = refresh_*`).
 
 ## Находки финального ревью ветки tui-forms-v3 (2026-09-11)
 
@@ -4710,3 +4716,21 @@ Task 3 (проверено git stash). Штатная команда цикла 
   проверкой отсутствия «pending:» — вакуумно-зелёный при сломанном
   инспекторе (отсутствие текста проходит и на пустой панели); добавить
   positive-ассерт содержимого инспектора.
+
+## Отложенное финального ревью tui-live (2026-10-01)
+
+> Фоллоу-апы финального ревью ветки `feat/tui-live` (спека
+> `2026-09-30-tui-live-design.md`).
+
+* [ ] **uefi-engine: seed_lookup — ручной дубль барьер-селектора** — параллельная рекурсия с collect_std_defaults_hits (различие: пропуск стора без записи vs ошибка). Два источника истины «доступного стора» разъедутся снова; извлечь общий спуск (барьер + детект store-body) в один хелпер. Контекст: `crates/uefi-engine/src/hii/mod.rs` (seed_lookup, collect_std_defaults_hits); финальное ревью tui-live.
+* [ ] **uefi-tui: refresh_forms чистит current_value, но не question_info** — асимметрия инвалидации: после :switch/ре-входа возможен стейл question_info при том же ключе формы (у Current кэш чистится). Симметризовать (добавить очистку question_info/question_info_key в refresh_forms). Контекст: `crates/uefi-tui/src/commands.rs` (refresh_forms); финальное ревью tui-live.
+
+## Находки живого гейта tui-live №2 (2026-10-01, владелец)
+
+* [ ] **класс: limitation: uefi-tui пути с пробелами в :open/:upload/:extract/:import** —
+  парсер команд режет по `split_whitespace`, `parts[1]` = первый токен: образ
+  «450x - копия» даёт file-not-found (владелец подтвердил; ошибка чистая,
+  active при этом не пишется — корректно). Нужно квотирование или
+  rest-of-line для path-аргументов (образец грамматики — `--file`-флаги,
+  которые идут одним токеном). Контекст: `crates/uefi-tui/src/commands.rs`
+  (`split_whitespace` + path-ветки).

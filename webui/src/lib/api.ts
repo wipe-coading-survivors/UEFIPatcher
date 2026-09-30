@@ -179,6 +179,12 @@ export const questionInfo = (imageId: string, itemId: string) =>
         itemId,
     });
 
+export const getValue = (imageId: string, itemId: string) =>
+    bridge<{ imageId: string; itemId: string }, { value?: string; option?: string; storePath?: string }>(
+        'HiiGetValue',
+        { imageId, itemId },
+    );
+
 export const listStrings = (imageId: string) =>
     bridge<{ imageId: string }, { strings: StringInfo[] }>('HiiListStrings', { imageId });
 

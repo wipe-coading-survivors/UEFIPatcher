@@ -515,6 +515,19 @@ pub async fn question_info(
     Ok(())
 }
 
+pub async fn question_value(
+    item_id: &str,
+    cli_sock: Option<&str>,
+    format: OutputFormat,
+) -> Result<(), AppError> {
+    let st = state::require_state()?;
+    let mut client = Client::connect(cli_sock, st).await?;
+    let image_id = client.active_image()?;
+    let v = client.hii_get_value(&image_id, item_id).await?;
+    crate::output::print_question_value(&v, format);
+    Ok(())
+}
+
 pub async fn question_set_value(
     item_id: &str,
     value: u64,

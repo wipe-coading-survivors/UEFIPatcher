@@ -1,6 +1,6 @@
 <script lang="ts">
     import Modal from './Modal.svelte';
-    import { questionInfo, setValue } from '$lib/api';
+    import { questionInfo, setValue, getValue } from '$lib/api';
     import type { QuestionInfo } from '$lib/proto/engine';
 
     let {
@@ -18,6 +18,7 @@
     } = $props();
 
     let info: QuestionInfo | null = $state(null);
+    let current: { value?: string; option?: string; storePath?: string } | null = $state(null);
     let error = $state('');
     let busy = $state(false);
     let value = $state('');
@@ -37,6 +38,13 @@
             })
             .catch((e: unknown) => {
                 error = e instanceof Error ? e.message : String(e);
+            });
+        getValue(imageId, itemId)
+            .then((r) => {
+                current = r;
+            })
+            .catch(() => {
+                current = null;
             });
     });
 
@@ -63,6 +71,11 @@
     <p class="meta">
         {#if info}
             kind {info.kind} · store {info.varStoreId} @0x{info.varOffset.toString(16)} · width {info.width}
+        {/if}
+        {#if current}
+            {#if current.value !== undefined}
+                · current {current.value}{current.option ? ` (${current.option})` : ''}{current.storePath ? ` @ ${current.storePath}` : ''}
+            {:else}· current —{/if}
         {/if}
     </p>
     {#if error}<p class="error" role="alert">{error}</p>{/if}

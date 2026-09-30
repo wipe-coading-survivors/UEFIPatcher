@@ -79,6 +79,8 @@ pub struct FormsData {
     pub question_cursor: usize,
     pub question_info: Option<QuestionInfo>,
     pub question_info_key: Option<(crate::forms::FormKey, u32)>,
+    pub current_value: Option<uefi_proto::HiiGetValueResponse>,
+    pub current_value_key: Option<(crate::forms::FormKey, u32)>,
     pub questions_viewport: usize,
     pub list_viewport: usize,
     pub show_strings: bool,
@@ -92,6 +94,8 @@ pub struct FormsData {
     pub varstores_cursor: usize,
     pub varstores_viewport: usize,
     pub questions_state: ratatui::widgets::ListState,
+    pub bottom_cursor: usize,
+    pub bottom_viewport: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -513,12 +517,22 @@ impl App {
         if n > 0 && self.forms.question_cursor + 1 < n {
             self.forms.question_cursor += 1;
         }
+        self.forms.bottom_cursor = 0;
     }
 
     pub fn forms_question_cursor_up(&mut self) {
         if self.forms.question_cursor > 0 {
             self.forms.question_cursor -= 1;
         }
+        self.forms.bottom_cursor = 0;
+    }
+
+    pub fn forms_bottom_down(&mut self) {
+        self.forms.bottom_cursor += 1;
+    }
+
+    pub fn forms_bottom_up(&mut self) {
+        self.forms.bottom_cursor = self.forms.bottom_cursor.saturating_sub(1);
     }
 
     pub fn forms_question_page_size(&self) -> usize {
@@ -530,6 +544,7 @@ impl App {
     }
 
     pub fn forms_question_page_down(&mut self) {
+        self.forms.bottom_cursor = 0;
         let n = self.forms.questions.len();
         if n == 0 {
             return;
@@ -542,6 +557,7 @@ impl App {
     }
 
     pub fn forms_question_page_up(&mut self) {
+        self.forms.bottom_cursor = 0;
         self.forms.question_cursor =
             crate::ui::scroll::page_up(self.forms.question_cursor, self.forms_question_page_size());
     }

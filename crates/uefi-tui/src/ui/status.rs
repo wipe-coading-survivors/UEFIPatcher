@@ -13,7 +13,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         crate::app::Mode::Insert => "INSERT",
     };
     let img = if let Some(id) = &app.active_image_id {
-        format!("image:{}", id.get(..8).unwrap_or(id.as_str()))
+        format!("image:{id}")
     } else if app.image_loaded {
         "image:loaded".to_string()
     } else {

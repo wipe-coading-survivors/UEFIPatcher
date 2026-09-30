@@ -19,7 +19,7 @@
 Новый хелпер `ensure_session(client) -> Result<(), String>` в `crates/uefi-tui/src/commands.rs`:
 
 - `client.state.session_id == None` → `SessionCreate(name="")` → заполнить `client.state.{session_id, token}` → `state::write_state` (atomic, uefi-common). Персист state-файла — только в этот момент; существующий state с живой сессией не перезаписывается.
-- `session_id` есть, но RPC упал с tonic `NOT_FOUND` (сессия умерла: TTL/GC) → пересоздать один раз, повторить исходный вызов. Сетевые/транспортные ошибки (`RPC_INTERNAL`, unavailable) пересозданием не маскируются — исходная ошибка возвращается как есть.
+- `session_id` есть, но сессия мертва (TTL/GC/destroy) → движок теперь явно валидирует сессию в `open_from_bytes`/`artifact_import` и возвращает `NOT_FOUND "session not found"` (выяснено при планировании: раньше FK-ошибка sqlite приходила как opaque `internal`) → TUI пересоздаёт сессию один раз по этому сообщению и повторяет исходный вызов. Сетевые/транспортные ошибки (`RPC_INTERNAL`, unavailable) пересозданием не маскируются — исходная ошибка возвращается как есть.
 - Анти-цикл: не более одного пересоздания на команду.
 
 ### Точки вызова
@@ -31,6 +31,10 @@
 ### `:switch`: персист active_image_id
 
 После успешного `image_nodes_list` в `:switch` — `state::write_state(&client.state)` с обновлённым `active_image_id` (CLI в этом CWD видит активный образ). Ошибка записи — warn в status_msg, команда остаётся успешной (переключение уже применено; принцип «no partial states» не нарушен — это кэш-файл, не данные образа).
+
+### Аддендум живого гейта (2026-10-01): персист active на open/upload/reopen/close
+
+Находка владельца: TUI-only поток (два `:open`) оставлял state без `active_image_id` → CLI `NO_ACTIVE_IMAGE`, рестарт TUI терял активный образ. Причина — паритет-разрыв: CLI `image open`/`upload`/`switch`/`close`-активного персистят active (commands/image.rs), а TUI персистил только при создании сессии и `:switch`. Решение: `:open`/`:upload`/`reopen` персистят `active_image_id` сразу после установки (best-effort warn, как `:switch`); `:close` закрывающего активный образ — персистит очистку. Статус-бар показывает полный uuid (конвенция R1) вместо 8-символьного обрубка.
 
 ### Тесты
 
@@ -86,7 +90,7 @@ message HiiGetValueResponse {
 }
 ```
 
-Записи нет → все поля None (не ошибка). Порядок ошибок: InvalidItemId → NotFound (чек-лист AGENTS.md).
+Стора вообще нет → все поля None (не ошибка). Доступный стор есть, но записи с именем+размером варстора нет → `ValueOpUnsupported` (диагностический паритет с set_value — уточнение финального ревью, аддендум 2026-09-30). Порядок ошибок: InvalidItemId → NotFound (чек-лист AGENTS.md).
 
 ### C3. Engine-хендлер
 
@@ -122,4 +126,12 @@ Gateway — без кода: generic bridge `POST /api/v1/rpc/HiiGetValue` по�
 
 ## Вердикт
 
-TBD после живого гейта владельца.
+Живой гейт владельца (2026-10-01, три раунда): **ПРОШЁЛ**.
+
+- §1 ленивая сессия: `:open` без `uefi-cli session init` ✓; персист active на open/upload/close/switch/reopen ✓ (аддендум после находки раунда №1 — CLI `NO_ACTIVE_IMAGE`/потеря active при рестарте, закрыто `8bafe0a`); ошибочный путь не пишет active ✓; revive протухшей сессии (`session destroy` + восстановленный stale state) — TUI молча пересоздаёт, образ открывается под новой сессией (новый uuid), state перезаписан ✓.
+- §2 скролл нижней зоны: J/K ✓; индикатор `[1..17/19]` ✓; PgUp/PgDn листают вопросы, сброс низа покрыт тестом (пост-ревью фикс `54060b8`) ✓.
+- §3 read-back: `Current` обновляется после `:hii set-value` ✓; смена значения через CLI отражается в TUI ✓; WebUI current-строка — после пересборки webui+gateway из ветки ✓ (`HiiGetValue` в descriptor-pool бинарника gateway — старый бинарник тихо 404-ит). `hii question value` отдельно владельцем не прогонялся — покрыт CLI-интеграционными тестами (`hii_question_value_flow`, все три формата).
+- Раунд №1, «странный uuid» активного: легитимный id образа «450x - копия» из более ранней загрузки (образы живут в sqlite по сессии; до фикса паритета `:switch` по старой строке реестра писал его в state) — не порча, после фикса не воспроизводится.
+- Остаточные ограничения — TODO.md: пути с пробелами в TUI-командах (limitation), индикатор `[1..0/N]` на вырожденной высоте, qid-gate кэшей и пр.
+
+Ветка `feat/tui-live` (PR #34), 30 коммитов. Гейты: `cargo test --all` 1144/0, clippy `--all --all-targets` clean, fmt clean, webui check 0/0 + vitest 126/126.

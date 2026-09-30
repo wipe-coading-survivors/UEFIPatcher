@@ -334,6 +334,7 @@ async fn handle_normal_forms(app: &mut App, ev: &AppEvent, client: &mut Option<c
             app.forms_question_cursor_down();
             if let Some(c) = client.as_mut() {
                 let _ = commands::refresh_question_info_if_needed(app, c).await;
+                let _ = commands::refresh_current_value_if_needed(app, c).await;
             }
         }
         AppEvent::Key('k') | AppEvent::Up
@@ -344,6 +345,7 @@ async fn handle_normal_forms(app: &mut App, ev: &AppEvent, client: &mut Option<c
             app.forms_question_cursor_up();
             if let Some(c) = client.as_mut() {
                 let _ = commands::refresh_question_info_if_needed(app, c).await;
+                let _ = commands::refresh_current_value_if_needed(app, c).await;
             }
         }
         AppEvent::PageDown
@@ -374,6 +376,7 @@ async fn handle_normal_forms(app: &mut App, ev: &AppEvent, client: &mut Option<c
             app.forms_question_page_down();
             if let Some(c) = client.as_mut() {
                 let _ = commands::refresh_question_info_if_needed(app, c).await;
+                let _ = commands::refresh_current_value_if_needed(app, c).await;
             }
         }
         AppEvent::PageUp
@@ -384,7 +387,14 @@ async fn handle_normal_forms(app: &mut App, ev: &AppEvent, client: &mut Option<c
             app.forms_question_page_up();
             if let Some(c) = client.as_mut() {
                 let _ = commands::refresh_question_info_if_needed(app, c).await;
+                let _ = commands::refresh_current_value_if_needed(app, c).await;
             }
+        }
+        AppEvent::Key('J') if !app.forms.show_strings && !app.forms.show_varstores => {
+            app.forms_bottom_down();
+        }
+        AppEvent::Key('K') if !app.forms.show_strings && !app.forms.show_varstores => {
+            app.forms_bottom_up();
         }
         AppEvent::Enter
             if app.forms.focus == FormsFocus::Details
