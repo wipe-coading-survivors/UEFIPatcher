@@ -65,6 +65,10 @@ impl SessionManager {
         }
     }
 
+    pub fn session_exists(&self, id: &str) -> bool {
+        matches!(self.db.lock().unwrap().get_session(id), Ok(Some(_)))
+    }
+
     pub fn spawn_gc(self: Arc<Self>) -> tokio::task::JoinHandle<()> {
         let interval = self.gc_interval;
         let ttl_secs = self.ttl.as_secs() as i64;

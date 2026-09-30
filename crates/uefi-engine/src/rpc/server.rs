@@ -249,6 +249,9 @@ impl EngineServer {
         name: &str,
         path: &str,
     ) -> RpcResult<ImageOpenResponse> {
+        if !self.sm.session_exists(session_id) {
+            return Err(Status::not_found("session not found"));
+        }
         let image_id = Uuid::new_v4().to_string();
         let img = parse_image(&bytes, mode, &image_id, session_id)
             .map_err(|e| Status::internal(e.to_string()))?;
@@ -729,6 +732,9 @@ impl EngineService for EngineServer {
         req: Request<ArtifactImportRequest>,
     ) -> RpcResult<ArtifactImportResponse> {
         let r = req.into_inner();
+        if !self.sm.session_exists(&r.session_id) {
+            return Err(Status::not_found("session not found"));
+        }
         let bytes = fs::read(&r.path).map_err(|e| Status::not_found(e.to_string()))?;
         let artifact_id = Uuid::new_v4().to_string();
         let path = crate::storage::artifact::store_artifact_file(
@@ -1864,6 +1870,36 @@ mod tests {
         let st = formset_add_status(formset_add_image(formset_add_cert_blocked_pe(), None)).await;
         assert_eq!(st.code(), tonic::Code::FailedPrecondition);
         assert!(st.message().contains("grow"));
+    }
+
+    #[tokio::test]
+    async fn image_open_unknown_session_maps_to_not_found() {
+        let td = TempDir::new().unwrap();
+        let db = crate::storage::open_db(&td.path().join("db.sqlite")).unwrap();
+        let sm = Arc::new(SessionManager::new(
+            db,
+            td.path().to_path_buf(),
+            Duration::from_secs(864000),
+            Duration::from_secs(3600),
+            false,
+        ));
+        let server = EngineServer {
+            sm,
+            images: Arc::new(Mutex::new(HashMap::new())),
+            data_dir: td.path().to_path_buf(),
+        };
+        let st = server
+            .open_from_bytes(
+                "no-such-session",
+                b"blob".to_vec(),
+                ImageMode::Read,
+                "n",
+                "p",
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(st.code(), tonic::Code::NotFound);
+        assert!(st.message().contains("session not found"));
     }
 
     const FORM_ADD_STR_GUID: &str = "5C60F367-A505-419A-859E-2A4FF6CA6FE5";
