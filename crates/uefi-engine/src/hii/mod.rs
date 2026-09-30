@@ -772,6 +772,74 @@ pub fn question_info(image: &Image, item_id: &str) -> Result<uefi_proto::Questio
     Ok(question_info_proto(image, form_id, &map, &texts))
 }
 
+pub struct GetValueOutcome {
+    pub value: Option<u64>,
+    pub option: Option<String>,
+    pub store_path: Option<String>,
+    pub var_offset: u32,
+    pub width: u32,
+}
+
+/// Точечный read-back текущего значения вопроса (спека tui-live §3 C3):
+/// доступные StdDefaults-копии (тот же селектор, что у set_value), первый
+/// хит; стора/записи нет → value/option/store_path None — это не ошибка.
+/// Read-only, любой ImageMode; живой NVRAM платформы — out-of-scope.
+pub fn get_value(image: &Image, item_id: &str) -> Result<GetValueOutcome, HiiError> {
+    let (target, form_id, question_id) = parse_item_id(item_id)?;
+    let Some(question_id) = question_id else {
+        return Err(HiiError::NotFound);
+    };
+    let (map, texts) = find_question_map(image, &target, form_id, question_id)?;
+    let outcome =
+        |value: Option<u64>, option: Option<String>, store_path: Option<String>| GetValueOutcome {
+            value,
+            option,
+            store_path,
+            var_offset: u32::from(map.var_offset),
+            width: u32::from(map.width),
+        };
+    let Some(varstore) = map.varstore.as_ref() else {
+        return Ok(outcome(None, None, None));
+    };
+    let (off, w) = (map.var_offset as usize, map.width as usize);
+    if varstore.name.is_empty() || w == 0 || w > 8 || off + w > varstore.size as usize {
+        return Ok(outcome(None, None, None));
+    }
+    let mut scan = StdDefaultsScan {
+        path: Vec::new(),
+        hits: Vec::new(),
+        skipped_behind_barrier: false,
+    };
+    collect_std_defaults_hits(
+        &image.root,
+        false,
+        None,
+        &varstore.name,
+        varstore.size as usize,
+        &mut scan,
+    )?;
+    let Some(hit) = scan.hits.first() else {
+        return Ok(outcome(None, None, None));
+    };
+    let node = node_at(&image.root, &hit.path);
+    let abs = hit.body_offset + off;
+    let Some(b) = node.body.get(abs..abs + w) else {
+        return Ok(outcome(None, None, None));
+    };
+    let mut le = [0u8; 8];
+    le[..w].copy_from_slice(b);
+    let v = u64::from_le_bytes(le);
+    let option = seed_option_of(map.kind, Some(v), &map.options, &texts);
+    let store_path = Some(
+        hit.path
+            .iter()
+            .map(|i| i.to_string())
+            .collect::<Vec<_>>()
+            .join("/"),
+    );
+    Ok(outcome(Some(v), option, store_path))
+}
+
 /// Карта varstore-деклараций формсета (спека varstore-contract §3):
 /// item_id — грамматика `hii form add` (`<target>` или `<target>#<n>`;
 /// карта не зависит от formset-ординала — это пакет формсета).
@@ -3574,6 +3642,47 @@ mod tests {
         assert!(matches!(
             set_value(&mut w, MALFORMED_ITEM, 1),
             Err(HiiError::InvalidItemId(_))
+        ));
+    }
+
+    #[test]
+    fn get_value_reads_accessible_store_and_reports_source() {
+        let image = image_with_nvar_stores();
+        let v = get_value(&image, VENDOR_QUESTION_ITEM).unwrap();
+        let q = question_info(&image, VENDOR_QUESTION_ITEM).unwrap();
+        assert_eq!(
+            v.value, q.seed_value,
+            "read-back == seed (паритет источника)"
+        );
+        assert!(v.store_path.is_some(), "источник сообщается");
+        assert_eq!(v.var_offset, u32::from(q.var_offset));
+        assert_eq!(v.width, u32::from(q.width));
+    }
+
+    #[test]
+    fn get_value_without_store_returns_none_fields() {
+        let image = vendor_image_with(0x19, value_forms_pkg());
+        let v = get_value(&image, VENDOR_QUESTION_ITEM).unwrap();
+        assert_eq!(v.value, None, "записи нет — не ошибка");
+        assert_eq!(v.store_path, None);
+        assert_eq!(v.var_offset, 0x3A, "офсет/ширина известны из карты вопроса");
+        assert_eq!(v.width, 1);
+    }
+
+    #[test]
+    fn get_value_error_order_contract() {
+        let image = read_mode_image();
+        assert!(matches!(
+            get_value(&image, MALFORMED_ITEM),
+            Err(HiiError::InvalidItemId(_))
+        ));
+        assert!(matches!(
+            get_value(&image, UNKNOWN_TARGET_ITEM),
+            Err(HiiError::NotFound)
+        ));
+        assert!(matches!(
+            get_value(&image, VENDOR_FORM_ITEM),
+            Err(HiiError::NotFound)
         ));
     }
 

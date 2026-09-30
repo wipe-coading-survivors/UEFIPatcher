@@ -542,6 +542,20 @@ impl EngineService for MockEngine {
             }),
         }))
     }
+    async fn hii_get_value(
+        &self,
+        req: Request<HiiGetValueRequest>,
+    ) -> Result<Response<HiiGetValueResponse>, Status> {
+        let r = req.into_inner();
+        let none = r.item_id.contains("novalue");
+        Ok(Response::new(HiiGetValueResponse {
+            value: (!none).then_some(1),
+            option: (!none).then(|| "Enabled".into()),
+            store_path: (!none).then(|| "0/0/0".into()),
+            var_offset: (!none).then_some(0x5F),
+            width: (!none).then_some(1),
+        }))
+    }
     async fn hii_set_value(
         &self,
         _req: Request<HiiSetValueRequest>,

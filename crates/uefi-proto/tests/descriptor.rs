@@ -8,7 +8,8 @@ fn pool_contains_all_service_methods() {
     assert!(names.contains(&"NvarSet".to_string()));
     assert!(names.contains(&"ImageSnapshotRestore".to_string()));
     assert!(names.contains(&"ImageUpload".to_string()));
-    assert_eq!(names.len(), 40);
+    assert!(names.contains(&"HiiGetValue".to_string()));
+    assert_eq!(names.len(), 41);
 }
 
 #[test]

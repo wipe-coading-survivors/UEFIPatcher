@@ -1159,6 +1159,26 @@ impl EngineService for EngineServer {
         }))
     }
 
+    #[tracing::instrument(skip(self, req), err)]
+    async fn hii_get_value(
+        &self,
+        req: Request<HiiGetValueRequest>,
+    ) -> RpcResult<HiiGetValueResponse> {
+        let r = req.into_inner();
+        let img = self.get_or_load_image(&r.image_id).await?;
+        let v = crate::hii::get_value(&img, &r.item_id)
+            .map_err(|e| hii_error_status_ctx(e, &r.item_id))?;
+        let _ = self.sm.touch(&img.session_id);
+        tracing::info!(image_id = %r.image_id, item_id = %r.item_id, "hii get value");
+        Ok(Response::new(HiiGetValueResponse {
+            value: v.value,
+            option: v.option,
+            store_path: v.store_path,
+            var_offset: Some(v.var_offset),
+            width: Some(v.width),
+        }))
+    }
+
     /// Apply-фаза атомарна: при Err дерево байт-идентично состоянию до
     /// вызова (snapshot-rollback; спека hii-write-guard §3 B3).
     #[tracing::instrument(skip(self, req), err)]
