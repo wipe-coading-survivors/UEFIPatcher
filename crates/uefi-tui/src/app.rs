@@ -79,6 +79,8 @@ pub struct FormsData {
     pub question_cursor: usize,
     pub question_info: Option<QuestionInfo>,
     pub question_info_key: Option<(crate::forms::FormKey, u32)>,
+    pub current_value: Option<uefi_proto::HiiGetValueResponse>,
+    pub current_value_key: Option<(crate::forms::FormKey, u32)>,
     pub questions_viewport: usize,
     pub list_viewport: usize,
     pub show_strings: bool,

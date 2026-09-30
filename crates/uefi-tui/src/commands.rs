@@ -1120,6 +1120,7 @@ pub async fn execute_command(
                     {
                         app.forms.question_cursor = pos;
                         let _ = refresh_question_info_if_needed(app, client).await;
+                        let _ = refresh_current_value_if_needed(app, client).await;
                     }
                     let flips = if r.applied_flips.is_empty() {
                         "none".to_string()
@@ -2506,6 +2507,8 @@ pub async fn refresh_forms(app: &mut App, client: &mut Client) -> Result<(), Str
     app.forms.questions.clear();
     app.forms.questions_key = None;
     app.forms.bottom_cursor = 0;
+    app.forms.current_value = None;
+    app.forms.current_value_key = None;
     app.forms.strings.clear();
     app.forms.strings_filter.clear();
     app.forms.strings_cursor = 0;
@@ -2559,6 +2562,8 @@ pub async fn reload_forms(app: &mut App, client: &mut Client) -> Result<(), Stri
     app.forms.question_cursor = 0;
     app.forms.question_info = None;
     app.forms.question_info_key = None;
+    app.forms.current_value = None;
+    app.forms.current_value_key = None;
     app.forms.bottom_cursor = 0;
     app.forms.varstores_target = None;
     match sel {
@@ -2713,6 +2718,43 @@ pub async fn refresh_question_info_if_needed(
         .into_inner();
     app.forms.question_info = resp.question;
     app.forms.question_info_key = Some((key, qid));
+    Ok(())
+}
+
+/// Точечный read-back текущего значения выбранного вопроса (спека
+/// tui-live §3 C5): лениво, кэш на один вопрос — как question_info.
+pub async fn refresh_current_value_if_needed(
+    app: &mut App,
+    client: &mut Client,
+) -> Result<(), String> {
+    let Some(key) = app.selected_form_key() else {
+        return Ok(());
+    };
+    let Some(qid) = app.selected_question_id() else {
+        app.forms.current_value = None;
+        app.forms.current_value_key = None;
+        return Ok(());
+    };
+    if app.forms.current_value_key.as_ref() == Some(&(key.clone(), qid)) {
+        return Ok(());
+    }
+    let image_id = app
+        .active_image_id
+        .clone()
+        .or_else(|| client.state.active_image_id.clone())
+        .ok_or("no active image")?;
+    let item_id = format!("{}#{}:{:#x}", key.target, key.form_id_ifr, qid);
+    let resp = client
+        .inner
+        .hii_get_value(auth_req(
+            &client.state,
+            HiiGetValueRequest { image_id, item_id },
+        ))
+        .await
+        .map_err(|e| e.message().to_string())?
+        .into_inner();
+    app.forms.current_value = Some(resp);
+    app.forms.current_value_key = Some((key, qid));
     Ok(())
 }
 

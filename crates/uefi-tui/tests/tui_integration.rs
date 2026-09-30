@@ -334,6 +334,21 @@ async fn forms_details_question_info_gates_and_prefill() {
         uefi_tui::commands::set_value_prefill(&app).unwrap(),
         "hii set-value 11111111-2222-3333-4444-555555555555:0x19:0#10001:0x211 "
     );
+
+    uefi_tui::commands::refresh_current_value_if_needed(&mut app, &mut client)
+        .await
+        .unwrap();
+    let cv = app.forms.current_value.as_ref().unwrap();
+    assert_eq!(cv.value, Some(1));
+    assert_eq!(cv.option.as_deref(), Some("Enabled"));
+    assert_eq!(cv.store_path.as_deref(), Some("0/0/0"));
+    assert!(
+        app.forms
+            .current_value_key
+            .as_ref()
+            .is_some_and(|(_, qid)| *qid != 0 || true),
+        "ключ кэша установлен"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
