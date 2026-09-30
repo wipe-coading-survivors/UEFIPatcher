@@ -19,7 +19,7 @@
 Новый хелпер `ensure_session(client) -> Result<(), String>` в `crates/uefi-tui/src/commands.rs`:
 
 - `client.state.session_id == None` → `SessionCreate(name="")` → заполнить `client.state.{session_id, token}` → `state::write_state` (atomic, uefi-common). Персист state-файла — только в этот момент; существующий state с живой сессией не перезаписывается.
-- `session_id` есть, но RPC упал с tonic `NOT_FOUND` (сессия умерла: TTL/GC) → пересоздать один раз, повторить исходный вызов. Сетевые/транспортные ошибки (`RPC_INTERNAL`, unavailable) пересозданием не маскируются — исходная ошибка возвращается как есть.
+- `session_id` есть, но сессия мертва (TTL/GC/destroy) → движок теперь явно валидирует сессию в `open_from_bytes`/`artifact_import` и возвращает `NOT_FOUND "session not found"` (выяснено при планировании: раньше FK-ошибка sqlite приходила как opaque `internal`) → TUI пересоздаёт сессию один раз по этому сообщению и повторяет исходный вызов. Сетевые/транспортные ошибки (`RPC_INTERNAL`, unavailable) пересозданием не маскируются — исходная ошибка возвращается как есть.
 - Анти-цикл: не более одного пересоздания на команду.
 
 ### Точки вызова
