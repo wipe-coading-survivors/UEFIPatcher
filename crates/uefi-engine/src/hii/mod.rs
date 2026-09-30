@@ -625,9 +625,18 @@ fn question_kind_str(kind: values::QuestionKind) -> &'static str {
 }
 
 /// Seed-значение вопроса: байты той же StdDefaults-записи, которую адресует
-/// set_value (find_varstore_record по имя+размер варстора). Read-only,
-/// первый стор с записью; стора нет → None — это не ошибка. Спека nvar-op §4.
-fn seed_lookup(node: &FfsNode, name: &str, size: u16, off: usize, w: usize) -> Option<u64> {
+/// set_value (find_varstore_record по имя+размер варстора). Read-only;
+/// за-барьерные (non-recompressable) копии пропускаются — чтение видит
+/// только записуемое (паритет с collect_std_defaults_hits, спека
+/// tui-live §3 C1); стора нет → None — это не ошибка. Спека nvar-op §4.
+fn seed_lookup(
+    node: &FfsNode,
+    barrier: bool,
+    name: &str,
+    size: u16,
+    off: usize,
+    w: usize,
+) -> Option<u64> {
     if name.is_empty() || w == 0 || w > 8 || off + w > size as usize {
         return None;
     }
@@ -635,14 +644,18 @@ fn seed_lookup(node: &FfsNode, name: &str, size: u16, off: usize, w: usize) -> O
         && node.children.is_empty()
         && nvar::is_std_defaults(&node.body)
     {
+        if barrier {
+            return None;
+        }
         let (_, data) = nvar::find_varstore_record(&node.body, name, size as usize)?;
         let b = data.get(off..off + w)?;
         let mut le = [0u8; 8];
         le[..w].copy_from_slice(b);
         return Some(u64::from_le_bytes(le));
     }
+    let child_barrier = barrier || crate::nvar::section_blocks_mutation(node);
     for child in &node.children {
-        if let Some(v) = seed_lookup(child, name, size, off, w) {
+        if let Some(v) = seed_lookup(child, child_barrier, name, size, off, w) {
             return Some(v);
         }
     }
@@ -682,6 +695,7 @@ fn question_info_proto(
     let seed = map.varstore.as_ref().and_then(|vs| {
         seed_lookup(
             &image.root,
+            false,
             &vs.name,
             vs.size,
             map.var_offset as usize,
@@ -919,6 +933,7 @@ pub fn list_questions(
                     m.varstore.as_ref().and_then(|vs| {
                         seed_lookup(
                             &image.root,
+                            false,
                             &vs.name,
                             vs.size,
                             m.var_offset as usize,
@@ -4595,17 +4610,52 @@ mod tests {
     #[test]
     fn seed_lookup_reads_varstore_record_bytes() {
         let img = image_with_std_defaults(store_with_var_data(0x01));
-        assert_eq!(seed_lookup(&img.root, "Setup", 114, 1, 1), Some(1));
+        assert_eq!(seed_lookup(&img.root, false, "Setup", 114, 1, 1), Some(1));
         assert_eq!(
-            seed_lookup(&img.root, "Setup", 114, 113, 2),
+            seed_lookup(&img.root, false, "Setup", 114, 113, 2),
             None,
             "off+w > size"
         );
-        assert_eq!(seed_lookup(&img.root, "Wrong", 114, 1, 1), None);
+        assert_eq!(seed_lookup(&img.root, false, "Wrong", 114, 1, 1), None);
         assert_eq!(
-            seed_lookup(&image_with_std_defaults(vec![]).root, "Setup", 114, 1, 1),
+            seed_lookup(
+                &image_with_std_defaults(vec![]).root,
+                false,
+                "Setup",
+                114,
+                1,
+                1
+            ),
             None,
             "стора в образе нет — None, не ошибка"
+        );
+    }
+
+    #[test]
+    fn seed_lookup_skips_store_behind_non_recompressable() {
+        let mut raw_store = mk_node(FfsType::File, store_with_var_data(0x01), vec![]);
+        raw_store.subtype = 0x01;
+        let mut guided = mk_node(FfsType::Section, vec![], vec![raw_store]);
+        guided.subtype = EFI_SECTION_GUID_DEFINED;
+        guided.parsing_data = ParsingData::GuidedSection(crate::types::GuidedSectionParsingData {
+            guid: crate::ffs::crc32_guid(),
+            dictionary_size: 0,
+        });
+        let mut plain = mk_node(FfsType::File, store_with_var_data(0x02), vec![]);
+        plain.subtype = 0x01;
+        let volume = mk_node(FfsType::Volume, vec![], vec![guided.clone(), plain]);
+        let root = mk_node(FfsType::Image, vec![], vec![volume]);
+        assert_eq!(
+            seed_lookup(&root, false, "Setup", 114, 1, 1),
+            Some(2),
+            "за-барьерная копия пропущена, доступная прочитана"
+        );
+        let volume = mk_node(FfsType::Volume, vec![], vec![guided]);
+        let root = mk_node(FfsType::Image, vec![], vec![volume]);
+        assert_eq!(
+            seed_lookup(&root, false, "Setup", 114, 1, 1),
+            None,
+            "только запечённые копии → None — паритет с set_value"
         );
     }
 
