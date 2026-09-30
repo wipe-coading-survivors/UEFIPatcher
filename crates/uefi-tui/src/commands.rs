@@ -1210,14 +1210,7 @@ pub async fn execute_command(
                     if parts.get(2).copied() != Some("add") {
                         return Err("usage: :hii formset add FILE [--ffs GUID]".into());
                     }
-                    let file = parts
-                        .get(3)
-                        .ok_or("usage: :hii formset add FILE [--ffs GUID]")?;
-                    let ffs = parts
-                        .iter()
-                        .position(|p| *p == "--ffs")
-                        .and_then(|i| parts.get(i + 1).copied())
-                        .unwrap_or_default();
+                    let (file, ffs) = parse_formset_add_args(&parts[3..])?;
                     let schema_json = read_schema(file)?;
                     let r = client
                         .inner
@@ -1226,7 +1219,7 @@ pub async fn execute_command(
                             HiiFormSetAddRequest {
                                 image_id: iid,
                                 schema_json,
-                                target_ffs_guid: ffs.to_string(),
+                                target_ffs_guid: ffs.unwrap_or("").to_string(),
                             },
                         ))
                         .await
@@ -1670,6 +1663,56 @@ fn unique_form_targets(app: &App) -> Vec<String> {
         .collect()
 }
 
+/// Контракт `:hii formset add FILE [--ffs GUID]`: FILE — первый токен после
+/// `add`, не являющийся флагом или значением `--ffs` (порядок FILE/`--ffs`
+/// любой); dangling `--ffs`, неизвестный флаг, лишний позиционный токен или
+/// отсутствие FILE — usage-ошибка.
+fn parse_formset_add_args<'a>(tokens: &[&'a str]) -> Result<(&'a str, Option<&'a str>), String> {
+    const USAGE: &str = "usage: :hii formset add FILE [--ffs GUID]";
+    let mut file: Option<&str> = None;
+    let mut ffs: Option<&str> = None;
+    let mut i = 0;
+    while i < tokens.len() {
+        let t = tokens[i];
+        if t == "--ffs" {
+            let Some(v) = tokens.get(i + 1) else {
+                return Err(USAGE.into());
+            };
+            ffs = Some(v);
+            i += 2;
+        } else if t.starts_with("--") {
+            return Err(format!("unknown flag {t}: {USAGE}"));
+        } else if file.is_none() {
+            file = Some(t);
+            i += 1;
+        } else {
+            return Err(USAGE.into());
+        }
+    }
+    file.map(|f| (f, ffs)).ok_or_else(|| USAGE.to_string())
+}
+
+/// Состояние набранного префикса `formset add` для completion:
+/// (FILE уже набран, `--ffs` уже набран). Мусорные/лишние токены не ломают
+/// проход — completion классифицирует позицию, не валидирует.
+fn formset_add_typed_state(tokens: &[&str]) -> (bool, bool) {
+    let mut file = false;
+    let mut ffs = false;
+    let mut i = 0;
+    while i < tokens.len() {
+        if tokens[i] == "--ffs" {
+            ffs = true;
+            i += 2;
+        } else if tokens[i].starts_with("--") {
+            i += 1;
+        } else {
+            file = true;
+            i += 1;
+        }
+    }
+    (file, ffs)
+}
+
 fn unique_formset_guids(app: &App) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
     app.forms
@@ -1826,7 +1869,14 @@ fn context_candidates(app: &App, cmd: &str, head: &[&str], token: &str) -> Vec<S
             "extract" => &["--body-only"],
             "reopen" => &["--mode"],
             "open" | "o" => &["--mode"],
-            "hii" if head.len() == 4 && head[1] == "formset" && head[2] == "add" => &["--ffs"],
+            "hii"
+                if head.len() >= 3
+                    && head[1] == "formset"
+                    && head[2] == "add"
+                    && formset_add_typed_state(&head[3..]) == (true, false) =>
+            {
+                &["--ffs"]
+            }
             "hii" if head.len() == 4 && head[1] == "form" && head[2] == "export" => &["--out"],
             "hii" if head.len() == 3 && head[1] == "import" => &["--file"],
             "nvar" if head.len() == 2 && head[1] == "list" => &["--var"],
@@ -1889,7 +1939,14 @@ fn context_candidates(app: &App, cmd: &str, head: &[&str], token: &str) -> Vec<S
             if head.get(2) != Some(&"add") {
                 return vec![];
             }
-            let file_pos = if noun == "formset" { 3 } else { 4 };
+            if noun == "formset" {
+                let (file_given, _) = formset_add_typed_state(&head[3..]);
+                if !file_given {
+                    return complete_path(token);
+                }
+                return vec![];
+            }
+            let file_pos = 4;
             if head.len() == file_pos {
                 return complete_path(token);
             }
@@ -3397,6 +3454,79 @@ mod tests {
         assert_eq!(c.common.as_deref(), None);
         let c = complete(&app, "hii form add x --f");
         assert_ne!(c.common.as_deref(), Some("hii form add x --ffs"));
+    }
+
+    #[test]
+    fn complete_hii_formset_add_file_position_after_ffs_is_paths() {
+        let td = tempfile::TempDir::new().unwrap();
+        std::fs::write(td.path().join("schema-x.json"), "{}").unwrap();
+        let base = td.path().display().to_string();
+        let mut app = crate::app::App::new();
+        app.forms.forms = vec![uefi_proto::FormInfo {
+            form_id: "t:0x19:0".into(),
+            formset_guid: "SET-A".into(),
+            form_id_ifr: 10001,
+            title: "Main".into(),
+            visible: true,
+        }];
+        let c = complete(
+            &app,
+            &format!("hii formset add --ffs SET-A {base}/schema-x"),
+        );
+        assert_eq!(
+            c.common.as_deref(),
+            Some(format!("hii formset add --ffs SET-A {base}/schema-x.json ").as_str()),
+            "флаг-первый порядок: позиция файла — пути, не formset-гайды"
+        );
+    }
+
+    #[test]
+    fn complete_formset_add_no_duplicate_ffs_hint() {
+        let mut app = crate::app::App::new();
+        app.forms.forms = vec![uefi_proto::FormInfo {
+            form_id: "t:0x19:0".into(),
+            formset_guid: "SET-A".into(),
+            form_id_ifr: 10001,
+            title: "Main".into(),
+            visible: true,
+        }];
+        let c = complete(&app, "hii formset add --ffs SET-A f.json --f");
+        assert_eq!(
+            c.common.as_deref(),
+            None,
+            "--ffs уже набран — повторно не предлагаем"
+        );
+    }
+
+    #[test]
+    fn parse_formset_add_args_accepts_any_flag_order() {
+        assert_eq!(
+            parse_formset_add_args(&["np.json", "--ffs", "G"]),
+            Ok(("np.json", Some("G")))
+        );
+        assert_eq!(
+            parse_formset_add_args(&["--ffs", "G", "np.json"]),
+            Ok(("np.json", Some("G")))
+        );
+        assert_eq!(parse_formset_add_args(&["np.json"]), Ok(("np.json", None)));
+    }
+
+    #[test]
+    fn parse_formset_add_args_rejects_bad_arity() {
+        const USAGE: &str = "usage: :hii formset add FILE [--ffs GUID]";
+        assert_eq!(parse_formset_add_args(&[]), Err(USAGE.to_string()));
+        assert_eq!(
+            parse_formset_add_args(&["np.json", "--ffs"]),
+            Err(USAGE.to_string())
+        );
+        assert_eq!(
+            parse_formset_add_args(&["a.json", "b.json"]),
+            Err(USAGE.to_string())
+        );
+        assert_eq!(
+            parse_formset_add_args(&["np.json", "--bogus", "x"]),
+            Err(format!("unknown flag --bogus: {USAGE}"))
+        );
     }
 
     #[cfg(unix)]

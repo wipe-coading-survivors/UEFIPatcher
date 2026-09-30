@@ -3704,7 +3704,7 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
 > (recorder-lock в hijack-интеграционном тесте) закрыт fix-коммитом
 > ветки; ниже — отложенные миноры.
 
-* [ ] **uefi-tui: `--ffs` в `:hii formset add` — жёсткий порядок и молчаливые отказы**
+* [x] **uefi-tui: `--ffs` в `:hii formset add` — жёсткий порядок и молчаливые отказы**
   — грамматика `FILE [--ffs GUID]` строго позиционная: файл = parts[3]
   без оглядки на флаги. (1) `--ffs` ПЕРЕД файлом (`hii formset add --ffs
   /путь/np.json`) → файлом считается сам `--ffs` → read_schema даёт
@@ -3720,6 +3720,7 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   Воспроизведено владельцем на живом образе (2026-09-12). Контекст:
   `crates/uefi-tui/src/commands.rs` (`:hii`-ветка `"formset"`;
   complete-ветка `head.last() == "--ffs"`).
+  Закрыто фикс-пакетом tui-fixes (2026-10-01): parse_formset_add_args — FILE первый нефлаговый токен (любой порядок), dangling --ffs → usage-ошибка, completion в позиции файла — пути.
 * [ ] **CLI↔TUI: грамматика hijack расходится** — CLI:
   `hii form hijack --target X --file Y --setupdata-guid Z` (long-flags),
   TUI: `:hii hijack TARGET FILE [GUID]` (позиционные). Не баг, но сюрприз
