@@ -28,6 +28,20 @@ async fn session_bootstrap_lazy_create_switch_persist_and_revive() {
     let sid = client.state.session_id.clone().unwrap();
     assert_eq!(saved.session_id.as_deref(), Some(sid.as_str()));
     assert!(saved.token.is_some(), "токен персистится");
+    assert_eq!(
+        saved.active_image_id, client.state.active_image_id,
+        ":open персистит active_image_id (аддендум живого гейта)"
+    );
+
+    uefi_tui::commands::execute_command(&mut app, "upload /dev/null", &mut client)
+        .await
+        .unwrap();
+    let saved = uefi_common::state::read_state().unwrap();
+    assert_eq!(
+        saved.active_image_id.as_deref(),
+        Some("mock-upload"),
+        ":upload персистит active_image_id"
+    );
 
     uefi_tui::commands::execute_command(&mut app, "switch mock-img-1", &mut client)
         .await
@@ -37,6 +51,15 @@ async fn session_bootstrap_lazy_create_switch_persist_and_revive() {
         saved.active_image_id.as_deref(),
         Some("mock-img-1"),
         ":switch персистит active_image_id"
+    );
+
+    uefi_tui::commands::execute_command(&mut app, "close", &mut client)
+        .await
+        .unwrap();
+    let saved = uefi_common::state::read_state().unwrap();
+    assert_eq!(
+        saved.active_image_id, None,
+        ":close активного персистит очистку"
     );
 
     enforce.store(true, Ordering::SeqCst);
@@ -53,5 +76,9 @@ async fn session_bootstrap_lazy_create_switch_persist_and_revive() {
     assert_eq!(
         saved.session_id, client.state.session_id,
         "state-файл перезаписан оживлённой сессией"
+    );
+    assert_eq!(
+        saved.active_image_id, client.state.active_image_id,
+        "revive-:open тоже персистит active"
     );
 }

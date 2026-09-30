@@ -55,6 +55,16 @@ fn session_gone(err: &str) -> bool {
     err.contains("session not found")
 }
 
+/// Персист state best-effort (аддендум живого гейта 2026-10-01, спека
+/// tui-live §1): open/upload/reopen/switch/close-активного фиксируют
+/// active_image_id для CLI; ошибка записи — warn, команда остаётся
+/// успешной.
+fn persist_state_best_effort(app: &mut App, client: &Client) {
+    if let Err(e) = uefi_common::state::write_state(&client.state) {
+        app.status_msg = format!("warning: state not saved: {e}");
+    }
+}
+
 pub async fn connect(cli_sock: Option<&str>, state: State) -> Result<Client, String> {
     let sock = resolve_sock(cli_sock, &state);
     let sock_str = sock.display().to_string();
@@ -696,6 +706,7 @@ pub async fn execute_command(
             app.cursor = 0;
             app.active_image_id = Some(r.image_id.clone());
             client.state.active_image_id = Some(r.image_id.clone());
+            persist_state_best_effort(app, client);
             let _ = refresh_registry(app, client).await;
             Ok(r.image_id)
         }
@@ -723,6 +734,7 @@ pub async fn execute_command(
             };
             app.active_image_id = Some(resp.image_id.clone());
             client.state.active_image_id = Some(resp.image_id.clone());
+            persist_state_best_effort(app, client);
             app.image_loaded = true;
             app.cursor = 0;
             refresh_tree(app, client).await?;
@@ -1029,9 +1041,7 @@ pub async fn execute_command(
             client.state.active_image_id = Some(id.clone());
             app.image_loaded = true;
             app.status_msg = format!("switched to {id}");
-            if let Err(e) = uefi_common::state::write_state(&client.state) {
-                app.status_msg = format!("warning: state not saved: {e}");
-            }
+            persist_state_best_effort(app, client);
             let _ = refresh_registry(app, client).await;
             if app.view == View::Forms {
                 refresh_forms(app, client).await?;
@@ -1060,6 +1070,7 @@ pub async fn execute_command(
                 app.cursor = 0;
                 app.image_loaded = false;
                 app.view = View::Image;
+                persist_state_best_effort(app, client);
             }
             app.status_msg = format!("closed {id}");
             let _ = refresh_registry(app, client).await;
@@ -2309,6 +2320,7 @@ pub async fn reopen(
     app.cursor = 0;
     app.active_image_id = Some(r.image_id.clone());
     client.state.active_image_id = Some(r.image_id.clone());
+    persist_state_best_effort(app, client);
     let _ = client
         .inner
         .image_close(auth_req(
