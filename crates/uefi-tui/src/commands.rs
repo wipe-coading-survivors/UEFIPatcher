@@ -2576,6 +2576,8 @@ pub async fn refresh_forms(app: &mut App, client: &mut Client) -> Result<(), Str
     app.forms.questions.clear();
     app.forms.questions_key = None;
     app.forms.bottom_cursor = 0;
+    app.forms.question_info = None;
+    app.forms.question_info_key = None;
     app.forms.current_value = None;
     app.forms.current_value_key = None;
     app.forms.strings.clear();

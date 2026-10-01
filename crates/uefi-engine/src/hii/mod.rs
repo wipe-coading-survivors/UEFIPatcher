@@ -627,8 +627,9 @@ fn question_kind_str(kind: values::QuestionKind) -> &'static str {
 /// Seed-значение вопроса: байты той же StdDefaults-записи, которую адресует
 /// set_value (find_varstore_record по имя+размер варстора). Read-only;
 /// за-барьерные (non-recompressable) копии пропускаются — чтение видит
-/// только записуемое (паритет с collect_std_defaults_hits, спека
-/// tui-live §3 C1); стора нет → None — это не ошибка. Спека nvar-op §4.
+/// только записуемое (единый спуск collect_std_defaults_bodies, спека
+/// tui-live §3 C1 + аддендум §A); копия без записи пропускается, читается
+/// следующая доступная; стора нет → None — это не ошибка. Спека nvar-op §4.
 fn seed_lookup(
     node: &FfsNode,
     barrier: bool,
@@ -640,24 +641,20 @@ fn seed_lookup(
     if name.is_empty() || w == 0 || w > 8 || off + w > size as usize {
         return None;
     }
-    if matches!(node.node_type, FfsType::File | FfsType::Section)
-        && node.children.is_empty()
-        && nvar::is_std_defaults(&node.body)
-    {
-        if barrier {
-            return None;
-        }
-        let (_, data) = nvar::find_varstore_record(&node.body, name, size as usize)?;
-        let b = data.get(off..off + w)?;
+    let mut bodies = Vec::new();
+    let mut path = Vec::new();
+    let mut skipped = false;
+    collect_std_defaults_bodies(node, barrier, None, &mut path, &mut skipped, &mut bodies);
+    for b in bodies {
+        let Some((_, data)) = nvar::find_varstore_record(&b.node.body, name, size as usize) else {
+            continue;
+        };
+        let Some(bytes) = data.get(off..off + w) else {
+            continue;
+        };
         let mut le = [0u8; 8];
-        le[..w].copy_from_slice(b);
+        le[..w].copy_from_slice(bytes);
         return Some(u64::from_le_bytes(le));
-    }
-    let child_barrier = barrier || crate::nvar::section_blocks_mutation(node);
-    for child in &node.children {
-        if let Some(v) = seed_lookup(child, child_barrier, name, size, off, w) {
-            return Some(v);
-        }
     }
     None
 }
@@ -821,7 +818,6 @@ pub fn get_value(image: &Image, item_id: &str) -> Result<GetValueOutcome, HiiErr
         return Ok(outcome(None, None, None));
     }
     let mut scan = StdDefaultsScan {
-        path: Vec::new(),
         hits: Vec::new(),
         skipped_behind_barrier: false,
     };
@@ -1031,11 +1027,69 @@ struct StoreHit {
 /// пропускаются (skipped_behind_barrier) без анализа записей;
 /// MutationBehindCompression — только если доступных копий ноль.
 struct StdDefaultsScan {
-    path: Vec<usize>,
     hits: Vec<StoreHit>,
     skipped_behind_barrier: bool,
 }
 
+/// Доступная (не за-барьерная) StdDefaults-копия из общего спуска.
+struct StdDefaultsBody<'a> {
+    node: &'a FfsNode,
+    file_guid: Option<&'a Guid>,
+    path: Vec<usize>,
+}
+
+/// Единый спуск по StdDefaults-копиям: накопление барьера
+/// non-recompressable секций, детект store-body, DFS-порядок — один
+/// источник истины «доступного стора» для чтения (seed_lookup) и записи
+/// (collect_std_defaults_hits). За-барьерные копии в `bodies` не попадают,
+/// но ставят `skipped_behind_barrier`. Аддендум tui-live §A.
+fn collect_std_defaults_bodies<'a>(
+    node: &'a FfsNode,
+    barrier: bool,
+    file_guid: Option<&'a Guid>,
+    path: &mut Vec<usize>,
+    skipped_behind_barrier: &mut bool,
+    bodies: &mut Vec<StdDefaultsBody<'a>>,
+) {
+    let own_file_guid = if node.node_type == FfsType::File {
+        node.guid.as_ref()
+    } else {
+        file_guid
+    };
+    let is_store_body = matches!(node.node_type, FfsType::File | FfsType::Section)
+        && node.children.is_empty()
+        && nvar::is_std_defaults(&node.body);
+    if is_store_body {
+        if barrier {
+            *skipped_behind_barrier = true;
+        } else {
+            bodies.push(StdDefaultsBody {
+                node,
+                file_guid: own_file_guid,
+                path: path.clone(),
+            });
+        }
+        return;
+    }
+    let child_barrier = barrier || crate::nvar::section_blocks_mutation(node);
+    for (i, child) in node.children.iter().enumerate() {
+        path.push(i);
+        collect_std_defaults_bodies(
+            child,
+            child_barrier,
+            own_file_guid,
+            path,
+            skipped_behind_barrier,
+            bodies,
+        );
+        path.pop();
+    }
+}
+
+/// Доступные StdDefaults-копии с записью name+data_len → StoreHit-ы;
+/// первая доступная копия без записи — ValueOpUnsupported (паритет
+/// диагностики set_value/get_value; seed_lookup ту же копию пропускает —
+/// тест-пин seed_skips_but_collect_errors_on_store_without_record).
 fn collect_std_defaults_hits(
     node: &FfsNode,
     barrier: bool,
@@ -1044,42 +1098,29 @@ fn collect_std_defaults_hits(
     data_len: usize,
     scan: &mut StdDefaultsScan,
 ) -> Result<(), HiiError> {
-    let own_file_guid = if node.node_type == FfsType::File {
-        node.guid.as_ref()
-    } else {
-        file_guid
-    };
-    let is_store_body = |n: &FfsNode| {
-        matches!(n.node_type, FfsType::File | FfsType::Section)
-            && n.children.is_empty()
-            && nvar::is_std_defaults(&n.body)
-    };
-    if is_store_body(node) {
-        if barrier {
-            scan.skipped_behind_barrier = true;
-            return Ok(());
-        }
-        if let Some((off, _)) = nvar::find_varstore_record(&node.body, name, data_len) {
-            scan.hits.push(StoreHit {
-                path: scan.path.clone(),
-                desc: crate::nvar::store_desc(node, own_file_guid),
-                body_offset: off,
-            });
-        } else {
+    let mut bodies = Vec::new();
+    let mut path = Vec::new();
+    collect_std_defaults_bodies(
+        node,
+        barrier,
+        file_guid,
+        &mut path,
+        &mut scan.skipped_behind_barrier,
+        &mut bodies,
+    );
+    for b in bodies {
+        let desc = crate::nvar::store_desc(b.node, b.file_guid);
+        let Some((off, _)) = nvar::find_varstore_record(&b.node.body, name, data_len) else {
             return Err(HiiError::ValueOpUnsupported(format!(
                 "StdDefaults store {} has no record {:?} of {} bytes",
-                crate::nvar::store_desc(node, own_file_guid),
-                name,
-                data_len
+                desc, name, data_len
             )));
-        }
-        return Ok(());
-    }
-    let child_barrier = barrier || crate::nvar::section_blocks_mutation(node);
-    for (i, child) in node.children.iter().enumerate() {
-        scan.path.push(i);
-        collect_std_defaults_hits(child, child_barrier, own_file_guid, name, data_len, scan)?;
-        scan.path.pop();
+        };
+        scan.hits.push(StoreHit {
+            path: b.path,
+            desc,
+            body_offset: off,
+        });
     }
     Ok(())
 }
@@ -1144,7 +1185,6 @@ pub fn set_value(image: &mut Image, item_id: &str, value: u64) -> Result<ValueOu
         )));
     }
     let mut scan = StdDefaultsScan {
-        path: Vec::new(),
         hits: Vec::new(),
         skipped_behind_barrier: false,
     };
@@ -4715,6 +4755,38 @@ mod tests {
     }
 
     #[test]
+    fn seed_skips_but_collect_errors_on_store_without_record() {
+        let no_record = nvar_entry(
+            Some("StdDefaults"),
+            &nvar_entry(Some("Other"), &[0x11u8; 114], 0x82, Some(0)),
+            0x82,
+            Some(0),
+        );
+        let file_a = mk_node(FfsType::File, no_record, vec![]);
+        let file_b = mk_node(FfsType::File, store_with_var_data(0x05), vec![]);
+        let root = mk_node(
+            FfsType::Image,
+            vec![],
+            vec![mk_node(FfsType::Volume, vec![], vec![file_a, file_b])],
+        );
+        assert_eq!(
+            seed_lookup(&root, false, "Setup", 114, 0, 1),
+            Some(5),
+            "чтение: стор без записи пропущен, следующая доступная копия прочитана"
+        );
+        let mut scan = StdDefaultsScan {
+            hits: Vec::new(),
+            skipped_behind_barrier: false,
+        };
+        let err =
+            collect_std_defaults_hits(&root, false, None, "Setup", 114, &mut scan).unwrap_err();
+        assert!(
+            matches!(err, HiiError::ValueOpUnsupported(ref m) if m.contains("has no record")),
+            "запись: первая доступная копия без записи — ошибка, {err:?}"
+        );
+    }
+
+    #[test]
     fn seed_lookup_skips_store_behind_non_recompressable() {
         let mut raw_store = mk_node(FfsType::File, store_with_var_data(0x01), vec![]);
         raw_store.subtype = 0x01;
@@ -5037,7 +5109,6 @@ mod tests {
             mode: ImageMode::Write,
         };
         let mut scan = StdDefaultsScan {
-            path: Vec::new(),
             hits: Vec::new(),
             skipped_behind_barrier: false,
         };

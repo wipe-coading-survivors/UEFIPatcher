@@ -4740,8 +4740,10 @@ Task 3 (проверено git stash). Штатная команда цикла 
 > Фоллоу-апы финального ревью ветки `feat/tui-live` (спека
 > `2026-09-30-tui-live-design.md`).
 
-* [ ] **uefi-engine: seed_lookup — ручной дубль барьер-селектора** — параллельная рекурсия с collect_std_defaults_hits (различие: пропуск стора без записи vs ошибка). Два источника истины «доступного стора» разъедутся снова; извлечь общий спуск (барьер + детект store-body) в один хелпер. Контекст: `crates/uefi-engine/src/hii/mod.rs` (seed_lookup, collect_std_defaults_hits); финальное ревью tui-live.
-* [ ] **uefi-tui: refresh_forms чистит current_value, но не question_info** — асимметрия инвалидации: после :switch/ре-входа возможен стейл question_info при том же ключе формы (у Current кэш чистится). Симметризовать (добавить очистку question_info/question_info_key в refresh_forms). Контекст: `crates/uefi-tui/src/commands.rs` (refresh_forms); финальное ревью tui-live.
+* [x] **uefi-engine: seed_lookup — ручной дубль барьер-селектора** — параллельная рекурсия с collect_std_defaults_hits (различие: пропуск стора без записи vs ошибка). Два источника истины «доступного стора» разъедутся снова; извлечь общий спуск (барьер + детект store-body) в один хелпер. Контекст: `crates/uefi-engine/src/hii/mod.rs` (seed_lookup, collect_std_defaults_hits); финальное ревью tui-live.
+  Закрыто аддендумом tui-live (2026-10-01, §A): общий спуск collect_std_defaults_bodies (барьер + store-body + DFS-порядок), seed/collect поверх него; различие «пропуск vs ошибка» запинено тестом seed_skips_but_collect_errors_on_store_without_record.
+* [x] **uefi-tui: refresh_forms чистит current_value, но не question_info** — асимметрия инвалидации: после :switch/ре-входа возможен стейл question_info при том же ключе формы (у Current кэш чистится). Симметризовать (добавить очистку question_info/question_info_key в refresh_forms). Контекст: `crates/uefi-tui/src/commands.rs` (refresh_forms); финальное ревью tui-live.
+  Закрыто аддендумом tui-live (2026-10-01, §B): refresh_forms чистит question_info/question_info_key (как reload_forms); тест question_info_cache_invalidated_on_refresh_forms.
 
 ## Находки живого гейта tui-live №2 (2026-10-01, владелец)
 
