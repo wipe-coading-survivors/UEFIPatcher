@@ -1242,7 +1242,7 @@ mod tests {
     }
 
     #[test]
-    fn print_forms_tsv_has_ordinal_column() {
+    fn ordinal_cell_formats_ordinal_and_dash() {
         let f = FormInfo {
             form_id: "G:0x19:0".into(),
             formset_guid: "S".into(),

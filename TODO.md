@@ -4749,3 +4749,29 @@ Task 3 (проверено git stash). Штатная команда цикла 
   rest-of-line для path-аргументов (образец грамматики — `--file`-флаги,
   которые идут одним токеном). Контекст: `crates/uefi-tui/src/commands.rs`
   (`split_whitespace` + path-ветки).
+
+## Отложенное финального ревью formset-ordinal (2026-10-01)
+
+> Фоллоу-апы финального ревью ветки `feat/formset-ordinal` (спека
+> `2026-10-01-formset-ordinal-design.md`).
+
+* [ ] **класс: limitation: `hii varstore list` игнорирует formset-ординал в
+  `TARGET[#n]`** — справка обещает выбор формсета, движковый `list_varstores`
+  парсит и отбрасывает ординал (премисса §1 спеки formset-ordinal неверна;
+  поведение запинено тестом «карта не зависит от formset-ординала»).
+  Контекст: `crates/uefi-engine/src/hii/mod.rs` (`list_varstores`); владелец
+  запланировал отдельный мини-цикл (2026-10-01).
+* [ ] **класс: limitation: PE с дублирующимися resource-записями (одинаковые
+  off,len) — обе считаются writable-каналом в collect_forms** — `ranges.first()`
+  сравнивает кортеж по значению, дубль-диапазон матчится как writable у обеих
+  записей; патологический случай (живых прецедентов нет). Контекст:
+  `crates/uefi-engine/src/hii/forms.rs:116-131` (PE32-ветка walk_sections).
+* [ ] **uefi-engine: явная фикстура «второй resource-entry → ordinal None»
+  отсутствует** — поведение покрыто только косвенно (FREEFORM-пакеты +
+  конструкция `ranges.first()`); кандидат теста при следующем касании.
+  Контекст: `crates/uefi-engine/src/hii/forms.rs` (collect_forms, тест
+  `collect_forms_ordinal_pe32_only_first_resource_forms_pkg`).
+* [ ] **uefi-cli: print_forms — обвязка колонки `n` без прямого теста** —
+  заголовок TSV + хвост строки собираются в print-функции, stdout-захват
+  недоступен (unit-тест бьёт только `ordinal_cell`); кандидат — extraction
+  в чистый форматтер. Контекст: `crates/uefi-cli/src/output.rs` (print_forms).

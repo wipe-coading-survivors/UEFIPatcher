@@ -121,6 +121,20 @@ describe('FormsTree', () => {
         expect(container.textContent).toContain('#1');
     });
 
+    it('показывает #0 при formsetOrdinal: 0', () => {
+        const ordinalSets = buildFormsets([{ ...form('S1', 1, 'Main'), formsetOrdinal: 0 }], []);
+        const rows = buildFormRows(ordinalSets, new Set(['S1']));
+        const { container } = render(FormsTree, {
+            rows,
+            selectedKey: null,
+            onselect: () => {},
+            ongates: () => {},
+            onshow: () => {},
+            ontoggle: () => {},
+        });
+        expect(container.textContent).toContain('#0');
+    });
+
     it('не показывает #n без ordinal', () => {
         const rows = buildFormRows(buildFormsets([form('S1', 1, 'Main')], []), new Set(['S1']));
         const { container } = render(FormsTree, {
