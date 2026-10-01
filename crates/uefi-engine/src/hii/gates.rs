@@ -362,6 +362,16 @@ pub(crate) fn plan_flip(body: &[u8], gate: &Gate) -> Result<Option<PlannedFlip>,
                 to: 0xFFFFu16.to_le_bytes().to_vec(),
             }))
         }
+        GateExpr::True => {
+            if body.get(gate.expr_offset) != Some(&IFR_TRUE_OP) {
+                return Err(bounds_err());
+            }
+            Ok(Some(PlannedFlip {
+                offset: gate.expr_offset,
+                from: vec![IFR_TRUE_OP],
+                to: vec![IFR_FALSE_OP],
+            }))
+        }
         _ => Ok(None),
     }
 }
@@ -393,12 +403,14 @@ pub fn plan_gates(body: &[u8], gates: &[Gate]) -> Result<Vec<PlannedFlip>, Strin
     Ok(flips)
 }
 
-/// Аппаратно-вскрытое выражение гейта: EqConst с a≠b (константа сдвинута)
-/// или EqIdVal со значением 0xFFFF. Спека hii-errors-cleanup §2.
+/// Аппаратно-вскрытое выражение гейта: EqConst с a≠b (константа сдвинута),
+/// EqIdVal со значением 0xFFFF, False (бывший TRUE после флипа).
+/// Спека hii-errors-cleanup §2, ref-guard-true-flip §1.
 pub(crate) fn is_unlocked_expr(expr: &GateExpr) -> bool {
     match expr {
         GateExpr::EqConst { a, b } => a != b,
         GateExpr::EqIdVal { value, .. } => *value == 0xFFFF,
+        GateExpr::False => true,
         _ => false,
     }
 }
@@ -1000,6 +1012,66 @@ mod tests {
         assert!(plan_gates(&pkg, &gates).is_err());
     }
 
+    fn true_gate_ifr() -> Vec<u8> {
+        let mut ifr = form_set(7);
+        ifr.extend(opcode(IFR_SUPPRESS_IF_OP, true, &[]));
+        ifr.extend(true_op());
+        ifr.extend(form(901, 30));
+        ifr.extend(end());
+        ifr.extend(end());
+        ifr.extend(end());
+        ifr.extend(end());
+        ifr
+    }
+
+    const TRUE_GATE_TARGET: GateTarget = GateTarget {
+        form_id: 901,
+        question_id: None,
+        formset_guid: None,
+    };
+
+    #[test]
+    fn plan_true_flip_swaps_opcode_byte() {
+        let pkg = package(&true_gate_ifr());
+        let gates = find_gates(&pkg, &TRUE_GATE_TARGET);
+        assert_eq!(gates.len(), 1);
+        assert_eq!(gates[0].expr, GateExpr::True);
+        let flips = plan_gates(&pkg, &gates).unwrap();
+        assert_eq!(flips.len(), 1);
+        assert_eq!(flips[0].offset, gates[0].expr_offset);
+        assert_eq!(flips[0].from, vec![IFR_TRUE_OP]);
+        assert_eq!(flips[0].to, vec![IFR_FALSE_OP]);
+    }
+
+    #[test]
+    fn plan_true_after_flip_is_unlocked_and_skipped() {
+        let pkg = package(&true_gate_ifr());
+        let mut body = pkg.clone();
+        let flips = plan_gates(&body, &find_gates(&body, &TRUE_GATE_TARGET)).unwrap();
+        apply_flips(&mut body, &flips).unwrap();
+        let gates = find_gates(&body, &TRUE_GATE_TARGET);
+        assert_eq!(gates[0].expr, GateExpr::False);
+        assert!(plan_gates_skip_unlocked(&body, &gates)
+            .unwrap()
+            .is_empty());
+        assert!(
+            plan_gates(&body, &gates).is_err(),
+            "повторное открытие запрещено"
+        );
+    }
+
+    #[test]
+    fn plan_true_errs_when_expr_offset_beyond_body() {
+        let pkg = package(&true_gate_ifr());
+        let gate = hand_gate(
+            pkg.len() + 10,
+            pkg.len() + 40,
+            GateExpr::True,
+        );
+        let err = plan_flip(&pkg, &gate).unwrap_err();
+        assert!(err.contains("gate bounds out of package"), "{err}");
+    }
+
     #[test]
     fn plan_refuses_eq_id_val_when_master_storage_is_two_bytes() {
         let pkg = package(&master_switch_ifr(r_efi::hii::IFR_NUMERIC_SIZE_2));
@@ -1313,6 +1385,7 @@ mod tests {
             value: 1
         }));
         assert!(!is_unlocked_expr(&GateExpr::True));
+        assert!(is_unlocked_expr(&GateExpr::False));
         assert!(!is_unlocked_expr(&GateExpr::Other));
     }
 
