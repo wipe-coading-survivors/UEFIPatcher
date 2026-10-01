@@ -263,6 +263,8 @@ git commit -m "feat(engine): tse — скан stride-блоков AMITSE PE (tse
         put_u32(&mut b, m + SPF_SLOT_FORMSETS, 0x200);
         put_u32(&mut b, m + SPF_SLOT_VAR_CATALOG, 0x300);
         put_u32(&mut b, m + SPF_SLOT_PAGES, 0x60);
+        put_u32(&mut b, m + 0x300, 1);
+        put_u32(&mut b, m + 0x304, 0x10);
         put_u32(&mut b, m + SPF_PAGE_COUNT_OFFSET, 2);
         put_u32(&mut b, m + SPF_PAGE_TABLE_OFFSET, 0x100);
         put_u32(&mut b, m + SPF_PAGE_TABLE_OFFSET + 4, 0x120);
@@ -390,16 +392,23 @@ pub fn pages_count(body: &[u8]) -> u32 {
 }
 
 /// Число страниц по fsIdx: указатели таблицы @magic+0x64+4·i, у каждой
-/// записи fsIdx u16 @+0x08 (запись SPF_PAGE_HEADER_SIZE). Fail-soft [].
+/// записи fsIdx u16 @+0x08 (запись SPF_PAGE_HEADER_SIZE). Fail-soft [],
+/// усечение — warn (чек-лист HII п.5).
 pub fn pages_fs_counts(body: &[u8]) -> Vec<(u16, u32)> {
     let Some(m) = container_start(body) else { return Vec::new() };
     let count = pages_count(body) as usize;
     let mut counts: std::collections::BTreeMap<u16, u32> = Default::default();
     for i in 0..count {
         let tp = m + SPF_PAGE_TABLE_OFFSET + 4 * i;
-        let Some(relb) = body.get(tp..tp + 4) else { break };
+        let Some(relb) = body.get(tp..tp + 4) else {
+            tracing::warn!(i, "spf page table truncated");
+            break;
+        };
         let rel = u32::from_le_bytes(relb.try_into().unwrap()) as usize;
-        let Some(page) = body.get(m + rel..m + rel + SPF_PAGE_HEADER_SIZE) else { break };
+        let Some(page) = body.get(m + rel..m + rel + SPF_PAGE_HEADER_SIZE) else {
+            tracing::warn!(i, rel, "spf page record out of bounds");
+            continue;
+        };
         let fs = u16::from_le_bytes(page[0x08..0x0A].try_into().unwrap());
         *counts.entry(fs).or_default() += 1;
     }
@@ -419,9 +428,15 @@ fn read_indexed_blob<T>(
     let count = u32::from_le_bytes(h.try_into().unwrap()) as usize;
     let mut out = Vec::new();
     for i in 0..count {
-        let Some(op) = body.get(base + 4 + i * 4..base + 8 + i * 4) else { break };
+        let Some(op) = body.get(base + 4 + i * 4..base + 8 + i * 4) else {
+            tracing::warn!(slot, i, "spf indexed blob truncated");
+            break;
+        };
         let rel = u32::from_le_bytes(op.try_into().unwrap()) as usize;
-        let Some(rec) = body.get(base + rel..base + rel + entry_size) else { continue };
+        let Some(rec) = body.get(base + rel..base + rel + entry_size) else {
+            tracing::warn!(slot, i, rel, "spf blob entry out of bounds");
+            continue;
+        };
         if let Some(v) = parse(rec) {
             out.push(v);
         }
@@ -1252,7 +1267,7 @@ git commit -m "feat(rpc): TseReport/TseUnhide — proto, хендлеры, serve
 
 **Interfaces:**
 - Consumes: RPC-типы Task 5; конвенции `cli_sock: Option<&str>` (nvar.rs:9), глобальный `--format` → `output::OutputFormat` (main.rs:15-16, диспатч передаёт как в `Cmd::Nvar`).
-- Produces: `pub async fn report(image_id: &str, cli_sock: Option<&str>, format: OutputFormat) -> anyhow::Result<()>`; `pub async fn unhide(image_id: &str, guid: &str, form_id: u16, block_offset: Option<usize>, cli_sock: Option<&str>) -> anyhow::Result<()>`.
+- Produces: `pub async fn report(image_id: &str, cli_sock: Option<&str>, format: OutputFormat) -> Result<(), AppError>`; `pub async fn unhide(image_id: &str, guid: &str, form_id: u16, block_offset: Option<usize>, cli_sock: Option<&str>) -> Result<(), AppError>` (конвенция nvar.rs:11 — `Result<(), AppError>`, НЕ anyhow).
 
 - [ ] **Step 1: Parse-тесты (RED)** — в tests main.rs по образцу `parse_nvar_list_and_set_args` (:906):
 
@@ -1260,13 +1275,13 @@ git commit -m "feat(rpc): TseReport/TseUnhide — proto, хендлеры, serve
     #[test]
     fn parse_tse_report_and_unhide_args() {
         let cli = Cli::try_parse_from(["uefi-cli", "tse", "report", "img-1"]).unwrap();
-        assert!(matches!(cli.command, Cmd::Tse { sub: TseCmd::Report { image_id, .. } } if image_id == "img-1"));
+        assert!(matches!(cli.cmd, Cmd::Tse { sub: TseCmd::Report { image_id, .. } } if image_id == "img-1"));
         let cli = Cli::try_parse_from([
             "uefi-cli", "tse", "unhide", "img-1",
             "EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9", "1", "--block-offset", "0x1b40",
         ])
         .unwrap();
-        assert!(matches!(cli.command, Cmd::Tse { sub: TseCmd::Unhide { image_id, formset_guid, form_id, block_offset, .. } }
+        assert!(matches!(cli.cmd, Cmd::Tse { sub: TseCmd::Unhide { image_id, formset_guid, form_id, block_offset, .. } }
             if image_id == "img-1" && formset_guid == "EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9" && form_id == 1
                 && block_offset.as_deref() == Some("0x1b40")));
     }
@@ -1305,20 +1320,25 @@ enum TseCmd {
 ```rust
         Cmd::Tse { sub } => match sub {
             TseCmd::Report { image_id } => {
-                commands::tse::report(&image_id, sock.as_deref(), format).await
+                commands::tse::report(image_id, sock.as_deref(), format).await
             }
             TseCmd::Unhide { image_id, formset_guid, form_id, block_offset } => {
                 let off = match block_offset.as_deref() {
                     None => None,
                     Some(s) => Some(
                         usize::from_str_radix(s.trim_start_matches("0x"), 16)
-                            .map_err(|e| anyhow::anyhow!("invalid --block-offset: {e}"))?,
+                            .map_err(|e| AppError::new(
+                                error::ErrKind::RpcInvalidArgument,
+                                format!("invalid --block-offset: {e}"),
+                            ))?,
                     ),
                 };
-                commands::tse::unhide(&image_id, &formset_guid, form_id, off, sock.as_deref()).await
+                commands::tse::unhide(image_id, formset_guid, *form_id, off, sock.as_deref()).await
             }
         },
 ```
+
+(Диспатч идёт по `match &cli.cmd` — биндинги по ссылке; скаляры разыменовывать (`*form_id`), строки дотягиваются deref-coercion; образец AppError-ошибки — main.rs:498-501; `sock`/`format` — из внешней руки матча, как у `Cmd::Nvar`.)
 
 - [ ] **Step 3: commands/tse.rs + printers (по образцу commands/nvar.rs; подключение клиента к сокету — скопировать каркас из nvar::list; `format: OutputFormat` — как в nvar::list)**
 
@@ -1327,7 +1347,7 @@ enum TseCmd {
 - TSV: заголовок `type\toff\tformset_guid\tform_id\textra` + строки блоков/записей; секции `spf_formset\t…`, `spf_var\t…`.
 - Json: `serde_json::json!({blocks: […], spf: {…}})` — по образцу существующих json-принтеров output.rs.
 
-`unhide`: try-конверсия off → u32 (`u32::try_from(off).map_err(|_| anyhow!("--block-offset exceeds u32"))?`) → `TseUnhideRequest { image_id, formset_guid, form_id: u32::from(form_id), block_pe_offset: Some(v) }` → печать `unhidden {guid}#{form}: block @ {pe_offset:#x}, entry @ {entry_pe_offset:#x}`.
+`unhide`: try-конверсия off → u32 (`u32::try_from(off).map_err(|_| AppError::new(error::ErrKind::RpcInvalidArgument, "--block-offset exceeds u32".into()))?`) → `TseUnhideRequest { image_id, formset_guid, form_id: u32::from(form_id), block_pe_offset: Some(v) }` → печать `unhidden {guid}#{form}: block @ {pe_offset:#x}, entry @ {entry_pe_offset:#x}`.
 
 - [ ] **Step 4: Интеграционный тест с mock (cli_integration.rs)**
 
@@ -1579,4 +1599,4 @@ git commit -m "docs: закрытие TODO tse-unhide + вердикт спек�
 1. **Spec coverage:** §2.1 → Task 1 (+union в Task 3 `known_formsets`); §2.2 → Task 3; §2.3 → Tasks 2-4; §3.1 → Task 5; §3.2 → Task 6; §3.3 → Task 7; §3.4 — не делаем (по дизайну); §4 → Task 5 Step 4 (в т.ч. вариант «нет AMITSE» нулевым GUID); §5 → Tasks 1-8 (паритет — Task 8); §6 → Task 9; §7 — не делаем.
 2. **Placeholders:** `todo!` — только как RED-заглушки Step 1 каждой задачи (замещаются реализацией в GREEN-шаге); TBD отсутствуют.
 3. **Type consistency:** `StrideEntry/StrideBlock/UnhideOutcome/TseReport/SpfSummary` стабильны между задачами; RPC-имена совпадают в proto/моках/CLI/TUI; CLI-конвенции (`cli_sock: Option<&str>`, `OutputFormat`, `Cli::try_parse_from`) сверены с кодом крейта.
-4. **Правки внешнего ревью:** блокеры 1-10 (пути amitse, заимствования, unit-NotFound, scope-бит, импорт HiiError, слоты pages, 3 блока, parts-индексы, refs_fw, parse-тест), мажоры 11-14 (RED-фазы, swap Task 2/3 для union, server-тесты, мёртвый код), миноры 15-22 — внесены.
+4. **Правки внешнего ревью:** раунд 1 (блокеры 1-10, мажоры 11-14, миноры 15-22) и раунд 2 (фикстура var-catalog count/offset, `cli.cmd`, сигнатуры `Result<(), AppError>` + `*form_id` + AppError-парсинг, `tracing::warn!` на усечении читателей) — внесены.
