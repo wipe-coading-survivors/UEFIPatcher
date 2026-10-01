@@ -34,7 +34,9 @@ session-ses_*.md
 
 # External reference repos (symlink refs -> ../refs/)
 /refs
-.opencode/
+# .opencode is local, except shared agents
+.opencode/*
+!.opencode/agents/
 
 .superpowers/
 .worktrees/
