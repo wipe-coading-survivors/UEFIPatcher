@@ -4755,23 +4755,34 @@ Task 3 (проверено git stash). Штатная команда цикла 
 > Фоллоу-апы финального ревью ветки `feat/formset-ordinal` (спека
 > `2026-10-01-formset-ordinal-design.md`).
 
-* [ ] **класс: limitation: `hii varstore list` игнорирует formset-ординал в
+* [x] **класс: limitation: `hii varstore list` игнорирует formset-ординал в
   `TARGET[#n]`** — справка обещает выбор формсета, движковый `list_varstores`
   парсит и отбрасывает ординал (премисса §1 спеки formset-ordinal неверна;
   поведение запинено тестом «карта не зависит от formset-ординала»).
   Контекст: `crates/uefi-engine/src/hii/mod.rs` (`list_varstores`); владелец
   запланировал отдельный мини-цикл (2026-10-01).
-* [ ] **класс: limitation: PE с дублирующимися resource-записями (одинаковые
+  Закрыто циклом formset-ordinal-followups (2026-10-01): list_varstores
+  скоупится по #n (varstore_map_formset), write-валидация/вставка тоже
+  (validate_form_varstores, check_question_add/add_varstores, splice в
+  пролог формсета-владельца); спека
+  2026-10-01-formset-ordinal-followups-design.md.
+* [x] **класс: limitation: PE с дублирующимися resource-записями (одинаковые
   off,len) — обе считаются writable-каналом в collect_forms** — `ranges.first()`
   сравнивает кортеж по значению, дубль-диапазон матчится как writable у обеих
   записей; патологический случай (живых прецедентов нет). Контекст:
   `crates/uefi-engine/src/hii/forms.rs:116-131` (PE32-ветка walk_sections).
-* [ ] **uefi-engine: явная фикстура «второй resource-entry → ordinal None»
-  отсутствует** — поведение покрыто только косвенно (FREEFORM-пакеты +
+  Закрыто циклом formset-ordinal-followups (2026-10-01): writable по
+  индексу записи + dedup диапазона (synth_hii_pe_dup-тест).
+* [x] **uefi-engine: явная фикстура «второй resource-entry → ordinal
+  None» отсутствует** — поведение покрыто только косвенно (FREEFORM-пакеты +
   конструкция `ranges.first()`); кандидат теста при следующем касании.
   Контекст: `crates/uefi-engine/src/hii/forms.rs` (collect_forms, тест
   `collect_forms_ordinal_pe32_only_first_resource_forms_pkg`).
-* [ ] **uefi-cli: print_forms — обвязка колонки `n` без прямого теста** —
+  Закрыто циклом formset-ordinal-followups (2026-10-01):
+  synth_hii_pe_multi + тест collect_forms_ordinal_pe32_second_resource_entry_is_none.
+* [x] **uefi-cli: print_forms — обвязка колонки `n` без прямого теста** —
   заголовок TSV + хвост строки собираются в print-функции, stdout-захват
   недоступен (unit-тест бьёт только `ordinal_cell`); кандидат — extraction
   в чистый форматтер. Контекст: `crates/uefi-cli/src/output.rs` (print_forms).
+  Закрыто циклом formset-ordinal-followups (2026-10-01): forms_tsv_header/
+  forms_tsv_row/forms_text_row extraction с прямыми unit-тестами.

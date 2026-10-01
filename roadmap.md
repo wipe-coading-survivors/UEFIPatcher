@@ -539,6 +539,21 @@ Ordinal-строка в TUI Forms-детали, dim-суффикс `#n` в WebUI
 round-trip инвариант list→add (спека §4). Гейты цикла чистые; TODO-запись
 закрыта.
 
+## Мини-цикл formset-ordinal-followups — формсет-скоуп varstore-семантики (2026-10-01)
+
+`docs/superpowers/specs/2026-10-01-formset-ordinal-followups-design.md` +
+план `docs/superpowers/plans/2026-10-01-formset-ordinal-followups.md`
+(7 задач, TDD). Реализовано: `ifr::formset_spans` +
+`values::varstore_map_formset` (единый источник границ FORM_SET),
+`list_varstores TARGET#n` чтит ординал; write-путь скоупится по целевому
+формсету: `validate_form_varstores` (form add),
+`check_question_add`/`add_varstores`/вставка вопросов и деклараций —
+формсет-владелец формы (`locate_form_attribution`), splice_varstore_ops с
+formset_idx; collect_forms: writable по индексу resource-записи + dedup
+дублей (фикстуры synth_hii_pe_multi/dup); CLI print_forms-форматтер с
+прямыми тестами. Закрывает 4 записи TODO-секции «Отложенное финального
+ревью formset-ordinal».
+
 ## Дуга formset-unlock (U1–U4) — кросс-формсетные гейты и перенос IIO-бифуркации (2026-09-12)
 Спека `docs/superpowers/specs/2026-09-12-formset-unlock-design.md` +
 план `docs/superpowers/plans/2026-09-12-formset-unlock.md` (9 задач,
