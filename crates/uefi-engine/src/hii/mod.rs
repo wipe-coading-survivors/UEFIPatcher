@@ -2218,7 +2218,7 @@ fn check_ref_slots(
 /// read-only каналы — валидные цели (GOTO — навигация, не мутация).
 /// Вызывается до любых мутаций (plan-all-then-apply-all).
 fn validate_ref_target(
-    image: &Image,
+    _image: &Image,
     qt: &QuestionTarget,
     schema: &schema::QuestionAddRefSchema,
 ) -> Result<(), HiiError> {
@@ -2234,14 +2234,10 @@ fn validate_ref_target(
     if fs.forms.iter().any(|f| f.form_id == schema.form_id) {
         return Ok(());
     }
-    let mut have: Vec<String> = fs
-        .forms
-        .iter()
-        .map(|f| format!("{:#x}", f.form_id))
-        .collect();
+    let mut have: Vec<String> = fs.forms.iter().map(|f| f.form_id.to_string()).collect();
     have.sort_unstable();
     Err(HiiError::InvalidSchema(format!(
-        "ref target form {:#x} not declared in owning formset {} (have: {})",
+        "ref target form {} not declared in owning formset {} (have: {})",
         schema.form_id,
         crate::guid_to_upper_string(&fs.guid),
         have.join(", ")
