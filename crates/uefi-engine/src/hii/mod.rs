@@ -1506,6 +1506,18 @@ fn select_resolving_records(records: &[spf::SpfQuestionRecord], pkg: &[u8]) -> V
         .collect()
 }
 
+/// Fixup-план add_ref: только selected_records — REF не добавляет ни
+/// страницу, ни запись $SPF (безстраничная родительская форма и $SPF без
+/// записей допустимы; фиксапу нечего сдвигать). Отсутствие $SPF —
+/// NotFound, как раньше. Аддендум engine-errors-cleanup §3.
+fn plan_spf_fixup(body: &[u8], pkg: &[u8]) -> Result<Vec<usize>, HiiError> {
+    spf::container_start(body).ok_or(HiiError::NotFound)?;
+    Ok(select_resolving_records(
+        &spf::scan_question_records(body),
+        pkg,
+    ))
+}
+
 fn plan_spf_append(
     body: &[u8],
     pkg: &[u8],
@@ -1567,10 +1579,6 @@ fn plan_spf_append(
     })
 }
 
-fn apply_spf_ifr_fixup(body: &mut [u8], plan: &SpfAppendPlan, insert_at: u32, delta: u32) {
-    spf::fixup_selected_record_ifr_offsets(body, &plan.selected_records, insert_at, delta);
-}
-
 #[allow(clippy::too_many_arguments)]
 fn apply_spf_question(
     node: &mut FfsNode,
@@ -1583,7 +1591,12 @@ fn apply_spf_question(
     optimized: Option<u64>,
     failsafe: Option<u64>,
 ) -> Result<usize, HiiError> {
-    apply_spf_ifr_fixup(&mut node.body, plan, insert_at, delta);
+    spf::fixup_selected_record_ifr_offsets(
+        &mut node.body,
+        &plan.selected_records,
+        insert_at,
+        delta,
+    );
     let body = &mut node.body;
     let optimal = optimized.map_or(0, |v| v as u8);
     let failsafe_v = failsafe.map_or(0, |v| v as u8);
@@ -2232,15 +2245,9 @@ pub fn add_ref(
     let pos = insert_pos_of(schema.insert_before.as_ref())?;
     let path = resolve_writable_path(image, &qt.target)?;
     let sd_path = ami_patcher::discover_pfs_payload_path(image)?;
-    let spf_plan = {
+    let spf_records = {
         let body = node_at(&image.root, &sd_path).body.clone();
-        plan_spf_append(
-            &body,
-            &qt.pkg,
-            qt.span.form_op as u32,
-            qt.span.next_form_op as u32,
-            qt.form_id,
-        )?
+        plan_spf_fixup(&body, &qt.pkg)?
     };
     check_ref_slots(schema, &qt.pkg, &[])?;
 
@@ -2298,7 +2305,12 @@ pub fn add_ref(
 
     {
         let node = node_at_mut(&mut image.root, &sd_path);
-        apply_spf_ifr_fixup(&mut node.body, &spf_plan, insert_at as u32, delta as u32);
+        spf::fixup_selected_record_ifr_offsets(
+            &mut node.body,
+            &spf_records,
+            insert_at as u32,
+            delta as u32,
+        );
     }
     ops::mark_rebuild_to_root_by_path(&mut image.root, &sd_path);
     tracing::debug!(question_id = schema.question_id, insert_at, "add_ref done");
@@ -2322,13 +2334,7 @@ pub fn check_ref_add(
     let sd_path = ami_patcher::discover_pfs_payload_path(image)?;
     {
         let body = node_at(&image.root, &sd_path).body.clone();
-        plan_spf_append(
-            &body,
-            &qt.pkg,
-            qt.span.form_op as u32,
-            qt.span.next_form_op as u32,
-            qt.form_id,
-        )?;
+        plan_spf_fixup(&body, &qt.pkg)?;
     }
     let mut pending: Vec<u16> = question_qids.to_vec();
     for schema in refs {
@@ -6397,6 +6403,30 @@ mod tests {
                 assert!(
                     crate::hii::form_hijack::locate_form(&pkg_after, 10099).is_none(),
                     "fixture must not contain the dangling destination"
+                );
+            }
+
+            /// Безстраничная родительская форма: REF не требует $SPF-страницу —
+            /// только fixup selected_records (аддендум engine-errors-cleanup §3).
+            #[test]
+            fn add_ref_works_from_pageless_parent_form() {
+                let (flash, pkg_before, spf_before) = question_add_flash_image();
+                let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+                let item = "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x10:0#10020";
+                check_ref_add(&img, item, &[ref_add_schema(0x310, 10019)], &[])
+                    .expect("check_ref_add не требует страницу родительской формы");
+                let res = add_ref(&mut img, item, &ref_add_schema(0x310, 10019))
+                    .expect("add_ref из безстраничной формы");
+                assert_eq!(res.question_id, 0x310);
+                let pkg_after = pkg_of(&img, "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x10:0");
+                assert_eq!(pkg_after.len() - pkg_before.len(), 15);
+                let r = find_ref_op(&pkg_after, 10020).expect("REF op в форме 10020");
+                assert_eq!(pkg_u16(&pkg_after, r + 6), 0x310);
+                assert_eq!(pkg_u16(&pkg_after, r + 13), 10019);
+                assert_eq!(
+                    spf_leaf_of(&img).to_vec(),
+                    spf_before,
+                    "$SPF байт-идентичен: selected-записей за точкой вставки нет"
                 );
             }
 
