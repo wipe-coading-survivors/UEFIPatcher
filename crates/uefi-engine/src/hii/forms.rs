@@ -114,21 +114,19 @@ fn walk_sections(
             }
         } else if child.subtype == EFI_SECTION_PE32 {
             let ranges = hii_resource_ranges(&child.body);
-            let writable_blob = ranges.first().copied();
-            for &(off, len) in &ranges {
+            let mut drained: Vec<(usize, usize)> = Vec::new();
+            for (i, &(off, len)) in ranges.iter().enumerate() {
+                if drained.contains(&(off, len)) {
+                    continue;
+                }
+                drained.push((off, len));
                 let Some(blob) = child.body.get(off..off + len) else {
                     continue;
                 };
                 let Some(list) = parse_package_list(blob) else {
                     continue;
                 };
-                drain_list_packages(
-                    &list,
-                    &target,
-                    titles,
-                    found,
-                    Some((off, len)) == writable_blob,
-                );
+                drain_list_packages(&list, &target, titles, found, i == 0);
             }
             for pkg in bare_form_packages(&child.body, &ranges) {
                 if let Some(sets) = parse_form_package_sets(pkg) {
@@ -892,6 +890,71 @@ mod tests {
         assert_eq!(ord_of(1), Some(0));
         assert_eq!(ord_of(2), Some(1));
         assert_eq!(ord_of(3), None);
+    }
+
+    #[test]
+    fn collect_forms_ordinal_pe32_second_resource_entry_is_none() {
+        let g1: [u8; 16] = [1; 16];
+        let g3: [u8; 16] = [3; 16];
+        let mut ifr1 = Vec::new();
+        ifr1.extend_from_slice(&[IFR_FORM_SET_OP, 23 | 0x80]);
+        ifr1.extend_from_slice(&g1);
+        ifr1.extend_from_slice(&[1, 0, 0, 0, 0]);
+        ifr1.extend_from_slice(&[IFR_FORM_OP, 6, 1, 0, 1, 0]);
+        ifr1.extend_from_slice(&[IFR_END_OP, 2]);
+        let mut ifr2 = Vec::new();
+        ifr2.extend_from_slice(&[IFR_FORM_SET_OP, 23 | 0x80]);
+        ifr2.extend_from_slice(&g3);
+        ifr2.extend_from_slice(&[3, 0, 0, 0, 0]);
+        ifr2.extend_from_slice(&[IFR_FORM_OP, 6, 3, 0, 3, 0]);
+        ifr2.extend_from_slice(&[IFR_END_OP, 2]);
+        let list1 = hii_list_two_forms(&package(&ifr1), &[], &string_pkg());
+        let list2 = hii_list_two_forms(&package(&ifr2), &[], &string_pkg());
+        let pe = crate::hii::pe_resource::synth_hii_pe_multi("HII", &[&list1, &list2]);
+        let pe_sec = mk_node(None, FfsType::Section, EFI_SECTION_PE32, pe, vec![]);
+        let file = mk_node(
+            Some(Guid::from_str(FILE_GUID).unwrap()),
+            FfsType::File,
+            0x07,
+            vec![],
+            vec![pe_sec],
+        );
+        let image = img_of(file);
+        let forms = collect_forms_with_ordinals(&image);
+        assert_eq!(forms.len(), 2, "по одной форме на запись: got {forms:?}");
+        assert_eq!(
+            forms.iter().find(|(f, _)| f.form_id_ifr == 1).unwrap().1,
+            Some(0)
+        );
+        assert_eq!(
+            forms.iter().find(|(f, _)| f.form_id_ifr == 3).unwrap().1,
+            None
+        );
+    }
+
+    #[test]
+    fn collect_forms_ignores_duplicate_resource_ranges() {
+        let g1: [u8; 16] = [1; 16];
+        let mut ifr1 = Vec::new();
+        ifr1.extend_from_slice(&[IFR_FORM_SET_OP, 23 | 0x80]);
+        ifr1.extend_from_slice(&g1);
+        ifr1.extend_from_slice(&[1, 0, 0, 0, 0]);
+        ifr1.extend_from_slice(&[IFR_FORM_OP, 6, 1, 0, 1, 0]);
+        ifr1.extend_from_slice(&[IFR_END_OP, 2]);
+        let list = hii_list_two_forms(&package(&ifr1), &[], &string_pkg());
+        let pe = crate::hii::pe_resource::synth_hii_pe_dup("HII", &list);
+        let pe_sec = mk_node(None, FfsType::Section, EFI_SECTION_PE32, pe, vec![]);
+        let file = mk_node(
+            Some(Guid::from_str(FILE_GUID).unwrap()),
+            FfsType::File,
+            0x07,
+            vec![],
+            vec![pe_sec],
+        );
+        let image = img_of(file);
+        let forms = collect_forms_with_ordinals(&image);
+        assert_eq!(forms.len(), 1, "дубль-диапазон не удваивает строки");
+        assert_eq!(forms[0].1, Some(0));
     }
 
     #[test]
