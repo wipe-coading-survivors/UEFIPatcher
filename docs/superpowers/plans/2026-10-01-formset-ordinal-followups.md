@@ -1220,7 +1220,7 @@ pub(crate) fn synth_hii_pe_multi(type_name: &str, blobs: &[&[u8]]) -> Vec<u8> {
     let mut cur = name_end + 16 * blobs.len();
     for b in blobs {
         blob_offs.push(cur);
-        cur += b.len().next_multiple_of(16);
+        cur = (cur + b.len()).next_multiple_of(16);
     }
     let mut rsrc = Vec::new();
     rsrc.extend_from_slice(&rsrc_dir_header(1, 0));
