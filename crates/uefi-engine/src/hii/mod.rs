@@ -4288,6 +4288,41 @@ mod tests {
     }
 
     #[test]
+    fn unlock_flips_constant_true_gate() {
+        let pkg = forms_pkg(
+            [
+                g_form(10002),
+                g_opcode(r_efi::hii::IFR_SUPPRESS_IF_OP, true, &[]),
+                vec![r_efi::hii::IFR_TRUE_OP, 0x02],
+                g_ref(10029),
+                g_end(),
+                g_end(),
+                g_end(),
+            ]
+            .concat(),
+        );
+        let mut image = vendor_image_with(0x19, pkg);
+        let gates = gates_list(&image, VENDOR_FORM_ITEM).unwrap();
+        assert_eq!(gates.len(), 1);
+        assert_eq!(gates[0].expression, "true");
+        assert!(gates[0].flippable, "константный TRUE — флипаемый класс");
+        let out = unlock(&mut image, VENDOR_FORM_ITEM).unwrap();
+        assert!(
+            out.applied.iter().any(|t| t.contains("46 -> 47")),
+            "{:?}",
+            out.applied
+        );
+        let after = gates_list(&image, VENDOR_FORM_ITEM).unwrap();
+        assert_eq!(after[0].expression, "false");
+        let again = unlock(&mut image, VENDOR_FORM_ITEM).unwrap();
+        assert!(
+            again.applied.is_empty(),
+            "идемпотентность: уже открыт — {:?}",
+            again.applied
+        );
+    }
+
+    #[test]
     fn unlock_skips_already_unlocked_gate() {
         let mut eq = vec![r_efi::hii::IFR_EQ_ID_VAL_OP, 0x06, 0xB4, 0x00];
         eq.extend_from_slice(&0xFFFFu16.to_le_bytes());
