@@ -7,6 +7,7 @@ use super::ami_patcher;
 use super::form_add;
 use super::gates;
 use super::ifr;
+use super::ifr::formset_spans;
 use super::ops;
 use super::schema;
 use super::spf;
@@ -17,6 +18,16 @@ use crate::types::*;
 pub struct HijackFormSpan {
     pub form_op: usize,
     pub next_form_op: usize,
+}
+
+/// Формсет-владелец формы + её спан: первый формсет, содержащий form_id
+/// (первый-match, паритет locate_form). Спека formset-ordinal-followups §2.
+pub fn locate_form_attribution(pkg: &[u8], form_id: u16) -> Option<(usize, HijackFormSpan)> {
+    let span = locate_form(pkg, form_id)?;
+    let idx = formset_spans(pkg)?
+        .iter()
+        .position(|&(s, e)| s <= span.form_op && span.form_op < e)?;
+    Some((idx, span))
 }
 
 pub fn locate_form(pkg: &[u8], form_id: u16) -> Option<HijackFormSpan> {
@@ -384,6 +395,7 @@ pub(crate) mod test_fixtures {
         b.emit_form_set(&Guid::from_str(FORMSET_GUID).unwrap(), 1, 1, &[]);
         b.emit_form(7, 1);
         b.emit_one_of(2, 0, 0x11, 1, 0, 0, 1);
+        b.emit_end();
         b.emit_end();
         b.emit_end();
         let ifr = b.build();
