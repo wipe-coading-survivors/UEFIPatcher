@@ -338,6 +338,7 @@ mod tests {
             form_id_ifr: 1,
             title: "Main".into(),
             visible: true,
+            formset_ordinal: None,
         }];
         app.forms.expanded = ["S".into()].into();
         app.forms.cursor = 1;
@@ -573,6 +574,7 @@ mod tests {
                 form_id_ifr: i,
                 title: format!("F{i}"),
                 visible: true,
+                formset_ordinal: None,
             })
             .collect();
         app.forms.expanded = ["S".into()].into();

@@ -1283,6 +1283,7 @@ mod tests {
             form_id_ifr: id,
             title: format!("f{id}"),
             visible: true,
+            formset_ordinal: None,
         }
     }
 
@@ -1510,6 +1511,7 @@ mod tests {
             form_id_ifr: id,
             title: format!("f{id}"),
             visible: true,
+            formset_ordinal: None,
         };
         let mut app = App::new();
         app.forms.forms = vec![mk("SETUP", "t-setup:0x19:0", 1), mk("RC", "t-rc:0x19:0", 9)];

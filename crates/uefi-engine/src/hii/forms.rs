@@ -28,7 +28,10 @@ pub fn collect_forms_with_ordinals(image: &Image) -> Vec<(FormInfo, Option<u32>)
 pub fn collect_forms(image: &Image) -> Vec<FormInfo> {
     collect_forms_with_ordinals(image)
         .into_iter()
-        .map(|(f, _)| f)
+        .map(|(mut f, ord)| {
+            f.formset_ordinal = ord;
+            f
+        })
         .collect()
 }
 
@@ -70,6 +73,7 @@ fn collect_file_forms(
                         .cloned()
                         .unwrap_or_default(),
                     visible: !raw.suppressed,
+                    formset_ordinal: None,
                 },
                 ord,
             ));
@@ -829,6 +833,23 @@ mod tests {
             f2.0.formset_guid,
             guid_to_upper_string(&Guid::from_bytes(g2))
         );
+        let plain = collect_forms(&image);
+        assert_eq!(
+            plain
+                .iter()
+                .find(|f| f.form_id_ifr == 1)
+                .unwrap()
+                .formset_ordinal,
+            Some(0)
+        );
+        assert_eq!(
+            plain
+                .iter()
+                .find(|f| f.form_id_ifr == 2)
+                .unwrap()
+                .formset_ordinal,
+            Some(1)
+        );
     }
 
     #[test]
@@ -867,13 +888,7 @@ mod tests {
         );
         let image = img_of(file);
         let forms = collect_forms_with_ordinals(&image);
-        let ord_of = |fid: u32| {
-            forms
-                .iter()
-                .find(|(f, _)| f.form_id_ifr == fid)
-                .unwrap()
-                .1
-        };
+        let ord_of = |fid: u32| forms.iter().find(|(f, _)| f.form_id_ifr == fid).unwrap().1;
         assert_eq!(ord_of(1), Some(0));
         assert_eq!(ord_of(2), Some(1));
         assert_eq!(ord_of(3), None);

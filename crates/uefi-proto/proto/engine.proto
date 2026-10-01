@@ -178,6 +178,7 @@ message FormInfo {
   uint32 form_id_ifr = 3;
   string title = 4;
   bool visible = 5;
+  optional uint32 formset_ordinal = 6;
 }
 message HiiListFormsResponse { repeated FormInfo forms = 1; }
 message HiiListVarstoresRequest { string image_id = 1; string target = 2; }

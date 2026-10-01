@@ -499,6 +499,7 @@ mod tests {
             form_id_ifr: id,
             title: title.into(),
             visible,
+            formset_ordinal: None,
         }
     }
 
@@ -753,6 +754,7 @@ mod tests {
             form_id_ifr: 1,
             title: "Main".into(),
             visible: true,
+            formset_ordinal: None,
         }];
         app.forms.expanded = ["S".into()].into();
         let rows = app.forms_rows();
@@ -822,6 +824,7 @@ mod tests {
             form_id_ifr: 1,
             title: "Main".into(),
             visible: true,
+            formset_ordinal: None,
         }];
         app.forms.expanded = ["S".into()].into();
         let rows = app.forms_rows();
@@ -976,6 +979,7 @@ mod tests {
             form_id_ifr: 1,
             title: "Main".into(),
             visible: true,
+            formset_ordinal: None,
         }];
         app.forms.expanded = ["S".into()].into();
         let rows = app.forms_rows();
