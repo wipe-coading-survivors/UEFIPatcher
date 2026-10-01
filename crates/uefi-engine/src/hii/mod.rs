@@ -289,6 +289,7 @@ fn expr_text(expr: &gates::GateExpr, region: &[u8]) -> String {
             format!("{question_id:#06X} == {value:#06X}")
         }
         gates::GateExpr::True => "true".to_string(),
+        gates::GateExpr::False => "false".to_string(),
         gates::GateExpr::Other => format!(
             "[{}]",
             region
@@ -2210,6 +2211,74 @@ fn check_ref_slots(
     Ok(())
 }
 
+/// Цель REF обязана существовать (спека ref-guard-true-flip §2):
+/// plain REF — форма в формсете-владельце родительской формы
+/// (parse_form_package_sets по qt.pkg/qt.formset_idx); REF3 — глобальная
+/// пара (formset_guid, form_id) по collect_forms. Suppressed-формы и
+/// read-only каналы — валидные цели (GOTO — навигация, не мутация).
+/// Вызывается до любых мутаций (plan-all-then-apply-all).
+fn validate_ref_target(
+    image: &Image,
+    qt: &QuestionTarget,
+    schema: &schema::QuestionAddRefSchema,
+) -> Result<(), HiiError> {
+    let Some(gs) = schema.formset_guid.as_deref() else {
+        let sets = ifr::parse_form_package_sets(&qt.pkg)
+            .ok_or_else(|| HiiError::InvalidSchema("owning form package malformed".into()))?;
+        let fs = sets
+            .get(qt.formset_idx)
+            .map(|(_, fs)| fs)
+            .ok_or_else(|| HiiError::InvalidSchema("owning form package malformed".into()))?;
+        if fs.forms.iter().any(|f| f.form_id == schema.form_id) {
+            return Ok(());
+        }
+        let mut have: Vec<u16> = fs.forms.iter().map(|f| f.form_id).collect();
+        have.sort_unstable();
+        have.dedup();
+        return Err(HiiError::InvalidSchema(format!(
+            "ref target form {} not declared in owning formset {} (have: {})",
+            schema.form_id,
+            crate::guid_to_upper_string(&fs.guid),
+            have.iter()
+                .map(|f| f.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )));
+    };
+    let g = crate::types::Guid::try_parse(gs)
+        .map_err(|_| HiiError::InvalidSchema(format!("formset_guid '{gs}' is not a GUID")))?;
+    let want = crate::guid_to_upper_string(&g);
+    let all = forms::collect_forms(image);
+    let in_set: Vec<&uefi_proto::FormInfo> =
+        all.iter().filter(|f| f.formset_guid == want).collect();
+    if in_set.is_empty() {
+        let mut guids: Vec<&str> = all.iter().map(|f| f.formset_guid.as_str()).collect();
+        guids.sort_unstable();
+        guids.dedup();
+        return Err(HiiError::InvalidSchema(format!(
+            "ref target formset {want} not found in image (have: {})",
+            guids.join(", ")
+        )));
+    }
+    if in_set
+        .iter()
+        .any(|f| f.form_id_ifr == u32::from(schema.form_id))
+    {
+        return Ok(());
+    }
+    let mut have: Vec<u32> = in_set.iter().map(|f| f.form_id_ifr).collect();
+    have.sort_unstable();
+    have.dedup();
+    Err(HiiError::InvalidSchema(format!(
+        "ref target form {} not found in formset {want} (have: {})",
+        schema.form_id,
+        have.iter()
+            .map(|f| f.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    )))
+}
+
 /// Schema-якорь → позиция splice (спека positional-insert §3).
 /// Ровно один ключ проверяется и здесь: add_ref/add_question принимают
 /// схему в обход parse (структурой из кода).
@@ -2244,6 +2313,7 @@ pub fn add_ref(
     let qt = resolve_question_target(image, item_id)?;
     let pos = insert_pos_of(schema.insert_before.as_ref())?;
     let path = resolve_writable_path(image, &qt.target)?;
+    validate_ref_target(image, &qt, schema)?;
     let sd_path = ami_patcher::discover_pfs_payload_path(image)?;
     let spf_records = {
         let body = node_at(&image.root, &sd_path).body.clone();
@@ -2338,6 +2408,7 @@ pub fn check_ref_add(
     }
     let mut pending: Vec<u16> = question_qids.to_vec();
     for schema in refs {
+        validate_ref_target(image, &qt, schema)?;
         check_ref_slots(schema, &qt.pkg, &pending)?;
         let pos = insert_pos_of(schema.insert_before.as_ref())?;
         let mut strings: Vec<String> = vec![schema.prompt.clone(), schema.help.clone()];
@@ -3608,6 +3679,11 @@ mod tests {
     }
 
     #[test]
+    fn expr_text_false() {
+        assert_eq!(expr_text(&gates::GateExpr::False, &[]), "false");
+    }
+
+    #[test]
     fn gates_list_bare_channel_reports_form_and_question_gates() {
         let mut image = vendor_image_with(0x19, vendor_forms_pkg());
         image.mode = ImageMode::Read;
@@ -4267,7 +4343,7 @@ mod tests {
             [
                 g_form(10002),
                 g_opcode(r_efi::hii::IFR_SUPPRESS_IF_OP, true, &[]),
-                vec![r_efi::hii::IFR_TRUE_OP, 0x02],
+                vec![0x42u8, 0x03, 0x07],
                 g_ref(10029),
                 g_end(),
                 g_end(),
@@ -4279,6 +4355,41 @@ mod tests {
         let err = unlock(&mut image, VENDOR_FORM_ITEM).unwrap_err();
         assert!(matches!(err, HiiError::GateExpressionUnsupported(_)));
         assert_eq!(image.root.children[0].children[0].children[0].body, pkg);
+    }
+
+    #[test]
+    fn unlock_flips_constant_true_gate() {
+        let pkg = forms_pkg(
+            [
+                g_form(10002),
+                g_opcode(r_efi::hii::IFR_SUPPRESS_IF_OP, true, &[]),
+                vec![r_efi::hii::IFR_TRUE_OP, 0x02],
+                g_ref(10029),
+                g_end(),
+                g_end(),
+                g_end(),
+            ]
+            .concat(),
+        );
+        let mut image = vendor_image_with(0x19, pkg);
+        let gates = gates_list(&image, VENDOR_FORM_ITEM).unwrap();
+        assert_eq!(gates.len(), 1);
+        assert_eq!(gates[0].expression, "true");
+        assert!(gates[0].flippable, "константный TRUE — флипаемый класс");
+        let out = unlock(&mut image, VENDOR_FORM_ITEM).unwrap();
+        assert!(
+            out.applied.iter().any(|t| t.contains("46 -> 47")),
+            "{:?}",
+            out.applied
+        );
+        let after = gates_list(&image, VENDOR_FORM_ITEM).unwrap();
+        assert_eq!(after[0].expression, "false");
+        let again = unlock(&mut image, VENDOR_FORM_ITEM).unwrap();
+        assert!(
+            again.applied.is_empty(),
+            "идемпотентность: уже открыт — {:?}",
+            again.applied
+        );
     }
 
     #[test]
@@ -4350,7 +4461,7 @@ mod tests {
     fn unlock_cross_phase_failure_rolls_back_all_donors() {
         let mut image = cross_formset::cross_fixtures::three_file_image(
             cross_formset::cross_fixtures::donor_pkg(),
-            cross_formset::cross_fixtures::donor_true_expr_pkg(),
+            cross_formset::cross_fixtures::donor_other_expr_pkg(),
             cross_formset::cross_fixtures::target_pkg(),
         );
         let debug_before = format!("{:?}", image.root);
@@ -4369,7 +4480,7 @@ mod tests {
     fn unlock_rolls_back_own_phase_on_cross_failure() {
         let mut image = cross_formset::cross_fixtures::three_file_image(
             cross_formset::cross_fixtures::donor_pkg(),
-            cross_formset::cross_fixtures::donor_true_expr_pkg(),
+            cross_formset::cross_fixtures::donor_other_expr_pkg(),
             cross_formset::cross_fixtures::target_with_own_gate_pkg(),
         );
         let debug_before = format!("{:?}", image.root);
@@ -6391,18 +6502,74 @@ mod tests {
             }
 
             #[test]
-            fn add_ref_allows_dangling_destination_form() {
+            fn add_ref_rejects_dangling_destination_form() {
                 let (flash, _, _) = question_add_flash_image();
                 let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
-                let res = add_ref(&mut img, ITEM_FORM, &ref_add_schema(0x300, 10099))
-                    .expect("destination existence is the caller's contract");
-                assert_eq!(res.question_id, 0x300);
-                let pkg_after = pkg_of(&img, "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x10:0");
-                let r = find_ref_op(&pkg_after, 10019).expect("REF op in form 10019");
-                assert_eq!(pkg_u16(&pkg_after, r + 13), 10099);
+                let before = build_image(&img).unwrap();
+                let err = add_ref(&mut img, ITEM_FORM, &ref_add_schema(0x300, 10099)).unwrap_err();
                 assert!(
-                    crate::hii::form_hijack::locate_form(&pkg_after, 10099).is_none(),
-                    "fixture must not contain the dangling destination"
+                    matches!(&err, HiiError::InvalidSchema(m)
+                        if m.contains("not declared in owning formset")
+                        && m.contains("10019")
+                        && m.contains("10020")),
+                    "got {err:?}"
+                );
+                assert_eq!(
+                    build_image(&img).unwrap(),
+                    before,
+                    "rejection must not mutate the image"
+                );
+            }
+
+            #[test]
+            fn add_ref_rejects_form_of_neighbor_formset() {
+                let (flash, _, _) = two_formset_question_add_flash_image();
+                let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+                let err = add_ref(&mut img, ITEM_FORM, &ref_add_schema(0x300, 10020)).unwrap_err();
+                assert!(
+                    matches!(&err, HiiError::InvalidSchema(m)
+                        if m.contains("not declared in owning formset")),
+                    "10020 живёт в соседнем формсете, не в владельце 10019: {err:?}"
+                );
+            }
+
+            #[test]
+            fn check_ref_add_rejects_dangling_target() {
+                let (flash, _, _) = question_add_flash_image();
+                let img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+                let err = check_ref_add(&img, ITEM_FORM, &[ref_add_schema(0x300, 10099)], &[])
+                    .unwrap_err();
+                assert!(
+                    matches!(&err, HiiError::InvalidSchema(m)
+                        if m.contains("not declared in owning formset")),
+                    "got {err:?}"
+                );
+                check_ref_add(&img, ITEM_FORM, &[ref_add_schema(0x300, 10020)], &[])
+                    .expect("валидная intra-цель проходит precheck");
+            }
+
+            #[test]
+            fn add_ref_target_error_precedes_string_pack() {
+                use crate::hii::form_hijack::test_fixtures::{
+                    FILE_GUID, ffs_file_bytes, flash_with_files, section_bytes,
+                };
+                use crate::hii::pe_resource::synth_hii_pe;
+                let pkg = question_add_forms_pkg();
+                let spf_body = question_add_spf_body_for(&pkg);
+                let blob = hii_list_blob(&[&pkg]);
+                let pe = synth_hii_pe("HII", &blob);
+                let setup = ffs_file_bytes(
+                    &Guid::from_str(FILE_GUID).unwrap(),
+                    &section_bytes(crate::ffs::EFI_SECTION_PE32, &pe),
+                );
+                let sd = sd_file_direct(&spf_body);
+                let flash = flash_with_files(vec![setup, sd]);
+                let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+                let err = add_ref(&mut img, ITEM_FORM, &ref_add_schema(0x300, 10099)).unwrap_err();
+                assert!(
+                    matches!(&err, HiiError::InvalidSchema(m)
+                        if m.contains("not declared in owning formset")),
+                    "отказ цели раньше string-пакета: {err:?}"
                 );
             }
 
@@ -6465,12 +6632,147 @@ mod tests {
 
             const CROSS_FORMSET_GUID: &str = "EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9";
 
+            fn ref3_schema(qid: u16, dest_form: u16, guid: &str) -> schema::QuestionAddRefSchema {
+                let mut s = ref_add_schema(qid, dest_form);
+                s.formset_guid = Some(guid.into());
+                s
+            }
+
+            #[test]
+            fn add_ref_accepts_cross_formset_target() {
+                let (flash, pkg_before, _) = two_formset_question_add_flash_image();
+                let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+                let res = add_ref(
+                    &mut img,
+                    ITEM_FORM,
+                    &ref3_schema(0x300, 10020, FORMSET2_GUID),
+                )
+                .expect("REF3 на существующие формсет+форму");
+                assert_eq!(res.question_id, 0x300);
+                let pkg_after = pkg_of(&img, "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x10:0");
+                assert_eq!(pkg_after.len() - pkg_before.len(), 33);
+                let r = find_ref_op(&pkg_after, 10019).expect("REF3 op in form 10019");
+                assert_eq!(pkg_after[r + 1] & 0x7F, 33, "REF3 op total length is 33");
+            }
+
+            #[test]
+            fn add_ref_rejects_unknown_formset_guid() {
+                let (flash, _, _) = two_formset_question_add_flash_image();
+                let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+                let before = build_image(&img).unwrap();
+                let err = add_ref(
+                    &mut img,
+                    ITEM_FORM,
+                    &ref3_schema(0x300, 10020, CROSS_FORMSET_GUID),
+                )
+                .unwrap_err();
+                assert!(
+                    matches!(&err, HiiError::InvalidSchema(m)
+                        if m.contains("formset EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9 not found in image")),
+                    "got {err:?}"
+                );
+                assert_eq!(build_image(&img).unwrap(), before);
+            }
+
+            #[test]
+            fn add_ref_rejects_missing_form_in_known_formset() {
+                let (flash, _, _) = two_formset_question_add_flash_image();
+                let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+                let err = add_ref(
+                    &mut img,
+                    ITEM_FORM,
+                    &ref3_schema(0x300, 10099, FORMSET2_GUID),
+                )
+                .unwrap_err();
+                assert!(
+                    matches!(&err, HiiError::InvalidSchema(m)
+                        if m.contains("ref target form 10099 not found in formset")
+                        && m.contains("10020")),
+                    "got {err:?}"
+                );
+            }
+
+            #[test]
+            fn add_ref_accepts_suppressed_cross_target() {
+                use crate::hii::form_hijack::test_fixtures::{
+                    FILE_GUID, FORMSET_GUID, ffs_file_bytes, flash_with_files, section_bytes,
+                };
+                use crate::hii::pe_resource::synth_hii_pe;
+                let g1 = Guid::from_str(FORMSET_GUID).unwrap();
+                let g2 = Guid::from_str(FORMSET2_GUID).unwrap();
+                let mut ifr = Vec::new();
+                ifr.extend_from_slice(&[r_efi::hii::IFR_FORM_SET_OP, 23 | 0x80]);
+                ifr.extend_from_slice(&g1.to_bytes());
+                ifr.extend_from_slice(&1u16.to_le_bytes());
+                ifr.extend_from_slice(&0u16.to_le_bytes());
+                ifr.push(0u8);
+                ifr.extend_from_slice(&[r_efi::hii::IFR_FORM_OP, 6 | 0x80]);
+                ifr.extend_from_slice(&10019u16.to_le_bytes());
+                ifr.extend_from_slice(&1u16.to_le_bytes());
+                ifr.extend_from_slice(&[r_efi::hii::IFR_END_OP, 2]);
+                ifr.extend_from_slice(&[r_efi::hii::IFR_END_OP, 2]);
+                ifr.extend_from_slice(&[r_efi::hii::IFR_FORM_SET_OP, 23 | 0x80]);
+                ifr.extend_from_slice(&g2.to_bytes());
+                ifr.extend_from_slice(&2u16.to_le_bytes());
+                ifr.extend_from_slice(&0u16.to_le_bytes());
+                ifr.push(0u8);
+                ifr.extend_from_slice(&[r_efi::hii::IFR_SUPPRESS_IF_OP, 2 | 0x80]);
+                ifr.extend_from_slice(&[r_efi::hii::IFR_TRUE_OP, 0x02]);
+                ifr.extend_from_slice(&[r_efi::hii::IFR_FORM_OP, 6 | 0x80]);
+                ifr.extend_from_slice(&10030u16.to_le_bytes());
+                ifr.extend_from_slice(&2u16.to_le_bytes());
+                ifr.extend_from_slice(&[r_efi::hii::IFR_END_OP, 2]);
+                ifr.extend_from_slice(&[r_efi::hii::IFR_END_OP, 2]);
+                ifr.extend_from_slice(&[r_efi::hii::IFR_END_OP, 2]);
+                let len = 4 + ifr.len() as u32;
+                let mut pkg = vec![
+                    (len & 0xFF) as u8,
+                    ((len >> 8) & 0xFF) as u8,
+                    ((len >> 16) & 0xFF) as u8,
+                    r_efi::hii::PACKAGE_FORMS,
+                ];
+                pkg.extend_from_slice(&ifr);
+                let blob = hii_list_blob(&[&pkg]);
+                let pe = synth_hii_pe("HII", &blob);
+                let setup = ffs_file_bytes(
+                    &Guid::from_str(FILE_GUID).unwrap(),
+                    &section_bytes(crate::ffs::EFI_SECTION_PE32, &pe),
+                );
+                let flash = flash_with_files(vec![setup]);
+                let img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+                let target = forms::collect_forms(&img)
+                    .into_iter()
+                    .find(|f| f.formset_guid == FORMSET2_GUID && f.form_id_ifr == 10030)
+                    .expect("форма 10030 видна collect_forms");
+                assert!(!target.visible, "фикстура: цель реально suppressed");
+                let qt = resolve_question_target(&img, ITEM_FORM).unwrap();
+                validate_ref_target(&img, &qt, &ref3_schema(0x300, 10030, FORMSET2_GUID))
+                    .expect("suppressed-цель — валидный REF3-таргет");
+            }
+
+            #[test]
+            fn add_ref_rejects_malformed_formset_guid_early() {
+                let (flash, _, _) = two_formset_question_add_flash_image();
+                let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+                let err = add_ref(
+                    &mut img,
+                    ITEM_FORM,
+                    &ref3_schema(0x300, 10020, "not-a-guid"),
+                )
+                .unwrap_err();
+                assert!(
+                    matches!(&err, HiiError::InvalidSchema(m)
+                        if m.contains("formset_guid 'not-a-guid' is not a GUID")),
+                    "got {err:?}"
+                );
+            }
+
             #[test]
             fn add_ref_with_formset_guid_emits_ref3_roundtrip() {
-                let (flash, pkg_before, _) = question_add_flash_image();
+                let (flash, pkg_before, _) = two_formset_question_add_flash_image();
                 let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
                 let mut s = ref_add_schema(0x300, 10020);
-                s.formset_guid = Some(CROSS_FORMSET_GUID.into());
+                s.formset_guid = Some(FORMSET2_GUID.into());
                 add_ref(&mut img, ITEM_FORM, &s).expect("add ref3");
 
                 let pkg_after = pkg_of(&img, "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x10:0");
@@ -6483,7 +6785,7 @@ mod tests {
                 let r = find_ref_op(&pkg_after, 10019).expect("REF op in form 10019");
                 assert_eq!(pkg_after[r + 1] & 0x7F, 33, "REF3 op total length is 33");
                 let stmt = &pkg_after[r..r + 33];
-                let g = Guid::from_str(CROSS_FORMSET_GUID).unwrap();
+                let g = Guid::from_str(FORMSET2_GUID).unwrap();
                 assert_eq!(
                     ref_variant::parse_ref(stmt[0], stmt),
                     Some(ref_variant::RefTarget::Formset {

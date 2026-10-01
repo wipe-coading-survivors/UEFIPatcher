@@ -101,8 +101,7 @@ pub(crate) mod cross_fixtures {
     use crate::types::{Action, FfsNode, FfsType, Guid, Image, ImageMode, ParsingData};
     use r_efi::hii::{
         IFR_END_OP, IFR_EQ_ID_VAL_OP, IFR_EQUAL_OP, IFR_FORM_OP, IFR_FORM_SET_OP,
-        IFR_GRAY_OUT_IF_OP, IFR_ONE_OF_OP, IFR_SUPPRESS_IF_OP, IFR_TRUE_OP, IFR_UINT64_OP,
-        PACKAGE_FORMS,
+        IFR_GRAY_OUT_IF_OP, IFR_ONE_OF_OP, IFR_SUPPRESS_IF_OP, IFR_UINT64_OP, PACKAGE_FORMS,
     };
     use std::str::FromStr;
 
@@ -347,7 +346,7 @@ pub(crate) mod cross_fixtures {
     /// Донор с не-E12 выражением (TRUE) вокруг REF3 → RC_SET#1:
     /// plan_flip даёт Ok(None) → кросс-фаза падает GateExpressionUnsupported.
     /// Фикстура атомарности B3 (спека hii-write-guard §3).
-    pub(crate) fn donor_true_expr_pkg() -> Vec<u8> {
+    pub(crate) fn donor_other_expr_pkg() -> Vec<u8> {
         let mut ifr = opcode(IFR_FORM_SET_OP, true, &[0u8; 21]);
         ifr.extend(opcode(
             IFR_FORM_OP,
@@ -355,7 +354,7 @@ pub(crate) mod cross_fixtures {
             &[10001u16.to_le_bytes(), 20u16.to_le_bytes()].concat(),
         ));
         ifr.extend(opcode(IFR_SUPPRESS_IF_OP, true, &[]));
-        ifr.extend(vec![IFR_TRUE_OP, 0x02]);
+        ifr.extend(vec![0x42u8, 0x03, 0x07]);
         ifr.extend(ref3(1));
         ifr.extend(vec![IFR_END_OP, 0x02]);
         ifr.extend(vec![IFR_END_OP, 0x02]);

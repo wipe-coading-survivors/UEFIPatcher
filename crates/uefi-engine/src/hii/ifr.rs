@@ -623,7 +623,9 @@ pub fn parse_form_package(body: &[u8]) -> Option<FormSetInfo> {
 /// Ordinal = индекс FORM_SET_OP в пакете — семантика дискриминатора `#n`
 /// (locate_formset_insert_points). Пакет, не начинающийся с FORM_SET_OP,
 /// отвергается гейтом is_form_package (None). Malformed-опкод → None, как
-/// у parse_form_package. НЕ используется мутациями — только списки/просмотр.
+/// у parse_form_package. Читается и списками/просмотром, и read-путём
+/// валидации мутаторов (validate_ref_target, ref-guard-true-flip §2) —
+/// без мутации входного тела.
 pub fn parse_form_package_sets(body: &[u8]) -> Option<Vec<(usize, FormSetInfo)>> {
     if !is_form_package(body) {
         return None;
