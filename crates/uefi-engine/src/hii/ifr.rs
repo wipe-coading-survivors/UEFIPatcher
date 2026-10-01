@@ -266,13 +266,13 @@ pub(crate) fn formset_insert_points(pkg: &[u8], formset_idx: usize) -> Option<(u
     locate_formset_insert_points(pkg, formset_idx)
 }
 
-fn locate_formset_insert_points(body: &[u8], formset_idx: usize) -> Option<(usize, usize)> {
+pub(crate) fn formset_spans(body: &[u8]) -> Option<Vec<(usize, usize)>> {
     if !is_form_package(body) {
         return None;
     }
     let plen = body[0] as usize | (body[1] as usize) << 8 | (body[2] as usize) << 16;
     let end = plen.min(body.len());
-    let mut seen = 0usize;
+    let mut spans = Vec::new();
     let mut i = 4;
     while i + 2 <= end {
         let op_code = body[i];
@@ -282,33 +282,37 @@ fn locate_formset_insert_points(body: &[u8], formset_idx: usize) -> Option<(usiz
             return None;
         }
         if op_code == IFR_FORM_SET_OP {
-            if seen == formset_idx {
-                let mut depth = 1usize;
-                let mut j = i + length;
-                while j + 2 <= end {
-                    let inner_op = body[j];
-                    let inner_ls = body[j + 1];
-                    let inner_len = (inner_ls & 0x7F) as usize;
-                    if inner_len < 2 || j + inner_len > end {
-                        return None;
-                    }
-                    if inner_op == IFR_END_OP {
-                        depth -= 1;
-                        if depth == 0 {
-                            return Some((i + length, j));
-                        }
-                    } else if inner_ls & 0x80 != 0 {
-                        depth += 1;
-                    }
-                    j += inner_len;
+            let mut depth = 1usize;
+            let mut j = i + length;
+            while j + 2 <= end {
+                let inner_op = body[j];
+                let inner_ls = body[j + 1];
+                let inner_len = (inner_ls & 0x7F) as usize;
+                if inner_len < 2 || j + inner_len > end {
+                    return None;
                 }
+                if inner_op == IFR_END_OP {
+                    depth -= 1;
+                    if depth == 0 {
+                        spans.push((i + length, j));
+                        break;
+                    }
+                } else if inner_ls & 0x80 != 0 {
+                    depth += 1;
+                }
+                j += inner_len;
+            }
+            if depth != 0 {
                 return None;
             }
-            seen += 1;
         }
         i += length;
     }
-    None
+    Some(spans)
+}
+
+fn locate_formset_insert_points(body: &[u8], formset_idx: usize) -> Option<(usize, usize)> {
+    formset_spans(body)?.get(formset_idx).copied()
 }
 
 pub fn splice_question_ops(
@@ -1194,6 +1198,41 @@ mod tests {
         assert!(!insert_form_into_package(&mut pkg, 1, &nf, &vs));
         assert!(!insert_form_into_package(&mut pkg, 5, &[], &[]));
         assert_eq!(pkg, before);
+    }
+
+    #[test]
+    fn formset_spans_returns_span_per_formset() {
+        let g1: [u8; 16] = [1; 16];
+        let g2: [u8; 16] = [2; 16];
+        let mut ifr = Vec::new();
+        ifr.extend_from_slice(&[IFR_FORM_SET_OP, 23 | 0x80]);
+        ifr.extend_from_slice(&g1);
+        ifr.extend_from_slice(&[1, 0, 0, 0, 0]);
+        ifr.extend_from_slice(&[IFR_FORM_OP, 6, 1, 0, 1, 0]);
+        ifr.extend_from_slice(&[IFR_END_OP, 2]);
+        ifr.extend_from_slice(&[IFR_FORM_SET_OP, 23 | 0x80]);
+        ifr.extend_from_slice(&g2);
+        ifr.extend_from_slice(&[2, 0, 0, 0, 0]);
+        ifr.extend_from_slice(&[IFR_FORM_OP, 6, 2, 0, 2, 0]);
+        ifr.extend_from_slice(&[IFR_END_OP, 2]);
+        let spans = formset_spans(&package(&ifr)).unwrap();
+        assert_eq!(
+            spans,
+            vec![
+                (4 + 23, 4 + 23 + 6),
+                (4 + 23 + 6 + 2 + 23, 4 + 23 + 6 + 2 + 23 + 6)
+            ]
+        );
+    }
+
+    #[test]
+    fn formset_spans_rejects_unterminated_formset() {
+        let g1: [u8; 16] = [1; 16];
+        let mut ifr = Vec::new();
+        ifr.extend_from_slice(&[IFR_FORM_SET_OP, 23 | 0x80]);
+        ifr.extend_from_slice(&g1);
+        ifr.extend_from_slice(&[1, 0, 0, 0, 0]);
+        assert!(formset_spans(&package(&ifr)).is_none());
     }
 
     #[test]

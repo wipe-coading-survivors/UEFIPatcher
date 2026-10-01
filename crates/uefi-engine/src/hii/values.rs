@@ -1,4 +1,4 @@
-use super::ifr::is_form_package;
+use super::ifr::{formset_spans, is_form_package};
 use crate::types::Guid;
 use r_efi::hii::{
     IFR_ACTION_OP, IFR_CHECKBOX_OP, IFR_DATE_OP, IFR_DEFAULT_OP, IFR_END_OP, IFR_FORM_OP,
@@ -202,23 +202,48 @@ fn ucs2_strz(bytes: &[u8]) -> String {
 
 pub fn varstore_map(pkg: &[u8]) -> Vec<VarStoreMap> {
     let mut out = Vec::new();
-    walk_statements(pkg, |op, off, len, _| match op {
+    walk_statements(pkg, |op, off, len, _| {
+        if let Some(m) = parse_varstore_op(pkg, op, off, len) {
+            out.push(m);
+        }
+    });
+    out
+}
+
+/// Карта деклараций одного формсета (formset-ordinal-followups §2):
+/// те же op-разборы, что varstore_map, но только ops внутри спана
+/// formset_idx. None = out-of-range/malformed.
+pub fn varstore_map_formset(pkg: &[u8], formset_idx: usize) -> Option<Vec<VarStoreMap>> {
+    let (span_start, span_end) = formset_spans(pkg)?.get(formset_idx).copied()?;
+    let mut out = Vec::new();
+    walk_statements(pkg, |op, off, len, _| {
+        if (span_start..span_end).contains(&off)
+            && let Some(m) = parse_varstore_op(pkg, op, off, len)
+        {
+            out.push(m);
+        }
+    });
+    Some(out)
+}
+
+fn parse_varstore_op(pkg: &[u8], op: u8, off: usize, len: usize) -> Option<VarStoreMap> {
+    match op {
         IFR_VARSTORE_OP if len >= 22 => {
             let mut guid_bytes = [0u8; 16];
             guid_bytes.copy_from_slice(&pkg[off + 2..off + 18]);
-            out.push(VarStoreMap {
+            Some(VarStoreMap {
                 id: u16::from_le_bytes([pkg[off + 18], pkg[off + 19]]),
                 guid: Some(Guid::from_bytes(guid_bytes)),
                 size: u16::from_le_bytes([pkg[off + 20], pkg[off + 21]]),
                 name: ascii_strz(&pkg[off + 22..off + len]),
                 kind: VarStoreKind::Buffer,
                 attributes: 0,
-            });
+            })
         }
         IFR_VARSTORE_EFI_OP if len >= 26 => {
             let mut guid_bytes = [0u8; 16];
             guid_bytes.copy_from_slice(&pkg[off + 4..off + 20]);
-            out.push(VarStoreMap {
+            Some(VarStoreMap {
                 id: u16::from_le_bytes([pkg[off + 2], pkg[off + 3]]),
                 guid: Some(Guid::from_bytes(guid_bytes)),
                 size: u16::from_le_bytes([pkg[off + 24], pkg[off + 25]]),
@@ -230,9 +255,9 @@ pub fn varstore_map(pkg: &[u8]) -> Vec<VarStoreMap> {
                     pkg[off + 22],
                     pkg[off + 23],
                 ]),
-            });
+            })
         }
-        IFR_VARSTORE_NAME_VALUE_OP if len >= 6 => out.push(VarStoreMap {
+        IFR_VARSTORE_NAME_VALUE_OP if len >= 6 => Some(VarStoreMap {
             id: u16::from_le_bytes([pkg[off + 2], pkg[off + 3]]),
             guid: None,
             size: 0,
@@ -240,9 +265,8 @@ pub fn varstore_map(pkg: &[u8]) -> Vec<VarStoreMap> {
             kind: VarStoreKind::NameValue,
             attributes: 0,
         }),
-        _ => {}
-    });
-    out
+        _ => None,
+    }
 }
 
 pub(crate) fn scan_options(
@@ -604,6 +628,58 @@ mod tests {
             true,
             &question_header(qid, 1, 0x0020, 0x00),
         )
+    }
+
+    fn two_formsets_varstores_pkg() -> Vec<u8> {
+        let g1: [u8; 16] = [0x11; 16];
+        let g2: [u8; 16] = [0x22; 16];
+        let mut ifr = Vec::new();
+        ifr.extend_from_slice(&[IFR_FORM_SET_OP, 23 | 0x80]);
+        ifr.extend_from_slice(&g1);
+        ifr.extend_from_slice(&[1, 0, 0, 0, 0]);
+        ifr.extend_from_slice(&[IFR_VARSTORE_OP, 28]);
+        ifr.extend_from_slice(&g1);
+        ifr.extend_from_slice(&1u16.to_le_bytes());
+        ifr.extend_from_slice(&0x100u16.to_le_bytes());
+        ifr.extend_from_slice(b"Setup\0");
+        ifr.extend_from_slice(&[IFR_FORM_OP, 6, 1, 0, 1, 0]);
+        ifr.extend_from_slice(&[IFR_END_OP, 2]);
+        ifr.extend_from_slice(&[IFR_FORM_SET_OP, 23 | 0x80]);
+        ifr.extend_from_slice(&g2);
+        ifr.extend_from_slice(&[2, 0, 0, 0, 0]);
+        ifr.extend_from_slice(&[IFR_VARSTORE_OP, 29]);
+        ifr.extend_from_slice(&g2);
+        ifr.extend_from_slice(&2u16.to_le_bytes());
+        ifr.extend_from_slice(&0x80u16.to_le_bytes());
+        ifr.extend_from_slice(b"Setup2\0");
+        ifr.extend_from_slice(&[IFR_FORM_OP, 6, 2, 0, 2, 0]);
+        ifr.extend_from_slice(&[IFR_END_OP, 2]);
+        let len = 4 + ifr.len() as u32;
+        let mut pkg = vec![
+            (len & 0xFF) as u8,
+            ((len >> 8) & 0xFF) as u8,
+            ((len >> 16) & 0xFF) as u8,
+            r_efi::hii::PACKAGE_FORMS,
+        ];
+        pkg.extend_from_slice(&ifr);
+        pkg
+    }
+
+    #[test]
+    fn varstore_map_formset_scopes_declarations_to_span() {
+        let pkg = two_formsets_varstores_pkg();
+        let m0 = varstore_map_formset(&pkg, 0).unwrap();
+        assert_eq!(m0.len(), 1);
+        assert_eq!(m0[0].id, 1);
+        assert_eq!(m0[0].size, 0x100);
+        assert_eq!(m0[0].name, "Setup");
+        let m1 = varstore_map_formset(&pkg, 1).unwrap();
+        assert_eq!(m1.len(), 1);
+        assert_eq!(m1[0].id, 2);
+        assert_eq!(m1[0].name, "Setup2");
+        assert!(varstore_map_formset(&pkg, 2).is_none());
+        let whole = varstore_map(&pkg);
+        assert_eq!(whole.len(), 2, "целая карта = объединение спанов");
     }
 
     #[test]

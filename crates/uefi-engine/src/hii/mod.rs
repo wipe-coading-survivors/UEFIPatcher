@@ -855,15 +855,16 @@ pub fn get_value(image: &Image, item_id: &str) -> Result<GetValueOutcome, HiiErr
     Ok(outcome(Some(v), option, store_path))
 }
 
-/// Карта varstore-деклараций формсета (спека varstore-contract §3):
-/// item_id — грамматика `hii form add` (`<target>` или `<target>#<n>`;
-/// карта не зависит от formset-ординала — это пакет формсета).
+/// Карта varstore-деклараций формсета (спека varstore-contract §3;
+/// formset-ordinal-followups §2.1): item_id — грамматика `hii form add`
+/// (`<target>` или `<target>#<n>`); `#n` выбирает n-й FORM_SET пакета,
+/// читаются только декларации его спана; out-of-range `#n` → NotFound.
 /// Read-only, образ в любом режиме. guid="" — name-value декларация.
 pub fn list_varstores(
     image: &Image,
     item_id: &str,
 ) -> Result<Vec<uefi_proto::VarStoreInfo>, HiiError> {
-    let (target_str, _formset_idx) = match item_id.rsplit_once('#') {
+    let (target_str, formset_idx) = match item_id.rsplit_once('#') {
         Some((t, n)) => match n.parse::<u16>() {
             Ok(idx) => (t, idx as usize),
             Err(_) => return Err(HiiError::NotFound),
@@ -885,7 +886,11 @@ pub fn list_varstores(
     } else {
         return Err(HiiError::NotASetupItem);
     };
-    Ok(values::varstore_map(pkg)
+    if !ifr::formset_at(pkg, formset_idx) {
+        return Err(HiiError::NotFound);
+    }
+    let map = values::varstore_map_formset(pkg, formset_idx).ok_or(HiiError::InvalidIfr)?;
+    Ok(map
         .into_iter()
         .map(|m| uefi_proto::VarStoreInfo {
             id: u32::from(m.id),
@@ -6649,7 +6654,7 @@ mod tests {
                 assert_eq!(
                     list_varstores(&img, &format!("{ITEM_FORMSET}#0")).unwrap(),
                     stores,
-                    "карта не зависит от formset-ординала — грамматика form add `#<n>`"
+                    "фикстура одно-формсетная: scoped #0 == вся карта пакета (formset-ordinal-followups §2.1)"
                 );
                 let err = list_varstores(&img, "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x01:0")
                     .unwrap_err();
@@ -6666,6 +6671,104 @@ mod tests {
                 let err = list_varstores(&img, "00000000-0000-0000-0000-000000000000:0x10:0")
                     .unwrap_err();
                 assert!(matches!(err, HiiError::NotFound), "got {err:?}");
+            }
+
+            fn two_formset_varstores_pkg() -> Vec<u8> {
+                use crate::hii::ifr_builder::IfrBuilder;
+
+                let mut b = IfrBuilder::new();
+                let g1 = Guid::from_str("A1B2C3D4-E5F6-7890-ABCD-EF1234567890").unwrap();
+                b.emit_form_set(&g1, 1, 1, &[]);
+                b.emit_var_store(1, &g1, 0x100, "Setup");
+                b.emit_form(1, 1);
+                b.emit_end();
+                b.emit_end();
+                let g2 = Guid::from_str("B1B2C3D4-E5F6-7890-ABCD-EF1234567890").unwrap();
+                b.emit_form_set(&g2, 2, 2, &[]);
+                b.emit_var_store(2, &g2, 0x80, "Setup2");
+                b.emit_form(2, 2);
+                b.emit_end();
+                b.emit_end();
+                let ifr = b.build();
+                let len = 4 + ifr.len() as u32;
+                let mut pkg = vec![
+                    (len & 0xFF) as u8,
+                    ((len >> 8) & 0xFF) as u8,
+                    ((len >> 16) & 0xFF) as u8,
+                    r_efi::hii::PACKAGE_FORMS,
+                ];
+                pkg.extend_from_slice(&ifr);
+                pkg
+            }
+
+            #[test]
+            fn list_varstores_scopes_map_by_formset_ordinal() {
+                use crate::hii::form_hijack::test_fixtures::{
+                    ffs_file_bytes, flash_with_files, section_bytes,
+                };
+
+                let content =
+                    section_bytes(crate::ffs::EFI_SECTION_RAW, &two_formset_varstores_pkg());
+                let flash = flash_with_files(vec![ffs_file_bytes(
+                    &Guid::from_str("5C60F367-A505-419A-859E-2A4FF6CA6FE5").unwrap(),
+                    &content,
+                )]);
+                let img = parse_image(&flash, ImageMode::Read, "i", "s").unwrap();
+                let target = "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:0";
+                let ids = |s: Vec<uefi_proto::VarStoreInfo>| {
+                    s.into_iter().map(|v| (v.id, v.name)).collect::<Vec<_>>()
+                };
+                assert_eq!(
+                    ids(list_varstores(&img, target).unwrap()),
+                    vec![(1, "Setup".into())]
+                );
+                assert_eq!(
+                    ids(list_varstores(&img, &format!("{target}#1")).unwrap()),
+                    vec![(2, "Setup2".into())]
+                );
+                let err = list_varstores(&img, &format!("{target}#2")).unwrap_err();
+                assert!(
+                    matches!(err, HiiError::NotFound),
+                    "out-of-range #n, got {err:?}"
+                );
+            }
+
+            #[test]
+            fn list_varstores_truncated_package_is_not_found() {
+                use crate::hii::form_hijack::test_fixtures::{
+                    ffs_file_bytes, flash_with_files, section_bytes,
+                };
+
+                let g1: [u8; 16] = [0x11; 16];
+                let mut ifr = Vec::new();
+                ifr.extend_from_slice(&[r_efi::hii::IFR_FORM_SET_OP, 23 | 0x80]);
+                ifr.extend_from_slice(&g1);
+                ifr.extend_from_slice(&[1, 0, 0, 0, 0]);
+                ifr.extend_from_slice(&[r_efi::hii::IFR_VARSTORE_OP, 28]);
+                ifr.extend_from_slice(&g1);
+                ifr.extend_from_slice(&1u16.to_le_bytes());
+                ifr.extend_from_slice(&0x100u16.to_le_bytes());
+                ifr.extend_from_slice(b"Setup\0");
+                let len = 4 + ifr.len() as u32;
+                let mut pkg = vec![
+                    (len & 0xFF) as u8,
+                    ((len >> 8) & 0xFF) as u8,
+                    ((len >> 16) & 0xFF) as u8,
+                    r_efi::hii::PACKAGE_FORMS,
+                ];
+                pkg.extend_from_slice(&ifr);
+                let content = section_bytes(crate::ffs::EFI_SECTION_RAW, &pkg);
+                let flash = flash_with_files(vec![ffs_file_bytes(
+                    &Guid::from_str("5C60F367-A505-419A-859E-2A4FF6CA6FE5").unwrap(),
+                    &content,
+                )]);
+                let img = parse_image(&flash, ImageMode::Read, "i", "s").unwrap();
+                let err = list_varstores(&img, "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:0")
+                    .unwrap_err();
+                assert!(
+                    matches!(err, HiiError::NotFound),
+                    "FORM_SET без парного END: formset_spans None → NotFound, не молчаливая карта; got {err:?}"
+                );
             }
 
             #[test]
