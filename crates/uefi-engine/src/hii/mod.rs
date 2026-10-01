@@ -2001,6 +2001,24 @@ pub fn check_question_add(
 
 /// Вставка varstore-деклараций в пролог формсета + сдвиг $SPF-записей.
 /// Спека formset-unlock §3 U3. Возвращает вставленные id; повторный вызов
+/// Мутационный селектор форм-пакета для add_varstores: PE32 — первый
+/// forms-пакет ПЕРВОЙ resource-записи (единственный writable-канал,
+/// паритет collect_forms из formset-ordinal: writable по индексу записи),
+/// остальные каналы — первый диапазон form_package_ranges. Один источник
+/// для валидации, splice-цели и verify-снимка; первая запись без
+/// PACKAGE_FORMS → NotASetupItem до разбора схем. Аддендум
+/// engine-errors-cleanup §2.
+fn mutation_forms_package(node: &FfsNode) -> Result<(usize, usize), HiiError> {
+    if node.subtype == EFI_SECTION_PE32 {
+        form_add::resource_forms_package(&node.body).ok_or(HiiError::NotASetupItem)
+    } else {
+        form_package_ranges(node)
+            .into_iter()
+            .next()
+            .ok_or(HiiError::NotASetupItem)
+    }
+}
+
 /// с уже существующим в формсете id → InvalidSchema.
 /// Декларации встают в пролог формсета-владельца целевой формы TARGET#FORM
 /// (formset-ordinal-followups §2.1); формы нет → NotFound.
@@ -2035,11 +2053,10 @@ pub fn add_varstores(
     if node.node_type != FfsType::Section {
         return Err(HiiError::NotASetupItem);
     }
-    let pkg_before = form_package_ranges(node)
-        .into_iter()
-        .next()
-        .map(|(s, l)| node.body[s..s + l].to_vec())
-        .ok_or(HiiError::NotASetupItem)?;
+    let pkg_before = {
+        let (s, l) = mutation_forms_package(node)?;
+        node.body[s..s + l].to_vec()
+    };
     let formset_idx = form_hijack::locate_form_attribution(&pkg_before, form_id)
         .ok_or(HiiError::NotFound)?
         .0;
@@ -2067,10 +2084,7 @@ pub fn add_varstores(
     {
         let node = crate::parser::target::find_item(&image.root, &target)
             .map_err(|_| HiiError::NotFound)?;
-        let (start, len) = form_package_ranges(node)
-            .into_iter()
-            .next()
-            .ok_or(HiiError::NotASetupItem)?;
+        let (start, len) = mutation_forms_package(node)?;
         let spliced = node
             .body
             .get(start..start + len)
@@ -2091,10 +2105,8 @@ pub fn add_varstores(
 /// на insert_at (длина тела и u24-заголовок выросли ровно на delta,
 /// вставка на insert_at, остальной префикс/суффикс на месте; байты 0..3 —
 /// u24-длина — единственное допустимое отличие вне вставки).
-/// Селекторы снимка (form_package_ranges) и вставки
-/// (resource_forms_package) — разные пути; их расхождение на
-/// multi-package PE должно падать громко, а не молча сдвигать чужие
-/// $SPF-записи. Ревью Task 7 fix round 1.
+/// Снимок и splice-цель идут через единый селектор
+/// mutation_forms_package (аддендум engine-errors-cleanup §2).
 fn verify_spliced_snapshot(
     spliced: &[u8],
     pkg_before: &[u8],
@@ -5573,6 +5585,58 @@ mod tests {
             )
             .unwrap_err();
             assert!(matches!(err, HiiError::NotFound), "got {err:?}");
+        }
+
+        #[test]
+        fn add_varstores_multi_entry_pe_validates_writable_channel_only() {
+            use crate::ffs::EFI_SECTION_PE32;
+            use crate::hii::form_hijack::test_fixtures::{
+                FILE_GUID, ffs_file_bytes, flash_with_files, section_bytes, string_package_bytes,
+            };
+
+            let pkg = question_add_forms_pkg();
+            let spf_body = question_add_spf_body_for(&pkg);
+            let strings_only = hii_list_blob(&[&string_package_bytes()]);
+            let forms_blob = hii_list_blob(&[&pkg, &string_package_bytes()]);
+            let pe =
+                crate::hii::pe_resource::synth_hii_pe_multi("HII", &[&strings_only, &forms_blob]);
+            let setup = ffs_file_bytes(
+                &Guid::from_str(FILE_GUID).unwrap(),
+                &section_bytes(EFI_SECTION_PE32, &pe),
+            );
+            let sd = sd_file_direct(&spf_body);
+            let flash = flash_with_files(vec![setup, sd]);
+            let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+            let module = "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x10:0";
+            let t = crate::parser::target::parse_target(module).unwrap();
+            let pe_before = crate::parser::target::find_item(&img.root, &t)
+                .unwrap()
+                .body
+                .clone();
+            let err = add_varstores(
+                &mut img,
+                "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x10:0#10019",
+                &[schema::VarStoreSchema {
+                    id: 1,
+                    guid: "EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9".into(),
+                    size: 16,
+                    name: "NewV".into(),
+                    var_type: schema::VarStoreType::Buffer,
+                    attributes: 7,
+                }],
+            )
+            .unwrap_err();
+            assert!(
+                matches!(err, HiiError::NotASetupItem),
+                "отказ селектора writable-канала (первая запись без PACKAGE_FORMS), а не разбор чужого пакета второй записи, got {err:?}"
+            );
+            assert_eq!(
+                crate::parser::target::find_item(&img.root, &t)
+                    .unwrap()
+                    .body,
+                pe_before,
+                "мутаций нет"
+            );
         }
 
         #[test]
