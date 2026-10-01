@@ -98,6 +98,7 @@ fn plan_true_errs_when_expr_offset_beyond_body() {
 Плюс: в существующий `is_unlocked_expr_covers_all_expression_classes` дописать `assert!(is_unlocked_expr(&GateExpr::False))` и `assert!(!is_unlocked_expr(&GateExpr::True))` (отдельного теста не заводим — ревью).
 
 - [ ] **Step 2:** падают (True → Ok(None) сегодня).
+- [ ] **Step 2a: пересадка unflippable-фикстур.** Три существующих теста используют TRUE-выражение как представитель «unflippable»-класса и падают после Step 3: `unlock_unflippable_gate_refuses_without_mutation` (mod.rs:4271, suppress_if TRUE → GateExpressionUnsupported), `unlock_cross_phase_failure_rolls_back_all_donors` (:4356) и `unlock_rolls_back_own_phase_on_cross_failure` (:4375) через `cross_formset::cross_fixtures::donor_true_expr_pkg` (:350). Их предназначение — отказ/rollback на нефлипуемом выражении; таким классом остаётся `GateExpr::Other`: фикстуры переводятся на неизвестный опкод (например `[0x42, 0x03, 0x07]` — decode → Other), `donor_true_expr_pkg` → `donor_other_expr_pkg` (переименование с обновлением call-сайтов).
 - [ ] **Step 3: GREEN** — arm `GateExpr::True =>` в `plan_flip` после EqIdVal: `from`-байт сверяется с телом (`body.get(expr_offset) == Some(&IFR_TRUE_OP)`, иначе Err — ручной Gate с рассинхроном декодера не паникует); `GateExpr::False => true` в `is_unlocked_expr`.
 - [ ] **Step 4:** весь crate зелёный; clippy clean.
 - [ ] **Step 5: Commit** — `feat(engine): plan_flip ConstantTrue — TRUE→FALSE length-preserving (ref-guard-true-flip §1)`
