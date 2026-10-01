@@ -9,7 +9,9 @@ fn pool_contains_all_service_methods() {
     assert!(names.contains(&"ImageSnapshotRestore".to_string()));
     assert!(names.contains(&"ImageUpload".to_string()));
     assert!(names.contains(&"HiiGetValue".to_string()));
-    assert_eq!(names.len(), 41);
+    assert!(names.contains(&"TseReport".to_string()));
+    assert!(names.contains(&"TseUnhide".to_string()));
+    assert_eq!(names.len(), 43);
 }
 
 #[test]

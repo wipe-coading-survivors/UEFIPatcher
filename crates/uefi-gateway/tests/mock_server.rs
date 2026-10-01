@@ -346,6 +346,55 @@ impl EngineService for MockEngine {
     ) -> Result<Response<Empty>, Status> {
         Ok(Response::new(Empty {}))
     }
+    async fn tse_report(
+        &self,
+        _req: Request<TseReportRequest>,
+    ) -> Result<Response<TseReportResponse>, Status> {
+        Ok(Response::new(TseReportResponse {
+            blocks: vec![TseStrideBlock {
+                pe_offset: 0x1b40,
+                entries: vec![
+                    TseStrideEntry {
+                        formset_guid: "EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9".into(),
+                        form_id: 1,
+                    },
+                    TseStrideEntry {
+                        formset_guid: "7B59104A-C00D-4158-87FF-F04D6396A915".into(),
+                        form_id: 10000,
+                    },
+                ],
+            }],
+            spf: Some(TseSpfSummary {
+                page_count: 214,
+                formsets: vec![TseSpfFormset {
+                    guid: "EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9".into(),
+                    raw_u32: 2,
+                    pages: 161,
+                }],
+                vars: vec![TseSpfVar {
+                    guid: "899407D7-99FE-43D8-9A21-79EC328CAC21".into(),
+                    name: "Setup".into(),
+                    attrs: 3,
+                    size: 148,
+                }],
+                string_controls: 4,
+            }),
+            pe_len: 0x48860,
+        }))
+    }
+    async fn tse_unhide(
+        &self,
+        req: Request<TseUnhideRequest>,
+    ) -> Result<Response<TseUnhideResponse>, Status> {
+        let r = req.into_inner();
+        if r.formset_guid == "00000000-0000-0000-0000-000000000000" {
+            return Err(Status::not_found("no AMITSE setup browser module"));
+        }
+        Ok(Response::new(TseUnhideResponse {
+            pe_offset: 0x1b40,
+            entry_pe_offset: 0x1b40,
+        }))
+    }
 }
 
 pub async fn start_mock(sock: &Path) -> JoinHandle<()> {
