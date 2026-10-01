@@ -135,7 +135,7 @@ fn unlock_flips_constant_true_gate() {
 - Modify: `crates/uefi-engine/src/hii/mod.rs` (новый `validate_ref_target` рядом с `check_ref_slots` ~:2192; вызовы в `add_ref` ~:2246 и `check_ref_add` ~:2340; тест `add_ref_allows_dangling_destination_form` ~:6394)
 
 **Interfaces:**
-- Produces: `fn validate_ref_target(image: &Image, qt: &QuestionTarget, schema: &schema::QuestionAddRefSchema) -> Result<(), HiiError>`; plain: `parse_form_package_sets(&qt.pkg)` → `sets[qt.formset_idx].forms` содержит `schema.form_id` (suppressed — валидны); отказ `InvalidSchema("ref target form {:#x} not declared in owning formset {guid} (have: {sorted ids})")`. Fail-closed: `parse_form_package_sets → None` или `formset_idx` вне диапазона (не бывает после `locate_form_attribution`, но не паникуем) → `InvalidSchema("owning form package malformed")`.
+- Produces: `fn validate_ref_target(image: &Image, qt: &QuestionTarget, schema: &schema::QuestionAddRefSchema) -> Result<(), HiiError>`; plain: `parse_form_package_sets(&qt.pkg)` → `sets[qt.formset_idx].forms` содержит `schema.form_id` (suppressed — валидны); отказ `InvalidSchema("ref target form {form_id} not declared in owning formset {guid} (have: {sorted ids, decimal, числовая сортировка})")`. Fail-closed: `parse_form_package_sets → None` или `formset_idx` вне диапазона (не бывает после `locate_form_attribution`, но не паникуем) → `InvalidSchema("owning form package malformed")`.
 
 - [ ] **Step 1: RED-тесты**
 

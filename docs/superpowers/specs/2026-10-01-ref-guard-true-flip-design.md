@@ -47,9 +47,9 @@
 
 `validate_ref_target(image: &Image, qt: &QuestionTarget, schema: &QuestionAddRefSchema) -> Result<(), HiiError>`:
 
-- **plain REF** (`formset_guid: None`): цель обязана существовать в формсете-владельце родительской формы — `parse_form_package_sets(&qt.pkg)` → `sets[qt.formset_idx].forms` содержит `form_id == schema.form_id`. Suppressed-формы — валидные цели (REF на скрытую форму легитимен; её снимают unlock'ом — см. §1). Отказ: `InvalidSchema("ref target form {:#x} not declared in owning formset {guid} (have: {sorted form_ids})")`.
+- **plain REF** (`formset_guid: None`): цель обязана существовать в формсете-владельце родительской формы — `parse_form_package_sets(&qt.pkg)` → `sets[qt.formset_idx].forms` содержит `form_id == schema.form_id`. Suppressed-формы — валидные цели (REF на скрытую форму легитимен; её снимают unlock'ом — см. §1). Отказ: `InvalidSchema("ref target form {form_id} not declared in owning formset {guid} (have: {sorted form_ids, decimal, числовая сортировка})")`.
 - **REF3** (`Some(gs)`): GUID парсится рано (невалидная строка — InvalidSchema, как в build_ref_ops сегодня); глобальная карта `forms::collect_forms(image)`: пара `(formset_guid, form_id_ifr)`. Read-only каналы — валидные цели (GOTO — навигация, не мутация цели). Отказы:
-  - формсет есть, формы нет: `InvalidSchema("ref target form {:#x} not found in formset {guid} (have: {form_ids})")`;
+  - формсет есть, формы нет: `InvalidSchema("ref target form {form_id} not found in formset {guid} (have: {form_ids, decimal})")`;
   - формсета нет: `InvalidSchema("ref target formset {guid} not found in image (have: {formset_guids})")`.
 
 ### Точки вызова

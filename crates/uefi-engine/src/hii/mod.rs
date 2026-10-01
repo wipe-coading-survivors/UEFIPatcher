@@ -2232,13 +2232,17 @@ fn validate_ref_target(
         if fs.forms.iter().any(|f| f.form_id == schema.form_id) {
             return Ok(());
         }
-        let mut have: Vec<String> = fs.forms.iter().map(|f| f.form_id.to_string()).collect();
+        let mut have: Vec<u16> = fs.forms.iter().map(|f| f.form_id).collect();
         have.sort_unstable();
+        have.dedup();
         return Err(HiiError::InvalidSchema(format!(
             "ref target form {} not declared in owning formset {} (have: {})",
             schema.form_id,
             crate::guid_to_upper_string(&fs.guid),
-            have.join(", ")
+            have.iter()
+                .map(|f| f.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
         )));
     };
     let g = crate::types::Guid::try_parse(gs)
@@ -2262,13 +2266,16 @@ fn validate_ref_target(
     {
         return Ok(());
     }
-    let mut have: Vec<String> = in_set.iter().map(|f| f.form_id_ifr.to_string()).collect();
+    let mut have: Vec<u32> = in_set.iter().map(|f| f.form_id_ifr).collect();
     have.sort_unstable();
     have.dedup();
     Err(HiiError::InvalidSchema(format!(
         "ref target form {} not found in formset {want} (have: {})",
         schema.form_id,
-        have.join(", ")
+        have.iter()
+            .map(|f| f.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
     )))
 }
 

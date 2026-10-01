@@ -309,9 +309,10 @@ pub(crate) fn question_storage_width(body: &[u8], question_id: u16) -> Option<u8
 }
 
 /// План флипа одного гейта. Ok(None) — выражение не hardware-validated
-/// класс (EqConst с a!=b, EqIdVal c 0xFFFF, True, Other). Err — границы
+/// класс (EqConst с a!=b, EqIdVal c 0xFFFF, False, Other). Err — границы
 /// гейта выходят за тело пакета: не паникует ни на каком Gate, в т.ч.
-/// сконструированном вручную. Спека hii-write-guard §2 B2.
+/// сконструированном вручную. Спека hii-write-guard §2 B2; True-класс —
+/// ref-guard-true-flip §1.
 pub(crate) fn plan_flip(body: &[u8], gate: &Gate) -> Result<Option<PlannedFlip>, String> {
     let bounds_err = || {
         format!(

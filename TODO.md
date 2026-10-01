@@ -4038,7 +4038,8 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   после прошивки: REF3 в 10000 не отрендерился вкладкой; бар = 6
   GOTO-детей формы 10000 [10001/10002/10008/10009/10010/10012],
   Server Mgmt рисуется TSE извне).
-  Закрыто циклом ref-guard-true-flip (2026-10-01, §1): plan_flip-класс
+  Закрыто циклом ref-guard-true-flip (2026-10-01, §1, коммиты
+  `eae3d4b`/`ee5f555`/`5f866b5`): plan_flip-класс
   ConstantTrue (TRUE→FALSE, from-байт сверяется с телом), GateExpr::False
   декодируется и считается unlocked (идемпотентность unlock), expr_text
   "false"; интеграционный тест unlock_flips_constant_true_gate. Спека
@@ -4056,7 +4057,8 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   (2026-09-12, live-гейт 450x: два GOTO на форму 1 корневого Setup
   вставились без ошибки и повисли; движок-сторона кросс-резолва
   проверена зондом — с formset_guid resolves_cross=true).
-  Закрыто циклом ref-guard-true-flip (2026-10-01, §2): validate_ref_target
+  Закрыто циклом ref-guard-true-flip (2026-10-01, §2, коммиты
+  `305d30f`/`0e464bb`): validate_ref_target
   (intra по parse_form_package_sets/qt.formset_idx; REF3 глобально по
   collect_forms; suppressed/read-only цели валидны), вызов до мутаций в
   add_ref и в цикле check_ref_add; старый тест-инверсия
