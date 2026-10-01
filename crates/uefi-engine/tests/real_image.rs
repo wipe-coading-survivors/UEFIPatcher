@@ -6542,3 +6542,82 @@ fn real_image_hii_form_export_add_form_round_trip() {
         b_qids
     );
 }
+
+fn refs_fw(name: &str) -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../refs/fw")
+        .join(name)
+}
+
+#[ignore = "requires refs/fw/450x.bin and refs/amibcp/450x-intelrcsetup-tse-unhide-v3.bin"]
+#[test]
+fn real_450x_tse_unhide_byte_parity_v3() {
+    let stock = refs_fw("450x.bin");
+    let artifact = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../refs/amibcp/450x-intelrcsetup-tse-unhide-v3.bin");
+    if !stock.exists() || !artifact.exists() {
+        eprintln!("skip: no 450x fixtures");
+        return;
+    }
+    let data = std::fs::read(&stock).unwrap();
+    let mut img = parse_image(&data, ImageMode::Write, "tse", "s").unwrap();
+    let g = Guid::try_parse("EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9").unwrap();
+    let out = uefi_engine::hii::tse::tse_unhide(&mut img, &g, 1, None).unwrap();
+    assert_eq!(out.pe_offset, 0x1b40, "hide-блок найден авто-режимом");
+    assert_eq!(out.entry_pe_offset, 0x1b40);
+    let built = uefi_engine::builder::build_image(&img).unwrap();
+    let want = std::fs::read(&artifact).unwrap();
+    assert_eq!(built.len(), want.len());
+    assert_eq!(
+        built, want,
+        "байт-паритет с артефактом v3 (sha256 9d5f6b55…)"
+    );
+}
+
+#[ignore = "requires refs/fw/HNX99TF_200525_original_E5C88C6F.bin"]
+#[test]
+fn real_hnx_tse_report_runs() {
+    let data = load_fw();
+    let img = parse_image(&data, ImageMode::Read, "tse", "s").unwrap();
+    match uefi_engine::hii::tse::tse_report(&img) {
+        Ok(rep) => eprintln!(
+            "hnx: {} blocks, spf={}",
+            rep.blocks.len(),
+            rep.spf.is_some()
+        ),
+        Err(e) => panic!("report failed: {e}"),
+    }
+}
+
+#[ignore = "requires neighbor images (refs/amibcp, refs/fw)"]
+#[test]
+fn real_neighbors_tse_report_inventory() {
+    let amibcp = |n: &str| {
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../refs/amibcp")
+            .join(n)
+    };
+    let cases = [
+        ("asrock C275D4I3.20", amibcp("C275D4I3.20")),
+        ("mz32", amibcp("mz32-ar0-RBU.rom")),
+        ("226D2IL3.30", amibcp("226D2IL3.30")),
+        ("X10DRH1", refs_fw("X10DRH1_816.bin")),
+    ];
+    for (name, p) in cases {
+        if !p.exists() {
+            eprintln!("skip {name}: {}", p.display());
+            continue;
+        }
+        let data = std::fs::read(&p).unwrap();
+        let img = parse_image(&data, ImageMode::Read, "tse", "s").unwrap();
+        match uefi_engine::hii::tse::tse_report(&img) {
+            Ok(rep) => eprintln!(
+                "{name}: blocks={} spf={} pages={:?}",
+                rep.blocks.len(),
+                rep.spf.is_some(),
+                rep.spf.as_ref().map(|s| s.page_count)
+            ),
+            Err(e) => eprintln!("{name}: {e}"),
+        }
+    }
+}
