@@ -1515,6 +1515,41 @@ async fn restore_session_populates_tree_and_registry() {
     assert_eq!(app.registry.artifacts.len(), 1);
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn tse_commands_report_and_unhide() {
+    let td = TempDir::new().unwrap();
+    let sock = td.path().join("test.sock");
+    let _handle = mock_server::start_mock(&sock).await;
+    let state = uefi_common::State {
+        session_id: Some("s1".into()),
+        token: Some("t1".into()),
+        active_image_id: None,
+        sock_path: Some(sock.display().to_string()),
+    };
+    let mut client = uefi_tui::commands::connect(None, state).await.unwrap();
+    let mut app = uefi_tui::app::App::new();
+    uefi_tui::commands::execute_command(&mut app, "open /dev/null", &mut client)
+        .await
+        .unwrap();
+    uefi_tui::commands::execute_command(&mut app, "tse", &mut client)
+        .await
+        .unwrap();
+    assert!(app.status_msg.contains("1 stride blocks"));
+    uefi_tui::commands::execute_command(
+        &mut app,
+        "tse-unhide EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9 1",
+        &mut client,
+    )
+    .await
+    .unwrap();
+    assert!(app.status_msg.contains("0x1b40"));
+    assert!(
+        uefi_tui::commands::execute_command(&mut app, "tse-unhide bad", &mut client)
+            .await
+            .is_err()
+    );
+}
+
 #[tokio::test]
 async fn restore_session_without_active_image_only_registry() {
     let td = TempDir::new().unwrap();

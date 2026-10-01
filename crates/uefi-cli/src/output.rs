@@ -1,7 +1,7 @@
 use uefi_proto::{
     FormInfo, GateInfo, HiiFormHijackResponse, HiiGetValueResponse, HiiPageAddResponse,
     HiiQuestionAddOutcome, ImageInfo, Node, QuestionInfo, QuestionSummary, SessionInfo, StringInfo,
-    VarStoreInfo,
+    TseReportResponse, TseSpfSummary, TseUnhideResponse, VarStoreInfo,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -606,6 +606,123 @@ pub fn print_nvar_set(applied: &[String], stores: &[String], format: OutputForma
             }
         }
     }
+}
+
+fn tse_report_json(resp: &TseReportResponse) -> serde_json::Value {
+    let spf = resp.spf.as_ref().map(|s| {
+        serde_json::json!({
+            "page_count": s.page_count,
+            "formsets": s.formsets.iter().map(|f| serde_json::json!({
+                "guid": f.guid,
+                "raw_u32": f.raw_u32,
+                "pages": f.pages,
+            })).collect::<Vec<_>>(),
+            "vars": s.vars.iter().map(|v| serde_json::json!({
+                "guid": v.guid,
+                "name": v.name,
+                "attrs": v.attrs,
+                "size": v.size,
+            })).collect::<Vec<_>>(),
+            "string_controls": s.string_controls,
+        })
+    });
+    serde_json::json!({
+        "blocks": resp.blocks.iter().map(|b| serde_json::json!({
+            "pe_offset": b.pe_offset,
+            "entries": b.entries.iter().map(|e| serde_json::json!({
+                "formset_guid": e.formset_guid,
+                "form_id": e.form_id,
+            })).collect::<Vec<_>>(),
+        })).collect::<Vec<_>>(),
+        "spf": spf,
+        "pe_len": resp.pe_len,
+    })
+}
+
+fn print_tse_report_text(resp: &TseReportResponse) {
+    println!("stride blocks: {}", resp.blocks.len());
+    for b in &resp.blocks {
+        println!("@{:#x} ({} entries):", b.pe_offset, b.entries.len());
+        for e in &b.entries {
+            println!("  {} #{}", e.formset_guid, e.form_id);
+        }
+    }
+    match resp.spf.as_ref() {
+        None => println!("$SPF: not found"),
+        Some(s) => print_tse_spf_text(s),
+    }
+}
+
+fn print_tse_spf_text(s: &TseSpfSummary) {
+    println!(
+        "$SPF: pages={}, formsets={}, vars={}, string-controls={}",
+        s.page_count,
+        s.formsets.len(),
+        s.vars.len(),
+        s.string_controls
+    );
+    for f in &s.formsets {
+        println!("  {} raw={} pages={}", f.guid, f.raw_u32, f.pages);
+    }
+    for v in &s.vars {
+        println!(
+            "  {} {} attrs={:#x} size={}",
+            v.guid, v.name, v.attrs, v.size
+        );
+    }
+}
+
+fn print_tse_report_tsv(resp: &TseReportResponse) {
+    println!("type\toff\tformset_guid\tform_id\textra");
+    for b in &resp.blocks {
+        println!(
+            "block\t{:#x}\t-\t-\t{} entries",
+            b.pe_offset,
+            b.entries.len()
+        );
+        for e in &b.entries {
+            println!(
+                "entry\t{:#x}\t{}\t{}\t-",
+                b.pe_offset, e.formset_guid, e.form_id
+            );
+        }
+    }
+    if let Some(s) = resp.spf.as_ref() {
+        println!(
+            "spf\t-\t-\t-\tpages={} string-controls={}",
+            s.page_count, s.string_controls
+        );
+        for f in &s.formsets {
+            println!(
+                "spf_formset\t-\t{}\t-\traw={} pages={}",
+                f.guid, f.raw_u32, f.pages
+            );
+        }
+        for v in &s.vars {
+            println!(
+                "spf_var\t-\t{}\t-\t{} attrs={:#x} size={}",
+                v.guid, v.name, v.attrs, v.size
+            );
+        }
+    }
+}
+
+pub fn print_tse_report(resp: &TseReportResponse, format: OutputFormat) {
+    match format {
+        OutputFormat::Json => println!(
+            "{}",
+            serde_json::to_string_pretty(&tse_report_json(resp)).unwrap_or_else(|_| "{}".into())
+        ),
+        OutputFormat::Tsv => print_tse_report_tsv(resp),
+        OutputFormat::Text => print_tse_report_text(resp),
+    }
+}
+
+pub fn print_tse_unhide(formset_guid: &str, form_id: u16, resp: &TseUnhideResponse) {
+    println!(
+        "unhidden {}#{}: block @ {:#x}, entry @ {:#x}",
+        formset_guid, form_id, resp.pe_offset, resp.entry_pe_offset
+    );
 }
 
 pub fn print_node_id(item_id: &str, format: OutputFormat) {

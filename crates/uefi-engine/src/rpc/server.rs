@@ -115,6 +115,42 @@ fn nvar_store_proto(l: crate::nvar::NvarStoreListing) -> NvarStoreInfo {
     }
 }
 
+/// $SPF-сводка → proto; pages формсета ищется по fsIdx-карте
+/// (pages_per_formset), отсутствие записи = 0 страниц. Сатурация
+/// u32::MAX на recon-полях осознанна — счётчики реально меньше u32
+/// (спека tse-unhide §2.3).
+fn spf_summary_proto(s: &crate::hii::tse::SpfSummary) -> TseSpfSummary {
+    TseSpfSummary {
+        page_count: s.page_count,
+        formsets: s
+            .formsets
+            .iter()
+            .enumerate()
+            .map(|(idx, f)| TseSpfFormset {
+                guid: crate::guid_to_upper_string(&f.guid),
+                raw_u32: f.raw_u32,
+                pages: s
+                    .pages_per_formset
+                    .iter()
+                    .find(|(i, _)| usize::from(*i) == idx)
+                    .map(|(_, c)| *c)
+                    .unwrap_or(0),
+            })
+            .collect(),
+        vars: s
+            .vars
+            .iter()
+            .map(|v| TseSpfVar {
+                guid: crate::guid_to_upper_string(&v.guid),
+                name: v.name.clone(),
+                attrs: v.attrs,
+                size: v.size,
+            })
+            .collect(),
+        string_controls: u32::try_from(s.string_controls).unwrap_or(u32::MAX),
+    }
+}
+
 fn artifact_output_path_is_relative(p: &str) -> bool {
     std::path::Path::new(p).is_relative()
 }
@@ -1448,6 +1484,67 @@ impl EngineService for EngineServer {
         tracing::info!(image_id = %r.image_id, snapshot_id = %r.snapshot_id, "snapshot restored");
         Ok(Response::new(Empty {}))
     }
+
+    #[tracing::instrument(skip(self, req), err)]
+    async fn tse_report(&self, req: Request<TseReportRequest>) -> RpcResult<TseReportResponse> {
+        let r = req.into_inner();
+        let img = self.get_or_load_image(&r.image_id).await?;
+        let rep =
+            crate::hii::tse::tse_report(&img).map_err(|e| hii_error_status_ctx(e, &r.image_id))?;
+        let _ = self.sm.touch(&img.session_id);
+        tracing::info!(image_id = %r.image_id, blocks = rep.blocks.len(), "tse report");
+        Ok(Response::new(TseReportResponse {
+            blocks: rep
+                .blocks
+                .into_iter()
+                .map(|b| TseStrideBlock {
+                    pe_offset: u32::try_from(b.pe_offset).unwrap_or(u32::MAX),
+                    entries: b
+                        .entries
+                        .into_iter()
+                        .map(|e| TseStrideEntry {
+                            formset_guid: crate::guid_to_upper_string(&e.guid),
+                            form_id: e.form_id,
+                        })
+                        .collect(),
+                })
+                .collect(),
+            spf: rep.spf.as_ref().map(spf_summary_proto),
+            pe_len: u32::try_from(rep.pe_len).unwrap_or(u32::MAX),
+        }))
+    }
+
+    #[tracing::instrument(skip(self, req), err)]
+    async fn tse_unhide(&self, req: Request<TseUnhideRequest>) -> RpcResult<TseUnhideResponse> {
+        let r = req.into_inner();
+        let guid = uguid::Guid::try_parse(&r.formset_guid)
+            .map_err(|e| Status::invalid_argument(format!("invalid formset guid: {e}")))?;
+        let fid = u16::try_from(r.form_id)
+            .map_err(|_| Status::invalid_argument("form_id exceeds u16"))?;
+        let off = r
+            .block_pe_offset
+            .map(usize::try_from)
+            .transpose()
+            .map_err(|_| Status::invalid_argument("block_pe_offset exceeds usize"))?;
+        self.ensure_image_loaded(&r.image_id).await?;
+        let (outcome, session_id) = {
+            let mut images = self.images.lock().await;
+            let img = images
+                .get_mut(&r.image_id)
+                .ok_or_else(|| Status::not_found("image not found"))?;
+            let session_id = img.session_id.clone();
+            let outcome = crate::hii::tse::tse_unhide(img, &guid, fid, off)
+                .map_err(|e| hii_error_status_ctx(e, &r.formset_guid))?;
+            (outcome, session_id)
+        };
+        self.flush_image(&r.image_id).await?;
+        let _ = self.sm.touch(&session_id);
+        tracing::info!(image_id = %r.image_id, guid = %r.formset_guid, form = fid, "tse unhide");
+        Ok(Response::new(TseUnhideResponse {
+            pe_offset: u32::try_from(outcome.pe_offset).unwrap_or(u32::MAX),
+            entry_pe_offset: u32::try_from(outcome.entry_pe_offset).unwrap_or(u32::MAX),
+        }))
+    }
 }
 
 #[cfg(unix)]
@@ -1654,6 +1751,46 @@ mod tests {
         let st = hii_error_status_ctx(crate::hii::HiiError::NotWritable, "0#99");
         assert_eq!(st.code(), tonic::Code::FailedPrecondition);
         assert_eq!(st.message(), crate::hii::HiiError::NotWritable.to_string());
+    }
+
+    #[test]
+    fn tse_spf_summary_proto_maps_pages_by_fsidx() {
+        let g = uguid::Guid::try_parse("EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9").unwrap();
+        let s = crate::hii::tse::SpfSummary {
+            page_count: 214,
+            pages_per_formset: vec![(1, 5), (2, 161)],
+            formsets: vec![
+                crate::hii::spf::SpfFormsetEntry {
+                    guid: uguid::Guid::from_bytes([0; 16]),
+                    raw_u32: 0,
+                },
+                crate::hii::spf::SpfFormsetEntry {
+                    guid: g,
+                    raw_u32: 2,
+                },
+                crate::hii::spf::SpfFormsetEntry {
+                    guid: uguid::Guid::from_bytes([0; 16]),
+                    raw_u32: 9,
+                },
+            ],
+            vars: vec![],
+            string_controls: 4,
+        };
+        let p = spf_summary_proto(&s);
+        assert_eq!(p.formsets[0].pages, 0, "fsIdx 0 отсутствует в карте");
+        assert_eq!(p.formsets[1].pages, 5, "fsIdx 1");
+        assert_eq!(p.formsets[2].pages, 161, "fsIdx 2");
+        assert_eq!(p.page_count, 214);
+        assert_eq!(p.string_controls, 4);
+    }
+
+    #[test]
+    fn tse_unhide_bad_guid_maps_invalid_argument() {
+        let st = uguid::Guid::try_parse("not-a-guid")
+            .map_err(|e| Status::invalid_argument(format!("invalid formset guid: {e}")))
+            .unwrap_err();
+        assert_eq!(st.code(), tonic::Code::InvalidArgument);
+        assert!(st.message().contains("invalid formset guid"));
     }
 
     #[test]

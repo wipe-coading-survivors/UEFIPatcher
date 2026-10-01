@@ -40,8 +40,11 @@ service EngineService {
   rpc HiiListQuestions(HiiListQuestionsRequest)         returns (HiiListQuestionsResponse);
   rpc HiiSetValue(HiiSetValueRequest)                   returns (HiiSetValueResponse);
   rpc HiiGetValue(HiiGetValueRequest)                 returns (HiiGetValueResponse);
-  rpc HiiQuestionAdd(HiiQuestionAddRequest)             returns (HiiQuestionAddResponse);
-  rpc HiiPageAdd(HiiPageAddRequest)                     returns (HiiPageAddResponse);
+  rpc HiiQuestionAdd(HiiQuestionAddRequest)           returns (HiiQuestionAddResponse);
+  rpc HiiPageAdd(HiiPageAddRequest)                   returns (HiiPageAddResponse);
+
+  rpc TseReport(TseReportRequest) returns (TseReportResponse);
+  rpc TseUnhide(TseUnhideRequest) returns (TseUnhideResponse);
 
   rpc NvarList(NvarListRequest) returns (NvarListResponse);
   rpc NvarSet(NvarSetRequest)   returns (NvarSetResponse);
@@ -395,5 +398,29 @@ message ImageSnapshotRestoreRequest {
   string image_id = 1;
   string snapshot_id = 2;
 }
+
+message TseStrideEntry { string formset_guid = 1; uint64 form_id = 2; }
+message TseStrideBlock { uint32 pe_offset = 1; repeated TseStrideEntry entries = 2; }
+message TseSpfFormset { string guid = 1; uint32 raw_u32 = 2; uint32 pages = 3; }
+message TseSpfVar { string guid = 1; string name = 2; uint32 attrs = 3; uint32 size = 4; }
+message TseSpfSummary {
+  uint32 page_count = 1;
+  repeated TseSpfFormset formsets = 2;
+  repeated TseSpfVar vars = 3;
+  uint32 string_controls = 4;
+}
+message TseReportRequest  { string image_id = 1; }
+message TseReportResponse {
+  repeated TseStrideBlock blocks = 1;
+  optional TseSpfSummary spf = 2;
+  uint32 pe_len = 3;
+}
+message TseUnhideRequest {
+  string image_id = 1;
+  string formset_guid = 2;
+  uint32 form_id = 3;
+  optional uint32 block_pe_offset = 4;
+}
+message TseUnhideResponse { uint32 pe_offset = 1; uint32 entry_pe_offset = 2; }
 
 message Empty {}
