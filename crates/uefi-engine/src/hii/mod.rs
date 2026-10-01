@@ -2211,6 +2211,43 @@ fn check_ref_slots(
     Ok(())
 }
 
+/// Цель REF обязана существовать (спека ref-guard-true-flip §2):
+/// plain REF — форма в формсете-владельце родительской формы
+/// (parse_form_package_sets по qt.pkg/qt.formset_idx); REF3 — глобальная
+/// пара (formset_guid, form_id) по collect_forms. Suppressed-формы и
+/// read-only каналы — валидные цели (GOTO — навигация, не мутация).
+/// Вызывается до любых мутаций (plan-all-then-apply-all).
+fn validate_ref_target(
+    image: &Image,
+    qt: &QuestionTarget,
+    schema: &schema::QuestionAddRefSchema,
+) -> Result<(), HiiError> {
+    if schema.formset_guid.is_some() {
+        return Ok(());
+    }
+    let sets = ifr::parse_form_package_sets(&qt.pkg)
+        .ok_or_else(|| HiiError::InvalidSchema("owning form package malformed".into()))?;
+    let fs = sets
+        .get(qt.formset_idx)
+        .map(|(_, fs)| fs)
+        .ok_or_else(|| HiiError::InvalidSchema("owning form package malformed".into()))?;
+    if fs.forms.iter().any(|f| f.form_id == schema.form_id) {
+        return Ok(());
+    }
+    let mut have: Vec<String> = fs
+        .forms
+        .iter()
+        .map(|f| format!("{:#x}", f.form_id))
+        .collect();
+    have.sort_unstable();
+    Err(HiiError::InvalidSchema(format!(
+        "ref target form {:#x} not declared in owning formset {} (have: {})",
+        schema.form_id,
+        crate::guid_to_upper_string(&fs.guid),
+        have.join(", ")
+    )))
+}
+
 /// Schema-якорь → позиция splice (спека positional-insert §3).
 /// Ровно один ключ проверяется и здесь: add_ref/add_question принимают
 /// схему в обход parse (структурой из кода).
@@ -2245,6 +2282,7 @@ pub fn add_ref(
     let qt = resolve_question_target(image, item_id)?;
     let pos = insert_pos_of(schema.insert_before.as_ref())?;
     let path = resolve_writable_path(image, &qt.target)?;
+    validate_ref_target(image, &qt, schema)?;
     let sd_path = ami_patcher::discover_pfs_payload_path(image)?;
     let spf_records = {
         let body = node_at(&image.root, &sd_path).body.clone();
@@ -2339,6 +2377,7 @@ pub fn check_ref_add(
     }
     let mut pending: Vec<u16> = question_qids.to_vec();
     for schema in refs {
+        validate_ref_target(image, &qt, schema)?;
         check_ref_slots(schema, &qt.pkg, &pending)?;
         let pos = insert_pos_of(schema.insert_before.as_ref())?;
         let mut strings: Vec<String> = vec![schema.prompt.clone(), schema.help.clone()];
@@ -6432,18 +6471,74 @@ mod tests {
             }
 
             #[test]
-            fn add_ref_allows_dangling_destination_form() {
+            fn add_ref_rejects_dangling_destination_form() {
                 let (flash, _, _) = question_add_flash_image();
                 let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
-                let res = add_ref(&mut img, ITEM_FORM, &ref_add_schema(0x300, 10099))
-                    .expect("destination existence is the caller's contract");
-                assert_eq!(res.question_id, 0x300);
-                let pkg_after = pkg_of(&img, "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x10:0");
-                let r = find_ref_op(&pkg_after, 10019).expect("REF op in form 10019");
-                assert_eq!(pkg_u16(&pkg_after, r + 13), 10099);
+                let before = build_image(&img).unwrap();
+                let err = add_ref(&mut img, ITEM_FORM, &ref_add_schema(0x300, 10099)).unwrap_err();
                 assert!(
-                    crate::hii::form_hijack::locate_form(&pkg_after, 10099).is_none(),
-                    "fixture must not contain the dangling destination"
+                    matches!(&err, HiiError::InvalidSchema(m)
+                        if m.contains("not declared in owning formset")
+                        && m.contains("10019")
+                        && m.contains("10020")),
+                    "got {err:?}"
+                );
+                assert_eq!(
+                    build_image(&img).unwrap(),
+                    before,
+                    "rejection must not mutate the image"
+                );
+            }
+
+            #[test]
+            fn add_ref_rejects_form_of_neighbor_formset() {
+                let (flash, _, _) = two_formset_question_add_flash_image();
+                let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+                let err = add_ref(&mut img, ITEM_FORM, &ref_add_schema(0x300, 10020)).unwrap_err();
+                assert!(
+                    matches!(&err, HiiError::InvalidSchema(m)
+                        if m.contains("not declared in owning formset")),
+                    "10020 живёт в соседнем формсете, не в владельце 10019: {err:?}"
+                );
+            }
+
+            #[test]
+            fn check_ref_add_rejects_dangling_target() {
+                let (flash, _, _) = question_add_flash_image();
+                let img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+                let err = check_ref_add(&img, ITEM_FORM, &[ref_add_schema(0x300, 10099)], &[])
+                    .unwrap_err();
+                assert!(
+                    matches!(&err, HiiError::InvalidSchema(m)
+                        if m.contains("not declared in owning formset")),
+                    "got {err:?}"
+                );
+                check_ref_add(&img, ITEM_FORM, &[ref_add_schema(0x300, 10020)], &[])
+                    .expect("валидная intra-цель проходит precheck");
+            }
+
+            #[test]
+            fn add_ref_target_error_precedes_string_pack() {
+                use crate::hii::form_hijack::test_fixtures::{
+                    FILE_GUID, ffs_file_bytes, flash_with_files, section_bytes,
+                };
+                use crate::hii::pe_resource::synth_hii_pe;
+                let pkg = question_add_forms_pkg();
+                let spf_body = question_add_spf_body_for(&pkg);
+                let blob = hii_list_blob(&[&pkg]);
+                let pe = synth_hii_pe("HII", &blob);
+                let setup = ffs_file_bytes(
+                    &Guid::from_str(FILE_GUID).unwrap(),
+                    &section_bytes(crate::ffs::EFI_SECTION_PE32, &pe),
+                );
+                let sd = sd_file_direct(&spf_body);
+                let flash = flash_with_files(vec![setup, sd]);
+                let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+                let err = add_ref(&mut img, ITEM_FORM, &ref_add_schema(0x300, 10099)).unwrap_err();
+                assert!(
+                    matches!(&err, HiiError::InvalidSchema(m)
+                        if m.contains("not declared in owning formset")),
+                    "отказ цели раньше string-пакета: {err:?}"
                 );
             }
 
