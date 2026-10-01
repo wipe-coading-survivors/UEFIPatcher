@@ -1270,6 +1270,8 @@ git commit -m "feat(rpc): TseReport/TseUnhide — proto, хендлеры, serve
 - Modify: `crates/uefi-cli/src/commands/mod.rs` (`pub mod tse;`)
 - Modify: `crates/uefi-cli/src/main.rs` (группа `Tse`)
 - Modify: `crates/uefi-cli/src/output.rs` (printers)
+- Modify: `crates/uefi-cli/src/client.rs` (обёртки `Client::tse_report`/`tse_unhide` по образцу `nvar_list`/`nvar_set` — CLI-`Client` не наследует сгенерированные методы)
+- Modify: `crates/uefi-cli/Cargo.toml` (`uguid.workspace = true` — клиент-сайд валидация formset_guid)
 - Test: `crates/uefi-cli/src/main.rs` (parse-тесты), `crates/uefi-cli/tests/cli_integration.rs`
 
 **Interfaces:**
@@ -1352,9 +1354,9 @@ enum TseCmd {
 `report`: `TseReportRequest { image_id }` → response → печать по OutputFormat:
 - Text: `stride blocks: N` + на блок `@0x1b40 (2 entries):` + строки `  GUID #form`; `$SPF: pages=214, formsets=M, vars=K, string-controls=C`; формсеты `  GUID raw=2 pages=161`; переменные `  GUID name attrs=#x size`.
 - TSV: заголовок `type\toff\tformset_guid\tform_id\textra` + строки блоков/записей; секции `spf_formset\t…`, `spf_var\t…`.
-- Json: `serde_json::json!({blocks: […], spf: {…}})` — по образцу существующих json-принтеров output.rs.
+- Json: `serde_json::json!({blocks: […], spf: {…}|null, pe_len: N})` — по образцу существующих json-принтеров output.rs.
 
-`unhide`: try-конверсия off → u32 (`u32::try_from(off).map_err(|_| AppError::new(error::ErrKind::RpcInvalidArgument, "--block-offset exceeds u32".into()))?`) → `TseUnhideRequest { image_id, formset_guid, form_id: u32::from(form_id), block_pe_offset: Some(v) }` → печать `unhidden {guid}#{form}: block @ {pe_offset:#x}, entry @ {entry_pe_offset:#x}`.
+`unhide`: клиент-сайд валидация formset_guid (`uguid::Guid::try_parse` → AppError RpcInvalidArgument `invalid formset guid: {e}` — формулировка зеркалит server; нужна для контракта «not-a-guid → failure» — mock принимает любой ненулевой GUID) → try-конверсия off → u32 (`u32::try_from(off).map_err(|_| AppError::new(error::ErrKind::RpcInvalidArgument, "--block-offset exceeds u32".into()))?`) → `TseUnhideRequest { image_id, formset_guid, form_id: u32::from(form_id), block_pe_offset: Some(v) }` → печать `unhidden {guid}#{form}: block @ {pe_offset:#x}, entry @ {entry_pe_offset:#x}`.
 
 - [ ] **Step 4: Интеграционный тест с mock (cli_integration.rs)**
 
@@ -1375,7 +1377,7 @@ Run: `cargo test -p uefi-cli` — Expected: PASS.
 
 ```bash
 cargo test -p uefi-cli && cargo clippy -p uefi-cli --all-targets -- -D warnings
-git add crates/uefi-cli/src/commands/tse.rs crates/uefi-cli/src/commands/mod.rs crates/uefi-cli/src/main.rs crates/uefi-cli/src/output.rs crates/uefi-cli/tests/cli_integration.rs
+git add crates/uefi-cli/src/commands/tse.rs crates/uefi-cli/src/commands/mod.rs crates/uefi-cli/src/main.rs crates/uefi-cli/src/output.rs crates/uefi-cli/src/client.rs crates/uefi-cli/Cargo.toml crates/uefi-cli/tests/cli_integration.rs
 git commit -m "feat(cli): tse report/unhide — группа команд, printers, тесты (tse-unhide §3.2)"
 ```
 
