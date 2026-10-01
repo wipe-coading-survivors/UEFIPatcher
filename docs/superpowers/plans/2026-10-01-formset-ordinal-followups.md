@@ -609,12 +609,14 @@ git commit -m "feat(engine): validate_form_varstores скоупится по ф�
         b.emit_one_of_option(3, 0x00, TYPE_NUM_SIZE_8, 1, 1);
         b.emit_end();
         b.emit_end();
+        b.emit_end();
         let g2 = Guid::from_str(FORMSET2_GUID).unwrap();
         b.emit_form_set(&g2, 2, 2, &[]);
         b.emit_var_store(2, &g2, 0x80, "Setup2");
         b.emit_form(10020, 2);
         b.emit_one_of(0x01A5, 0x01A6, 0x55, 2, 0x40, 0, 1);
         b.emit_one_of_option(5, 0x00, TYPE_NUM_SIZE_8, 0, 1);
+        b.emit_end();
         b.emit_end();
         b.emit_end();
         let ifr = b.build();
@@ -741,7 +743,7 @@ page_offset=0x178), план 10019 не меняется.)
 - [ ] **Step 2: Run — verify fail**
 
 Run: `cargo test -p uefi-engine scopes_varstore_checks add_question_targets_form`
-Expected: FAIL — `..._scopes_...`: NotFound на `foreign`-кейсе (preflight `locate_insert_at(pkg, 0, 10020)` с hardcoded formset 0 — формы 10020 в формсете #0 нет; после threading ожидание сменится на InvalidSchema «var store id 0x1 is not declared»); `add_question_targets_...`: NotFound от splice с hardcoded formset 0 (формы 10020 в формсете #0 нет). (Plan-fix 2026-10-01: прежнее ожидание «InvalidSchema already exists на foreign-кейсе» было недостижимо — foreign-вызов передаёт `varstores=&[]`, коллизионный блок до preflight не срабатывает.)
+Expected: FAIL — `..._scopes_...`: assert-падение на `foreign`-кейсе с `NotFound` (preflight `locate_insert_at(pkg, 0, 10020)` с hardcoded formset 0 — формы 10020 в формсете #0 нет; после threading ожидание сменится на InvalidSchema «var store id 0x1 is not declared»); `add_question_targets_...`: NotFound от splice с hardcoded formset 0 (формы 10020 в формсете #0 нет). (Plan-fix 2026-10-01 №1: прежнее ожидание «InvalidSchema already exists на foreign-кейсе» было недостижимо — foreign-вызов передаёт `varstores=&[]`, коллизионный блок до preflight не срабатывает. Plan-fix 2026-10-01 №2: фикстура была без закрывающих FORM_SET END — незакрытый fs1 делал `form_span(pkg, 0, 10020)` ложно успешным (форма 10020 «внутри» формсета #0), `formset_spans` на таком пакете даёт None; каждый блок формсета закрывается тремя END: ONE_OF, FORM, FORM_SET.)
 
 - [ ] **Step 3: Implement `locate_form_attribution`** (form_hijack.rs, над `locate_form`; наверху — `use super::ifr::formset_spans;`)
 
