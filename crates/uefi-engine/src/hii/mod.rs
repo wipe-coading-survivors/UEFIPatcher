@@ -2218,28 +2218,56 @@ fn check_ref_slots(
 /// read-only каналы — валидные цели (GOTO — навигация, не мутация).
 /// Вызывается до любых мутаций (plan-all-then-apply-all).
 fn validate_ref_target(
-    _image: &Image,
+    image: &Image,
     qt: &QuestionTarget,
     schema: &schema::QuestionAddRefSchema,
 ) -> Result<(), HiiError> {
-    if schema.formset_guid.is_some() {
+    let Some(gs) = schema.formset_guid.as_deref() else {
+        let sets = ifr::parse_form_package_sets(&qt.pkg)
+            .ok_or_else(|| HiiError::InvalidSchema("owning form package malformed".into()))?;
+        let fs = sets
+            .get(qt.formset_idx)
+            .map(|(_, fs)| fs)
+            .ok_or_else(|| HiiError::InvalidSchema("owning form package malformed".into()))?;
+        if fs.forms.iter().any(|f| f.form_id == schema.form_id) {
+            return Ok(());
+        }
+        let mut have: Vec<String> = fs.forms.iter().map(|f| f.form_id.to_string()).collect();
+        have.sort_unstable();
+        return Err(HiiError::InvalidSchema(format!(
+            "ref target form {} not declared in owning formset {} (have: {})",
+            schema.form_id,
+            crate::guid_to_upper_string(&fs.guid),
+            have.join(", ")
+        )));
+    };
+    let g = crate::types::Guid::try_parse(gs)
+        .map_err(|_| HiiError::InvalidSchema(format!("formset_guid '{gs}' is not a GUID")))?;
+    let want = crate::guid_to_upper_string(&g);
+    let all = forms::collect_forms(image);
+    let in_set: Vec<&uefi_proto::FormInfo> =
+        all.iter().filter(|f| f.formset_guid == want).collect();
+    if in_set.is_empty() {
+        let mut guids: Vec<&str> = all.iter().map(|f| f.formset_guid.as_str()).collect();
+        guids.sort_unstable();
+        guids.dedup();
+        return Err(HiiError::InvalidSchema(format!(
+            "ref target formset {want} not found in image (have: {})",
+            guids.join(", ")
+        )));
+    }
+    if in_set
+        .iter()
+        .any(|f| f.form_id_ifr == u32::from(schema.form_id))
+    {
         return Ok(());
     }
-    let sets = ifr::parse_form_package_sets(&qt.pkg)
-        .ok_or_else(|| HiiError::InvalidSchema("owning form package malformed".into()))?;
-    let fs = sets
-        .get(qt.formset_idx)
-        .map(|(_, fs)| fs)
-        .ok_or_else(|| HiiError::InvalidSchema("owning form package malformed".into()))?;
-    if fs.forms.iter().any(|f| f.form_id == schema.form_id) {
-        return Ok(());
-    }
-    let mut have: Vec<String> = fs.forms.iter().map(|f| f.form_id.to_string()).collect();
+    let mut have: Vec<String> = in_set.iter().map(|f| f.form_id_ifr.to_string()).collect();
     have.sort_unstable();
+    have.dedup();
     Err(HiiError::InvalidSchema(format!(
-        "ref target form {} not declared in owning formset {} (have: {})",
+        "ref target form {} not found in formset {want} (have: {})",
         schema.form_id,
-        crate::guid_to_upper_string(&fs.guid),
         have.join(", ")
     )))
 }
@@ -6597,12 +6625,147 @@ mod tests {
 
             const CROSS_FORMSET_GUID: &str = "EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9";
 
+            fn ref3_schema(qid: u16, dest_form: u16, guid: &str) -> schema::QuestionAddRefSchema {
+                let mut s = ref_add_schema(qid, dest_form);
+                s.formset_guid = Some(guid.into());
+                s
+            }
+
+            #[test]
+            fn add_ref_accepts_cross_formset_target() {
+                let (flash, pkg_before, _) = two_formset_question_add_flash_image();
+                let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+                let res = add_ref(
+                    &mut img,
+                    ITEM_FORM,
+                    &ref3_schema(0x300, 10020, FORMSET2_GUID),
+                )
+                .expect("REF3 на существующие формсет+форму");
+                assert_eq!(res.question_id, 0x300);
+                let pkg_after = pkg_of(&img, "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x10:0");
+                assert_eq!(pkg_after.len() - pkg_before.len(), 33);
+                let r = find_ref_op(&pkg_after, 10019).expect("REF3 op in form 10019");
+                assert_eq!(pkg_after[r + 1] & 0x7F, 33, "REF3 op total length is 33");
+            }
+
+            #[test]
+            fn add_ref_rejects_unknown_formset_guid() {
+                let (flash, _, _) = two_formset_question_add_flash_image();
+                let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+                let before = build_image(&img).unwrap();
+                let err = add_ref(
+                    &mut img,
+                    ITEM_FORM,
+                    &ref3_schema(0x300, 10020, CROSS_FORMSET_GUID),
+                )
+                .unwrap_err();
+                assert!(
+                    matches!(&err, HiiError::InvalidSchema(m)
+                        if m.contains("formset EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9 not found in image")),
+                    "got {err:?}"
+                );
+                assert_eq!(build_image(&img).unwrap(), before);
+            }
+
+            #[test]
+            fn add_ref_rejects_missing_form_in_known_formset() {
+                let (flash, _, _) = two_formset_question_add_flash_image();
+                let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+                let err = add_ref(
+                    &mut img,
+                    ITEM_FORM,
+                    &ref3_schema(0x300, 10099, FORMSET2_GUID),
+                )
+                .unwrap_err();
+                assert!(
+                    matches!(&err, HiiError::InvalidSchema(m)
+                        if m.contains("ref target form 10099 not found in formset")
+                        && m.contains("10020")),
+                    "got {err:?}"
+                );
+            }
+
+            #[test]
+            fn add_ref_accepts_suppressed_cross_target() {
+                use crate::hii::form_hijack::test_fixtures::{
+                    FILE_GUID, FORMSET_GUID, ffs_file_bytes, flash_with_files, section_bytes,
+                };
+                use crate::hii::pe_resource::synth_hii_pe;
+                let g1 = Guid::from_str(FORMSET_GUID).unwrap();
+                let g2 = Guid::from_str(FORMSET2_GUID).unwrap();
+                let mut ifr = Vec::new();
+                ifr.extend_from_slice(&[r_efi::hii::IFR_FORM_SET_OP, 23 | 0x80]);
+                ifr.extend_from_slice(&g1.to_bytes());
+                ifr.extend_from_slice(&1u16.to_le_bytes());
+                ifr.extend_from_slice(&0u16.to_le_bytes());
+                ifr.push(0u8);
+                ifr.extend_from_slice(&[r_efi::hii::IFR_FORM_OP, 6 | 0x80]);
+                ifr.extend_from_slice(&10019u16.to_le_bytes());
+                ifr.extend_from_slice(&1u16.to_le_bytes());
+                ifr.extend_from_slice(&[r_efi::hii::IFR_END_OP, 2]);
+                ifr.extend_from_slice(&[r_efi::hii::IFR_END_OP, 2]);
+                ifr.extend_from_slice(&[r_efi::hii::IFR_FORM_SET_OP, 23 | 0x80]);
+                ifr.extend_from_slice(&g2.to_bytes());
+                ifr.extend_from_slice(&2u16.to_le_bytes());
+                ifr.extend_from_slice(&0u16.to_le_bytes());
+                ifr.push(0u8);
+                ifr.extend_from_slice(&[r_efi::hii::IFR_SUPPRESS_IF_OP, 2 | 0x80]);
+                ifr.extend_from_slice(&[r_efi::hii::IFR_TRUE_OP, 0x02]);
+                ifr.extend_from_slice(&[r_efi::hii::IFR_FORM_OP, 6 | 0x80]);
+                ifr.extend_from_slice(&10030u16.to_le_bytes());
+                ifr.extend_from_slice(&2u16.to_le_bytes());
+                ifr.extend_from_slice(&[r_efi::hii::IFR_END_OP, 2]);
+                ifr.extend_from_slice(&[r_efi::hii::IFR_END_OP, 2]);
+                ifr.extend_from_slice(&[r_efi::hii::IFR_END_OP, 2]);
+                let len = 4 + ifr.len() as u32;
+                let mut pkg = vec![
+                    (len & 0xFF) as u8,
+                    ((len >> 8) & 0xFF) as u8,
+                    ((len >> 16) & 0xFF) as u8,
+                    r_efi::hii::PACKAGE_FORMS,
+                ];
+                pkg.extend_from_slice(&ifr);
+                let blob = hii_list_blob(&[&pkg]);
+                let pe = synth_hii_pe("HII", &blob);
+                let setup = ffs_file_bytes(
+                    &Guid::from_str(FILE_GUID).unwrap(),
+                    &section_bytes(crate::ffs::EFI_SECTION_PE32, &pe),
+                );
+                let flash = flash_with_files(vec![setup]);
+                let img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+                let target = forms::collect_forms(&img)
+                    .into_iter()
+                    .find(|f| f.formset_guid == FORMSET2_GUID && f.form_id_ifr == 10030)
+                    .expect("форма 10030 видна collect_forms");
+                assert!(!target.visible, "фикстура: цель реально suppressed");
+                let qt = resolve_question_target(&img, ITEM_FORM).unwrap();
+                validate_ref_target(&img, &qt, &ref3_schema(0x300, 10030, FORMSET2_GUID))
+                    .expect("suppressed-цель — валидный REF3-таргет");
+            }
+
+            #[test]
+            fn add_ref_rejects_malformed_formset_guid_early() {
+                let (flash, _, _) = two_formset_question_add_flash_image();
+                let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+                let err = add_ref(
+                    &mut img,
+                    ITEM_FORM,
+                    &ref3_schema(0x300, 10020, "not-a-guid"),
+                )
+                .unwrap_err();
+                assert!(
+                    matches!(&err, HiiError::InvalidSchema(m)
+                        if m.contains("formset_guid 'not-a-guid' is not a GUID")),
+                    "got {err:?}"
+                );
+            }
+
             #[test]
             fn add_ref_with_formset_guid_emits_ref3_roundtrip() {
-                let (flash, pkg_before, _) = question_add_flash_image();
+                let (flash, pkg_before, _) = two_formset_question_add_flash_image();
                 let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
                 let mut s = ref_add_schema(0x300, 10020);
-                s.formset_guid = Some(CROSS_FORMSET_GUID.into());
+                s.formset_guid = Some(FORMSET2_GUID.into());
                 add_ref(&mut img, ITEM_FORM, &s).expect("add ref3");
 
                 let pkg_after = pkg_of(&img, "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x10:0");
@@ -6615,7 +6778,7 @@ mod tests {
                 let r = find_ref_op(&pkg_after, 10019).expect("REF op in form 10019");
                 assert_eq!(pkg_after[r + 1] & 0x7F, 33, "REF3 op total length is 33");
                 let stmt = &pkg_after[r..r + 33];
-                let g = Guid::from_str(CROSS_FORMSET_GUID).unwrap();
+                let g = Guid::from_str(FORMSET2_GUID).unwrap();
                 assert_eq!(
                     ref_variant::parse_ref(stmt[0], stmt),
                     Some(ref_variant::RefTarget::Formset {
