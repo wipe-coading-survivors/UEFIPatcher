@@ -1704,6 +1704,10 @@ atomic_write. После первой мутации хранимый файл �
 * [ ] **TUI: зависание после set-value** (asr1, форма 1215/Above 4G,
   2026-09-21) — перезапуск сохраняет правки; нужен репро (какое действие,
   какая форма, лог) для разбора.
+  Инструментация (tui-fixes, 2026-10-01): файловый лог <state_dir>/tui.log
+  (старт/финиш команд с elapsed, panic-hook с восстановлением терминала) —
+  при следующем зависании прислать tui.log + хвост engine-лога для
+  корреляции.
 * [x] **TUI: команда `:nvar list/set`** — закрыто мини-циклом 2026-09-21:
   `:nvar list [PATH] [--var NAME]` (PATH — целевой режим: панель + goto по
   узлу стора, без PATH — сводка по всем сторам, `--var` ищет переменную по
@@ -3694,7 +3698,8 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   QuestionInfo + рендер `current: 0x5 "Auto"` в TUI.
   Контекст: `uefi-engine/src/hii/mod.rs` set_value (plans.from), спека §3.2.
   Закрыто циклом tui-live (2026-09-30, §3): superseded seed_value (nvar-op) + HiiGetValue RPC (engine/CLI/TUI/WebUI); seed_lookup получил барьер-паритет с set_value.
-* [ ] **uefi-tui: gate `current_for_this`/`info_for_this` не проверяет qid** — при смене вопроса внутри формы и ошибке ленивого fetch (ошибки глотаются `let _ =`) рендерится Current/инфо предыдущего вопроса. План-мандат цикла tui-live (зеркало question_info-паттерна); лечится добавлением qid в ключ gate. Контекст: `crates/uefi-tui/src/forms.rs` (form_panel), `commands.rs` (call-сайты `let _ = refresh_*`).
+* [x] **uefi-tui: gate `current_for_this`/`info_for_this` не проверяет qid** — при смене вопроса внутри формы и ошибке ленивого fetch (ошибки глотаются `let _ =`) рендерится Current/инфо предыдущего вопроса. План-мандат цикла tui-live (зеркало question_info-паттерна); лечится добавлением qid в ключ gate. Контекст: `crates/uefi-tui/src/forms.rs` (form_panel), `commands.rs` (call-сайты `let _ = refresh_*`).
+  Закрыто фикс-пакетом tui-fixes (2026-10-01): gate сравнивает полный ключ (FormKey, qid) с выбранным вопросом.
 
 ## Находки финального ревью ветки tui-forms-v3 (2026-09-11)
 
@@ -3703,7 +3708,7 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
 > (recorder-lock в hijack-интеграционном тесте) закрыт fix-коммитом
 > ветки; ниже — отложенные миноры.
 
-* [ ] **uefi-tui: `--ffs` в `:hii formset add` — жёсткий порядок и молчаливые отказы**
+* [x] **uefi-tui: `--ffs` в `:hii formset add` — жёсткий порядок и молчаливые отказы**
   — грамматика `FILE [--ffs GUID]` строго позиционная: файл = parts[3]
   без оглядки на флаги. (1) `--ffs` ПЕРЕД файлом (`hii formset add --ffs
   /путь/np.json`) → файлом считается сам `--ffs` → read_schema даёт
@@ -3719,6 +3724,7 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   Воспроизведено владельцем на живом образе (2026-09-12). Контекст:
   `crates/uefi-tui/src/commands.rs` (`:hii`-ветка `"formset"`;
   complete-ветка `head.last() == "--ffs"`).
+  Закрыто фикс-пакетом tui-fixes (2026-10-01): parse_formset_add_args — FILE первый нефлаговый токен (любой порядок), dangling --ffs → usage-ошибка, completion в позиции файла — пути.
 * [ ] **CLI↔TUI: грамматика hijack расходится** — CLI:
   `hii form hijack --target X --file Y --setupdata-guid Z` (long-flags),
   TUI: `:hii hijack TARGET FILE [GUID]` (позиционные). Не баг, но сюрприз

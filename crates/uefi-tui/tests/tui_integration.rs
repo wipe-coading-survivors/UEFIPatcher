@@ -817,6 +817,59 @@ async fn hii_formset_add_ffs_flag() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn hii_formset_add_flag_aware_grammar() {
+    let td = tempfile::TempDir::new().unwrap();
+    let sock = td.path().join("test.sock");
+    let (_h, calls) = mock_server::start_mock(&sock).await;
+    let state = uefi_common::State {
+        session_id: Some("s1".into()),
+        token: Some("t1".into()),
+        active_image_id: None,
+        sock_path: Some(sock.display().to_string()),
+    };
+    let mut client = uefi_tui::commands::connect(None, state).await.unwrap();
+    let mut app = uefi_tui::app::App::new();
+    uefi_tui::commands::execute_command(&mut app, "open /dev/null", &mut client)
+        .await
+        .unwrap();
+    let file = schema_file(&td, "formset.json", "{}");
+
+    uefi_tui::commands::execute_command(
+        &mut app,
+        &format!("hii formset add --ffs ABC-GUID {file}"),
+        &mut client,
+    )
+    .await
+    .unwrap();
+    {
+        let calls = calls.lock().await;
+        assert_eq!(calls[0].rpc, "HiiFormSetAdd");
+        assert_eq!(
+            calls[0].target, "ABC-GUID",
+            "флаг-первый порядок эквивалентен"
+        );
+    }
+
+    let e = uefi_tui::commands::execute_command(
+        &mut app,
+        &format!("hii formset add {file} --ffs"),
+        &mut client,
+    )
+    .await
+    .unwrap_err();
+    assert!(e.contains("usage"), "dangling --ffs — usage-ошибка: {e}");
+
+    let e = uefi_tui::commands::execute_command(
+        &mut app,
+        &format!("hii formset add {file} extra.json"),
+        &mut client,
+    )
+    .await
+    .unwrap_err();
+    assert!(e.contains("usage"), "лишний позиционный токен — usage: {e}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn hii_form_add_sends_target_and_schema() {
     let td = tempfile::TempDir::new().unwrap();
     let sock = td.path().join("test.sock");

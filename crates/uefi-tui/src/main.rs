@@ -11,6 +11,7 @@ use ratatui::backend::CrosstermBackend;
 use uefi_tui::app::{App, CmdFlow, Focus, FormsFocus, Mode, RegistryRow, View};
 use uefi_tui::commands;
 use uefi_tui::input::{self, AppEvent};
+use uefi_tui::logging;
 use uefi_tui::ui;
 
 #[derive(Parser)]
@@ -22,8 +23,17 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let log_path = logging::init();
+    if let Some(p) = log_path {
+        logging::install_panic_hook(p);
+    }
     let cli = Cli::parse();
     let state = uefi_common::read_state().unwrap_or_default();
+    tracing::info!(
+        version = env!("CARGO_PKG_VERSION"),
+        sock = %uefi_common::state::resolve_sock(cli.sock.as_deref(), &state).display(),
+        "tui start"
+    );
     let mut app = App::new();
     let mut client = match commands::connect(cli.sock.as_deref(), state.clone()).await {
         Ok(c) => Some(c),
@@ -58,6 +68,7 @@ async fn main() -> anyhow::Result<()> {
             break;
         }
     }
+    tracing::info!("tui exit");
     disable_raw_mode()?;
     execute!(stdout(), LeaveAlternateScreen)?;
     Ok(())
@@ -233,9 +244,17 @@ async fn handle_command(app: &mut App, ev: &AppEvent, client: &mut Option<comman
         CmdFlow::Execute => {
             let cmd = app.cmdline.as_str().to_string();
             if let Some(c) = client {
-                match commands::execute_command(app, &cmd, c).await {
-                    Ok(_) => {}
-                    Err(e) => app.status_msg = format!("error: {e}"),
+                let t0 = std::time::Instant::now();
+                let result = commands::execute_command(app, &cmd, c).await;
+                tracing::info!(
+                    cmd = %cmd,
+                    ok = result.is_ok(),
+                    elapsed_ms = t0.elapsed().as_millis() as u64,
+                    "cmd"
+                );
+                if let Err(e) = result {
+                    tracing::warn!(cmd = %cmd, err = %e, "cmd failed");
+                    app.status_msg = format!("error: {e}");
                 }
             } else {
                 app.status_msg = "no engine connection".into();
