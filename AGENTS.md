@@ -40,7 +40,7 @@ UEFIPatcher — многокомпонентное приложение для �
 
 ### Внешнее ревью (Kimi K3)
 
-Агент `plan-reviewer` (`.opencode/agents/plan-reviewer.md`, модель `kimi-code-plan-global/k3`, read-only) — вторая линия обороны после селф-ревью. Требует настроенного провайдера `kimi-code-plan-global` (`opencode auth login`). Запуск — `task` с `subagent_type: plan-reviewer`, режим (`plan-review` / `final-review`) и входы указываются в промпте диспетчеризации.
+Агент `plan-reviewer` (`.opencode/agents/plan-reviewer.md`, модель `kimi-code-plan-global/k3`, read-only) — вторая линия обороны после селф-ревью. Требует настроенного провайдера `kimi-code-plan-global` (`opencode auth login`). Запуск — `task` с `subagent_type: plan-reviewer`, режим (`plan-review` / `final-review`) и входы указываются в промпте диспетчеризации. Рецепт переноса в другие проекты: `docs/opencode-external-review.md`.
 
 1. **Ревью плана — блокирующий гейт после селф-ревью.** После написания плана цикла (`docs/superpowers/plans/*.md`) и селф-ревью — диспетчеризовать `plan-reviewer` в режиме `plan-review`: путь к плану + краткий контекст цели цикла.
 2. **Замечания правятся до старта реализации** отдельным коммитом `docs: fix <cycle> plan review findings (<суть>)`. Существенные правки (порядок задач, архитектура, объём) — повторное ревью; мелкие (опечатки, формулировки) — без.
@@ -119,16 +119,6 @@ cd webui && npm run check                        # svelte-check (цикл 5+7)
 - Rust builder: отдельный `docker/rust-builder.containerfile` (fedora:44 + rust toolchain)
 - Все Rust-сборки наследуются от `rust-builder`
 
-## Специфика для моделей с ограниченным контекстом
-
-- **Не пытайся охватить весь план сразу.** Работай по одной задаче за раз.
-- **Если задача большая** — разбей на подшаги, реализуй по частям.
-- **Если не хватает контекста** — читай только нужные части через `read` с `offset`/`limit`.
-- **Референсы читай точечно** — только нужные функции/структуры.
-- **Если тест не проходит** — прочитай ошибку, прочитай код, исправь осознанно.
-- **После каждого коммита** — `cargo test -p <crate>` и `cargo clippy -p <crate> -- -D warnings`.
-- **Не пиши весь крейт за один присест** — задача за задачей, коммит за коммитом.
-
 ## Работа с IPMI/SOL (риг rd450x)
 
 - Креды НЕ в репо: `source ../IPMI-rd450x.txt` → переменные `IP` (BMC), `L` (login), `P` (password). Не печатать значения.
@@ -138,7 +128,3 @@ cd webui && npm run check                        # svelte-check (цикл 5+7)
 - F9 (Optimal Defaults) после флеша обязателен: пересева печёных дефолтов самим флешем не наблюдается. [Уточнение 2026-09-22: на 450x/TMM пересева нет, а на соседнем C226 дефолты после прошивки берутся из IFR сами (владелец) — правило платформо-зависимое; F9 остаётся безопасной конвенцией, для навигационных правок (REF) не нужен.]
 - power cycle рвёт SOL — перезапустить мост; если сессия закрыта («SOL session closed by BMC») — смело сначала `ipmitool ... sol deactivate`, потом всё остальное (перезапуск моста). Зомби-payload («already active on another session») лечится `sol deactivate`, упорные — `mc reset warm` (BMC ~1 мин, хост не трогается).
 - Хост рига: `ssh root-rd450x`. ECAM-пробы из ОС — поштучные dword (python mmap /dev/mem r+b, `iomem=relaxed` уже в ostree-конфиге).
-
-## Старт
-
-Начни с Цикла 1, Task 1: открой `docs/superpowers/plans/2026-07-22-uefi-engine.md`, найди `### Task 1`, выполняй по шагам до коммита. Затем Task 2, и так далее.
