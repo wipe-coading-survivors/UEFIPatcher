@@ -317,6 +317,7 @@ export interface FormInfo {
   formIdIfr: number;
   title: string;
   visible: boolean;
+  formsetOrdinal?: number | undefined;
 }
 
 export interface HiiListFormsResponse {
@@ -4008,7 +4009,7 @@ export const HiiListFormsRequest: MessageFns<HiiListFormsRequest> = {
 };
 
 function createBaseFormInfo(): FormInfo {
-  return { formId: "", formsetGuid: "", formIdIfr: 0, title: "", visible: false };
+  return { formId: "", formsetGuid: "", formIdIfr: 0, title: "", visible: false, formsetOrdinal: undefined };
 }
 
 export const FormInfo: MessageFns<FormInfo> = {
@@ -4027,6 +4028,9 @@ export const FormInfo: MessageFns<FormInfo> = {
     }
     if (message.visible !== false) {
       writer.uint32(40).bool(message.visible);
+    }
+    if (message.formsetOrdinal !== undefined) {
+      writer.uint32(48).uint32(message.formsetOrdinal);
     }
     return writer;
   },
@@ -4084,6 +4088,14 @@ export const FormInfo: MessageFns<FormInfo> = {
             message.visible = reader.bool();
             continue;
           }
+          case 6: {
+            if (tag !== 48) {
+              break;
+            }
+
+            message.formsetOrdinal = reader.uint32();
+            continue;
+          }
         }
         if ((tag & 7) === 4 || tag === 0) {
           break;
@@ -4115,6 +4127,11 @@ export const FormInfo: MessageFns<FormInfo> = {
         : 0,
       title: isSet(object.title) ? globalThis.String(object.title) : "",
       visible: isSet(object.visible) ? globalThis.Boolean(object.visible) : false,
+      formsetOrdinal: isSet(object.formsetOrdinal)
+        ? globalThis.Number(object.formsetOrdinal)
+        : isSet(object.formset_ordinal)
+        ? globalThis.Number(object.formset_ordinal)
+        : undefined,
     };
   },
 
@@ -4135,6 +4152,9 @@ export const FormInfo: MessageFns<FormInfo> = {
     if (message.visible !== false) {
       obj.visible = message.visible;
     }
+    if (message.formsetOrdinal !== undefined) {
+      obj.formsetOrdinal = Math.round(message.formsetOrdinal);
+    }
     return obj;
   },
 
@@ -4148,6 +4168,7 @@ export const FormInfo: MessageFns<FormInfo> = {
     message.formIdIfr = object.formIdIfr ?? 0;
     message.title = object.title ?? "";
     message.visible = object.visible ?? false;
+    message.formsetOrdinal = object.formsetOrdinal ?? undefined;
     return message;
   },
 };

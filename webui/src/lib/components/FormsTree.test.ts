@@ -106,4 +106,31 @@ describe('FormsTree', () => {
         render(FormsTree, { rows, selectedKey: null, onselect: () => {}, ongates: () => {}, onshow: () => {}, ontoggle: () => {} });
         expect(screen.queryByRole('button', { name: 'show S1#1' })).not.toBeInTheDocument();
     });
+
+    it('показывает #n у формы с ordinal', () => {
+        const ordinalSets = buildFormsets([{ ...form('S1', 1, 'Main'), formsetOrdinal: 1 }], []);
+        const rows = buildFormRows(ordinalSets, new Set(['S1']));
+        const { container } = render(FormsTree, {
+            rows,
+            selectedKey: null,
+            onselect: () => {},
+            ongates: () => {},
+            onshow: () => {},
+            ontoggle: () => {},
+        });
+        expect(container.textContent).toContain('#1');
+    });
+
+    it('не показывает #n без ordinal', () => {
+        const rows = buildFormRows(buildFormsets([form('S1', 1, 'Main')], []), new Set(['S1']));
+        const { container } = render(FormsTree, {
+            rows,
+            selectedKey: null,
+            onselect: () => {},
+            ongates: () => {},
+            onshow: () => {},
+            ontoggle: () => {},
+        });
+        expect(container.textContent).not.toContain('#');
+    });
 });
