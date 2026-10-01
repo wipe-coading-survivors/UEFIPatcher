@@ -1511,6 +1511,70 @@ pub async fn execute_command(
                 _ => Err(NVAR_USAGE.into()),
             }
         }
+        "tse" => {
+            let iid = app
+                .active_image_id
+                .clone()
+                .or_else(|| client.state.active_image_id.clone())
+                .ok_or("no active image")?;
+            let r = client
+                .inner
+                .tse_report(auth_req(&client.state, TseReportRequest { image_id: iid }))
+                .await
+                .map_err(|e| e.message().to_string())?
+                .into_inner();
+            let spf = r
+                .spf
+                .as_ref()
+                .map(|s| {
+                    format!(
+                        "spf: {} pages, {} formsets, {} vars",
+                        s.page_count,
+                        s.formsets.len(),
+                        s.vars.len()
+                    )
+                })
+                .unwrap_or_else(|| "spf: none".into());
+            app.status_msg = format!("{} stride blocks, {spf}", r.blocks.len());
+            Ok(app.status_msg.clone())
+        }
+        "tse-unhide" => {
+            let usage = "usage: :tse-unhide FORMSET-GUID FORM-ID [--block-offset HEX]";
+            let iid = app
+                .active_image_id
+                .clone()
+                .or_else(|| client.state.active_image_id.clone())
+                .ok_or("no active image")?;
+            let guid = parts.get(1).ok_or(usage)?.to_string();
+            let fid: u32 = parts.get(2).ok_or(usage)?.parse().map_err(|_| usage)?;
+            let off = parts
+                .iter()
+                .position(|p| *p == "--block-offset")
+                .and_then(|i| parts.get(i + 1))
+                .map(|s| usize::from_str_radix(s.trim_start_matches("0x"), 16))
+                .transpose()
+                .map_err(|_| usage)?;
+            let off_u32 = off
+                .map(u32::try_from)
+                .transpose()
+                .map_err(|_| "block offset exceeds u32".to_string())?;
+            let r = client
+                .inner
+                .tse_unhide(auth_req(
+                    &client.state,
+                    TseUnhideRequest {
+                        image_id: iid,
+                        formset_guid: guid.clone(),
+                        form_id: fid,
+                        block_pe_offset: off_u32,
+                    },
+                ))
+                .await
+                .map_err(|e| e.message().to_string())?
+                .into_inner();
+            app.status_msg = format!("unhidden {} #{} @ {:#x}", guid, fid, r.entry_pe_offset);
+            Ok(app.status_msg.clone())
+        }
         "filter" => {
             if !app.forms.show_strings {
                 return Err("filter is for the strings browser (S to open)".into());
