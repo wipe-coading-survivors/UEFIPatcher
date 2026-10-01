@@ -554,7 +554,8 @@ git commit -m "feat(engine): spf — читатели formset-blob, катало
 
     /// Образ: Volume > File(B1DA0ADF) > [PE32 leaf, Section 0x19
     /// (forms_pkg_for(A, &[1,5])), Section 0x19 (forms_pkg_for(B,
-    /// &[10000,10001,2049]))]. Root-карта: A→1, B→10000.
+    /// &[10000,10001]))]. Root-карта: A→1, B→10000 (2049 — только в
+    /// stride-баре PE, по 450x это корень формсета 01239999).
     fn root_image(pe: Vec<u8>, mode: ImageMode) -> Image {
         let pe32 = {
             let mut n = mk_node(FfsType::Section, pe, vec![]);
@@ -567,7 +568,7 @@ git commit -m "feat(engine): spf — читатели formset-blob, катало
             n
         };
         let fs_b = {
-            let mut n = mk_node(FfsType::Section, forms_pkg_for(B, &[10000, 10001, 2049]), vec![]);
+            let mut n = mk_node(FfsType::Section, forms_pkg_for(B, &[10000, 10001]), vec![]);
             n.subtype = 0x19;
             n
         };
