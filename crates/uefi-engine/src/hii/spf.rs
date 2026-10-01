@@ -1,3 +1,5 @@
+use uguid::Guid;
+
 pub const SPF_RECORD_SIZE: usize = 72;
 pub const SPF_RECORD_IFR_OFFSET: usize = 28;
 pub const SPF_RECORD_FAILSAFE: usize = 52;
@@ -21,6 +23,12 @@ pub const SPF_PAGE_CNT_OFFSET: usize = 0x1C;
 pub const SPF_PAGE_LIST_OFFSET: usize = 0x20;
 pub const SPF_STRING_CONTROL_SIZE: usize = 0x0C;
 
+pub const SPF_SLOT_PAGES: usize = 0x2c;
+pub const SPF_SLOT_VAR_CATALOG: usize = 0x34;
+pub const SPF_SLOT_FORMSETS: usize = 0x40;
+pub const SPF_FORMSET_ENTRY_SIZE: usize = 0x14;
+pub const SPF_VAR_ENTRY_SIZE: usize = 0x7C;
+
 const SPF_SIGNATURE: [u8; 8] = [0xF8, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF];
 const SPF_TAIL: [u8; 4] = [0x01, 0x00, 0x01, 0x00];
 const SPF_CONTAINER_SIG: [u8; 4] = *b"$SPF";
@@ -30,6 +38,134 @@ pub fn container_start(body: &[u8]) -> Option<usize> {
         return None;
     }
     (0..=body.len() - SPF_CONTAINER_SIG.len()).find(|&p| body[p..p + 4] == SPF_CONTAINER_SIG)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpfFormsetEntry {
+    pub guid: Guid,
+    pub raw_u32: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpfVarEntry {
+    pub guid: Guid,
+    pub name: String,
+    pub attrs: u32,
+    pub size: u32,
+}
+
+/// u32-слот хедера $SPF (оффсет от magic). Пинн по 450x: +0x2c таблица
+/// страниц, +0x34 каталог переменных, +0x40 блоб формсетов
+/// (спека tse-unhide §2.3).
+pub fn header_slot(body: &[u8], slot: usize) -> Option<u32> {
+    let m = container_start(body)?;
+    let p = m.checked_add(slot)?;
+    let b = body.get(p..p + 4)?;
+    Some(u32::from_le_bytes(b.try_into().unwrap()))
+}
+
+/// Блоб формсетов: {u32 count, u32 offs[count]} → записи
+/// {GUID(16), u32@+0x10}, stride 0x14, оффсеты от начала блоба.
+/// u32-поле семантически неясно (450x: 0,1,2,1,121,64,20) — raw.
+/// Мусор/переполнения → пустой список (fail-soft, recon-канал).
+pub fn scan_formsets(body: &[u8]) -> Vec<SpfFormsetEntry> {
+    read_indexed_blob(body, SPF_SLOT_FORMSETS, SPF_FORMSET_ENTRY_SIZE, |rec| {
+        Some(SpfFormsetEntry {
+            guid: Guid::from_bytes(rec[..16].try_into().unwrap()),
+            raw_u32: u32::from_le_bytes(rec[16..20].try_into().unwrap()),
+        })
+    })
+}
+
+/// Каталог переменных: записи 0x7C — GUID, имя UCS-2 @+0x10..+0x60,
+/// attrs @+0x60, size @+0x78 (P3 analyzer-patterns, спека §2.3).
+pub fn scan_var_catalog(body: &[u8]) -> Vec<SpfVarEntry> {
+    read_indexed_blob(body, SPF_SLOT_VAR_CATALOG, SPF_VAR_ENTRY_SIZE, |rec| {
+        let units: Vec<u16> = rec[0x10..0x60]
+            .chunks_exact(2)
+            .take_while(|c| c != &[0, 0])
+            .map(|c| u16::from_le_bytes(c.try_into().unwrap()))
+            .collect();
+        Some(SpfVarEntry {
+            guid: Guid::from_bytes(rec[..16].try_into().unwrap()),
+            name: String::from_utf16_lossy(&units),
+            attrs: u32::from_le_bytes(rec[0x60..0x64].try_into().unwrap()),
+            size: u32::from_le_bytes(rec[0x78..0x7C].try_into().unwrap()),
+        })
+    })
+}
+
+/// Число страниц: u32 @magic+SPF_PAGE_COUNT_OFFSET (0x60). Fail-soft 0.
+pub fn pages_count(body: &[u8]) -> u32 {
+    let Some(m) = container_start(body) else {
+        return 0;
+    };
+    body.get(m + SPF_PAGE_COUNT_OFFSET..m + SPF_PAGE_COUNT_OFFSET + 4)
+        .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+        .unwrap_or(0)
+}
+
+/// Число страниц по fsIdx: указатели таблицы @magic+0x64+4·i, у каждой
+/// записи fsIdx u16 @+0x08 (запись SPF_PAGE_HEADER_SIZE). Fail-soft [],
+/// усечение — warn (чек-лист HII п.5).
+pub fn pages_fs_counts(body: &[u8]) -> Vec<(u16, u32)> {
+    let Some(m) = container_start(body) else {
+        return Vec::new();
+    };
+    let count = pages_count(body) as usize;
+    let mut counts: std::collections::BTreeMap<u16, u32> = Default::default();
+    for i in 0..count {
+        let tp = m + SPF_PAGE_TABLE_OFFSET + 4 * i;
+        let Some(relb) = body.get(tp..tp + 4) else {
+            tracing::warn!(i, "spf page table truncated");
+            break;
+        };
+        let rel = u32::from_le_bytes(relb.try_into().unwrap()) as usize;
+        let Some(page) = body.get(m + rel..m + rel + SPF_PAGE_HEADER_SIZE) else {
+            tracing::warn!(i, rel, "spf page record out of bounds");
+            continue;
+        };
+        let fs = u16::from_le_bytes(page[0x08..0x0A].try_into().unwrap());
+        *counts.entry(fs).or_default() += 1;
+    }
+    counts.into_iter().collect()
+}
+
+fn read_indexed_blob<T>(
+    body: &[u8],
+    slot: usize,
+    entry_size: usize,
+    parse: impl Fn(&[u8]) -> Option<T>,
+) -> Vec<T> {
+    let Some(m) = container_start(body) else {
+        return Vec::new();
+    };
+    let Some(blob) = header_slot(body, slot) else {
+        return Vec::new();
+    };
+    let Some(base) = m.checked_add(blob as usize) else {
+        return Vec::new();
+    };
+    let Some(h) = body.get(base..base + 4) else {
+        return Vec::new();
+    };
+    let count = u32::from_le_bytes(h.try_into().unwrap()) as usize;
+    let mut out = Vec::new();
+    for i in 0..count {
+        let Some(op) = body.get(base + 4 + i * 4..base + 8 + i * 4) else {
+            tracing::warn!(slot, i, "spf indexed blob truncated");
+            break;
+        };
+        let rel = u32::from_le_bytes(op.try_into().unwrap()) as usize;
+        let Some(rec) = body.get(base + rel..base + rel + entry_size) else {
+            tracing::warn!(slot, i, rel, "spf blob entry out of bounds");
+            continue;
+        };
+        if let Some(v) = parse(rec) {
+            out.push(v);
+        }
+    }
+    out
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1057,5 +1193,72 @@ mod tests {
     fn fixup_selected_record_ifr_offsets_panics_without_spf_container() {
         let mut body = vec![0u8; 0x200];
         fixup_selected_record_ifr_offsets(&mut body, &[0], 0, 0);
+    }
+
+    fn put_u32(b: &mut [u8], off: usize, v: u32) {
+        b[off..off + 4].copy_from_slice(&v.to_le_bytes());
+    }
+
+    fn put_u16(b: &mut [u8], off: usize, v: u16) {
+        b[off..off + 2].copy_from_slice(&v.to_le_bytes());
+    }
+
+    fn write_page(b: &mut [u8], off: usize, fs_idx: u16, form_id: u16) {
+        put_u16(b, off + 0x08, fs_idx);
+        put_u16(b, off + 0x0A, form_id);
+    }
+
+    fn spf_fixture() -> Vec<u8> {
+        let m = SPF_CONTAINER_BASE; // 0x10 — magic в теле секции
+        let mut b = vec![0u8; m + 0x500];
+        b[m..m + 4].copy_from_slice(b"$SPF");
+        put_u32(&mut b, m + SPF_SLOT_FORMSETS, 0x200);
+        put_u32(&mut b, m + SPF_SLOT_VAR_CATALOG, 0x300);
+        put_u32(&mut b, m + SPF_SLOT_PAGES, 0x60);
+        put_u32(&mut b, m + 0x300, 1);
+        put_u32(&mut b, m + 0x304, 0x10);
+        put_u32(&mut b, m + SPF_PAGE_COUNT_OFFSET, 2);
+        put_u32(&mut b, m + SPF_PAGE_TABLE_OFFSET, 0x100);
+        put_u32(&mut b, m + SPF_PAGE_TABLE_OFFSET + 4, 0x120);
+        write_page(&mut b, m + 0x100, 0, 1);
+        write_page(&mut b, m + 0x120, 1, 2);
+        put_u32(&mut b, m + 0x200, 2);
+        put_u32(&mut b, m + 0x204, 0x20);
+        put_u32(&mut b, m + 0x208, 0x34);
+        let g1 = Guid::try_parse("EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9").unwrap();
+        b[m + 0x220..m + 0x230].copy_from_slice(&g1.to_bytes());
+        put_u32(&mut b, m + 0x230, 7);
+        let gv = Guid::try_parse("899407D7-99FE-43D8-9A21-79EC328CAC21").unwrap();
+        b[m + 0x310..m + 0x320].copy_from_slice(&gv.to_bytes());
+        for (i, ch) in "Setup".encode_utf16().enumerate() {
+            put_u16(&mut b, m + 0x310 + 0x10 + i * 2, ch);
+        }
+        put_u32(&mut b, m + 0x310 + 0x60, 3);
+        put_u32(&mut b, m + 0x310 + 0x78, 148);
+        b
+    }
+
+    #[test]
+    fn spf_formsets_and_var_catalog_read() {
+        let b = spf_fixture();
+        assert_eq!(pages_count(&b), 2);
+        let fs = scan_formsets(&b);
+        assert_eq!(fs.len(), 2);
+        assert_eq!(fs[0].raw_u32, 7);
+        let vars = scan_var_catalog(&b);
+        assert_eq!(vars.len(), 1);
+        assert_eq!(vars[0].name, "Setup");
+        assert_eq!(vars[0].attrs, 3);
+        assert_eq!(vars[0].size, 148);
+        assert_eq!(pages_fs_counts(&b), vec![(0, 1), (1, 1)]);
+    }
+
+    #[test]
+    fn spf_readers_fail_soft_on_garbage() {
+        assert!(scan_formsets(b"garbage").is_empty());
+        assert!(scan_var_catalog(b"garbage").is_empty());
+        assert!(pages_fs_counts(b"garbage").is_empty());
+        assert_eq!(pages_count(b"garbage"), 0);
+        assert_eq!(header_slot(b"garbage", SPF_SLOT_FORMSETS), None);
     }
 }
