@@ -4811,6 +4811,18 @@ Task 3 (проверено git stash). Штатная команда цикла 
   (`check_question_add_scopes_varstore_checks_to_owning_formset`).
   Контекст: `crates/uefi-engine/src/hii/form_add.rs`
   (validate_form_varstores); финальное ревью formset-ordinal-followups.
+* [ ] **класс: limitation: uefi-engine: scoped varstore-семантика reject'ит
+  ссылки на варсторы соседних формсетов (без cross-formset fallback)** —
+  с цикла formset-ordinal-followups question-add/form-add/add_varstores
+  проверяют ссылки и коллизии против карты ЦЕЛЕВОГО формсета
+  (`varstore_map_formset`): ссылка на варстор, декларированный только в
+  другом формсете пакета, → InvalidSchema «not declared» (раньше
+  whole-package карта её пропускала). Решение владельца (2026-10-01):
+  осознанное ограничение — насколько критичен fallback на карту пакета,
+  неясно (живых кейсов нет); пересмотреть при появлении образа, где
+  форма реально ссылается на чужой варстор. Контекст: спека
+  `2026-10-01-formset-ordinal-followups-design.md` §2.1, план-фикс
+  d94884a (foreign-кейс), PR #37.
 * [ ] **класс: errors: uefi-engine: add_varstores — расхождение селекторов
   валидации и splice на multi-entry PE** — атрибуция/валидация идут по
   `form_package_ranges(node).next()` (первый forms-пакет по всем
