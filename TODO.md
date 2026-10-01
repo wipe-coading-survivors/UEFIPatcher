@@ -4027,7 +4027,7 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   (движок корректно удаляет, но пользователь может ожидать «закрыть
   сессию, файл оставить»). Проверить help-текст CLI/TUI (2026-09-12,
   наблюдение при лечении 450x-артефактов).
-* [ ] **uefi-engine: класс «suppress_if TRUE» не флипается (flip '-')** —
+* [x] **uefi-engine: класс «suppress_if TRUE» не флипается (flip '-')** —
   жёстко скрытые GOTO/вопросы с константным выражением `true`
   (EFI_IFR_TRUE_OP): plan_flip не имеет операнда для инверсии. На 450x
   так скрыт GOTO→Chipset (10008) в корневой форме 10000 (`@pkg+0x6da`)
@@ -4038,7 +4038,12 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   после прошивки: REF3 в 10000 не отрендерился вкладкой; бар = 6
   GOTO-детей формы 10000 [10001/10002/10008/10009/10010/10012],
   Server Mgmt рисуется TSE извне).
-* [ ] **uefi-engine: add_ref не валидирует существование цели REF** —
+  Закрыто циклом ref-guard-true-flip (2026-10-01, §1): plan_flip-класс
+  ConstantTrue (TRUE→FALSE, from-байт сверяется с телом), GateExpr::False
+  декодируется и считается unlocked (идемпотентность unlock), expr_text
+  "false"; интеграционный тест unlock_flips_constant_true_gate. Спека
+  2026-10-01-ref-guard-true-flip-design.md.
+* [x] **uefi-engine: add_ref не валидирует существование цели REF** —
   без `formset_guid` эмитится plain REF (GOTO внутри формсета-хозяина),
   и если формы с таким form_id в нём нет, вставка молча проходит:
   пользователь получает висячий GOTO (в TUI Forms View — «! … dangling
@@ -4051,6 +4056,12 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
   (2026-09-12, live-гейт 450x: два GOTO на форму 1 корневого Setup
   вставились без ошибки и повисли; движок-сторона кросс-резолва
   проверена зондом — с formset_guid resolves_cross=true).
+  Закрыто циклом ref-guard-true-flip (2026-10-01, §2): validate_ref_target
+  (intra по parse_form_package_sets/qt.formset_idx; REF3 глобально по
+  collect_forms; suppressed/read-only цели валидны), вызов до мутаций в
+  add_ref и в цикле check_ref_add; старый тест-инверсия
+  add_ref_rejects_dangling_destination_form. Спека
+  2026-10-01-ref-guard-true-flip-design.md.
 * [x] **uefi-engine: extract/export и move форм/вопросов — лёгкая
   переподвязка в другие корни** — сериализация существующей
   формы/вопроса (IFR + строки + varstore-декларация) в JSON-схему

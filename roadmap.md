@@ -539,6 +539,24 @@ Ordinal-строка в TUI Forms-детали, dim-суффикс `#n` в WebUI
 round-trip инвариант list→add (спека §4). Гейты цикла чистые; TODO-запись
 закрыта.
 
+## Мини-цикл ref-guard-true-flip — flip ConstantTrue + валидация цели add_ref (2026-10-01)
+
+`docs/superpowers/specs/2026-10-01-ref-guard-true-flip-design.md` + план
+`docs/superpowers/plans/2026-10-01-ref-guard-true-flip.md` (6 задач, TDD;
+план прошёл два раунда plan-review — FIX-FIRST → APPROVE). Реализовано:
+§1 — третий flip-класс ConstantTrue в `plan_flip` (TRUE→FALSE,
+length-preserving, from-байт сверяется с телом), `GateExpr::False`
+декодируется и считается unlocked (идемпотентность повторного unlock),
+`expr_text` "false"; §2 — `validate_ref_target` в add_ref/check_ref_add:
+plain REF против форм формсета-владельца (`parse_form_package_sets` по
+qt.pkg/qt.formset_idx), REF3 глобально по `collect_forms`;
+suppressed/read-only цели валидны, отказ до мутаций с have-списком.
+Закрывает TODO «suppress_if TRUE не флипается» (450x: GOTO→Chipset 10008)
+и «add_ref не валидирует цель REF» (висячие GOTO живого гейта 2026-09-12).
+Статус: исполнена (2026-10-01, ветка feat/ref-guard-true-flip), гейты
+чистые (workspace test/clippy/fmt); живой гейт 450x (вкладка Chipset)
+— за владельцем.
+
 ## Мини-цикл formset-ordinal-followups — формсет-скоуп varstore-семантики (2026-10-01)
 
 `docs/superpowers/specs/2026-10-01-formset-ordinal-followups-design.md` +
