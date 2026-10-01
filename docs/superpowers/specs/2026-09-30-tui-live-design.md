@@ -135,3 +135,17 @@ Gateway — без кода: generic bridge `POST /api/v1/rpc/HiiGetValue` по�
 - Остаточные ограничения — TODO.md: пути с пробелами в TUI-командах (limitation), индикатор `[1..0/N]` на вырожденной высоте, qid-gate кэшей и пр.
 
 Ветка `feat/tui-live` (PR #34), 30 коммитов. Гейты: `cargo test --all` 1144/0, clippy `--all --all-targets` clean, fmt clean, webui check 0/0 + vitest 126/126.
+
+## Аддендум фоллоу-апов (2026-10-01)
+
+> Фоллоу-апы финального ревью из TODO. Без мини-цикла: точечные правки без изменения видимого API/поведения (кроме убранного стейла), межкрейтовой координации нет.
+
+### §A Общий спуск StdDefaults (engine)
+
+`seed_lookup` и `collect_std_defaults_hits` (crates/uefi-engine/src/hii/mod.rs) дублировали рекурсию «барьер non-recompressable + детект store-body + DFS-порядок» — два источника истины «доступного стора», риск расхождения. Фикс: единый спуск `collect_std_defaults_bodies` (список доступных копий + флаг `skipped_behind_barrier`), оба потребителя поверх него; `StdDefaultsScan.path` уходит (путь трекается спуском).
+
+Семантики сохраняются построчно: чтение (seed_lookup) **пропускает** стор без записи name+size и читает следующую доступную копию; запись/диагностика (set_value/get_value через collect_std_defaults_hits) — `ValueOpUnsupported("has no record")` на первой такой копии. Тест-пин различия: два доступных стора, первый без записи → seed возвращает значение второго, collect ошибается.
+
+### §B refresh_forms чистит question_info (tui)
+
+`refresh_forms` (crates/uefi-tui/src/commands.rs) чистил `current_value`/`current_value_key`, но не `question_info`/`question_info_key` — после `:switch`/ре-входа с тем же ключом `(FormKey, qid)` `refresh_question_info_if_needed` выходил по кэшу и рендерил стейл-инфо предыдущего образа. Фикс: симметричная очистка обеих пар (как `reload_forms`). Тест — по образцу `varstores_cache_invalidated_on_refresh_and_reload`.
