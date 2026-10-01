@@ -4273,7 +4273,7 @@ mod tests {
             [
                 g_form(10002),
                 g_opcode(r_efi::hii::IFR_SUPPRESS_IF_OP, true, &[]),
-                vec![r_efi::hii::IFR_TRUE_OP, 0x02],
+                vec![0x42u8, 0x03, 0x07],
                 g_ref(10029),
                 g_end(),
                 g_end(),
@@ -4356,7 +4356,7 @@ mod tests {
     fn unlock_cross_phase_failure_rolls_back_all_donors() {
         let mut image = cross_formset::cross_fixtures::three_file_image(
             cross_formset::cross_fixtures::donor_pkg(),
-            cross_formset::cross_fixtures::donor_true_expr_pkg(),
+            cross_formset::cross_fixtures::donor_other_expr_pkg(),
             cross_formset::cross_fixtures::target_pkg(),
         );
         let debug_before = format!("{:?}", image.root);
@@ -4375,7 +4375,7 @@ mod tests {
     fn unlock_rolls_back_own_phase_on_cross_failure() {
         let mut image = cross_formset::cross_fixtures::three_file_image(
             cross_formset::cross_fixtures::donor_pkg(),
-            cross_formset::cross_fixtures::donor_true_expr_pkg(),
+            cross_formset::cross_fixtures::donor_other_expr_pkg(),
             cross_formset::cross_fixtures::target_with_own_gate_pkg(),
         );
         let debug_before = format!("{:?}", image.root);

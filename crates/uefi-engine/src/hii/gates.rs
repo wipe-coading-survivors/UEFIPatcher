@@ -4,8 +4,8 @@ use r_efi::hii::{
     IFR_ACTION_OP, IFR_CHECKBOX_OP, IFR_DATE_OP, IFR_DEFAULT_OP, IFR_END_OP, IFR_EQ_ID_VAL_OP,
     IFR_EQUAL_OP, IFR_FALSE_OP, IFR_FORM_OP, IFR_GRAY_OUT_IF_OP, IFR_NUMERIC_OP, IFR_NUMERIC_SIZE,
     IFR_ONE_OF_OP, IFR_ONE_OF_OPTION_OP, IFR_ORDERED_LIST_OP, IFR_PASSWORD_OP, IFR_REF_OP,
-    IFR_STRING_OP,
-    IFR_SUBTITLE_OP, IFR_SUPPRESS_IF_OP, IFR_TEXT_OP, IFR_TIME_OP, IFR_TRUE_OP, IFR_UINT64_OP,
+    IFR_STRING_OP, IFR_SUBTITLE_OP, IFR_SUPPRESS_IF_OP, IFR_TEXT_OP, IFR_TIME_OP, IFR_TRUE_OP,
+    IFR_UINT64_OP,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1051,9 +1051,7 @@ mod tests {
         apply_flips(&mut body, &flips).unwrap();
         let gates = find_gates(&body, &TRUE_GATE_TARGET);
         assert_eq!(gates[0].expr, GateExpr::False);
-        assert!(plan_gates_skip_unlocked(&body, &gates)
-            .unwrap()
-            .is_empty());
+        assert!(plan_gates_skip_unlocked(&body, &gates).unwrap().is_empty());
         assert!(
             plan_gates(&body, &gates).is_err(),
             "повторное открытие запрещено"
@@ -1063,11 +1061,7 @@ mod tests {
     #[test]
     fn plan_true_errs_when_expr_offset_beyond_body() {
         let pkg = package(&true_gate_ifr());
-        let gate = hand_gate(
-            pkg.len() + 10,
-            pkg.len() + 40,
-            GateExpr::True,
-        );
+        let gate = hand_gate(pkg.len() + 10, pkg.len() + 40, GateExpr::True);
         let err = plan_flip(&pkg, &gate).unwrap_err();
         assert!(err.contains("gate bounds out of package"), "{err}");
     }
