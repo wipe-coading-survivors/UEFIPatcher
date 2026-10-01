@@ -289,6 +289,7 @@ fn expr_text(expr: &gates::GateExpr, region: &[u8]) -> String {
             format!("{question_id:#06X} == {value:#06X}")
         }
         gates::GateExpr::True => "true".to_string(),
+        gates::GateExpr::False => "false".to_string(),
         gates::GateExpr::Other => format!(
             "[{}]",
             region
@@ -3605,6 +3606,11 @@ mod tests {
         let mut image = vendor_image_with(0x19, vendor_forms_pkg());
         let err = set_item_visibility(&mut image, VENDOR_FORM_ITEM, true).unwrap_err();
         assert!(matches!(err, HiiError::NoSuppressScope));
+    }
+
+    #[test]
+    fn expr_text_false() {
+        assert_eq!(expr_text(&gates::GateExpr::False, &[]), "false");
     }
 
     #[test]

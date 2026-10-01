@@ -2,8 +2,9 @@ use super::ifr::package_bounds;
 use crate::types::Guid;
 use r_efi::hii::{
     IFR_ACTION_OP, IFR_CHECKBOX_OP, IFR_DATE_OP, IFR_DEFAULT_OP, IFR_END_OP, IFR_EQ_ID_VAL_OP,
-    IFR_EQUAL_OP, IFR_FORM_OP, IFR_GRAY_OUT_IF_OP, IFR_NUMERIC_OP, IFR_NUMERIC_SIZE, IFR_ONE_OF_OP,
-    IFR_ONE_OF_OPTION_OP, IFR_ORDERED_LIST_OP, IFR_PASSWORD_OP, IFR_REF_OP, IFR_STRING_OP,
+    IFR_EQUAL_OP, IFR_FALSE_OP, IFR_FORM_OP, IFR_GRAY_OUT_IF_OP, IFR_NUMERIC_OP, IFR_NUMERIC_SIZE,
+    IFR_ONE_OF_OP, IFR_ONE_OF_OPTION_OP, IFR_ORDERED_LIST_OP, IFR_PASSWORD_OP, IFR_REF_OP,
+    IFR_STRING_OP,
     IFR_SUBTITLE_OP, IFR_SUPPRESS_IF_OP, IFR_TEXT_OP, IFR_TIME_OP, IFR_TRUE_OP, IFR_UINT64_OP,
 };
 
@@ -47,6 +48,7 @@ pub enum GateExpr {
     EqConst { a: u64, b: u64 },
     EqIdVal { question_id: u16, value: u16 },
     True,
+    False,
     Other,
 }
 
@@ -97,6 +99,7 @@ pub fn decode_expr(region: &[u8]) -> GateExpr {
             value: u16::from_le_bytes([p[2], p[3]]),
         },
         [(IFR_TRUE_OP, _)] => GateExpr::True,
+        [(IFR_FALSE_OP, _)] => GateExpr::False,
         _ => GateExpr::Other,
     }
 }
@@ -1149,6 +1152,10 @@ mod tests {
         vec![IFR_TRUE_OP, 0x02]
     }
 
+    fn false_op() -> Vec<u8> {
+        vec![IFR_FALSE_OP, 0x02]
+    }
+
     fn concat(parts: &[Vec<u8>]) -> Vec<u8> {
         parts.concat()
     }
@@ -1194,6 +1201,20 @@ mod tests {
     #[test]
     fn decode_true() {
         assert_eq!(decode_expr(&true_op()), GateExpr::True);
+    }
+
+    #[test]
+    fn decode_false() {
+        assert_eq!(decode_expr(&false_op()), GateExpr::False);
+    }
+
+    #[test]
+    fn decode_true_and_false_are_distinct() {
+        assert_eq!(
+            decode_expr(&concat(&[true_op(), false_op()])),
+            GateExpr::Other,
+            "не одиночный опкод — не константный класс"
+        );
     }
 
     #[test]
