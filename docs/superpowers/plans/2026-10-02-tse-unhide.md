@@ -1023,6 +1023,8 @@ git commit -m "feat(engine): tse_report — инвентарь stride-блоко
 - Modify: `crates/uefi-engine/src/rpc/server.rs`
 - Modify: `crates/uefi-cli/tests/mock_server.rs`
 - Modify: `crates/uefi-tui/tests/mock_server.rs`
+- Modify: `crates/uefi-gateway/tests/mock_server.rs` (третья реализация трейта — без неё E0046)
+- Modify: `crates/uefi-proto/tests/descriptor.rs` (хардкод числа методов 41 → 43)
 
 **Interfaces:**
 - Consumes: `tse_report`, `tse_unhide` (Tasks 3-4).
@@ -1145,7 +1147,11 @@ fn spf_summary_proto(s: &crate::hii::tse::SpfSummary) -> TseSpfSummary {
         })?;
         let fid = u16::try_from(r.form_id)
             .map_err(|_| Status::invalid_argument("form_id exceeds u16"))?;
-        let off = r.block_pe_offset.map(usize::from);
+        let off = r
+            .block_pe_offset
+            .map(usize::try_from)
+            .transpose()
+            .map_err(|_| Status::invalid_argument("block_pe_offset exceeds usize"))?;
         self.ensure_image_loaded(&r.image_id).await?;
         let (outcome, session_id) = {
             let mut images = self.images.lock().await;
@@ -1206,7 +1212,7 @@ fn spf_summary_proto(s: &crate::hii::tse::SpfSummary) -> TseSpfSummary {
 
 - [ ] **Step 4: стабы моков (обязательны — иначе trait неполон и workspace не компилируется)**
 
-`crates/uefi-cli/tests/mock_server.rs` (и зеркально `uefi-tui/tests/mock_server.rs`):
+`crates/uefi-cli/tests/mock_server.rs` (и зеркально `uefi-tui/tests/mock_server.rs`, `uefi-gateway/tests/mock_server.rs`):
 
 ```rust
     async fn tse_report(
@@ -1251,7 +1257,7 @@ fn spf_summary_proto(s: &crate::hii::tse::SpfSummary) -> TseSpfSummary {
 
 ```bash
 cargo test --all && cargo clippy --all --all-targets -- -D warnings
-git add crates/uefi-proto/proto/engine.proto crates/uefi-engine/src/rpc/server.rs crates/uefi-cli/tests/mock_server.rs crates/uefi-tui/tests/mock_server.rs
+git add crates/uefi-proto/proto/engine.proto crates/uefi-engine/src/rpc/server.rs crates/uefi-cli/tests/mock_server.rs crates/uefi-tui/tests/mock_server.rs crates/uefi-gateway/tests/mock_server.rs crates/uefi-proto/tests/descriptor.rs
 git commit -m "feat(rpc): TseReport/TseUnhide — proto, хендлеры, server-тесты, стабы моков (tse-unhide §3.1)"
 ```
 
