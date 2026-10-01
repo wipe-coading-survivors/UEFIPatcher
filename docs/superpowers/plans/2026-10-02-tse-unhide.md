@@ -35,7 +35,7 @@
 
 **Files:**
 - Create: `crates/uefi-engine/src/hii/tse.rs`
-- Modify: `crates/uefi-engine/src/hii/mod.rs` (добавить `pub mod tse;` после `pub mod string_pack;`)
+- Modify: `crates/uefi-engine/src/hii/mod.rs` (добавить `pub mod tse;` по алфавиту — после `pub mod strings;`)
 
 **Interfaces:**
 - Produces: `pub const AMITSE_GUID_STR / STRIDE_ENTRY_SIZE`; `pub struct StrideEntry { pub guid: Guid, pub form_id: u64 }`; `pub struct StrideBlock { pub pe_offset: usize, pub entries: Vec<StrideEntry> }`; `pub fn scan_stride_blocks(pe: &[u8], known_formsets: &HashSet<Guid>) -> Vec<StrideBlock>`; (crate) `fn stride_series_at(pe: &[u8], off: usize) -> Option<Vec<StrideEntry>>`.
@@ -166,7 +166,7 @@ mod tests {
 }
 ```
 
-В `hii/mod.rs` после `pub mod string_pack;` добавить `pub mod tse;`.
+В `hii/mod.rs` добавить `pub mod tse;` по алфавиту (после `pub mod strings;`).
 
 - [ ] **Step 2: Запустить тесты — RED**
 
