@@ -585,7 +585,7 @@ git commit -m "feat(engine): validate_form_varstores скоупится по ф�
 
 **Files:**
 - Modify: `crates/uefi-engine/src/hii/form_hijack.rs` (`locate_form` :22 — рядом новый `locate_form_attribution`)
-- Modify: `crates/uefi-engine/src/hii/mod.rs`: `QuestionTarget` :1636 (+`formset_idx`), `resolve_question_target` :1644, `check_question_slots` :1676 (+idx), `preflight_question_splice` :1605 (+idx, убрать `0` на :1617), `check_rsrc_question_splice` :1310 (+idx, `locate_insert_at(pkg, 0, ...)` :1320 → idx), `splice_question_ops_into_resource` :1350 (+idx, :1358), `add_question` :1823/:1825 (qt.formset_idx), `check_question_add` :1875-1891 (scoped-петля) и :1912 (declared-check)
+- Modify: `crates/uefi-engine/src/hii/mod.rs`: `QuestionTarget` :1636 (+`formset_idx`), `resolve_question_target` :1644, `check_question_slots` :1676 (+idx), `preflight_question_splice` :1605 (+idx, убрать `0` на :1617), `check_rsrc_question_splice` :1310 (+idx, `locate_insert_at(pkg, 0, ...)` :1320 → idx), `splice_question_ops_into_resource` :1350 (+idx, :1358), `add_question` :1823/:1825 (qt.formset_idx), `check_question_add` :1875-1891 (scoped-петля) и :1912 (declared-check); сигнатурно-обязательные (Plan-fix 2026-10-01): `add_ref` :2180 (preflight) и :2216/:2218 (splice), `check_ref_add` :2263 (preflight), тест `preflight_bare_channel_bad_anchor...` :5610
 - Test: `crates/uefi-engine/src/hii/mod.rs` (`mod question_add_tests` :5172; фикстуры — в `question_add_fixtures` рядом с `question_add_forms_pkg` :2406 и `question_add_flash_image` :2531)
 
 **Interfaces:**
@@ -631,7 +631,11 @@ git commit -m "feat(engine): validate_form_varstores скоупится по ф�
 
     pub(crate) fn two_formset_question_add_flash_image() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
         let pkg = two_formset_question_add_pkg();
-        let spf_body = question_add_spf_body_for(&pkg);
+        let mut spf_body = question_add_spf_body_for(&pkg);
+        let skeleton = spf::append_page_skeleton(&mut spf_body, 0x68, 10020, 2, 2, 0);
+        spf::register_page_slot(&mut spf_body, skeleton).expect("page-table gap free");
+        let new_len = spf_body.len() - spf::container_start(&spf_body).unwrap();
+        spf::bump_container_length(&mut spf_body, new_len);
         let blob = hii_list_blob(&[&pkg, &string_package_bytes()]);
         let pe = crate::hii::pe_resource::synth_hii_pe("HII", &blob);
         let setup = ffs_file_bytes(
@@ -642,6 +646,15 @@ git commit -m "feat(engine): validate_form_varstores скоупится по ф�
         (flash_with_files(vec![setup, sd]), pkg, spf_body)
     }
 ```
+
+(Plan-fix 2026-10-01: голый `question_add_spf_body_for` даёт $SPF с единственной
+страницей form 10019 — `plan_spf_append` требует страницу с form_id целевой
+формы (`page_slot.ok_or(NotFound)`), оба новых теста целют 10020 и без
+второй страницы зелёными стать не могут, независимо от threading. Страница
+для 10020 регистрируется штатным тулкитом `add_page`: `append_page_skeleton`
++ `register_page_slot` (слот пишется в zero-gap после таблицы страниц) +
+`bump_container_length`. Проверено пробой: plan для 10020 = Ok(page_slot=1,
+page_offset=0x178), план 10019 не меняется.)
 
 Тесты — в `mod question_add_tests` (рядом с `question_add_schema` :5180; хелпер `pkg_of` :5227):
 
@@ -679,7 +692,11 @@ git commit -m "feat(engine): validate_form_varstores скоупится по ф�
             let target2 = "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x10:0#10020";
             let mut foreign = question_add_schema_10020(0x77, 0x10);
             foreign.var_store_id = 1;
-            check_question_add(&img, target2, &[foreign], &[]).unwrap();
+            let err = check_question_add(&img, target2, &[foreign], &[]).unwrap_err();
+            assert!(
+                matches!(err, HiiError::InvalidSchema(ref m) if m.contains("var store id 0x1 is not declared")),
+                "id 1 декларирован только в соседнем fs1, не в формсете-владельце fs2, got {err:?}"
+            );
             let vs = schema::VarStoreSchema {
                 id: 2,
                 guid: "EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9".into(),
@@ -724,7 +741,7 @@ git commit -m "feat(engine): validate_form_varstores скоупится по ф�
 - [ ] **Step 2: Run — verify fail**
 
 Run: `cargo test -p uefi-engine scopes_varstore_checks add_question_targets_form`
-Expected: FAIL — `..._scopes_...`: InvalidSchema «already exists» на `foreign`-кейсе (карта целого пакета видит id 1); `add_question_targets_...`: NotFound от splice с hardcoded formset 0 (формы 10020 в формсете #0 нет).
+Expected: FAIL — `..._scopes_...`: NotFound на `foreign`-кейсе (preflight `locate_insert_at(pkg, 0, 10020)` с hardcoded formset 0 — формы 10020 в формсете #0 нет; после threading ожидание сменится на InvalidSchema «var store id 0x1 is not declared»); `add_question_targets_...`: NotFound от splice с hardcoded formset 0 (формы 10020 в формсете #0 нет). (Plan-fix 2026-10-01: прежнее ожидание «InvalidSchema already exists на foreign-кейсе» было недостижимо — foreign-вызов передаёт `varstores=&[]`, коллизионный блок до preflight не срабатывает.)
 
 - [ ] **Step 3: Implement `locate_form_attribution`** (form_hijack.rs, над `locate_form`; наверху — `use super::ifr::formset_spans;`)
 
@@ -823,12 +840,10 @@ struct QuestionTarget {
         }
 ```
 
-`check_question_add`: петля :1875-1891 → scoped-карта:
+`check_question_add`: петля :1875-1891 → scoped-карта (Plan-fix 2026-10-01: без `let node = find_item(...)` — lookup в новом блоке не читается, `unused_variables` валит clippy-гейт; `qt.pkg` уже несёт байты того же узла):
 
 ```rust
     {
-        let node = crate::parser::target::find_item(&image.root, &qt.target)
-            .map_err(|_| HiiError::NotFound)?;
         let existing = values::varstore_map_formset(&qt.pkg, qt.formset_idx)
             .ok_or(HiiError::InvalidIfr)?;
         for vs in varstores {
@@ -854,6 +869,8 @@ declared-check :1911-1914:
 (`unwrap_or(false)` здесь — не канал чтения, а отказ: None-карта → «не декларирован» → InvalidSchema ниже, громко.)
 
 Вызов `check_question_slots` :1921 → `check_question_slots(schema, &qt.pkg, qt.formset_idx, &pending, varstores)?;`; вызов `preflight_question_splice` :1925-1933 — вставить `qt.formset_idx,` после `qt.form_id,`.
+
+Сигнатурно-обязательные вызовы (Plan-fix 2026-10-01: в исходном плане не перечислены, но сигнатуры меняются — без правок крейт не соберётся): `add_ref` — preflight :2180 вставить `qt.formset_idx,` после `qt.form_id,`; splice :2216-2218 — bare-ветка `ifr::splice_question_ops(&mut node.body, qt.formset_idx, qt.form_id, pos, &ops)?`, resource-ветка `splice_question_ops_into_resource(&mut node.body, qt.formset_idx, qt.form_id, pos, &ops)?`; `check_ref_add` — preflight :2263 вставить `qt.formset_idx,` после `qt.form_id,`; тест `preflight_bare_channel_bad_anchor_is_invalid_schema_with_listing` :5610 — аргумент `0` (bare-фикстура одно-формсетная) после `10019`.
 
 - [ ] **Step 5: Run — verify pass + clippy**
 
