@@ -3356,13 +3356,16 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
 (mульти-формсет десинк) и #2 (CLI JSON) — исправлены (`292c95c`,
 `785198c`); ниже — оставленные миноры и процесс-заметки.
 
-* [ ] **uefi-engine/add_ref: требуется $SPF-страница родительской
+* [x] **uefi-engine/add_ref: требуется $SPF-страница родительской
   формы** — add_ref/check_ref_add переиспользуют plan_spf_append,
   который падает NotFound без страницы формы, хотя REF не нужна ни
   страница, ни запись — только selected_records. REF из безстраничной
   формы даёт невнятный NotFound. Фикс-вариант: лёгкий
   plan_spf_fixup(body, pkg) -> Vec<usize> для add_ref, либо явная
   ошибка «parent form has no $SPF page».
+  Закрыто циклом engine-errors-cleanup (2026-10-01, §3): plan_spf_fixup
+  (container_start + select_resolving_records, без требований
+  страницы/записей/шаблонов); тест add_ref_works_from_pageless_parent_form.
 * [ ] **uefi-engine/real_image np4: безусловный дамп
   /tmp/np14_E43.bin** — остаток лестницы прошивок; гейт-тест,
   пишущий 16MB в фиксированный /tmp-путь. Убрать (E43 принят) или
@@ -4797,7 +4800,7 @@ Task 3 (проверено git stash). Штатная команда цикла 
 > Фоллоу-апы финального ревью ветки `feat/formset-ordinal-followups` (спека
 > `2026-10-01-formset-ordinal-followups-design.md`).
 
-* [ ] **класс: write-path: uefi-engine/ifr: splice_varstore_ops/
+* [x] **класс: write-path: uefi-engine/ifr: splice_varstore_ops/
   splice_question_ops молча усекают u24-длину пакета** — `plen + ops.len()`
   пишется в три заголовочных байта без проверки переполнения: пакет
   >0xFFFFFF (~16MB) после splice получает молча обрезанную длину.
@@ -4805,6 +4808,9 @@ Task 3 (проверено git stash). Штатная команда цикла 
   общий у обеих функций. Контекст: `crates/uefi-engine/src/hii/ifr.rs`
   (splice_varstore_ops, splice_question_ops); найдено финальным ревью
   цикла formset-ordinal-followups.
+  Закрыто циклом engine-errors-cleanup (2026-10-01, §1): checked_package_len —
+  проверка ДО вставки, ValueOpUnsupported, пакет нетронут; тест
+  splice_ops_refuse_u24_length_overflow_without_mutation.
 * [ ] **uefi-engine: нет прямого теста foreign-reference на form-add-пути** —
   отказ question/form-add-ссылки на варстор, объявленный только в
   НЕцелевом формсете, обеспечивается скоупингом `validate_form_varstores`
@@ -4825,7 +4831,7 @@ Task 3 (проверено git stash). Штатная команда цикла 
   форма реально ссылается на чужой варстор. Контекст: спека
   `2026-10-01-formset-ordinal-followups-design.md` §2.1, план-фикс
   d94884a (foreign-кейс), PR #37.
-* [ ] **класс: errors: uefi-engine: add_varstores — расхождение селекторов
+* [x] **класс: errors: uefi-engine: add_varstores — расхождение селекторов
   валидации и splice на multi-entry PE** — атрибуция/валидация идут по
   `form_package_ranges(node).next()` (первый forms-пакет по всем
   resource-записям), а resource-splice — по `form_add::resource_forms_package`
@@ -4836,3 +4842,8 @@ Task 3 (проверено git stash). Штатная команда цикла 
   `crates/uefi-engine/src/hii/mod.rs` (add_varstores),
   `crates/uefi-engine/src/hii/form_add.rs` (resource_forms_package);
   pre-existing шов, найден финальным ревью formset-ordinal-followups.
+  Закрыто циклом engine-errors-cleanup (2026-10-01, §2): единый
+  mutation_forms_package (PE32 — первая resource-запись, паритет
+  collect_forms) для pkg_before/verify-снимка/splice-цели; отказ
+  NotASetupItem до разбора схем; тест
+  add_varstores_multi_entry_pe_validates_writable_channel_only.

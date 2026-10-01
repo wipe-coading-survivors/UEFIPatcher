@@ -315,6 +315,20 @@ fn locate_formset_insert_points(body: &[u8], formset_idx: usize) -> Option<(usiz
     formset_spans(body)?.get(formset_idx).copied()
 }
 
+/// u24-длина пакета после вставки grow байт; переполнение — отказ
+/// (класс write-path: молчаливая усечка заголовка запрещена).
+/// Аддендум engine-errors-cleanup §1.
+fn checked_package_len(package: &[u8], grow: usize) -> Result<usize, HiiError> {
+    let plen = package[0] as usize | (package[1] as usize) << 8 | (package[2] as usize) << 16;
+    let new_len = plen + grow;
+    if new_len > 0xFF_FFFF {
+        return Err(HiiError::ValueOpUnsupported(format!(
+            "IFR package length {new_len} exceeds u24 after splice"
+        )));
+    }
+    Ok(new_len)
+}
+
 pub fn splice_question_ops(
     package: &mut Vec<u8>,
     formset_idx: usize,
@@ -325,13 +339,12 @@ pub fn splice_question_ops(
     if ops.is_empty() {
         return Err(HiiError::InvalidSchema("empty ops".into()));
     }
+    let new_len = checked_package_len(package, ops.len())?;
     let insert_at = locate_insert_at(package, formset_idx, form_id, pos)?;
     package.splice(insert_at..insert_at, ops.iter().copied());
-    let plen = (package[0] as usize | (package[1] as usize) << 8 | (package[2] as usize) << 16)
-        + ops.len();
-    package[0] = (plen & 0xFF) as u8;
-    package[1] = ((plen >> 8) & 0xFF) as u8;
-    package[2] = ((plen >> 16) & 0xFF) as u8;
+    package[0] = (new_len & 0xFF) as u8;
+    package[1] = ((new_len >> 8) & 0xFF) as u8;
+    package[2] = ((new_len >> 16) & 0xFF) as u8;
     Ok((insert_at, ops.len()))
 }
 
@@ -362,15 +375,14 @@ pub fn splice_varstore_ops(
     if ops.is_empty() {
         return Err(HiiError::InvalidSchema("empty ops".into()));
     }
+    let new_len = checked_package_len(package, ops.len())?;
     let Some(insert_at) = locate_formset_prelude_end(package, formset_idx) else {
         return Err(HiiError::NotFound);
     };
     package.splice(insert_at..insert_at, ops.iter().copied());
-    let plen = (package[0] as usize | (package[1] as usize) << 8 | (package[2] as usize) << 16)
-        + ops.len();
-    package[0] = (plen & 0xFF) as u8;
-    package[1] = ((plen >> 8) & 0xFF) as u8;
-    package[2] = ((plen >> 16) & 0xFF) as u8;
+    package[0] = (new_len & 0xFF) as u8;
+    package[1] = ((new_len >> 8) & 0xFF) as u8;
+    package[2] = ((new_len >> 16) & 0xFF) as u8;
     Ok((insert_at, ops.len()))
 }
 
@@ -1732,6 +1744,40 @@ mod tests {
             Err(HiiError::NotFound)
         ));
         assert_eq!(formless, formless_before);
+    }
+
+    #[test]
+    fn splice_ops_refuse_u24_length_overflow_without_mutation() {
+        let mut pkg = two_form_package();
+        pkg[0] = 0xFF;
+        pkg[1] = 0xFF;
+        pkg[2] = 0xFF;
+        let before = pkg.clone();
+        let ops = opcode(
+            IFR_VARSTORE_EFI_OP,
+            false,
+            &[vec![0u8; 24], b"I\0n\0t\0e\0l\0".to_vec()].concat(),
+        );
+        assert!(
+            matches!(
+                splice_varstore_ops(&mut pkg, &ops, 0),
+                Err(HiiError::ValueOpUnsupported(_))
+            ),
+            "u24-переполнение длины — отказ, не молчаливая усечка"
+        );
+        assert_eq!(pkg, before, "отказ до вставки: частичных состояний нет");
+
+        let mut pkg = two_form_package();
+        pkg[0] = 0xFF;
+        pkg[1] = 0xFF;
+        pkg[2] = 0xFF;
+        let before = pkg.clone();
+        let qops = opcode(IFR_ONE_OF_OP, false, &[0u8; 12]);
+        assert!(matches!(
+            splice_question_ops(&mut pkg, 0, 100, InsertPos::End, &qops),
+            Err(HiiError::ValueOpUnsupported(_))
+        ));
+        assert_eq!(pkg, before);
     }
 
     #[test]

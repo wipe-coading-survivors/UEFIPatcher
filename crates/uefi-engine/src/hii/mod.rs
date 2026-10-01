@@ -1506,6 +1506,18 @@ fn select_resolving_records(records: &[spf::SpfQuestionRecord], pkg: &[u8]) -> V
         .collect()
 }
 
+/// Fixup-план add_ref: только selected_records — REF не добавляет ни
+/// страницу, ни запись $SPF (безстраничная родительская форма и $SPF без
+/// записей допустимы; фиксапу нечего сдвигать). Отсутствие $SPF —
+/// NotFound, как раньше. Аддендум engine-errors-cleanup §3.
+fn plan_spf_fixup(body: &[u8], pkg: &[u8]) -> Result<Vec<usize>, HiiError> {
+    spf::container_start(body).ok_or(HiiError::NotFound)?;
+    Ok(select_resolving_records(
+        &spf::scan_question_records(body),
+        pkg,
+    ))
+}
+
 fn plan_spf_append(
     body: &[u8],
     pkg: &[u8],
@@ -1567,10 +1579,6 @@ fn plan_spf_append(
     })
 }
 
-fn apply_spf_ifr_fixup(body: &mut [u8], plan: &SpfAppendPlan, insert_at: u32, delta: u32) {
-    spf::fixup_selected_record_ifr_offsets(body, &plan.selected_records, insert_at, delta);
-}
-
 #[allow(clippy::too_many_arguments)]
 fn apply_spf_question(
     node: &mut FfsNode,
@@ -1583,7 +1591,12 @@ fn apply_spf_question(
     optimized: Option<u64>,
     failsafe: Option<u64>,
 ) -> Result<usize, HiiError> {
-    apply_spf_ifr_fixup(&mut node.body, plan, insert_at, delta);
+    spf::fixup_selected_record_ifr_offsets(
+        &mut node.body,
+        &plan.selected_records,
+        insert_at,
+        delta,
+    );
     let body = &mut node.body;
     let optimal = optimized.map_or(0, |v| v as u8);
     let failsafe_v = failsafe.map_or(0, |v| v as u8);
@@ -2001,6 +2014,24 @@ pub fn check_question_add(
 
 /// Вставка varstore-деклараций в пролог формсета + сдвиг $SPF-записей.
 /// Спека formset-unlock §3 U3. Возвращает вставленные id; повторный вызов
+/// Мутационный селектор форм-пакета для add_varstores: PE32 — первый
+/// forms-пакет ПЕРВОЙ resource-записи (единственный writable-канал,
+/// паритет collect_forms из formset-ordinal: writable по индексу записи),
+/// остальные каналы — первый диапазон form_package_ranges. Один источник
+/// для валидации, splice-цели и verify-снимка; первая запись без
+/// PACKAGE_FORMS → NotASetupItem до разбора схем. Аддендум
+/// engine-errors-cleanup §2.
+fn mutation_forms_package(node: &FfsNode) -> Result<(usize, usize), HiiError> {
+    if node.subtype == EFI_SECTION_PE32 {
+        form_add::resource_forms_package(&node.body).ok_or(HiiError::NotASetupItem)
+    } else {
+        form_package_ranges(node)
+            .into_iter()
+            .next()
+            .ok_or(HiiError::NotASetupItem)
+    }
+}
+
 /// с уже существующим в формсете id → InvalidSchema.
 /// Декларации встают в пролог формсета-владельца целевой формы TARGET#FORM
 /// (formset-ordinal-followups §2.1); формы нет → NotFound.
@@ -2035,11 +2066,10 @@ pub fn add_varstores(
     if node.node_type != FfsType::Section {
         return Err(HiiError::NotASetupItem);
     }
-    let pkg_before = form_package_ranges(node)
-        .into_iter()
-        .next()
-        .map(|(s, l)| node.body[s..s + l].to_vec())
-        .ok_or(HiiError::NotASetupItem)?;
+    let pkg_before = {
+        let (s, l) = mutation_forms_package(node)?;
+        node.body[s..s + l].to_vec()
+    };
     let formset_idx = form_hijack::locate_form_attribution(&pkg_before, form_id)
         .ok_or(HiiError::NotFound)?
         .0;
@@ -2067,10 +2097,7 @@ pub fn add_varstores(
     {
         let node = crate::parser::target::find_item(&image.root, &target)
             .map_err(|_| HiiError::NotFound)?;
-        let (start, len) = form_package_ranges(node)
-            .into_iter()
-            .next()
-            .ok_or(HiiError::NotASetupItem)?;
+        let (start, len) = mutation_forms_package(node)?;
         let spliced = node
             .body
             .get(start..start + len)
@@ -2091,10 +2118,8 @@ pub fn add_varstores(
 /// на insert_at (длина тела и u24-заголовок выросли ровно на delta,
 /// вставка на insert_at, остальной префикс/суффикс на месте; байты 0..3 —
 /// u24-длина — единственное допустимое отличие вне вставки).
-/// Селекторы снимка (form_package_ranges) и вставки
-/// (resource_forms_package) — разные пути; их расхождение на
-/// multi-package PE должно падать громко, а не молча сдвигать чужие
-/// $SPF-записи. Ревью Task 7 fix round 1.
+/// Снимок и splice-цель идут через единый селектор
+/// mutation_forms_package (аддендум engine-errors-cleanup §2).
 fn verify_spliced_snapshot(
     spliced: &[u8],
     pkg_before: &[u8],
@@ -2220,15 +2245,9 @@ pub fn add_ref(
     let pos = insert_pos_of(schema.insert_before.as_ref())?;
     let path = resolve_writable_path(image, &qt.target)?;
     let sd_path = ami_patcher::discover_pfs_payload_path(image)?;
-    let spf_plan = {
+    let spf_records = {
         let body = node_at(&image.root, &sd_path).body.clone();
-        plan_spf_append(
-            &body,
-            &qt.pkg,
-            qt.span.form_op as u32,
-            qt.span.next_form_op as u32,
-            qt.form_id,
-        )?
+        plan_spf_fixup(&body, &qt.pkg)?
     };
     check_ref_slots(schema, &qt.pkg, &[])?;
 
@@ -2286,7 +2305,12 @@ pub fn add_ref(
 
     {
         let node = node_at_mut(&mut image.root, &sd_path);
-        apply_spf_ifr_fixup(&mut node.body, &spf_plan, insert_at as u32, delta as u32);
+        spf::fixup_selected_record_ifr_offsets(
+            &mut node.body,
+            &spf_records,
+            insert_at as u32,
+            delta as u32,
+        );
     }
     ops::mark_rebuild_to_root_by_path(&mut image.root, &sd_path);
     tracing::debug!(question_id = schema.question_id, insert_at, "add_ref done");
@@ -2310,13 +2334,7 @@ pub fn check_ref_add(
     let sd_path = ami_patcher::discover_pfs_payload_path(image)?;
     {
         let body = node_at(&image.root, &sd_path).body.clone();
-        plan_spf_append(
-            &body,
-            &qt.pkg,
-            qt.span.form_op as u32,
-            qt.span.next_form_op as u32,
-            qt.form_id,
-        )?;
+        plan_spf_fixup(&body, &qt.pkg)?;
     }
     let mut pending: Vec<u16> = question_qids.to_vec();
     for schema in refs {
@@ -5576,6 +5594,58 @@ mod tests {
         }
 
         #[test]
+        fn add_varstores_multi_entry_pe_validates_writable_channel_only() {
+            use crate::ffs::EFI_SECTION_PE32;
+            use crate::hii::form_hijack::test_fixtures::{
+                FILE_GUID, ffs_file_bytes, flash_with_files, section_bytes, string_package_bytes,
+            };
+
+            let pkg = question_add_forms_pkg();
+            let spf_body = question_add_spf_body_for(&pkg);
+            let strings_only = hii_list_blob(&[&string_package_bytes()]);
+            let forms_blob = hii_list_blob(&[&pkg, &string_package_bytes()]);
+            let pe =
+                crate::hii::pe_resource::synth_hii_pe_multi("HII", &[&strings_only, &forms_blob]);
+            let setup = ffs_file_bytes(
+                &Guid::from_str(FILE_GUID).unwrap(),
+                &section_bytes(EFI_SECTION_PE32, &pe),
+            );
+            let sd = sd_file_direct(&spf_body);
+            let flash = flash_with_files(vec![setup, sd]);
+            let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+            let module = "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x10:0";
+            let t = crate::parser::target::parse_target(module).unwrap();
+            let pe_before = crate::parser::target::find_item(&img.root, &t)
+                .unwrap()
+                .body
+                .clone();
+            let err = add_varstores(
+                &mut img,
+                "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x10:0#10019",
+                &[schema::VarStoreSchema {
+                    id: 1,
+                    guid: "EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9".into(),
+                    size: 16,
+                    name: "NewV".into(),
+                    var_type: schema::VarStoreType::Buffer,
+                    attributes: 7,
+                }],
+            )
+            .unwrap_err();
+            assert!(
+                matches!(err, HiiError::NotASetupItem),
+                "отказ селектора writable-канала (первая запись без PACKAGE_FORMS), а не разбор чужого пакета второй записи, got {err:?}"
+            );
+            assert_eq!(
+                crate::parser::target::find_item(&img.root, &t)
+                    .unwrap()
+                    .body,
+                pe_before,
+                "мутаций нет"
+            );
+        }
+
+        #[test]
         fn add_question_inserts_one_of_into_live_form() {
             let (flash, pkg_before, spf_before) = question_add_flash_image();
             let rec1_before = spf::scan_question_records(&spf_before)
@@ -6333,6 +6403,30 @@ mod tests {
                 assert!(
                     crate::hii::form_hijack::locate_form(&pkg_after, 10099).is_none(),
                     "fixture must not contain the dangling destination"
+                );
+            }
+
+            /// Безстраничная родительская форма: REF не требует $SPF-страницу —
+            /// только fixup selected_records (аддендум engine-errors-cleanup §3).
+            #[test]
+            fn add_ref_works_from_pageless_parent_form() {
+                let (flash, pkg_before, spf_before) = question_add_flash_image();
+                let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+                let item = "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x10:0#10020";
+                check_ref_add(&img, item, &[ref_add_schema(0x310, 10019)], &[])
+                    .expect("check_ref_add не требует страницу родительской формы");
+                let res = add_ref(&mut img, item, &ref_add_schema(0x310, 10019))
+                    .expect("add_ref из безстраничной формы");
+                assert_eq!(res.question_id, 0x310);
+                let pkg_after = pkg_of(&img, "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x10:0");
+                assert_eq!(pkg_after.len() - pkg_before.len(), 15);
+                let r = find_ref_op(&pkg_after, 10020).expect("REF op в форме 10020");
+                assert_eq!(pkg_u16(&pkg_after, r + 6), 0x310);
+                assert_eq!(pkg_u16(&pkg_after, r + 13), 10019);
+                assert_eq!(
+                    spf_leaf_of(&img).to_vec(),
+                    spf_before,
+                    "$SPF байт-идентичен: selected-записей за точкой вставки нет"
                 );
             }
 
