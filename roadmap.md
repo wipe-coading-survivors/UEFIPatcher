@@ -573,6 +573,30 @@ formset_idx; collect_forms: writable по индексу resource-записи +
 прямыми тестами. Закрывает 4 записи TODO-секции «Отложенное финального
 ревью formset-ordinal».
 
+## Мини-цикл tse-unhide — снятие hide-маркера AMITSE + SPF/stride recon (2026-10-02)
+
+`docs/superpowers/specs/2026-10-02-tse-unhide-design.md` + план
+`docs/superpowers/plans/2026-10-02-tse-unhide.md` (9 задач, TDD,
+субагент-исполнение; план — 2 раунда plan-review + 4 docs-фикса
+дефектов по ходу). Реализовано: `hii/tse.rs` — `scan_stride_blocks`
+(серии `{GUID, u64 fid, u64 0}`×0x20 с терминатором; GUID-фильтр =
+union IFR+$SPF формсетов), `tse_unhide` (root-фильтр дискриминации
+hide/бар — блок валиден, если все записи корневые; byte-guard;
+экспертный `--block-offset`; snapshot-rollback; порядок ошибок
+NotFound→NotWritable→NotFound/InvalidSchema), `tse_report` (полный
+инвентарь + $SPF-сводка); `hii/spf.rs` — читатели formset-blob,
+каталога переменных (0x7C, UCS-2), pages (fail-soft); RPC
+TseReport/TseUnhide (3 мока, descriptor 43); CLI `tse report|unhide`
+(Text/TSV/Json); TUI `:tse`/`:tse-unhide`. Приёмка — байт-паритет с
+аппаратно-валидированным артефактом v3 (sha256 9d5f6b55…,
+`real_450x_tse_unhide_byte_parity_v3` PASS). Инвентарь соседей:
+asrock 7 блоков/90 стр, X10DRH 14/231, 226D2IL3 0/96, mz32 0 (ложный
+$SPF-маг — TODO silent-data), HNX 0/no-spf; analyzer-patterns P1/P2
+обновлены (решение владельца), 5 TODO-записей. Финальное ревью
+plan-reviewer: Ready to merge — Yes. MERGED: PR #41 (merge 4611247,
+2026-10-02); post-merge master: test --all 1223/0, clippy/fmt clean.
+
+
 ## Дуга formset-unlock (U1–U4) — кросс-формсетные гейты и перенос IIO-бифуркации (2026-09-12)
 Спека `docs/superpowers/specs/2026-09-12-formset-unlock-design.md` +
 план `docs/superpowers/plans/2026-09-12-formset-unlock.md` (9 задач,
