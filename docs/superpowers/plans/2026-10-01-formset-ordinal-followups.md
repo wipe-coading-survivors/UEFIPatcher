@@ -1122,8 +1122,8 @@ git commit -m "feat(engine): add_varstores — атрибуция формсет
         ifr2.extend_from_slice(&[3, 0, 0, 0, 0]);
         ifr2.extend_from_slice(&[IFR_FORM_OP, 6, 3, 0, 3, 0]);
         ifr2.extend_from_slice(&[IFR_END_OP, 2]);
-        let list1 = hii_list_raw(&package(&ifr1), &string_pkg());
-        let list2 = hii_list_raw(&package(&ifr2), &string_pkg());
+        let list1 = hii_list_two_forms(&package(&ifr1), &[], &string_pkg());
+        let list2 = hii_list_two_forms(&package(&ifr2), &[], &string_pkg());
         let pe = crate::hii::pe_resource::synth_hii_pe_multi("HII", &[&list1, &list2]);
         let pe_sec = mk_node(None, FfsType::Section, EFI_SECTION_PE32, pe, vec![]);
         let file = mk_node(
@@ -1155,7 +1155,7 @@ git commit -m "feat(engine): add_varstores — атрибуция формсет
         ifr1.extend_from_slice(&[1, 0, 0, 0, 0]);
         ifr1.extend_from_slice(&[IFR_FORM_OP, 6, 1, 0, 1, 0]);
         ifr1.extend_from_slice(&[IFR_END_OP, 2]);
-        let list = hii_list_raw(&package(&ifr1), &string_pkg());
+        let list = hii_list_two_forms(&package(&ifr1), &[], &string_pkg());
         let pe = crate::hii::pe_resource::synth_hii_pe_dup("HII", &list);
         let pe_sec = mk_node(None, FfsType::Section, EFI_SECTION_PE32, pe, vec![]);
         let file = mk_node(
