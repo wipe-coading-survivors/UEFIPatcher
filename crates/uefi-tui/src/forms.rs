@@ -304,6 +304,19 @@ pub fn form_panel(forms: &FormsData, rows: &[FormsRow], cursor: usize) -> FormPa
         format!("FormSet: {}", key.formset_guid),
         format!("Target:  {}", key.target),
     ];
+    let ordinal = forms
+        .forms
+        .iter()
+        .find(|f| {
+            f.form_id == key.target
+                && f.formset_guid == key.formset_guid
+                && f.form_id_ifr == key.form_id_ifr
+        })
+        .and_then(|f| f.formset_ordinal);
+    header.push(match ordinal {
+        Some(n) => format!("Ordinal: #{n}"),
+        None => "Ordinal: —".to_string(),
+    });
     if !path.is_empty() {
         header.push(format!("Path:    {path}"));
     }
@@ -877,6 +890,48 @@ mod tests {
         let p = form_panel(&app.forms, &rows, 1);
         assert!(p.bottom[0].contains("Question q0x210"));
         assert!(p.bottom.iter().any(|l| l.contains("Current: 4")));
+    }
+
+    #[test]
+    fn form_panel_header_shows_ordinal_line() {
+        let mut app = crate::app::App::new();
+        app.forms.forms = vec![uefi_proto::FormInfo {
+            form_id: "t1".into(),
+            formset_guid: "S".into(),
+            form_id_ifr: 1,
+            title: "Main".into(),
+            visible: true,
+            formset_ordinal: Some(1),
+        }];
+        app.forms.expanded = ["S".into()].into();
+        let rows = app.forms_rows();
+        let idx = rows
+            .iter()
+            .position(|r| matches!(r, FormsRow::Form { .. }))
+            .unwrap();
+        let p = form_panel(&app.forms, &rows, idx);
+        assert!(p.header.iter().any(|l| l.contains("Ordinal: #1")));
+    }
+
+    #[test]
+    fn form_panel_header_ordinal_none_renders_dash() {
+        let mut app = crate::app::App::new();
+        app.forms.forms = vec![uefi_proto::FormInfo {
+            form_id: "t1".into(),
+            formset_guid: "S".into(),
+            form_id_ifr: 1,
+            title: "Main".into(),
+            visible: true,
+            formset_ordinal: None,
+        }];
+        app.forms.expanded = ["S".into()].into();
+        let rows = app.forms_rows();
+        let idx = rows
+            .iter()
+            .position(|r| matches!(r, FormsRow::Form { .. }))
+            .unwrap();
+        let p = form_panel(&app.forms, &rows, idx);
+        assert!(p.header.iter().any(|l| l.contains("Ordinal: —")));
     }
 
     #[test]
