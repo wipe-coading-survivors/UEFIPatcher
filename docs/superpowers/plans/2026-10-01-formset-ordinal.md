@@ -647,7 +647,7 @@ git commit -m "feat(webui): dim-суффикс #ordinal у строки форм
 **Interfaces:**
 - Consumes: хелперы тестов form_add.rs: `two_formset_flash_image()`, `parse_image`, `add_form_schema()`, `section_of`; `crate::hii::forms::collect_forms`.
 
-- [ ] **Step 1: Write the failing-style invariant test** (фикстура уже даёт 2 формсета: fs1 forms [1,2], fs2 пустой до add)
+- [ ] **Step 1: Write the failing-style invariant test** (фикстура даёт 2 формсета: fs1 [form 1], fs2 [form 2] — two_formset_package, form_add.rs:406)
 
 ```rust
 #[test]
@@ -663,11 +663,8 @@ fn list_add_roundtrip_formset_ordinal() {
             .filter(|f| f.form_id == target)
             .map(|f| f.formset_ordinal)
             .collect::<Vec<_>>(),
-        vec![Some(0), Some(0)]
-    ); // fs1: forms 1,2; fs2 до add пуст — строк нет
-    assert!(!before
-        .iter()
-        .any(|f| f.form_id == target && f.formset_ordinal == Some(1)));
+        vec![Some(0), Some(1)]
+    ); // фикстура: fs1=[form 1], fs2=[form 2] (two_formset_package, form_add.rs:406)
     // guid-атрибутция fs1:
     let g1 = before
         .iter()
@@ -685,7 +682,12 @@ fn list_add_roundtrip_formset_ordinal() {
     assert_eq!(
         after.iter().filter(|f| f.form_id == target && f.formset_ordinal == Some(0))
             .map(|f| f.form_id_ifr).collect::<Vec<_>>(),
-        vec![1, 2]
+        vec![1]
+    );
+    assert_eq!(
+        after.iter().filter(|f| f.form_id == target && f.formset_ordinal == Some(1))
+            .map(|f| f.form_id_ifr).collect::<Vec<_>>(),
+        vec![2, 42]
     );
 }
 ```
