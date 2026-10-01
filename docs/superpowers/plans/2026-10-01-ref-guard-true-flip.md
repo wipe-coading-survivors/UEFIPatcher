@@ -21,15 +21,16 @@
 
 ---
 
-### Task 1: gates.rs — `GateExpr::False` декодирование
+### Task 1: gates.rs + mod.rs — `GateExpr::False`: декодирование и expr_text
 
 **Files:**
-- Modify: `crates/uefi-engine/src/hii/gates.rs` (enum `GateExpr` ~:46, `decode_expr` ~:70, tests)
+- Modify: `crates/uefi-engine/src/hii/gates.rs` (enum `GateExpr` ~:46, `decode_expr` ~:70, тест `is_unlocked_expr_covers_all_expression_classes` ~:1283)
+- Modify: `crates/uefi-engine/src/hii/mod.rs` (`expr_text` ~:285 — exhaustive match, без arm не компилируется)
 
 **Interfaces:**
-- Produces: вариант `GateExpr::False`; `decode_expr` распознаёт одиночный `IFR_FALSE_OP` (импорт константы из r_efi::hii).
+- Produces: вариант `GateExpr::False`; `decode_expr` распознаёт одиночный `IFR_FALSE_OP` (импорт из r_efi::hii); `expr_text(False) = "false"`.
 
-- [ ] **Step 1: RED-тесты** (в `mod tests`, рядом с `decode_true`; добавить хелпер `false_op() -> Vec<u8>` = `[IFR_FALSE_OP, 0x02]`)
+- [ ] **Step 1: RED-тесты** (в `mod tests` gates.rs, рядом с `decode_true`; хелпер `false_op() -> Vec<u8>` = `[IFR_FALSE_OP, 0x02]`; тест expr_text — в mod.rs-тестах)
 
 ```rust
 #[test]
@@ -48,10 +49,10 @@ fn decode_true_and_false_are_distinct() {
 }
 ```
 
-- [ ] **Step 2:** `cargo test -p uefi-engine gates::` — падает (нет варианта `False`).
-- [ ] **Step 3: GREEN** — вариант + arm в `decode_expr` (`[(IFR_FALSE_OP, _)] => GateExpr::False`), импорт `IFR_FALSE_OP`.
+- [ ] **Step 2:** `cargo test -p uefi-engine gates::` — не компилируется/падает (нет варианта `False`; expr_text non-exhaustive).
+- [ ] **Step 3: GREEN** — вариант + arm в `decode_expr`; arm `False => "false"` в `expr_text` (mod.rs — exhaustive match, обязателен в этом же шаге); дописать `False`-assert'ы в `is_unlocked_expr_covers_all_expression_classes` (позже, в Task 2, тест получит семантику).
 - [ ] **Step 4:** `cargo test -p uefi-engine` зелёный; clippy clean.
-- [ ] **Step 5: Commit** — `feat(engine): GateExpr::False — декодирование константного FALSE (ref-guard-true-flip §1)`
+- [ ] **Step 5: Commit** — `feat(engine): GateExpr::False — декодирование + expr_text (ref-guard-true-flip §1)`
 
 ### Task 2: gates.rs — arm `ConstantTrue` в plan_flip + is_unlocked_expr
 
@@ -92,48 +93,40 @@ fn plan_true_after_flip_is_unlocked_and_skipped() {
 fn plan_true_errs_when_expr_offset_beyond_body() {
     // hand_gate(GateExpr::True, expr_offset = pkg.len()+10) → Err "gate bounds out of package"
 }
-
-#[test]
-fn is_unlocked_expr_false_is_unlocked() {
-    assert!(is_unlocked_expr(&GateExpr::False));
-    assert!(!is_unlocked_expr(&GateExpr::True));
-}
 ```
+
+Плюс: в существующий `is_unlocked_expr_covers_all_expression_classes` дописать `assert!(is_unlocked_expr(&GateExpr::False))` и `assert!(!is_unlocked_expr(&GateExpr::True))` (отдельного теста не заводим — ревью).
 
 - [ ] **Step 2:** падают (True → Ok(None) сегодня).
 - [ ] **Step 3: GREEN** — arm `GateExpr::True =>` в `plan_flip` после EqIdVal: `from`-байт сверяется с телом (`body.get(expr_offset) == Some(&IFR_TRUE_OP)`, иначе Err — ручной Gate с рассинхроном декодера не паникует); `GateExpr::False => true` в `is_unlocked_expr`.
 - [ ] **Step 4:** весь crate зелёный; clippy clean.
 - [ ] **Step 5: Commit** — `feat(engine): plan_flip ConstantTrue — TRUE→FALSE length-preserving (ref-guard-true-flip §1)`
 
-### Task 3: mod.rs — expr_text(False) + интеграционный unlock TRUE-гейта
+### Task 3: mod.rs — интеграционный unlock TRUE-гейта
 
 **Files:**
-- Modify: `crates/uefi-engine/src/hii/mod.rs` (`expr_text` ~:285, tests)
+- Modify: `crates/uefi-engine/src/hii/mod.rs` (tests; production-кода нет — expr_text уже в Task 1)
 
 **Interfaces:**
-- Produces: `expr_text(False) = "false"`; `gates_list`/`unlock` едят TRUE-гейты (flippable, applied `"pkg+0x…: 46 -> 47"`).
+- Produces: регресс-покрытие конца-в-конец: `gates_list` на TRUE-гейте → flippable=true; `unlock` применяет, повторный — no-op без ошибки.
 
-- [ ] **Step 1: RED-тесты** (по образцу существующих unlock-тестов hii::tests; фикстура: suppress_if TRUE → GOTO/форма в writable-образе)
+- [ ] **Step 1: RED-тест** (по образцу существующих unlock-тестов hii::tests; фикстура: suppress_if TRUE вокруг формы-таргета в writable-образе)
 
 ```rust
 #[test]
 fn unlock_flips_constant_true_gate() {
-    // фикстура с suppress_if(TRUE) вокруг формы-таргета
     let out = unlock(&mut image, ITEM).unwrap();
     assert!(out.applied.iter().any(|t| t.contains("46 -> 47")));
-    // повторный unlock: no-op, без ошибки; gates_list до: flippable=true
-}
-
-#[test]
-fn expr_text_false() {
-    assert_eq!(expr_text(&gates::GateExpr::False, &[]), "false");
+    let again = unlock(&mut image, ITEM).unwrap();
+    assert!(again.applied.is_empty(), "идемпотентность: уже открыт");
+    // gates_list до flip: flippable=true, expression "true"
 }
 ```
 
-- [ ] **Step 2:** падают.
-- [ ] **Step 3: GREEN** — arm `False` в `expr_text` (если тест unlock уже проходит за счёт Task 2 — зафиксировать как регрессию, RED-стадия объясняет это в коммите).
+- [ ] **Step 2:** падает (сегодня — Err GateExpressionUnsupported).
+- [ ] **Step 3:** фиксируется как регрессия (production-изменения из Task 1-2 уже дают GREEN); если не зелёный — разберись, не правь тест под код.
 - [ ] **Step 4:** crate зелёный; clippy clean.
-- [ ] **Step 5: Commit** — `feat(engine): unlock ConstantTrue-гейтов — expr_text/integration (ref-guard-true-flip §1)`
+- [ ] **Step 5: Commit** — `test(engine): unlock ConstantTrue-гейтов — интеграционный (ref-guard-true-flip §1)`
 
 ### Task 4: mod.rs — validate_ref_target: plain REF (intra-формсет) + wiring
 
@@ -162,10 +155,16 @@ fn add_ref_rejects_form_of_neighbor_formset() {
 
 #[test]
 fn check_ref_add_rejects_dangling_target() { /* InvalidSchema, без мутации */ }
+
+#[test]
+fn add_ref_target_error_precedes_string_pack() {
+    // фикстура без string-пакета + dangling цель: InvalidSchema цели,
+    // а не StringPackageNotFound (порядок: валидация до string_pack, спека §2)
+}
 ```
 
-- [ ] **Step 2:** падают (dangling проходит сегодня).
-- [ ] **Step 3: GREEN** — хелпер + вызовы (add_ref: после `resolve_writable_path`, до `plan_spf_fixup`; check_ref_add: в цикле до `check_ref_slots`).
+- [ ] **Step 2:** падают.
+- [ ] **Step 3: GREEN** — хелпер + вызовы (add_ref: после `resolve_writable_path`, до `plan_spf_fixup`; check_ref_add: в цикле до `check_ref_slots`); в том же коммите — правка rustdoc-контракта `parse_form_package_sets` (ifr.rs: «НЕ используется мутациями» устарел: теперь read-путь валидации в add_ref/check_ref_add).
 - [ ] **Step 4:** crate зелёный; существующие positive add_ref-тесты (`add_ref_inserts_goto_before_form_end` и пр.) остаются зелёными — их цели существуют; падение = фикстура ссылалась на несуществующую форму, чинится в тесте осознанно; clippy clean.
 - [ ] **Step 5: Commit** — `feat(engine): add_ref/check_ref_add валидируют intra-цель REF (ref-guard-true-flip §2)`
 
@@ -192,8 +191,8 @@ fn add_ref_accepts_suppressed_cross_target() { /* suppressed-форма — ва
 fn add_ref_rejects_malformed_formset_guid_early() { /* невалидная строка GUID → InvalidSchema до прочих проверок */ }
 ```
 
-- [ ] **Step 2:** падают.
-- [ ] **Step 3: GREEN** — ветка REF3 в `validate_ref_target`.
+- [ ] **Step 2:** падают; сюда же падает существующий `add_ref_with_formset_guid_emits_ref3_roundtrip` (мод.rs:6469): его REF3-цель `EC87D643…`/10020 отсутствует в образе (единственный формсет фикстуры — `A1B2C3D4…`) — ожидаемое следствие новой валидации.
+- [ ] **Step 3: GREEN** — ветка REF3 в `validate_ref_target`; пересадить `add_ref_with_formset_guid_emits_ref3_roundtrip` на валидную цель: двуформсетная фикстура (`two_formset_question_add_flash_image`, FORMSET2_GUID, форма 10020) либо расширить `question_add_flash_image` вторым формсетом — осознанная правка теста, рефлекс в коммите.
 - [ ] **Step 4:** crate зелёный; clippy clean.
 - [ ] **Step 5: Commit** — `feat(engine): add_ref валидирует REF3-цель по глобальной карте форм (ref-guard-true-flip §2)`
 
