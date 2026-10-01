@@ -898,7 +898,7 @@ git commit -m "feat(engine): locate_form_attribution — question-add прове
 **Interfaces:**
 - Consumes: `locate_form_attribution` (Task 3), `formset_spans` (Task 1), фикстура `two_formset_question_add_flash_image` (Task 3).
 - Produces: `pub fn ifr::splice_varstore_ops(package: &mut Vec<u8>, ops: &[u8], formset_idx: usize) -> Result<(usize, usize), HiiError>` (сигнатура меняется; потребитель один — add_varstores + тесты); `pub(crate) fn ifr::locate_formset_prelude_end(package: &[u8], formset_idx: usize) -> Option<usize>` — первый IFR_FORM_OP внутри спана idx (форм у формсета нет → None, formless-контракт сохранён); `fn splice_varstore_ops_into_resource(pe, ops, formset_idx)`.
-- Поведение `add_varstores(image, "TARGET#FORM", ...)`: форма FORM обязана существовать в writable-пакете → иначе `HiiError::NotFound` (ужесточение: раньше декларации молча вставлялись в первый формсет); TARGET без `#FORM` → NotFound.
+- Поведение `add_varstores(image, "TARGET#FORM", ...)`: форма FORM обязана существовать в writable-пакете → иначе `HiiError::NotFound` (ужесточение: раньше декларации молча вставлялись в первый формсет); TARGET без `#FORM` → InvalidItemId из parse_item_id (form_id там — u16, не Option; компонента # обязательна на уровне парсинга).
 
 - [ ] **Step 1: Failing tests** (ifr.rs tests — рядом с `splice_varstore_ops_inserts_before_first_form` :1650; двухформсетный ifr собери inline, как в тестах formset_spans Task 1; `varstore_bytes()` :1074 уже есть)
 
@@ -1034,8 +1034,9 @@ pub fn splice_varstore_ops(
 
 ```rust
     let (target, form_id, _qid) = parse_item_id(item_id)?;
-    let form_id = form_id.ok_or(HiiError::NotFound)?;
 ```
+
+(form_id — u16, не Option: parse_item_id гарантирует наличие `#FORM`, иначе InvalidItemId; отдельная `.ok_or`-строка не нужна и не компилируется)
 
 после сборки `ops` и проверки node/subtype (:1973-1977) — атрибуция и scoped-валидация вместо петли по всем рангам:
 
