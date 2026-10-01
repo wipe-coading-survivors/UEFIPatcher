@@ -26,7 +26,7 @@
 - Modify: `crates/uefi-engine/src/hii/ifr.rs` (после `parse_form_package`, ~:600)
 
 **Interfaces:**
-- Produces: `pub fn parse_form_package_sets(body: &[u8]) -> Option<Vec<(usize, FormSetInfo)>>` — на каждый IFR_FORM_SET_OP свой `(ordinal, FormSetInfo)`; ordinal = порядковый номер FORM_SET_OP в пакете (0..); формы до первого FORM_SET_OP пропускаются; malformed-опкод → None (паритет `parse_form_package`).
+- Produces: `pub fn parse_form_package_sets(body: &[u8]) -> Option<Vec<(usize, FormSetInfo)>>` — на каждый IFR_FORM_SET_OP свой `(ordinal, FormSetInfo)`; ordinal = порядковый номер FORM_SET_OP в пакете (0..); пакет, не начинающийся с FORM_SET_OP, отвергается гейтом `is_form_package` → None (паритет `parse_form_package`); malformed-опкод → None.
 
 - [ ] **Step 1: Write the failing tests** (в существующий `mod tests` ifr.rs, рядом с тестами `parse_form_package`; хелпер `package(&ifr)` уже есть в тестах)
 
@@ -57,7 +57,7 @@ fn parse_form_package_sets_splits_two_formsets() {
 }
 
 #[test]
-fn parse_form_package_sets_skips_forms_before_first_set() {
+fn parse_form_package_sets_rejects_package_not_starting_with_formset() {
     let g: [u8; 16] = [3; 16];
     let mut ifr = Vec::new();
     ifr.extend_from_slice(&[IFR_FORM_OP, 6, 5, 0, 1, 0]); // мусор до FORM_SET
@@ -66,9 +66,8 @@ fn parse_form_package_sets_skips_forms_before_first_set() {
     ifr.extend_from_slice(&[1, 0, 0, 0, 0]);
     ifr.extend_from_slice(&[IFR_FORM_OP, 6, 1, 0, 2, 0]);
     ifr.extend_from_slice(&[IFR_END_OP, 2]);
-    let sets = parse_form_package_sets(&package(&ifr)).unwrap();
-    assert_eq!(sets.len(), 1);
-    assert_eq!(sets[0].1.forms.iter().map(|f| f.form_id).collect::<Vec<_>>(), vec![1]);
+    let body = package(&ifr);
+    assert!(parse_form_package_sets(&body).is_none());
 }
 
 #[test]
@@ -91,9 +90,9 @@ Expected: FAIL — «cannot find function `parse_form_package_sets`»
 /// Пер-формсетный проход form-пакета: на каждый IFR_FORM_SET_OP — свой
 /// `(ordinal, FormSetInfo)` с guid/title/формами до следующего FORM_SET_OP.
 /// Ordinal = индекс FORM_SET_OP в пакете — семантика дискриминатора `#n`
-/// (locate_formset_insert_points). Формы до первого FORM_SET_OP не
-/// атрибуцируются (пропуск). Malformed-опкод → None, как у
-/// parse_form_package. НЕ используется мутациями — только списки/просмотр.
+/// (locate_formset_insert_points). Пакет, не начинающийся с FORM_SET_OP,
+/// отвергается гейтом is_form_package (None). Malformed-опкод → None, как
+/// у parse_form_package. НЕ используется мутациями — только списки/просмотр.
 pub fn parse_form_package_sets(body: &[u8]) -> Option<Vec<(usize, FormSetInfo)>> {
     if !is_form_package(body) {
         return None;
