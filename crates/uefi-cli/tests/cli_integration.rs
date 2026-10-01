@@ -783,6 +783,69 @@ async fn hii_import_precheck_errors_zero_mutations() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn tse_report_and_unhide_roundtrip() {
+    let (td, sock) = setup_env().await;
+    let cwd = td.path();
+
+    cli(&sock, cwd).args(["session", "init"]).assert().success();
+    let open_out = cli(&sock, cwd)
+        .args(["image", "open", "/dev/null", "--mode", "write"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let image_id = String::from_utf8(open_out)
+        .unwrap()
+        .split('\t')
+        .next()
+        .unwrap()
+        .to_string();
+
+    cli(&sock, cwd)
+        .args(["tse", "report", &image_id])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("0x1b40"))
+        .stdout(predicates::str::contains("214"));
+
+    cli(&sock, cwd)
+        .args([
+            "tse",
+            "unhide",
+            &image_id,
+            "EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9",
+            "1",
+        ])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("0x1b40"));
+
+    cli(&sock, cwd)
+        .args([
+            "tse",
+            "unhide",
+            &image_id,
+            "00000000-0000-0000-0000-000000000000",
+            "1",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("no AMITSE"));
+
+    cli(&sock, cwd)
+        .args(["tse", "unhide", &image_id, "not-a-guid", "1"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("invalid formset guid"));
+
+    cli(&sock, cwd)
+        .args(["session", "destroy"])
+        .assert()
+        .success();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn hii_question_list_outputs_item_ids() {
     let (td, sock) = setup_env().await;
     let cwd = td.path();

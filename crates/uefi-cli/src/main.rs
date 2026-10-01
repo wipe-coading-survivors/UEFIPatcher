@@ -88,6 +88,11 @@ enum Cmd {
         #[command(subcommand)]
         sub: NvarCmd,
     },
+    #[command(about = "AMITSE setup browser: stride-tables recon and unhide")]
+    Tse {
+        #[command(subcommand)]
+        sub: TseCmd,
+    },
 }
 
 #[derive(Subcommand)]
@@ -227,6 +232,20 @@ enum NvarCmd {
         value: String,
         #[arg(long, default_value_t = 1)]
         width: u32,
+    },
+}
+
+#[derive(Subcommand)]
+enum TseCmd {
+    #[command(about = "stride-blocks and $SPF inventory of the AMITSE module")]
+    Report { image_id: String },
+    #[command(about = "zero a hide-table entry {formset-guid, form-id} in the TSE PE")]
+    Unhide {
+        image_id: String,
+        formset_guid: String,
+        form_id: u16,
+        #[arg(long)]
+        block_offset: Option<String>,
     },
 }
 
@@ -592,6 +611,28 @@ async fn dispatch(cli: &Cli, format: output::OutputFormat) -> Result<(), error::
                 commands::nvar::set(name, guid.as_deref(), off, val, *width, sock, format).await
             }
         },
+        Cmd::Tse { sub } => match sub {
+            TseCmd::Report { image_id } => commands::tse::report(image_id, sock, format).await,
+            TseCmd::Unhide {
+                image_id,
+                formset_guid,
+                form_id,
+                block_offset,
+            } => {
+                let off = match block_offset.as_deref() {
+                    None => None,
+                    Some(s) => Some(
+                        usize::from_str_radix(s.trim_start_matches("0x"), 16).map_err(|e| {
+                            error::AppError::new(
+                                error::ErrKind::RpcInvalidArgument,
+                                format!("invalid --block-offset: {e}"),
+                            )
+                        })?,
+                    ),
+                };
+                commands::tse::unhide(image_id, formset_guid, *form_id, off, sock).await
+            }
+        },
     }
 }
 
@@ -900,6 +941,30 @@ mod tests {
             }
             _ => panic!("expected hii form hijack"),
         }
+    }
+
+    #[test]
+    fn parse_tse_report_and_unhide_args() {
+        let cli = Cli::try_parse_from(["uefi-cli", "tse", "report", "img-1"]).unwrap();
+        assert!(matches!(cli.cmd,
+            Cmd::Tse { sub: TseCmd::Report { image_id, .. } } if image_id == "img-1"));
+        let cli = Cli::try_parse_from([
+            "uefi-cli",
+            "tse",
+            "unhide",
+            "img-1",
+            "EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9",
+            "1",
+            "--block-offset",
+            "0x1b40",
+        ])
+        .unwrap();
+        assert!(matches!(cli.cmd,
+            Cmd::Tse { sub: TseCmd::Unhide { image_id, formset_guid, form_id, block_offset, .. } }
+            if image_id == "img-1"
+                && formset_guid == "EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9"
+                && form_id == 1
+                && block_offset.as_deref() == Some("0x1b40")));
     }
 
     #[test]

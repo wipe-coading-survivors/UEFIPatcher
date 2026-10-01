@@ -610,6 +610,39 @@ impl Client {
         Ok((resp.applied, resp.stores))
     }
 
+    pub async fn tse_report(&mut self, image_id: &str) -> Result<TseReportResponse, AppError> {
+        let req = TseReportRequest {
+            image_id: image_id.into(),
+        };
+        let resp = self
+            .inner
+            .tse_report(auth_req(&self.state, req))
+            .await?
+            .into_inner();
+        Ok(resp)
+    }
+
+    pub async fn tse_unhide(
+        &mut self,
+        image_id: &str,
+        formset_guid: &str,
+        form_id: u32,
+        block_pe_offset: Option<u32>,
+    ) -> Result<TseUnhideResponse, AppError> {
+        let req = TseUnhideRequest {
+            image_id: image_id.into(),
+            formset_guid: formset_guid.into(),
+            form_id,
+            block_pe_offset,
+        };
+        let resp = self
+            .inner
+            .tse_unhide(auth_req(&self.state, req))
+            .await?
+            .into_inner();
+        Ok(resp)
+    }
+
     pub async fn image_save(&mut self, image_id: &str, output_path: &str) -> Result<(), AppError> {
         let req = ImageSaveRequest {
             image_id: image_id.into(),
