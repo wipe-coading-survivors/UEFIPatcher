@@ -50,7 +50,7 @@ formset-unlock (§3 U3), hii-read-truth (§5, read/write-сплит рангов
 
 | Примитив | Контракт |
 |---|---|
-| `ifr::formset_spans(pkg) -> Option<Vec<Range<usize>>>` | Спаны всех FORM_SET (конец заголовка i-го FORM_SET_OP → следующий FORM_SET_OP / конец пакета). Гейт `is_form_package`; malformed → None. Единый источник границ read/write (HII-чек-лист §6). |
+| `ifr::formset_spans(pkg) -> Option<Vec<Range<usize>>>` | Спаны всех FORM_SET (конец заголовка i-го FORM_SET_OP → смещение парного END-опа; незакрытый FORM_SET → None, fail-closed без fallback на конец пакета). Гейт `is_form_package`; malformed → None. Единый источник границ read/write (HII-чек-лист §6). |
 | `values::varstore_map_formset(pkg, idx) -> Option<Vec<VarStoreMap>>` | Разбор ops как у `varstore_map`, записываются только ops внутри спана idx (offset живёт локально, `VarStoreMap` не меняется). None = out-of-range/malformed. `varstore_map` остаётся для read-потребителей (form_export и др.). |
 | `ifr::locate_form_attribution(pkg, form_id) -> Option<(usize, span)>` | Первый формсет, содержащий форму, + её спан. Первый-match — текущее поведение `locate_form`. |
 | `splice_varstore_ops(package, ops, formset_idx)` | Вставка перед первой формой i-го формсета (форм у формсета нет — NotFound, как сегодняшний formless-контракт), с обновлением u24-длины. Сигнатура меняется: потребитель один — `add_varstores` (+ тесты). В атрибутированном потоке ветка недостижима: формсет содержит целевую форму. |

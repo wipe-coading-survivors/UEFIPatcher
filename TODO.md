@@ -1374,6 +1374,9 @@ atomic_write. После первой мутации хранимый файл �
   экземпляр того же bounds-хелпера после выноса в `hii::ifr::package_bounds`
   (pub(crate), цикл hii-walker-consistency §3.8 дедуплицировал только
   gates.rs). Контекст: выровнять при следующем касании values.rs.
+  Ещё один ручной экземпляр того же u24-decode длины пакета —
+  `ifr::formset_spans` (цикл formset-ordinal-followups), кандидат на тот же
+  общий хелпер.
 * [ ] **hii/ifr: единый generic opcode-walker (вариант B) — отложен** — на
   дизайне цикла hii-walker-consistency (2026-09-10) рассмотрен и отклонён:
   переписать все find_*/walk-обходчики на один generic walker с колбэками —
@@ -4755,23 +4758,79 @@ Task 3 (проверено git stash). Штатная команда цикла 
 > Фоллоу-апы финального ревью ветки `feat/formset-ordinal` (спека
 > `2026-10-01-formset-ordinal-design.md`).
 
-* [ ] **класс: limitation: `hii varstore list` игнорирует formset-ординал в
+* [x] **класс: limitation: `hii varstore list` игнорирует formset-ординал в
   `TARGET[#n]`** — справка обещает выбор формсета, движковый `list_varstores`
   парсит и отбрасывает ординал (премисса §1 спеки formset-ordinal неверна;
   поведение запинено тестом «карта не зависит от formset-ординала»).
   Контекст: `crates/uefi-engine/src/hii/mod.rs` (`list_varstores`); владелец
   запланировал отдельный мини-цикл (2026-10-01).
-* [ ] **класс: limitation: PE с дублирующимися resource-записями (одинаковые
+  Закрыто циклом formset-ordinal-followups (2026-10-01): list_varstores
+  скоупится по #n (varstore_map_formset), write-валидация/вставка тоже
+  (validate_form_varstores, check_question_add/add_varstores, splice в
+  пролог формсета-владельца); спека
+  2026-10-01-formset-ordinal-followups-design.md.
+* [x] **класс: limitation: PE с дублирующимися resource-записями (одинаковые
   off,len) — обе считаются writable-каналом в collect_forms** — `ranges.first()`
   сравнивает кортеж по значению, дубль-диапазон матчится как writable у обеих
   записей; патологический случай (живых прецедентов нет). Контекст:
   `crates/uefi-engine/src/hii/forms.rs:116-131` (PE32-ветка walk_sections).
-* [ ] **uefi-engine: явная фикстура «второй resource-entry → ordinal None»
-  отсутствует** — поведение покрыто только косвенно (FREEFORM-пакеты +
+  Закрыто циклом formset-ordinal-followups (2026-10-01): writable по
+  индексу записи + dedup диапазона (synth_hii_pe_dup-тест).
+* [x] **uefi-engine: явная фикстура «второй resource-entry → ordinal
+  None» отсутствует** — поведение покрыто только косвенно (FREEFORM-пакеты +
   конструкция `ranges.first()`); кандидат теста при следующем касании.
   Контекст: `crates/uefi-engine/src/hii/forms.rs` (collect_forms, тест
   `collect_forms_ordinal_pe32_only_first_resource_forms_pkg`).
-* [ ] **uefi-cli: print_forms — обвязка колонки `n` без прямого теста** —
+  Закрыто циклом formset-ordinal-followups (2026-10-01):
+  synth_hii_pe_multi + тест collect_forms_ordinal_pe32_second_resource_entry_is_none.
+* [x] **uefi-cli: print_forms — обвязка колонки `n` без прямого теста** —
   заголовок TSV + хвост строки собираются в print-функции, stdout-захват
   недоступен (unit-тест бьёт только `ordinal_cell`); кандидат — extraction
   в чистый форматтер. Контекст: `crates/uefi-cli/src/output.rs` (print_forms).
+  Закрыто циклом formset-ordinal-followups (2026-10-01): forms_tsv_header/
+  forms_tsv_row/forms_text_row extraction с прямыми unit-тестами.
+
+## Отложенное финального ревью formset-ordinal-followups (2026-10-01)
+
+> Фоллоу-апы финального ревью ветки `feat/formset-ordinal-followups` (спека
+> `2026-10-01-formset-ordinal-followups-design.md`).
+
+* [ ] **класс: write-path: uefi-engine/ifr: splice_varstore_ops/
+  splice_question_ops молча усекают u24-длину пакета** — `plen + ops.len()`
+  пишется в три заголовочных байта без проверки переполнения: пакет
+  >0xFFFFFF (~16MB) после splice получает молча обрезанную длину.
+  Нереалистично для живых IFR-пакетов, но pre-existing паттерн write-path,
+  общий у обеих функций. Контекст: `crates/uefi-engine/src/hii/ifr.rs`
+  (splice_varstore_ops, splice_question_ops); найдено финальным ревью
+  цикла formset-ordinal-followups.
+* [ ] **uefi-engine: нет прямого теста foreign-reference на form-add-пути** —
+  отказ question/form-add-ссылки на варстор, объявленный только в
+  НЕцелевом формсете, обеспечивается скоупингом `validate_form_varstores`
+  (Task 2), но прямым тестом не покрыт; эквивалентный кейс на
+  question-add-пути протестирован
+  (`check_question_add_scopes_varstore_checks_to_owning_formset`).
+  Контекст: `crates/uefi-engine/src/hii/form_add.rs`
+  (validate_form_varstores); финальное ревью formset-ordinal-followups.
+* [ ] **класс: limitation: uefi-engine: scoped varstore-семантика reject'ит
+  ссылки на варсторы соседних формсетов (без cross-formset fallback)** —
+  с цикла formset-ordinal-followups question-add/form-add/add_varstores
+  проверяют ссылки и коллизии против карты ЦЕЛЕВОГО формсета
+  (`varstore_map_formset`): ссылка на варстор, декларированный только в
+  другом формсете пакета, → InvalidSchema «not declared» (раньше
+  whole-package карта её пропускала). Решение владельца (2026-10-01):
+  осознанное ограничение — насколько критичен fallback на карту пакета,
+  неясно (живых кейсов нет); пересмотреть при появлении образа, где
+  форма реально ссылается на чужой варстор. Контекст: спека
+  `2026-10-01-formset-ordinal-followups-design.md` §2.1, план-фикс
+  d94884a (foreign-кейс), PR #37.
+* [ ] **класс: errors: uefi-engine: add_varstores — расхождение селекторов
+  валидации и splice на multi-entry PE** — атрибуция/валидация идут по
+  `form_package_ranges(node).next()` (первый forms-пакет по всем
+  resource-записям), а resource-splice — по `form_add::resource_forms_package`
+  (первый forms-пакет только первой записи): на патологическом multi-entry
+  PE без PACKAGE_FORMS в первой записи валидация проходит, splice падает
+  NotASetupItem — громко, без мутации, но ошибка вводит в заблуждение.
+  Фикс — унификация: оба селектора из одного источника. Контекст:
+  `crates/uefi-engine/src/hii/mod.rs` (add_varstores),
+  `crates/uefi-engine/src/hii/form_add.rs` (resource_forms_package);
+  pre-existing шов, найден финальным ревью formset-ordinal-followups.

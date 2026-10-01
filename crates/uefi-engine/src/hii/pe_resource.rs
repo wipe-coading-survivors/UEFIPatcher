@@ -766,6 +766,12 @@ pub(crate) fn synth_hii_pe(type_name: &str, blob: &[u8]) -> Vec<u8> {
         rsrc.push(0);
     }
 
+    pe_with_rsrc(rsrc)
+}
+
+#[cfg(test)]
+fn pe_with_rsrc(rsrc: Vec<u8>) -> Vec<u8> {
+    let rsrc_rva: u32 = 0x1000;
     let size_of_image = (rsrc_rva + rsrc.len() as u32).next_multiple_of(0x1000);
     let mut pe = vec![0u8; 0x170];
     pe[0] = b'M';
@@ -790,6 +796,102 @@ pub(crate) fn synth_hii_pe(type_name: &str, blob: &[u8]) -> Vec<u8> {
     pe[0x16c..0x170].copy_from_slice(&0x4000_0040u32.to_le_bytes());
     pe.extend_from_slice(&rsrc);
     pe
+}
+
+#[cfg(test)]
+pub(crate) fn synth_hii_pe_multi(type_name: &str, blobs: &[&[u8]]) -> Vec<u8> {
+    let rsrc_rva: u32 = 0x1000;
+    let name_at = 0x40 + 8 * blobs.len();
+    let mut name_end = name_at + 2 + 2 * type_name.encode_utf16().count();
+    name_end = name_end.next_multiple_of(8);
+    let data_offs: Vec<usize> = (0..blobs.len()).map(|i| name_end + 16 * i).collect();
+    let mut blob_offs: Vec<usize> = Vec::with_capacity(blobs.len());
+    let mut cur = name_end + 16 * blobs.len();
+    for b in blobs {
+        blob_offs.push(cur);
+        cur = (cur + b.len()).next_multiple_of(16);
+    }
+    let mut rsrc = Vec::new();
+    rsrc.extend_from_slice(&rsrc_dir_header(1, 0));
+    rsrc.extend_from_slice(&(0x8000_0000u32 | name_at as u32).to_le_bytes());
+    rsrc.extend_from_slice(&0x8000_0018u32.to_le_bytes());
+    rsrc.extend_from_slice(&rsrc_dir_header(0, 1));
+    rsrc.extend_from_slice(&1u32.to_le_bytes());
+    rsrc.extend_from_slice(&0x8000_0030u32.to_le_bytes());
+    rsrc.extend_from_slice(&rsrc_dir_header(0, blobs.len() as u16));
+    for &d in &data_offs {
+        rsrc.extend_from_slice(&0x409u32.to_le_bytes());
+        rsrc.extend_from_slice(&(d as u32).to_le_bytes());
+    }
+    while rsrc.len() < name_at {
+        rsrc.push(0);
+    }
+    rsrc.extend_from_slice(&(type_name.len() as u16).to_le_bytes());
+    for u in type_name.encode_utf16() {
+        rsrc.extend_from_slice(&u.to_le_bytes());
+    }
+    while rsrc.len() < name_end {
+        rsrc.push(0);
+    }
+    for (i, b) in blobs.iter().enumerate() {
+        rsrc.extend_from_slice(&(rsrc_rva + blob_offs[i] as u32).to_le_bytes());
+        rsrc.extend_from_slice(&(b.len() as u32).to_le_bytes());
+        rsrc.extend_from_slice(&0u32.to_le_bytes());
+        rsrc.extend_from_slice(&0u32.to_le_bytes());
+    }
+    for b in blobs {
+        rsrc.extend_from_slice(b);
+        while rsrc.len() % 16 != 0 {
+            rsrc.push(0);
+        }
+    }
+    pe_with_rsrc(rsrc)
+}
+
+#[cfg(test)]
+pub(crate) fn synth_hii_pe_dup(type_name: &str, blob: &[u8]) -> Vec<u8> {
+    let rsrc_rva: u32 = 0x1000;
+    let name_at = 0x40 + 8 * 2;
+    let mut name_end = name_at + 2 + 2 * type_name.encode_utf16().count();
+    name_end = name_end.next_multiple_of(8);
+    let data_at = name_end;
+    let blobs_at = data_at + 16 * 2;
+    let mut rsrc = Vec::new();
+    rsrc.extend_from_slice(&rsrc_dir_header(1, 0));
+    rsrc.extend_from_slice(&(0x8000_0000u32 | name_at as u32).to_le_bytes());
+    rsrc.extend_from_slice(&0x8000_0018u32.to_le_bytes());
+    rsrc.extend_from_slice(&rsrc_dir_header(0, 1));
+    rsrc.extend_from_slice(&1u32.to_le_bytes());
+    rsrc.extend_from_slice(&0x8000_0030u32.to_le_bytes());
+    rsrc.extend_from_slice(&rsrc_dir_header(0, 2));
+    rsrc.extend_from_slice(&0x409u32.to_le_bytes());
+    rsrc.extend_from_slice(&(data_at as u32).to_le_bytes());
+    rsrc.extend_from_slice(&0x40Au32.to_le_bytes());
+    rsrc.extend_from_slice(&((data_at + 16) as u32).to_le_bytes());
+    while rsrc.len() < name_at {
+        rsrc.push(0);
+    }
+    rsrc.extend_from_slice(&(type_name.len() as u16).to_le_bytes());
+    for u in type_name.encode_utf16() {
+        rsrc.extend_from_slice(&u.to_le_bytes());
+    }
+    while rsrc.len() < name_end {
+        rsrc.push(0);
+    }
+    for _ in 0..2 {
+        rsrc.extend_from_slice(&(rsrc_rva + blobs_at as u32).to_le_bytes());
+        rsrc.extend_from_slice(&(blob.len() as u32).to_le_bytes());
+        rsrc.extend_from_slice(&0u32.to_le_bytes());
+        rsrc.extend_from_slice(&0u32.to_le_bytes());
+    }
+    while rsrc.len() < blobs_at {
+        rsrc.push(0);
+    }
+    rsrc.extend_from_slice(blob);
+    while rsrc.len() % 16 != 0 {
+        rsrc.push(0);
+    }
+    pe_with_rsrc(rsrc)
 }
 
 #[cfg(test)]

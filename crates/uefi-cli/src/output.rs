@@ -176,6 +176,34 @@ pub(crate) fn ordinal_cell(ord: Option<u32>) -> String {
     }
 }
 
+fn forms_tsv_header() -> &'static str {
+    "form_id\tformset_guid\tform_id_ifr\ttitle\tvisible\tn"
+}
+
+fn forms_tsv_row(f: &FormInfo) -> String {
+    format!(
+        "{}\t{}\t{}\t{}\t{}\t{}",
+        f.form_id,
+        f.formset_guid,
+        f.form_id_ifr,
+        f.title,
+        f.visible,
+        ordinal_cell(f.formset_ordinal)
+    )
+}
+
+fn forms_text_row(f: &FormInfo) -> String {
+    format!(
+        "{}\t{}\t{}\t{}\tvisible={}\t{}",
+        f.form_id,
+        f.formset_guid,
+        f.form_id_ifr,
+        f.title,
+        f.visible,
+        ordinal_cell(f.formset_ordinal)
+    )
+}
+
 pub fn print_forms(forms: &[FormInfo], format: OutputFormat) {
     match format {
         OutputFormat::Json => {
@@ -183,30 +211,14 @@ pub fn print_forms(forms: &[FormInfo], format: OutputFormat) {
             println!("{v}");
         }
         OutputFormat::Tsv => {
-            println!("form_id\tformset_guid\tform_id_ifr\ttitle\tvisible\tn");
+            println!("{}", forms_tsv_header());
             for f in forms {
-                println!(
-                    "{}\t{}\t{}\t{}\t{}\t{}",
-                    f.form_id,
-                    f.formset_guid,
-                    f.form_id_ifr,
-                    f.title,
-                    f.visible,
-                    ordinal_cell(f.formset_ordinal)
-                );
+                println!("{}", forms_tsv_row(f));
             }
         }
         OutputFormat::Text => {
             for f in forms {
-                println!(
-                    "{}\t{}\t{}\t{}\tvisible={}\t{}",
-                    f.form_id,
-                    f.formset_guid,
-                    f.form_id_ifr,
-                    f.title,
-                    f.visible,
-                    ordinal_cell(f.formset_ordinal)
-                );
+                println!("{}", forms_text_row(f));
             }
         }
     }
@@ -1253,5 +1265,28 @@ mod tests {
         };
         assert_eq!(ordinal_cell(f.formset_ordinal), "#1");
         assert_eq!(ordinal_cell(None), "—");
+    }
+
+    #[test]
+    fn forms_tsv_header_and_rows_carry_ordinal_column() {
+        assert_eq!(
+            forms_tsv_header(),
+            "form_id\tformset_guid\tform_id_ifr\ttitle\tvisible\tn"
+        );
+        let f = uefi_proto::FormInfo {
+            form_id: "T".into(),
+            formset_guid: "G".into(),
+            form_id_ifr: 1,
+            title: "t".into(),
+            visible: true,
+            formset_ordinal: Some(1),
+        };
+        assert_eq!(forms_tsv_row(&f), "T\tG\t1\tt\ttrue\t#1");
+        let none = uefi_proto::FormInfo {
+            formset_ordinal: None,
+            ..f.clone()
+        };
+        assert_eq!(forms_tsv_row(&none), "T\tG\t1\tt\ttrue\t—");
+        assert_eq!(forms_text_row(&f), "T\tG\t1\tt\tvisible=true\t#1");
     }
 }

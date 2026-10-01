@@ -855,15 +855,16 @@ pub fn get_value(image: &Image, item_id: &str) -> Result<GetValueOutcome, HiiErr
     Ok(outcome(Some(v), option, store_path))
 }
 
-/// Карта varstore-деклараций формсета (спека varstore-contract §3):
-/// item_id — грамматика `hii form add` (`<target>` или `<target>#<n>`;
-/// карта не зависит от formset-ординала — это пакет формсета).
+/// Карта varstore-деклараций формсета (спека varstore-contract §3;
+/// formset-ordinal-followups §2.1): item_id — грамматика `hii form add`
+/// (`<target>` или `<target>#<n>`); `#n` выбирает n-й FORM_SET пакета,
+/// читаются только декларации его спана; out-of-range `#n` → NotFound.
 /// Read-only, образ в любом режиме. guid="" — name-value декларация.
 pub fn list_varstores(
     image: &Image,
     item_id: &str,
 ) -> Result<Vec<uefi_proto::VarStoreInfo>, HiiError> {
-    let (target_str, _formset_idx) = match item_id.rsplit_once('#') {
+    let (target_str, formset_idx) = match item_id.rsplit_once('#') {
         Some((t, n)) => match n.parse::<u16>() {
             Ok(idx) => (t, idx as usize),
             Err(_) => return Err(HiiError::NotFound),
@@ -885,7 +886,11 @@ pub fn list_varstores(
     } else {
         return Err(HiiError::NotASetupItem);
     };
-    Ok(values::varstore_map(pkg)
+    if !ifr::formset_at(pkg, formset_idx) {
+        return Err(HiiError::NotFound);
+    }
+    let map = values::varstore_map_formset(pkg, formset_idx).ok_or(HiiError::InvalidIfr)?;
+    Ok(map
         .into_iter()
         .map(|m| uefi_proto::VarStoreInfo {
             id: u32::from(m.id),
@@ -1309,6 +1314,7 @@ struct RsrcSpliceCheck {
 
 fn check_rsrc_question_splice(
     pe: &[u8],
+    formset_idx: usize,
     form_id: u16,
     pos: ifr::InsertPos,
     ops_len: usize,
@@ -1317,7 +1323,7 @@ fn check_rsrc_question_splice(
     let pkg = pe
         .get(pkg_off..pkg_off + old_len)
         .ok_or(HiiError::InvalidIfr)?;
-    ifr::locate_insert_at(pkg, 0, form_id, pos)?;
+    ifr::locate_insert_at(pkg, formset_idx, form_id, pos)?;
     let (_, blob_off, blob_len) = pe_resource::hii_entry_locations(pe)
         .first()
         .copied()
@@ -1349,13 +1355,14 @@ fn check_rsrc_question_splice(
 
 fn splice_question_ops_into_resource(
     pe: &mut Vec<u8>,
+    formset_idx: usize,
     form_id: u16,
     pos: ifr::InsertPos,
     ops: &[u8],
 ) -> Result<(usize, usize), HiiError> {
-    let chk = check_rsrc_question_splice(pe, form_id, pos, ops.len())?;
+    let chk = check_rsrc_question_splice(pe, formset_idx, form_id, pos, ops.len())?;
     let mut pkg = pe[chk.pkg_off..chk.pkg_off + chk.old_len].to_vec();
-    let res = ifr::splice_question_ops(&mut pkg, 0, form_id, pos, ops)?;
+    let res = ifr::splice_question_ops(&mut pkg, formset_idx, form_id, pos, ops)?;
     let delta = pkg.len() - chk.old_len;
     let plan =
         pe_resource::plan_rsrc_blob_growth(pe, delta).ok_or(HiiError::PeGrowthUnsupported)?;
@@ -1380,12 +1387,13 @@ fn splice_question_ops_into_resource(
 fn splice_varstore_ops_into_resource(
     pe: &mut Vec<u8>,
     ops: &[u8],
+    formset_idx: usize,
 ) -> Result<(usize, usize), HiiError> {
     let (pkg_off, old_len) = form_add::resource_forms_package(pe).ok_or(HiiError::NotASetupItem)?;
     let pkg = pe
         .get(pkg_off..pkg_off + old_len)
         .ok_or(HiiError::InvalidIfr)?;
-    ifr::locate_formset_prelude_end(pkg).ok_or(HiiError::NotFound)?;
+    ifr::locate_formset_prelude_end(pkg, formset_idx).ok_or(HiiError::NotFound)?;
     let (_, blob_off, blob_len) = pe_resource::hii_entry_locations(pe)
         .first()
         .copied()
@@ -1407,7 +1415,7 @@ fn splice_varstore_ops_into_resource(
         return Err(HiiError::PeGrowthUnsupported);
     }
     let mut pkg = pe[pkg_off..pkg_off + old_len].to_vec();
-    let res = ifr::splice_varstore_ops(&mut pkg, ops)?;
+    let res = ifr::splice_varstore_ops(&mut pkg, ops, formset_idx)?;
     if plan.grow > 0 && !pe_resource::try_grow_rsrc_tail(pe, plan.grow) {
         return Err(HiiError::PeGrowthUnsupported);
     }
@@ -1602,11 +1610,13 @@ fn build_question_ops(
     Ok(b.build())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn preflight_question_splice(
     image: &Image,
     target: &crate::types::Target,
     bare_channel: bool,
     form_id: u16,
+    formset_idx: usize,
     pos: ifr::InsertPos,
     ops_len: usize,
     strings: &[String],
@@ -1614,7 +1624,7 @@ fn preflight_question_splice(
     let node =
         crate::parser::target::find_item(&image.root, target).map_err(|_| HiiError::NotFound)?;
     if bare_channel {
-        return ifr::locate_insert_at(&node.body, 0, form_id, pos).map(|_| ());
+        return ifr::locate_insert_at(&node.body, formset_idx, form_id, pos).map(|_| ());
     }
     let mut post_strings = node.body.clone();
     match string_pack::add_strings_to_resource(&mut post_strings, strings) {
@@ -1629,7 +1639,7 @@ fn preflight_question_splice(
             return Err(HiiError::StringIdExhausted { next });
         }
     }
-    check_rsrc_question_splice(&post_strings, form_id, pos, ops_len)?;
+    check_rsrc_question_splice(&post_strings, formset_idx, form_id, pos, ops_len)?;
     Ok(())
 }
 
@@ -1637,6 +1647,7 @@ struct QuestionTarget {
     target: crate::types::Target,
     form_id: u16,
     bare_channel: bool,
+    formset_idx: usize,
     pkg: Vec<u8>,
     span: form_hijack::HijackFormSpan,
 }
@@ -1663,11 +1674,13 @@ fn resolve_question_target(image: &Image, item_id: &str) -> Result<QuestionTarge
         }
     };
     let pkg = question_forms_package(&image.root, &target, bare_channel)?.to_vec();
-    let span = form_hijack::locate_form(&pkg, form_id).ok_or(HiiError::NotFound)?;
+    let (formset_idx, span) =
+        form_hijack::locate_form_attribution(&pkg, form_id).ok_or(HiiError::NotFound)?;
     Ok(QuestionTarget {
         target,
         form_id,
         bare_channel,
+        formset_idx,
         pkg,
         span,
     })
@@ -1676,6 +1689,7 @@ fn resolve_question_target(image: &Image, item_id: &str) -> Result<QuestionTarge
 fn check_question_slots(
     schema: &schema::QuestionAddSchema,
     pkg: &[u8],
+    formset_idx: usize,
     pending: &[(u16, u16, u32, u32)],
     extra_varstores: &[schema::VarStoreSchema],
 ) -> Result<(), HiiError> {
@@ -1716,7 +1730,8 @@ fn check_question_slots(
             )));
         }
     }
-    let declared_size = values::varstore_map(pkg)
+    let declared_size = values::varstore_map_formset(pkg, formset_idx)
+        .ok_or(HiiError::InvalidIfr)?
         .iter()
         .find(|v| v.id == schema.var_store_id)
         .map(|v| u32::from(v.size))
@@ -1773,7 +1788,7 @@ pub fn add_question(
         plan.ctrl_template.ok_or(HiiError::NotFound)?;
         plan
     };
-    check_question_slots(schema, &qt.pkg, &[], &[])?;
+    check_question_slots(schema, &qt.pkg, qt.formset_idx, &[], &[])?;
 
     let mut strings: Vec<String> = vec![schema.prompt.clone(), schema.help.clone()];
     strings.extend(schema.options.iter().map(|o| o.text.clone()));
@@ -1783,6 +1798,7 @@ pub fn add_question(
         &qt.target,
         qt.bare_channel,
         qt.form_id,
+        qt.formset_idx,
         pos,
         build_question_ops(schema, 0, 0, |_| Some(0), optimized)?.len(),
         &strings,
@@ -1820,9 +1836,15 @@ pub fn add_question(
         let node = crate::parser::target::find_item_mut(&mut image.root, &qt.target)
             .map_err(|_| HiiError::NotFound)?;
         if qt.bare_channel {
-            ifr::splice_question_ops(&mut node.body, 0, qt.form_id, pos, &ops)?
+            ifr::splice_question_ops(&mut node.body, qt.formset_idx, qt.form_id, pos, &ops)?
         } else {
-            splice_question_ops_into_resource(&mut node.body, qt.form_id, pos, &ops)?
+            splice_question_ops_into_resource(
+                &mut node.body,
+                qt.formset_idx,
+                qt.form_id,
+                pos,
+                &ops,
+            )?
         }
     };
     ops::mark_rebuild_to_root_by_path(&mut image.root, &path);
@@ -1873,19 +1895,14 @@ pub fn check_question_add(
         }
     }
     {
-        let node = crate::parser::target::find_item(&image.root, &qt.target)
-            .map_err(|_| HiiError::NotFound)?;
+        let existing =
+            values::varstore_map_formset(&qt.pkg, qt.formset_idx).ok_or(HiiError::InvalidIfr)?;
         for vs in varstores {
-            for (start, len) in form_package_ranges(node) {
-                if values::varstore_map(&node.body[start..start + len])
-                    .iter()
-                    .any(|m| m.id == vs.id)
-                {
-                    return Err(HiiError::InvalidSchema(format!(
-                        "varstore id {:#x} already exists in the formset",
-                        vs.id
-                    )));
-                }
+            if existing.iter().any(|m| m.id == vs.id) {
+                return Err(HiiError::InvalidSchema(format!(
+                    "varstore id {:#x} already exists in the formset",
+                    vs.id
+                )));
             }
         }
     }
@@ -1909,16 +1926,16 @@ pub fn check_question_add(
         let (optimized, _) = validate_question_add(schema)?;
         let pos = insert_pos_of(schema.insert_before.as_ref())?;
         let declared = varstores.iter().any(|v| v.id == schema.var_store_id)
-            || values::varstore_map(&qt.pkg)
-                .iter()
-                .any(|m| m.id == schema.var_store_id);
+            || values::varstore_map_formset(&qt.pkg, qt.formset_idx)
+                .map(|m| m.iter().any(|v| v.id == schema.var_store_id))
+                .unwrap_or(false);
         if schema.var_store_id != 0 && !declared {
             return Err(HiiError::InvalidSchema(format!(
                 "var store id {:#x} is not declared (add it to schema varstores)",
                 schema.var_store_id
             )));
         }
-        check_question_slots(schema, &qt.pkg, &pending, varstores)?;
+        check_question_slots(schema, &qt.pkg, qt.formset_idx, &pending, varstores)?;
         let mut strings: Vec<String> = vec![schema.prompt.clone(), schema.help.clone()];
         strings.extend(schema.options.iter().map(|o| o.text.clone()));
         strings.dedup();
@@ -1927,6 +1944,7 @@ pub fn check_question_add(
             &qt.target,
             qt.bare_channel,
             qt.form_id,
+            qt.formset_idx,
             pos,
             build_question_ops(schema, 0, 0, |_| Some(0), optimized)?.len(),
             &strings,
@@ -1944,6 +1962,8 @@ pub fn check_question_add(
 /// Вставка varstore-деклараций в пролог формсета + сдвиг $SPF-записей.
 /// Спека formset-unlock §3 U3. Возвращает вставленные id; повторный вызов
 /// с уже существующим в формсете id → InvalidSchema.
+/// Декларации встают в пролог формсета-владельца целевой формы TARGET#FORM
+/// (formset-ordinal-followups §2.1); формы нет → NotFound.
 #[tracing::instrument(level = "debug", skip(image, varstores), fields(item_id = %item_id), err)]
 pub fn add_varstores(
     image: &mut Image,
@@ -1953,7 +1973,7 @@ pub fn add_varstores(
     if varstores.is_empty() {
         return Ok(Vec::new());
     }
-    let (target, _form_id, _qid) = parse_item_id(item_id)?;
+    let (target, form_id, _qid) = parse_item_id(item_id)?;
     let path = resolve_writable_path(image, &target)?;
     let sd_path = ami_patcher::discover_pfs_payload_path(image)?;
     let mut ops = Vec::new();
@@ -1975,31 +1995,33 @@ pub fn add_varstores(
     if node.node_type != FfsType::Section {
         return Err(HiiError::NotASetupItem);
     }
-    for vs in varstores {
-        for (start, len) in form_package_ranges(node) {
-            if values::varstore_map(&node.body[start..start + len])
-                .iter()
-                .any(|m| m.id == vs.id)
-            {
+    let pkg_before = form_package_ranges(node)
+        .into_iter()
+        .next()
+        .map(|(s, l)| node.body[s..s + l].to_vec())
+        .ok_or(HiiError::NotASetupItem)?;
+    let formset_idx = form_hijack::locate_form_attribution(&pkg_before, form_id)
+        .ok_or(HiiError::NotFound)?
+        .0;
+    if let Some(existing) = values::varstore_map_formset(&pkg_before, formset_idx) {
+        for vs in varstores {
+            if existing.iter().any(|m| m.id == vs.id) {
                 return Err(HiiError::InvalidSchema(format!(
                     "varstore id {:#x} already exists in the formset",
                     vs.id
                 )));
             }
         }
+    } else {
+        return Err(HiiError::InvalidIfr);
     }
-    let pkg_before = form_package_ranges(node)
-        .into_iter()
-        .next()
-        .map(|(s, l)| node.body[s..s + l].to_vec())
-        .ok_or(HiiError::NotASetupItem)?;
     let (insert_at, delta) = {
         let node = crate::parser::target::find_item_mut(&mut image.root, &target)
             .map_err(|_| HiiError::NotFound)?;
         if node.subtype == EFI_SECTION_RAW {
-            ifr::splice_varstore_ops(&mut node.body, &ops)?
+            ifr::splice_varstore_ops(&mut node.body, &ops, formset_idx)?
         } else {
-            splice_varstore_ops_into_resource(&mut node.body, &ops)?
+            splice_varstore_ops_into_resource(&mut node.body, &ops, formset_idx)?
         }
     };
     {
@@ -2177,6 +2199,7 @@ pub fn add_ref(
         &qt.target,
         qt.bare_channel,
         qt.form_id,
+        qt.formset_idx,
         pos,
         build_ref_ops(schema, 0, 0)?.len(),
         &strings,
@@ -2208,9 +2231,15 @@ pub fn add_ref(
         let node = crate::parser::target::find_item_mut(&mut image.root, &qt.target)
             .map_err(|_| HiiError::NotFound)?;
         if qt.bare_channel {
-            ifr::splice_question_ops(&mut node.body, 0, qt.form_id, pos, &ops)?
+            ifr::splice_question_ops(&mut node.body, qt.formset_idx, qt.form_id, pos, &ops)?
         } else {
-            splice_question_ops_into_resource(&mut node.body, qt.form_id, pos, &ops)?
+            splice_question_ops_into_resource(
+                &mut node.body,
+                qt.formset_idx,
+                qt.form_id,
+                pos,
+                &ops,
+            )?
         }
     };
     ops::mark_rebuild_to_root_by_path(&mut image.root, &path);
@@ -2260,6 +2289,7 @@ pub fn check_ref_add(
             &qt.target,
             qt.bare_channel,
             qt.form_id,
+            qt.formset_idx,
             pos,
             build_ref_ops(schema, 0, 0)?.len(),
             &strings,
@@ -2403,6 +2433,8 @@ pub(crate) mod question_add_fixtures {
     use crate::types::Guid;
     use std::str::FromStr;
 
+    pub(crate) const FORMSET2_GUID: &str = "B1B2C3D4-E5F6-7890-ABCD-EF1234567890";
+
     pub(crate) fn question_add_forms_pkg() -> Vec<u8> {
         let mut b = IfrBuilder::new();
         let g = Guid::from_str(FORMSET_GUID).unwrap();
@@ -2531,6 +2563,56 @@ pub(crate) mod question_add_fixtures {
     pub(crate) fn question_add_flash_image() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
         let pkg = question_add_forms_pkg();
         let spf_body = question_add_spf_body_for(&pkg);
+        let blob = hii_list_blob(&[&pkg, &string_package_bytes()]);
+        let pe = crate::hii::pe_resource::synth_hii_pe("HII", &blob);
+        let setup = ffs_file_bytes(
+            &Guid::from_str(FILE_GUID).unwrap(),
+            &section_bytes(EFI_SECTION_PE32, &pe),
+        );
+        let sd = sd_file_direct(&spf_body);
+        (flash_with_files(vec![setup, sd]), pkg, spf_body)
+    }
+
+    pub(crate) fn two_formset_question_add_pkg() -> Vec<u8> {
+        let mut b = IfrBuilder::new();
+        let g1 = Guid::from_str(FORMSET_GUID).unwrap();
+        b.emit_form_set(&g1, 1, 1, &[]);
+        b.emit_var_store(1, &g1, 0x100, "Setup");
+        b.emit_form(10019, 1);
+        b.emit_one_of(0x01A3, 0x01A4, 0x3B, 1, 0x3A, 0, 1);
+        b.emit_one_of_option(4, 0x30, TYPE_NUM_SIZE_8, 0, 1);
+        b.emit_one_of_option(3, 0x00, TYPE_NUM_SIZE_8, 1, 1);
+        b.emit_end();
+        b.emit_end();
+        b.emit_end();
+        let g2 = Guid::from_str(FORMSET2_GUID).unwrap();
+        b.emit_form_set(&g2, 2, 2, &[]);
+        b.emit_var_store(2, &g2, 0x80, "Setup2");
+        b.emit_form(10020, 2);
+        b.emit_one_of(0x01A5, 0x01A6, 0x55, 2, 0x40, 0, 1);
+        b.emit_one_of_option(5, 0x00, TYPE_NUM_SIZE_8, 0, 1);
+        b.emit_end();
+        b.emit_end();
+        b.emit_end();
+        let ifr = b.build();
+        let len = 4 + ifr.len() as u32;
+        let mut pkg = vec![
+            (len & 0xFF) as u8,
+            ((len >> 8) & 0xFF) as u8,
+            ((len >> 16) & 0xFF) as u8,
+            r_efi::hii::PACKAGE_FORMS,
+        ];
+        pkg.extend_from_slice(&ifr);
+        pkg
+    }
+
+    pub(crate) fn two_formset_question_add_flash_image() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        let pkg = two_formset_question_add_pkg();
+        let mut spf_body = question_add_spf_body_for(&pkg);
+        let skeleton = spf::append_page_skeleton(&mut spf_body, 0x68, 10020, 2, 2, 0);
+        spf::register_page_slot(&mut spf_body, skeleton).expect("page-table gap free");
+        let new_len = spf_body.len() - spf::container_start(&spf_body).unwrap();
+        spf::bump_container_length(&mut spf_body, new_len);
         let blob = hii_list_blob(&[&pkg, &string_package_bytes()]);
         let pe = crate::hii::pe_resource::synth_hii_pe("HII", &blob);
         let setup = ffs_file_bytes(
@@ -5203,6 +5285,32 @@ mod tests {
             }
         }
 
+        fn question_add_schema_10020(qid: u16, voff: u16) -> schema::QuestionAddSchema {
+            schema::QuestionAddSchema {
+                form_id: 10020,
+                prompt: "Serial Console".into(),
+                help: "Serial console help".into(),
+                question_id: qid,
+                var_store_id: 2,
+                var_offset: voff,
+                size: 1,
+                options: vec![
+                    schema::QuestionAddOption {
+                        text: "Disabled".into(),
+                        value: 0,
+                        default: None,
+                    },
+                    schema::QuestionAddOption {
+                        text: "Enabled".into(),
+                        value: 1,
+                        default: Some(schema::DefaultClass::Optimized),
+                    },
+                ],
+                defaults: None,
+                insert_before: None,
+            }
+        }
+
         const ITEM_FORM: &str = "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x10:0#10019";
         const ITEM_FORM_BARE: &str = "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:0#10019";
 
@@ -5263,11 +5371,11 @@ mod tests {
             let mut b = crate::hii::ifr_builder::IfrBuilder::new();
             b.emit_var_store_efi(0x7F01, &g, 0x1670, "IntelSetup", 7);
             let ops = b.build();
-            let insert_at = ifr::locate_formset_prelude_end(&pkg_before).unwrap();
+            let insert_at = ifr::locate_formset_prelude_end(&pkg_before, 0).unwrap();
             let delta = ops.len();
             let mut spliced = pkg_before.clone();
             assert_eq!(
-                ifr::splice_varstore_ops(&mut spliced, &ops).unwrap(),
+                ifr::splice_varstore_ops(&mut spliced, &ops, 0).unwrap(),
                 (insert_at, delta)
             );
             assert!(verify_spliced_snapshot(&spliced, &pkg_before, &ops, insert_at, delta).is_ok());
@@ -5328,7 +5436,7 @@ mod tests {
                 "declared varstore readable via varstore_map: {maps:?}"
             );
             assert!(
-                ifr::locate_formset_prelude_end(&pkg).unwrap()
+                ifr::locate_formset_prelude_end(&pkg, 0).unwrap()
                     < crate::hii::form_hijack::locate_questions(&pkg, 10019)[0].0,
                 "varstore op inserted before the first form's questions"
             );
@@ -5350,6 +5458,50 @@ mod tests {
                 add_varstores(&mut img, ITEM_FORM, &[vs]),
                 Err(HiiError::InvalidSchema(_))
             ));
+        }
+
+        #[test]
+        fn add_varstores_declares_in_owning_formset_prelude() {
+            let (flash, _, _) = two_formset_question_add_flash_image();
+            let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+            let target2 = "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x10:0#10020";
+            let vs = schema::VarStoreSchema {
+                id: 5,
+                guid: "EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9".into(),
+                size: 16,
+                name: "NewV".into(),
+                var_type: schema::VarStoreType::Buffer,
+                attributes: 7,
+            };
+            add_varstores(&mut img, target2, std::slice::from_ref(&vs)).unwrap();
+            let pkg = pkg_of(&img, "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x10:0");
+            let fs2 = values::varstore_map_formset(&pkg, 1).unwrap();
+            assert!(fs2.iter().any(|m| m.id == 5 && m.name == "NewV"));
+            let fs1 = values::varstore_map_formset(&pkg, 0).unwrap();
+            assert!(
+                fs1.iter().all(|m| m.id != 5),
+                "декларация не должна попадать в пролог формсета #0, got {fs1:?}"
+            );
+        }
+
+        #[test]
+        fn add_varstores_unknown_form_is_not_found() {
+            let (flash, _, _) = two_formset_question_add_flash_image();
+            let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+            let err = add_varstores(
+                &mut img,
+                "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x10:0#40000",
+                &[schema::VarStoreSchema {
+                    id: 5,
+                    guid: "EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9".into(),
+                    size: 16,
+                    name: "NewV".into(),
+                    var_type: schema::VarStoreType::Buffer,
+                    attributes: 7,
+                }],
+            )
+            .unwrap_err();
+            assert!(matches!(err, HiiError::NotFound), "got {err:?}");
         }
 
         #[test]
@@ -5607,6 +5759,7 @@ mod tests {
                 &target,
                 true,
                 10019,
+                0,
                 ifr::InsertPos::BeforeGoto(0xDEAD),
                 15,
                 &[],
@@ -5841,6 +5994,61 @@ mod tests {
                 snapshot_bodies(&img.root),
                 before,
                 "check must not mutate the image"
+            );
+        }
+
+        #[test]
+        fn check_question_add_scopes_varstore_checks_to_owning_formset() {
+            let (flash, _, _) = two_formset_question_add_flash_image();
+            let img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+            let target2 = "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x10:0#10020";
+            let mut foreign = question_add_schema_10020(0x77, 0x10);
+            foreign.var_store_id = 1;
+            let err = check_question_add(&img, target2, &[foreign], &[]).unwrap_err();
+            assert!(
+                matches!(err, HiiError::InvalidSchema(ref m) if m.contains("var store id 0x1 is not declared")),
+                "id 1 декларирован только в соседнем fs1, не в формсете-владельце fs2, got {err:?}"
+            );
+            let vs = schema::VarStoreSchema {
+                id: 2,
+                guid: "EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9".into(),
+                size: 0x40,
+                name: "Dup".into(),
+                var_type: schema::VarStoreType::Buffer,
+                attributes: 7,
+            };
+            let err = check_question_add(&img, target2, &[], &[vs]).unwrap_err();
+            assert!(
+                matches!(err, HiiError::InvalidSchema(ref m) if m.contains("varstore id 0x2 already exists")),
+                "id 2 декларирован в формсете-владельце (fs2), got {err:?}"
+            );
+            let mut undeclared = question_add_schema_10020(0x78, 0x11);
+            undeclared.var_store_id = 9;
+            let err = check_question_add(&img, target2, &[undeclared], &[]).unwrap_err();
+            assert!(
+                matches!(err, HiiError::InvalidSchema(ref m) if m.contains("var store id 0x9 is not declared")),
+                "id 9 не декларирован в fs2 (в fs1 только id 1), got {err:?}"
+            );
+        }
+
+        #[test]
+        fn add_question_targets_form_in_second_formset() {
+            let (flash, _, _) = two_formset_question_add_flash_image();
+            let mut img = parse_image(&flash, ImageMode::Write, "i", "s").unwrap();
+            let target2 = "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x10:0#10020";
+            let res =
+                add_question(&mut img, target2, &question_add_schema_10020(0x77, 0x10)).unwrap();
+            assert_eq!(res.question_id, 0x77);
+            let pkg = pkg_of(&img, "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x10:0");
+            let (fs2_start, fs2_end) = crate::hii::ifr::formset_spans(&pkg).unwrap()[1];
+            let in_fs2 = crate::hii::form_hijack::locate_questions(&pkg, 10020)
+                .iter()
+                .any(|&(off, qid)| qid == 0x77 && (fs2_start..fs2_end).contains(&off));
+            assert!(in_fs2, "вопрос 0x77 в форме 10020 формсета #1");
+            assert!(
+                crate::hii::form_hijack::locate_questions(&pkg, 10019)
+                    .iter()
+                    .all(|&(_, qid)| qid != 0x77)
             );
         }
 
@@ -6649,7 +6857,7 @@ mod tests {
                 assert_eq!(
                     list_varstores(&img, &format!("{ITEM_FORMSET}#0")).unwrap(),
                     stores,
-                    "карта не зависит от formset-ординала — грамматика form add `#<n>`"
+                    "фикстура одно-формсетная: scoped #0 == вся карта пакета (formset-ordinal-followups §2.1)"
                 );
                 let err = list_varstores(&img, "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x01:0")
                     .unwrap_err();
@@ -6666,6 +6874,104 @@ mod tests {
                 let err = list_varstores(&img, "00000000-0000-0000-0000-000000000000:0x10:0")
                     .unwrap_err();
                 assert!(matches!(err, HiiError::NotFound), "got {err:?}");
+            }
+
+            fn two_formset_varstores_pkg() -> Vec<u8> {
+                use crate::hii::ifr_builder::IfrBuilder;
+
+                let mut b = IfrBuilder::new();
+                let g1 = Guid::from_str("A1B2C3D4-E5F6-7890-ABCD-EF1234567890").unwrap();
+                b.emit_form_set(&g1, 1, 1, &[]);
+                b.emit_var_store(1, &g1, 0x100, "Setup");
+                b.emit_form(1, 1);
+                b.emit_end();
+                b.emit_end();
+                let g2 = Guid::from_str("B1B2C3D4-E5F6-7890-ABCD-EF1234567890").unwrap();
+                b.emit_form_set(&g2, 2, 2, &[]);
+                b.emit_var_store(2, &g2, 0x80, "Setup2");
+                b.emit_form(2, 2);
+                b.emit_end();
+                b.emit_end();
+                let ifr = b.build();
+                let len = 4 + ifr.len() as u32;
+                let mut pkg = vec![
+                    (len & 0xFF) as u8,
+                    ((len >> 8) & 0xFF) as u8,
+                    ((len >> 16) & 0xFF) as u8,
+                    r_efi::hii::PACKAGE_FORMS,
+                ];
+                pkg.extend_from_slice(&ifr);
+                pkg
+            }
+
+            #[test]
+            fn list_varstores_scopes_map_by_formset_ordinal() {
+                use crate::hii::form_hijack::test_fixtures::{
+                    ffs_file_bytes, flash_with_files, section_bytes,
+                };
+
+                let content =
+                    section_bytes(crate::ffs::EFI_SECTION_RAW, &two_formset_varstores_pkg());
+                let flash = flash_with_files(vec![ffs_file_bytes(
+                    &Guid::from_str("5C60F367-A505-419A-859E-2A4FF6CA6FE5").unwrap(),
+                    &content,
+                )]);
+                let img = parse_image(&flash, ImageMode::Read, "i", "s").unwrap();
+                let target = "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:0";
+                let ids = |s: Vec<uefi_proto::VarStoreInfo>| {
+                    s.into_iter().map(|v| (v.id, v.name)).collect::<Vec<_>>()
+                };
+                assert_eq!(
+                    ids(list_varstores(&img, target).unwrap()),
+                    vec![(1, "Setup".into())]
+                );
+                assert_eq!(
+                    ids(list_varstores(&img, &format!("{target}#1")).unwrap()),
+                    vec![(2, "Setup2".into())]
+                );
+                let err = list_varstores(&img, &format!("{target}#2")).unwrap_err();
+                assert!(
+                    matches!(err, HiiError::NotFound),
+                    "out-of-range #n, got {err:?}"
+                );
+            }
+
+            #[test]
+            fn list_varstores_truncated_package_is_not_found() {
+                use crate::hii::form_hijack::test_fixtures::{
+                    ffs_file_bytes, flash_with_files, section_bytes,
+                };
+
+                let g1: [u8; 16] = [0x11; 16];
+                let mut ifr = Vec::new();
+                ifr.extend_from_slice(&[r_efi::hii::IFR_FORM_SET_OP, 23 | 0x80]);
+                ifr.extend_from_slice(&g1);
+                ifr.extend_from_slice(&[1, 0, 0, 0, 0]);
+                ifr.extend_from_slice(&[r_efi::hii::IFR_VARSTORE_OP, 28]);
+                ifr.extend_from_slice(&g1);
+                ifr.extend_from_slice(&1u16.to_le_bytes());
+                ifr.extend_from_slice(&0x100u16.to_le_bytes());
+                ifr.extend_from_slice(b"Setup\0");
+                let len = 4 + ifr.len() as u32;
+                let mut pkg = vec![
+                    (len & 0xFF) as u8,
+                    ((len >> 8) & 0xFF) as u8,
+                    ((len >> 16) & 0xFF) as u8,
+                    r_efi::hii::PACKAGE_FORMS,
+                ];
+                pkg.extend_from_slice(&ifr);
+                let content = section_bytes(crate::ffs::EFI_SECTION_RAW, &pkg);
+                let flash = flash_with_files(vec![ffs_file_bytes(
+                    &Guid::from_str("5C60F367-A505-419A-859E-2A4FF6CA6FE5").unwrap(),
+                    &content,
+                )]);
+                let img = parse_image(&flash, ImageMode::Read, "i", "s").unwrap();
+                let err = list_varstores(&img, "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:0")
+                    .unwrap_err();
+                assert!(
+                    matches!(err, HiiError::NotFound),
+                    "FORM_SET без парного END: formset_spans None → NotFound, не молчаливая карта; got {err:?}"
+                );
             }
 
             #[test]

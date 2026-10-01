@@ -52,7 +52,7 @@ fn formset_spans_returns_span_per_formset() {
     ifr.extend_from_slice(&[IFR_FORM_OP, 6, 2, 0, 2, 0]);
     ifr.extend_from_slice(&[IFR_END_OP, 2]);
     let spans = formset_spans(&package(&ifr)).unwrap();
-    assert_eq!(spans, vec![(4 + 23, 4 + 23 + 6 + 2), (4 + 23 + 6 + 2 + 23, 4 + 23 + 6 + 2 + 23 + 6 + 2)]);
+    assert_eq!(spans, vec![(4 + 23, 4 + 23 + 6), (4 + 23 + 6 + 2 + 23, 4 + 23 + 6 + 2 + 23 + 6)]);
 }
 
 #[test]
@@ -66,7 +66,7 @@ fn formset_spans_rejects_unterminated_formset() {
 }
 ```
 
-(`formset_spans` виден тестам без `super::` — тесты в том же файле; константы IFR_* уже импортированы в тестах ifr.rs.)
+(`formset_spans` виден тестам без `super::` — тесты в том же файле; константы IFR_* уже импортированы в тестах ifr.rs. Дефект-фикс: конец спана = offset парного END-op (как в существующем `locate_formset_insert_points` :298 — `insert_form_into_package` вставляет форму по `before_end` ПЕРЕД END-op), не past-END; исходное ожидание ошибочно включало длину END-op в offset.)
 
 - [ ] **Step 2: Run — verify fail**
 
@@ -585,7 +585,7 @@ git commit -m "feat(engine): validate_form_varstores скоупится по ф�
 
 **Files:**
 - Modify: `crates/uefi-engine/src/hii/form_hijack.rs` (`locate_form` :22 — рядом новый `locate_form_attribution`)
-- Modify: `crates/uefi-engine/src/hii/mod.rs`: `QuestionTarget` :1636 (+`formset_idx`), `resolve_question_target` :1644, `check_question_slots` :1676 (+idx), `preflight_question_splice` :1605 (+idx, убрать `0` на :1617), `check_rsrc_question_splice` :1310 (+idx, `locate_insert_at(pkg, 0, ...)` :1320 → idx), `splice_question_ops_into_resource` :1350 (+idx, :1358), `add_question` :1823/:1825 (qt.formset_idx), `check_question_add` :1875-1891 (scoped-петля) и :1912 (declared-check)
+- Modify: `crates/uefi-engine/src/hii/mod.rs`: `QuestionTarget` :1636 (+`formset_idx`), `resolve_question_target` :1644, `check_question_slots` :1676 (+idx), `preflight_question_splice` :1605 (+idx, убрать `0` на :1617), `check_rsrc_question_splice` :1310 (+idx, `locate_insert_at(pkg, 0, ...)` :1320 → idx), `splice_question_ops_into_resource` :1350 (+idx, :1358), `add_question` :1823/:1825 (qt.formset_idx), `check_question_add` :1875-1891 (scoped-петля) и :1912 (declared-check); сигнатурно-обязательные (Plan-fix 2026-10-01): `add_ref` :2180 (preflight) и :2216/:2218 (splice), `check_ref_add` :2263 (preflight), тест `preflight_bare_channel_bad_anchor...` :5610
 - Test: `crates/uefi-engine/src/hii/mod.rs` (`mod question_add_tests` :5172; фикстуры — в `question_add_fixtures` рядом с `question_add_forms_pkg` :2406 и `question_add_flash_image` :2531)
 
 **Interfaces:**
@@ -609,12 +609,14 @@ git commit -m "feat(engine): validate_form_varstores скоупится по ф�
         b.emit_one_of_option(3, 0x00, TYPE_NUM_SIZE_8, 1, 1);
         b.emit_end();
         b.emit_end();
+        b.emit_end();
         let g2 = Guid::from_str(FORMSET2_GUID).unwrap();
         b.emit_form_set(&g2, 2, 2, &[]);
         b.emit_var_store(2, &g2, 0x80, "Setup2");
         b.emit_form(10020, 2);
         b.emit_one_of(0x01A5, 0x01A6, 0x55, 2, 0x40, 0, 1);
         b.emit_one_of_option(5, 0x00, TYPE_NUM_SIZE_8, 0, 1);
+        b.emit_end();
         b.emit_end();
         b.emit_end();
         let ifr = b.build();
@@ -631,7 +633,11 @@ git commit -m "feat(engine): validate_form_varstores скоупится по ф�
 
     pub(crate) fn two_formset_question_add_flash_image() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
         let pkg = two_formset_question_add_pkg();
-        let spf_body = question_add_spf_body_for(&pkg);
+        let mut spf_body = question_add_spf_body_for(&pkg);
+        let skeleton = spf::append_page_skeleton(&mut spf_body, 0x68, 10020, 2, 2, 0);
+        spf::register_page_slot(&mut spf_body, skeleton).expect("page-table gap free");
+        let new_len = spf_body.len() - spf::container_start(&spf_body).unwrap();
+        spf::bump_container_length(&mut spf_body, new_len);
         let blob = hii_list_blob(&[&pkg, &string_package_bytes()]);
         let pe = crate::hii::pe_resource::synth_hii_pe("HII", &blob);
         let setup = ffs_file_bytes(
@@ -642,6 +648,15 @@ git commit -m "feat(engine): validate_form_varstores скоупится по ф�
         (flash_with_files(vec![setup, sd]), pkg, spf_body)
     }
 ```
+
+(Plan-fix 2026-10-01: голый `question_add_spf_body_for` даёт $SPF с единственной
+страницей form 10019 — `plan_spf_append` требует страницу с form_id целевой
+формы (`page_slot.ok_or(NotFound)`), оба новых теста целют 10020 и без
+второй страницы зелёными стать не могут, независимо от threading. Страница
+для 10020 регистрируется штатным тулкитом `add_page`: `append_page_skeleton`
++ `register_page_slot` (слот пишется в zero-gap после таблицы страниц) +
+`bump_container_length`. Проверено пробой: plan для 10020 = Ok(page_slot=1,
+page_offset=0x178), план 10019 не меняется.)
 
 Тесты — в `mod question_add_tests` (рядом с `question_add_schema` :5180; хелпер `pkg_of` :5227):
 
@@ -679,7 +694,11 @@ git commit -m "feat(engine): validate_form_varstores скоупится по ф�
             let target2 = "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x10:0#10020";
             let mut foreign = question_add_schema_10020(0x77, 0x10);
             foreign.var_store_id = 1;
-            check_question_add(&img, target2, &[foreign], &[]).unwrap();
+            let err = check_question_add(&img, target2, &[foreign], &[]).unwrap_err();
+            assert!(
+                matches!(err, HiiError::InvalidSchema(ref m) if m.contains("var store id 0x1 is not declared")),
+                "id 1 декларирован только в соседнем fs1, не в формсете-владельце fs2, got {err:?}"
+            );
             let vs = schema::VarStoreSchema {
                 id: 2,
                 guid: "EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9".into(),
@@ -724,9 +743,11 @@ git commit -m "feat(engine): validate_form_varstores скоупится по ф�
 - [ ] **Step 2: Run — verify fail**
 
 Run: `cargo test -p uefi-engine scopes_varstore_checks add_question_targets_form`
-Expected: FAIL — `..._scopes_...`: InvalidSchema «already exists» на `foreign`-кейсе (карта целого пакета видит id 1); `add_question_targets_...`: NotFound от splice с hardcoded formset 0 (формы 10020 в формсете #0 нет).
+Expected: FAIL — `..._scopes_...`: assert-падение на `foreign`-кейсе с `NotFound` (preflight `locate_insert_at(pkg, 0, 10020)` с hardcoded formset 0 — формы 10020 в формсете #0 нет; после threading ожидание сменится на InvalidSchema «var store id 0x1 is not declared»); `add_question_targets_...`: NotFound от splice с hardcoded formset 0 (формы 10020 в формсете #0 нет). (Plan-fix 2026-10-01 №1: прежнее ожидание «InvalidSchema already exists на foreign-кейсе» было недостижимо — foreign-вызов передаёт `varstores=&[]`, коллизионный блок до preflight не срабатывает. Plan-fix 2026-10-01 №2: фикстура была без закрывающих FORM_SET END — незакрытый fs1 делал `form_span(pkg, 0, 10020)` ложно успешным (форма 10020 «внутри» формсета #0), `formset_spans` на таком пакете даёт None; каждый блок формсета закрывается тремя END: ONE_OF, FORM, FORM_SET.)
 
 - [ ] **Step 3: Implement `locate_form_attribution`** (form_hijack.rs, над `locate_form`; наверху — `use super::ifr::formset_spans;`)
+
+(Plan-fix 2026-10-01 №3: атрибуция в `resolve_question_target` ужесточает контракт для пакетов с незакрытым FORM_SET — `formset_spans` fail-closed → NotFound, спека §5 «честное ужесточение». Legacy-фикстура `package_with_form` (form_hijack test_fixtures, потребитель — `hijack_flash_image`/`hijack_test_flash`, rpc-тесты question add) не закрывала FORM_SET: 3 scoped-op, 2 END. Фикстура добирает закрывающий `b.emit_end()` в хвост — смещения существующих ops не меняются, `$SPF`-записи (считаются по `locate_questions`) не сдвигаются.)
 
 ```rust
 /// Формсет-владелец формы + её спан: первый формсет, содержащий form_id
@@ -823,12 +844,10 @@ struct QuestionTarget {
         }
 ```
 
-`check_question_add`: петля :1875-1891 → scoped-карта:
+`check_question_add`: петля :1875-1891 → scoped-карта (Plan-fix 2026-10-01: без `let node = find_item(...)` — lookup в новом блоке не читается, `unused_variables` валит clippy-гейт; `qt.pkg` уже несёт байты того же узла):
 
 ```rust
     {
-        let node = crate::parser::target::find_item(&image.root, &qt.target)
-            .map_err(|_| HiiError::NotFound)?;
         let existing = values::varstore_map_formset(&qt.pkg, qt.formset_idx)
             .ok_or(HiiError::InvalidIfr)?;
         for vs in varstores {
@@ -855,6 +874,8 @@ declared-check :1911-1914:
 
 Вызов `check_question_slots` :1921 → `check_question_slots(schema, &qt.pkg, qt.formset_idx, &pending, varstores)?;`; вызов `preflight_question_splice` :1925-1933 — вставить `qt.formset_idx,` после `qt.form_id,`.
 
+Сигнатурно-обязательные вызовы (Plan-fix 2026-10-01: в исходном плане не перечислены, но сигнатуры меняются — без правок крейт не соберётся): `add_ref` — preflight :2180 вставить `qt.formset_idx,` после `qt.form_id,`; splice :2216-2218 — bare-ветка `ifr::splice_question_ops(&mut node.body, qt.formset_idx, qt.form_id, pos, &ops)?`, resource-ветка `splice_question_ops_into_resource(&mut node.body, qt.formset_idx, qt.form_id, pos, &ops)?`; `check_ref_add` — preflight :2263 вставить `qt.formset_idx,` после `qt.form_id,`; тест `preflight_bare_channel_bad_anchor_is_invalid_schema_with_listing` :5610 — аргумент `0` (bare-фикстура одно-формсетная) после `10019`.
+
 - [ ] **Step 5: Run — verify pass + clippy**
 
 Run: `cargo test -p uefi-engine && cargo clippy -p uefi-engine -- -D warnings`
@@ -877,7 +898,7 @@ git commit -m "feat(engine): locate_form_attribution — question-add прове
 **Interfaces:**
 - Consumes: `locate_form_attribution` (Task 3), `formset_spans` (Task 1), фикстура `two_formset_question_add_flash_image` (Task 3).
 - Produces: `pub fn ifr::splice_varstore_ops(package: &mut Vec<u8>, ops: &[u8], formset_idx: usize) -> Result<(usize, usize), HiiError>` (сигнатура меняется; потребитель один — add_varstores + тесты); `pub(crate) fn ifr::locate_formset_prelude_end(package: &[u8], formset_idx: usize) -> Option<usize>` — первый IFR_FORM_OP внутри спана idx (форм у формсета нет → None, formless-контракт сохранён); `fn splice_varstore_ops_into_resource(pe, ops, formset_idx)`.
-- Поведение `add_varstores(image, "TARGET#FORM", ...)`: форма FORM обязана существовать в writable-пакете → иначе `HiiError::NotFound` (ужесточение: раньше декларации молча вставлялись в первый формсет); TARGET без `#FORM` → NotFound.
+- Поведение `add_varstores(image, "TARGET#FORM", ...)`: форма FORM обязана существовать в writable-пакете → иначе `HiiError::NotFound` (ужесточение: раньше декларации молча вставлялись в первый формсет); TARGET без `#FORM` → InvalidItemId из parse_item_id (form_id там — u16, не Option; компонента # обязательна на уровне парсинга).
 
 - [ ] **Step 1: Failing tests** (ifr.rs tests — рядом с `splice_varstore_ops_inserts_before_first_form` :1650; двухформсетный ifr собери inline, как в тестах formset_spans Task 1; `varstore_bytes()` :1074 уже есть)
 
@@ -1013,8 +1034,9 @@ pub fn splice_varstore_ops(
 
 ```rust
     let (target, form_id, _qid) = parse_item_id(item_id)?;
-    let form_id = form_id.ok_or(HiiError::NotFound)?;
 ```
+
+(form_id — u16, не Option: parse_item_id гарантирует наличие `#FORM`, иначе InvalidItemId; отдельная `.ok_or`-строка не нужна и не компилируется)
 
 после сборки `ops` и проверки node/subtype (:1973-1977) — атрибуция и scoped-валидация вместо петли по всем рангам:
 
@@ -1100,8 +1122,8 @@ git commit -m "feat(engine): add_varstores — атрибуция формсет
         ifr2.extend_from_slice(&[3, 0, 0, 0, 0]);
         ifr2.extend_from_slice(&[IFR_FORM_OP, 6, 3, 0, 3, 0]);
         ifr2.extend_from_slice(&[IFR_END_OP, 2]);
-        let list1 = hii_list_raw(&package(&ifr1), &string_pkg());
-        let list2 = hii_list_raw(&package(&ifr2), &string_pkg());
+        let list1 = hii_list_two_forms(&package(&ifr1), &[], &string_pkg());
+        let list2 = hii_list_two_forms(&package(&ifr2), &[], &string_pkg());
         let pe = crate::hii::pe_resource::synth_hii_pe_multi("HII", &[&list1, &list2]);
         let pe_sec = mk_node(None, FfsType::Section, EFI_SECTION_PE32, pe, vec![]);
         let file = mk_node(
@@ -1133,7 +1155,7 @@ git commit -m "feat(engine): add_varstores — атрибуция формсет
         ifr1.extend_from_slice(&[1, 0, 0, 0, 0]);
         ifr1.extend_from_slice(&[IFR_FORM_OP, 6, 1, 0, 1, 0]);
         ifr1.extend_from_slice(&[IFR_END_OP, 2]);
-        let list = hii_list_raw(&package(&ifr1), &string_pkg());
+        let list = hii_list_two_forms(&package(&ifr1), &[], &string_pkg());
         let pe = crate::hii::pe_resource::synth_hii_pe_dup("HII", &list);
         let pe_sec = mk_node(None, FfsType::Section, EFI_SECTION_PE32, pe, vec![]);
         let file = mk_node(
@@ -1198,7 +1220,7 @@ pub(crate) fn synth_hii_pe_multi(type_name: &str, blobs: &[&[u8]]) -> Vec<u8> {
     let mut cur = name_end + 16 * blobs.len();
     for b in blobs {
         blob_offs.push(cur);
-        cur += b.len().next_multiple_of(16);
+        cur = (cur + b.len()).next_multiple_of(16);
     }
     let mut rsrc = Vec::new();
     rsrc.extend_from_slice(&rsrc_dir_header(1, 0));
@@ -1210,7 +1232,7 @@ pub(crate) fn synth_hii_pe_multi(type_name: &str, blobs: &[&[u8]]) -> Vec<u8> {
     rsrc.extend_from_slice(&rsrc_dir_header(0, blobs.len() as u16));
     for &d in &data_offs {
         rsrc.extend_from_slice(&0x409u32.to_le_bytes());
-        rsrc.extend_from_slice(&(0x8000_0000u32 | d as u32).to_le_bytes());
+        rsrc.extend_from_slice(&(d as u32).to_le_bytes());
     }
     while rsrc.len() < name_at {
         rsrc.push(0);
@@ -1254,9 +1276,9 @@ pub(crate) fn synth_hii_pe_dup(type_name: &str, blob: &[u8]) -> Vec<u8> {
     rsrc.extend_from_slice(&0x8000_0030u32.to_le_bytes());
     rsrc.extend_from_slice(&rsrc_dir_header(0, 2));
     rsrc.extend_from_slice(&0x409u32.to_le_bytes());
-    rsrc.extend_from_slice(&(0x8000_0000u32 | data_at as u32).to_le_bytes());
+    rsrc.extend_from_slice(&(data_at as u32).to_le_bytes());
     rsrc.extend_from_slice(&0x40Au32.to_le_bytes());
-    rsrc.extend_from_slice(&(0x8000_0000u32 | (data_at + 16) as u32).to_le_bytes());
+    rsrc.extend_from_slice(&((data_at + 16) as u32).to_le_bytes());
     while rsrc.len() < name_at {
         rsrc.push(0);
     }

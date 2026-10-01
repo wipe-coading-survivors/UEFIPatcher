@@ -90,7 +90,7 @@ pub fn add_form(
         }
     };
     let owner_file_guid = owner_guid_by_path(&image.root, &path);
-    validate_form_varstores(image, &target, bare_channel, schema)?;
+    validate_form_varstores(image, &target, bare_channel, formset_idx, schema)?;
     let mut strings: Vec<String> = Vec::new();
     for vs in &schema.varstores {
         strings.push(vs.name.clone());
@@ -204,16 +204,20 @@ fn item_var_store_id(item: &schema::ItemSchema) -> Option<u16> {
     }
 }
 
-/// Спека varstore-contract §2: per-item ссылки и декларации пакета
-/// проверяются против карты формсета ДО первой мутации образа.
+/// Спека varstore-contract §2 + formset-ordinal-followups §2.1: per-item
+/// ссылки и декларации проверяются против карты ЦЕЛЕВОГО формсета
+/// (не всего пакета) ДО первой мутации образа.
 fn validate_form_varstores(
     image: &Image,
     target: &crate::types::Target,
     bare_channel: bool,
+    formset_idx: usize,
     schema: &schema::FormSetSchema,
 ) -> Result<(), HiiError> {
     let pkg = question_forms_package(&image.root, target, bare_channel)?.to_vec();
-    let existing = super::values::varstore_map(&pkg);
+    let Some(existing) = super::values::varstore_map_formset(&pkg, formset_idx) else {
+        return Err(HiiError::InvalidIfr);
+    };
     let mut seen: Vec<u16> = Vec::new();
     for vs in &schema.varstores {
         if existing.iter().any(|m| m.id == vs.id) || seen.contains(&vs.id) {
@@ -507,6 +511,35 @@ mod tests {
         )])
     }
 
+    fn two_formset_pkg_varstores() -> Vec<u8> {
+        let mut b = IfrBuilder::new();
+        let g1 = Guid::try_parse(FORMSET_GUID).unwrap();
+        b.emit_form_set(&g1, 1, 1, &[]);
+        b.emit_var_store(7, &g1, 64, "OldV");
+        b.emit_form(1, 1);
+        b.emit_end();
+        b.emit_end();
+        let g2 = Guid::try_parse(FORMSET2_GUID).unwrap();
+        b.emit_form_set(&g2, 2, 2, &[]);
+        b.emit_var_store(2, &g2, 32, "Fs2V");
+        b.emit_form(2, 2);
+        b.emit_end();
+        b.emit_end();
+        hii_pkg(PACKAGE_FORMS, &b.build())
+    }
+
+    fn two_formset_varstores_flash_image() -> Vec<u8> {
+        let content = [
+            section_bytes(EFI_SECTION_RAW, &string_package_bytes()),
+            section_bytes(EFI_SECTION_RAW, &two_formset_pkg_varstores()),
+        ]
+        .concat();
+        flash_with_files(vec![ffs_file_bytes(
+            &Guid::try_parse(FILE_GUID).unwrap(),
+            &content,
+        )])
+    }
+
     fn resource_blob() -> Vec<u8> {
         hii_list(
             &Guid::try_parse(LIST_GUID).unwrap(),
@@ -723,6 +756,49 @@ mod tests {
                 .map(|f| f.form_id_ifr)
                 .collect::<Vec<_>>(),
             vec![2, 42]
+        );
+    }
+
+    #[test]
+    fn add_form_varstore_collision_in_other_formset_is_allowed() {
+        let data = two_formset_varstores_flash_image();
+        let mut img = parse_image(&data, ImageMode::Write, "i", "s").unwrap();
+        add_form(
+            &mut img,
+            "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:1#1",
+            &add_form_schema(),
+        )
+        .unwrap();
+        let pkg = section_of(&img, "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:1")
+            .body
+            .clone();
+        let fs2 = crate::hii::values::varstore_map_formset(&pkg, 1).unwrap();
+        assert!(
+            fs2.iter().any(|m| m.id == 7 && m.name == "VStore"),
+            "декларация схемы (id 7) встала в формсет #1, got {fs2:?}"
+        );
+        let fs1 = crate::hii::values::varstore_map_formset(&pkg, 0).unwrap();
+        assert_eq!(
+            fs1.iter().filter(|m| m.id == 7).count(),
+            1,
+            "в формсете #0 осталась только старая OldV"
+        );
+        assert!(fs1.iter().all(|m| m.name != "VStore"));
+    }
+
+    #[test]
+    fn add_form_varstore_collision_in_target_formset_is_rejected() {
+        let data = two_formset_varstores_flash_image();
+        let mut img = parse_image(&data, ImageMode::Write, "i", "s").unwrap();
+        let err = add_form(
+            &mut img,
+            "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:1#0",
+            &add_form_schema(),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, HiiError::InvalidSchema(ref m) if m.contains("varstore id 0x7 already exists in the formset")),
+            "id 7 уже декларирован в ЦЕЛЕВОМ формсете #0, got {err:?}"
         );
     }
 
