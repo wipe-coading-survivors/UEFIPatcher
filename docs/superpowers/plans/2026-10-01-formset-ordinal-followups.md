@@ -747,6 +747,8 @@ Expected: FAIL — `..._scopes_...`: assert-падение на `foreign`-кей
 
 - [ ] **Step 3: Implement `locate_form_attribution`** (form_hijack.rs, над `locate_form`; наверху — `use super::ifr::formset_spans;`)
 
+(Plan-fix 2026-10-01 №3: атрибуция в `resolve_question_target` ужесточает контракт для пакетов с незакрытым FORM_SET — `formset_spans` fail-closed → NotFound, спека §5 «честное ужесточение». Legacy-фикстура `package_with_form` (form_hijack test_fixtures, потребитель — `hijack_flash_image`/`hijack_test_flash`, rpc-тесты question add) не закрывала FORM_SET: 3 scoped-op, 2 END. Фикстура добирает закрывающий `b.emit_end()` в хвост — смещения существующих ops не меняются, `$SPF`-записи (считаются по `locate_questions`) не сдвигаются.)
+
 ```rust
 /// Формсет-владелец формы + её спан: первый формсет, содержащий form_id
 /// (первый-match, паритет locate_form). Спека formset-ordinal-followups §2.
