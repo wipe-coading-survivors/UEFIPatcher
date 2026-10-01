@@ -335,30 +335,34 @@ pub fn splice_question_ops(
     Ok((insert_at, ops.len()))
 }
 
-/// Конец пролога формсета = offset первого IFR_FORM_OP (точка вставки
-/// formset-уровневых деклараций: varstore/default-store). Спека
-/// formset-unlock §3 U3.
-pub(crate) fn locate_formset_prelude_end(package: &[u8]) -> Option<usize> {
-    if !is_form_package(package) {
-        return None;
-    }
+/// Конец пролога формсета formset_idx = offset первого IFR_FORM_OP его
+/// спана (точка вставки formset-уровневых деклараций). Форм у формсета
+/// нет → None (formless-контракт). Спека formset-unlock §3 U3,
+/// formset-ordinal-followups §2.
+pub(crate) fn locate_formset_prelude_end(package: &[u8], formset_idx: usize) -> Option<usize> {
+    let (start, end) = formset_spans(package)?.get(formset_idx).copied()?;
     let mut first: Option<usize> = None;
     walk_statements(package, |op, off, _len, _| {
-        if op == IFR_FORM_OP && first.is_none() {
+        if op == IFR_FORM_OP && first.is_none() && (start..end).contains(&off) {
             first = Some(off);
         }
     });
     first
 }
 
-/// Вставка formset-уровневых ops в пролог (до первой формы) с обновлением
-/// u24-длины пакета. НЕ проверяет коллизии id — это уровень add_varstores.
-/// Спека formset-unlock §3 U3.
-pub fn splice_varstore_ops(package: &mut Vec<u8>, ops: &[u8]) -> Result<(usize, usize), HiiError> {
+/// Вставка formset-уровневых ops в пролог (до первой формы) формсета
+/// formset_idx с обновлением u24-длины пакета. НЕ проверяет коллизии id —
+/// это уровень add_varstores. Спека formset-unlock §3 U3,
+/// formset-ordinal-followups §2.
+pub fn splice_varstore_ops(
+    package: &mut Vec<u8>,
+    ops: &[u8],
+    formset_idx: usize,
+) -> Result<(usize, usize), HiiError> {
     if ops.is_empty() {
         return Err(HiiError::InvalidSchema("empty ops".into()));
     }
-    let Some(insert_at) = locate_formset_prelude_end(package) else {
+    let Some(insert_at) = locate_formset_prelude_end(package, formset_idx) else {
         return Err(HiiError::NotFound);
     };
     package.splice(insert_at..insert_at, ops.iter().copied());
@@ -1688,13 +1692,13 @@ mod tests {
     #[test]
     fn splice_varstore_ops_inserts_before_first_form() {
         let mut pkg = two_form_package(); // формы 100 и 200
-        let prelude_end = locate_formset_prelude_end(&pkg).unwrap();
+        let prelude_end = locate_formset_prelude_end(&pkg, 0).unwrap();
         let ops = opcode(
             IFR_VARSTORE_EFI_OP,
             false,
             &[vec![0u8; 24], b"I\0n\0t\0e\0l\0".to_vec()].concat(),
         );
-        let (at, delta) = splice_varstore_ops(&mut pkg, &ops).unwrap();
+        let (at, delta) = splice_varstore_ops(&mut pkg, &ops, 0).unwrap();
         assert_eq!(at, prelude_end);
         assert_eq!(delta, ops.len());
         assert_eq!(&pkg[at..at + ops.len()], &ops[..]);
@@ -1710,7 +1714,7 @@ mod tests {
         let mut pkg = two_form_package();
         let before = pkg.clone();
         assert!(matches!(
-            splice_varstore_ops(&mut pkg, &[]),
+            splice_varstore_ops(&mut pkg, &[], 0),
             Err(HiiError::InvalidSchema(_))
         ));
         let mut formless = package(&form_set(&Guid::from_str(FORMSET_GUID).unwrap(), 7));
@@ -1722,12 +1726,36 @@ mod tests {
         let formless_before = formless.clone();
         let ops = opcode(IFR_VARSTORE_EFI_OP, false, &[0u8; 24]);
         assert_eq!(pkg, before);
-        assert!(locate_formset_prelude_end(&formless).is_none());
+        assert!(locate_formset_prelude_end(&formless, 0).is_none());
         assert!(matches!(
-            splice_varstore_ops(&mut formless, &ops),
+            splice_varstore_ops(&mut formless, &ops, 0),
             Err(HiiError::NotFound)
         ));
         assert_eq!(formless, formless_before);
+    }
+
+    #[test]
+    fn splice_varstore_ops_targets_given_formset_prelude() {
+        let g1: [u8; 16] = [1; 16];
+        let g2: [u8; 16] = [2; 16];
+        let mut ifr = Vec::new();
+        ifr.extend_from_slice(&[IFR_FORM_SET_OP, 23 | 0x80]);
+        ifr.extend_from_slice(&g1);
+        ifr.extend_from_slice(&[1, 0, 0, 0, 0]);
+        ifr.extend_from_slice(&[IFR_FORM_OP, 6, 1, 0, 1, 0]);
+        ifr.extend_from_slice(&[IFR_END_OP, 2]);
+        ifr.extend_from_slice(&[IFR_FORM_SET_OP, 23 | 0x80]);
+        ifr.extend_from_slice(&g2);
+        ifr.extend_from_slice(&[2, 0, 0, 0, 0]);
+        ifr.extend_from_slice(&[IFR_FORM_OP, 6, 2, 0, 2, 0]);
+        ifr.extend_from_slice(&[IFR_END_OP, 2]);
+        let mut pkg = package(&ifr);
+        let ops = varstore_bytes();
+        let fs2_form = 4 + (23 + 6 + 2) + 23;
+        let (at, delta) = splice_varstore_ops(&mut pkg, &ops, 1).unwrap();
+        assert_eq!(at, fs2_form, "вставка перед первой формой ВТОРОГО формсета");
+        assert_eq!(delta, ops.len());
+        assert_eq!(&pkg[at..at + ops.len()], &ops[..]);
     }
 
     #[test]
