@@ -19,6 +19,7 @@ pub mod schema;
 pub mod spf;
 pub mod string_pack;
 pub mod strings;
+pub mod tse;
 pub mod values;
 
 use crate::ffs::{
