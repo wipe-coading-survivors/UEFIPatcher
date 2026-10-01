@@ -548,13 +548,17 @@
   `:hii hijack`/`:hii import` (e730dad+), WebUI SchemaDialog/ExportDialog с
   formSetAdd/formAdd/questionAdd/pageAdd/formHijack (558073c, webui-parity W3).
   Следующий живой пробел зоны — formset-ordinal discoverability (запись ниже).
-* [ ] **FormInfo: formset-порядковый номер не виден в `hii form list`** —
+* [x] **FormInfo: formset-порядковый номер не виден в `hii form list`** —
   дискриминатор `#<n>` таргета `hii form add` не дискаверибелен: FormInfo не
   несёт formset ordinal, на multi-formset-пакетах пользователь не может
   узнать `n` (промах `#1` на single-formset-пакете — лёгкий first-attempt
   typo). Кандидат — расширить FormInfo (engine+proto+CLI) formset-порядковым
   номером или селектором по anchor-форме. Дополняет pre-check I1: неверный
   ordinal теперь отбивается NotFound до мутации строк.
+  Закрыто циклом formset-ordinal (2026-10-01): FormInfo.formset_ordinal
+  (optional), колонка n в CLI, Ordinal-строка в TUI, #n в WebUI;
+  attribution-дефект multi-formset тоже закрыт (спека
+  2026-10-01-formset-ordinal-design.md).
 * [ ] **add_form: `default_stores` игнорируются by design (решение R2)** — v1
   сознательно не обрабатывает `default_stores` (и прочие formset-level поля
   схемы); автор схемы не получает фидбека, что поле отброшено. Вернуться к

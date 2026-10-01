@@ -524,6 +524,21 @@ RPC `HiiGetValue` (engine + CLI `hii question value` + TUI `Current`
 + WebUI current-строка; gateway — generic bridge без кода). Гейт
 владельца ПРОШЁЛ (3 раунда). PR #34 смержен (2026-10-01), ветка удалена.
 
+## Мини-цикл formset-ordinal — discoverability дискриминатора TARGET#<n> (2026-10-01)
+
+Живая болячка из TODO («FormInfo: formset-порядковый номер не виден»). Спека
+`docs/superpowers/specs/2026-10-01-formset-ordinal-design.md` + план
+`docs/superpowers/plans/2026-10-01-formset-ordinal.md` (7 задач, TDD,
+субагент-исполнение, ветка `feat/formset-ordinal`). Реализовано:
+`parse_form_package_sets` — пер-формсетный проход форм-пакета (заодно чинит
+атрибуцию форм multi-formset-пакета: guid/title от своего FORM_SET_OP, не
+от последнего), `FormInfo.formset_ordinal` (optional uint32; только
+writable-канал add_form — RAW-тело / первый resource-entry × первый
+PACKAGE_FORMS; вне канала None), колонка `n` в CLI `hii form list`,
+Ordinal-строка в TUI Forms-детали, dim-суффикс `#n` в WebUI FormsTree;
+round-trip инвариант list→add (спека §4). Гейты цикла чистые; TODO-запись
+закрыта.
+
 ## Дуга formset-unlock (U1–U4) — кросс-формсетные гейты и перенос IIO-бифуркации (2026-09-12)
 Спека `docs/superpowers/specs/2026-09-12-formset-unlock-design.md` +
 план `docs/superpowers/plans/2026-09-12-formset-unlock.md` (9 задач,
