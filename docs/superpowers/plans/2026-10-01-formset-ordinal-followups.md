@@ -52,7 +52,7 @@ fn formset_spans_returns_span_per_formset() {
     ifr.extend_from_slice(&[IFR_FORM_OP, 6, 2, 0, 2, 0]);
     ifr.extend_from_slice(&[IFR_END_OP, 2]);
     let spans = formset_spans(&package(&ifr)).unwrap();
-    assert_eq!(spans, vec![(4 + 23, 4 + 23 + 6 + 2), (4 + 23 + 6 + 2 + 23, 4 + 23 + 6 + 2 + 23 + 6 + 2)]);
+    assert_eq!(spans, vec![(4 + 23, 4 + 23 + 6), (4 + 23 + 6 + 2 + 23, 4 + 23 + 6 + 2 + 23 + 6)]);
 }
 
 #[test]
@@ -66,7 +66,7 @@ fn formset_spans_rejects_unterminated_formset() {
 }
 ```
 
-(`formset_spans` виден тестам без `super::` — тесты в том же файле; константы IFR_* уже импортированы в тестах ifr.rs.)
+(`formset_spans` виден тестам без `super::` — тесты в том же файле; константы IFR_* уже импортированы в тестах ifr.rs. Дефект-фикс: конец спана = offset парного END-op (как в существующем `locate_formset_insert_points` :298 — `insert_form_into_package` вставляет форму по `before_end` ПЕРЕД END-op), не past-END; исходное ожидание ошибочно включало длину END-op в offset.)
 
 - [ ] **Step 2: Run — verify fail**
 
