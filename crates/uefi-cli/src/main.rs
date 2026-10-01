@@ -292,7 +292,9 @@ enum HiiFormCmd {
         #[arg(long, help = "write the envelope to a file instead of stdout")]
         out: Option<std::path::PathBuf>,
     },
-    #[command(about = "insert a form from a schema file into a live formset")]
+    #[command(
+        about = "add a form to a formset; target = TARGET[#n] — ordinal n из колонки n `hii form list` (default #0)"
+    )]
     Add {
         #[arg(long)]
         target: String,
@@ -348,7 +350,7 @@ enum HiiQuestionCmd {
 #[derive(Subcommand)]
 enum HiiVarstoreCmd {
     #[command(
-        about = "list varstore declarations of a formset; item_id = TARGET — e.g. `hii varstore list 899407d7-99fe-43d8-9a21-79ec328cac21:0x10:0` (copy TARGET from the form_id column of `hii form list`)"
+        about = "list varstore declarations of a formset; item_id = TARGET[#n] — ordinal из колонки n `hii form list` (default #0); e.g. `hii varstore list 899407d7-99fe-43d8-9a21-79ec328cac21:0x10:0`"
     )]
     List { item_id: String },
 }

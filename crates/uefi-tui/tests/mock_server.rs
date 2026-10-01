@@ -320,6 +320,7 @@ impl EngineService for MockEngine {
                     form_id_ifr: 10001,
                     title: "Main".into(),
                     visible: true,
+                    formset_ordinal: None,
                 },
                 FormInfo {
                     form_id: "11111111-2222-3333-4444-555555555555:0x19:0".into(),
@@ -327,6 +328,7 @@ impl EngineService for MockEngine {
                     form_id_ifr: 10019,
                     title: "Serial Port 1 Configuration".into(),
                     visible: false,
+                    formset_ordinal: None,
                 },
                 FormInfo {
                     form_id: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE:0x19:0".into(),
@@ -334,6 +336,7 @@ impl EngineService for MockEngine {
                     form_id_ifr: 902,
                     title: "Platform".into(),
                     visible: true,
+                    formset_ordinal: None,
                 },
             ],
         }))

@@ -605,6 +605,7 @@ mod tests {
             form_id_ifr,
             title: String::new(),
             visible: true,
+            formset_ordinal: None,
         }
     }
 

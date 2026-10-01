@@ -598,6 +598,74 @@ pub fn parse_form_package(body: &[u8]) -> Option<FormSetInfo> {
     })
 }
 
+/// Пер-формсетный проход form-пакета: на каждый IFR_FORM_SET_OP — свой
+/// `(ordinal, FormSetInfo)` с guid/title/формами до следующего FORM_SET_OP.
+/// Ordinal = индекс FORM_SET_OP в пакете — семантика дискриминатора `#n`
+/// (locate_formset_insert_points). Пакет, не начинающийся с FORM_SET_OP,
+/// отвергается гейтом is_form_package (None). Malformed-опкод → None, как
+/// у parse_form_package. НЕ используется мутациями — только списки/просмотр.
+pub fn parse_form_package_sets(body: &[u8]) -> Option<Vec<(usize, FormSetInfo)>> {
+    if !is_form_package(body) {
+        return None;
+    }
+    let (start, end) = package_bounds(body);
+    let mut sets: Vec<(usize, FormSetInfo)> = Vec::new();
+    let mut cur: Option<FormSetInfo> = None;
+    let mut scope_stack: Vec<u8> = Vec::new();
+    let mut i = start;
+    while i + 2 <= end {
+        let op_code = body[i];
+        let length_and_scope = body[i + 1];
+        let length = (length_and_scope & 0x7F) as usize;
+        if length < 2 || i + length > end {
+            return None;
+        }
+        match op_code {
+            IFR_FORM_SET_OP => {
+                if length < 23 {
+                    return None;
+                }
+                if let Some(fs) = cur.take() {
+                    sets.push((sets.len(), fs));
+                }
+                let mut arr = [0u8; 16];
+                arr.copy_from_slice(&body[i + 2..i + 18]);
+                cur = Some(FormSetInfo {
+                    guid: Guid::from_bytes(arr),
+                    title: u16::from_le_bytes([body[i + 18], body[i + 19]]),
+                    forms: Vec::new(),
+                });
+            }
+            IFR_FORM_OP => {
+                if length < 6 {
+                    return None;
+                }
+                if let Some(fs) = cur.as_mut() {
+                    fs.forms.push(RawForm {
+                        form_id: u16::from_le_bytes([body[i + 2], body[i + 3]]),
+                        title: u16::from_le_bytes([body[i + 4], body[i + 5]]),
+                        suppressed: scope_stack.contains(&IFR_SUPPRESS_IF_OP),
+                    });
+                }
+            }
+            IFR_END_OP => {
+                scope_stack.pop();
+            }
+            _ => {
+                tracing::trace!(op_code, offset = i, "unknown ifr opcode skipped");
+            }
+        }
+        if length_and_scope & 0x80 != 0 {
+            scope_stack.push(op_code);
+        }
+        i += length;
+    }
+    if let Some(fs) = cur.take() {
+        sets.push((sets.len(), fs));
+    }
+    Some(sets)
+}
+
 /// Баланс скоупов IFR form-пакета: +1 на scoped-опкод (бит 0x80 в байте
 /// length/scope), −1 на END. 0 на корректном пакете. Инвариант
 /// железо-доказан раундом 8 дуги setup-new-page; спека
@@ -773,6 +841,69 @@ mod tests {
         let mut ifr = vec![IFR_FORM_SET_OP, 0x04, 0xAA, 0xBB];
         ifr.extend(end());
         assert!(parse_form_package(&package(&ifr)).is_none());
+    }
+
+    #[test]
+    fn parse_form_package_sets_splits_two_formsets() {
+        let g1: [u8; 16] = [1; 16];
+        let g2: [u8; 16] = [2; 16];
+        let mut ifr = Vec::new();
+        ifr.extend_from_slice(&[IFR_FORM_SET_OP, 23 | 0x80]);
+        ifr.extend_from_slice(&g1);
+        ifr.extend_from_slice(&[7, 0, 0, 0, 0]); // title sid 7 + help sid 0 + flags 0
+        ifr.extend_from_slice(&[IFR_FORM_OP, 6, 1, 0, 8, 0]); // form 1, title 8
+        ifr.extend_from_slice(&[IFR_END_OP, 2]);
+        ifr.extend_from_slice(&[IFR_FORM_SET_OP, 23 | 0x80]);
+        ifr.extend_from_slice(&g2);
+        ifr.extend_from_slice(&[9, 0, 0, 0, 0]);
+        ifr.extend_from_slice(&[IFR_FORM_OP, 6, 2, 0, 10, 0]); // form 2, title 10
+        ifr.extend_from_slice(&[IFR_END_OP, 2]);
+        let sets = parse_form_package_sets(&package(&ifr)).unwrap();
+        assert_eq!(sets.len(), 2);
+        assert_eq!(sets[0].0, 0);
+        assert_eq!(sets[0].1.guid, Guid::from_bytes(g1));
+        assert_eq!(
+            sets[0]
+                .1
+                .forms
+                .iter()
+                .map(|f| f.form_id)
+                .collect::<Vec<_>>(),
+            vec![1]
+        );
+        assert_eq!(sets[1].0, 1);
+        assert_eq!(sets[1].1.guid, Guid::from_bytes(g2));
+        assert_eq!(
+            sets[1]
+                .1
+                .forms
+                .iter()
+                .map(|f| f.form_id)
+                .collect::<Vec<_>>(),
+            vec![2]
+        );
+    }
+
+    #[test]
+    fn parse_form_package_sets_rejects_package_not_starting_with_formset() {
+        let g: [u8; 16] = [3; 16];
+        let mut ifr = Vec::new();
+        ifr.extend_from_slice(&[IFR_FORM_OP, 6, 5, 0, 1, 0]); // мусор до FORM_SET
+        ifr.extend_from_slice(&[IFR_FORM_SET_OP, 23 | 0x80]);
+        ifr.extend_from_slice(&g);
+        ifr.extend_from_slice(&[1, 0, 0, 0, 0]);
+        ifr.extend_from_slice(&[IFR_FORM_OP, 6, 1, 0, 2, 0]);
+        ifr.extend_from_slice(&[IFR_END_OP, 2]);
+        let body = package(&ifr);
+        assert!(parse_form_package_sets(&body).is_none());
+    }
+
+    #[test]
+    fn parse_form_package_sets_rejects_malformed_formset_header() {
+        let mut ifr = Vec::new();
+        ifr.extend_from_slice(&[IFR_FORM_SET_OP, 10]); // length < 23
+        let body = package(&ifr);
+        assert!(parse_form_package_sets(&body).is_none());
     }
 
     #[test]

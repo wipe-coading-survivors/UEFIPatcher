@@ -7,20 +7,39 @@ use crate::ffs::{
     EFI_SECTION_COMPRESSION, EFI_SECTION_FREEFORM_SUBTYPE_GUID, EFI_SECTION_GUID_DEFINED,
     EFI_SECTION_PE32, EFI_SECTION_RAW,
 };
-use crate::hii::ifr::{FormSetInfo, parse_form_package};
+use crate::hii::ifr::{FormSetInfo, parse_form_package_sets};
 use crate::hii::package_list::{HiiPackageList, parse_package_list, parse_package_list_exact};
-use crate::hii::pe_resource::{bare_form_packages, hii_resource_blobs, hii_resource_ranges};
+use crate::hii::pe_resource::{bare_form_packages, hii_resource_ranges};
 use crate::hii::strings::{declared_len_sane, parse_string_package};
 use crate::types::{FfsNode, FfsType, Guid, Image, guid_to_upper_string};
 
-pub fn collect_forms(image: &Image) -> Vec<FormInfo> {
+/// Формы образа с ordinal'ом их формсета в writable-канале: `Some(i)` —
+/// i-й FORM_SET RAW-секции или первого resource-списка (его первый
+/// PACKAGE_FORMS), `None` — каналы только-чтения (bare PE32-пакеты,
+/// не-первые resource-entry/PACKAGE_FORMS, FREEFORM-списки).
+/// Читающий путь; семантика writable-канала — formset-ordinal §2-§3.1.
+pub fn collect_forms_with_ordinals(image: &Image) -> Vec<(FormInfo, Option<u32>)> {
     let mut out = Vec::new();
     let fallback = crate::hii::questions::image_string_fallback(&image.root);
     walk_files(&image.root, &fallback, &mut out);
     out
 }
 
-fn walk_files(node: &FfsNode, fallback: &HashMap<u16, String>, out: &mut Vec<FormInfo>) {
+pub fn collect_forms(image: &Image) -> Vec<FormInfo> {
+    collect_forms_with_ordinals(image)
+        .into_iter()
+        .map(|(mut f, ord)| {
+            f.formset_ordinal = ord;
+            f
+        })
+        .collect()
+}
+
+fn walk_files(
+    node: &FfsNode,
+    fallback: &HashMap<u16, String>,
+    out: &mut Vec<(FormInfo, Option<u32>)>,
+) {
     for child in &node.children {
         if child.node_type == FfsType::File {
             collect_file_forms(child, fallback, out);
@@ -29,27 +48,35 @@ fn walk_files(node: &FfsNode, fallback: &HashMap<u16, String>, out: &mut Vec<For
     }
 }
 
-fn collect_file_forms(file: &FfsNode, fallback: &HashMap<u16, String>, out: &mut Vec<FormInfo>) {
+fn collect_file_forms(
+    file: &FfsNode,
+    fallback: &HashMap<u16, String>,
+    out: &mut Vec<(FormInfo, Option<u32>)>,
+) {
     let Some(fg) = file.guid else {
         return;
     };
     let mut titles: HashMap<u16, String> = HashMap::new();
-    let mut found: Vec<(String, FormSetInfo)> = Vec::new();
+    let mut found: Vec<(String, FormSetInfo, Option<u32>)> = Vec::new();
     let mut counters: HashMap<u8, usize> = HashMap::new();
     walk_sections(file, fg, &mut titles, &mut found, &mut counters);
-    for (target, fs) in found {
+    for (target, fs, ord) in found {
         for raw in &fs.forms {
-            out.push(FormInfo {
-                form_id: target.clone(),
-                formset_guid: guid_to_upper_string(&fs.guid),
-                form_id_ifr: raw.form_id as u32,
-                title: titles
-                    .get(&raw.title)
-                    .or_else(|| fallback.get(&raw.title))
-                    .cloned()
-                    .unwrap_or_default(),
-                visible: !raw.suppressed,
-            });
+            out.push((
+                FormInfo {
+                    form_id: target.clone(),
+                    formset_guid: guid_to_upper_string(&fs.guid),
+                    form_id_ifr: raw.form_id as u32,
+                    title: titles
+                        .get(&raw.title)
+                        .or_else(|| fallback.get(&raw.title))
+                        .cloned()
+                        .unwrap_or_default(),
+                    visible: !raw.suppressed,
+                    formset_ordinal: None,
+                },
+                ord,
+            ));
         }
     }
 }
@@ -58,7 +85,7 @@ fn walk_sections(
     node: &FfsNode,
     fg: Guid,
     titles: &mut HashMap<u16, String>,
-    found: &mut Vec<(String, FormSetInfo)>,
+    found: &mut Vec<(String, FormSetInfo, Option<u32>)>,
     counters: &mut HashMap<u8, usize>,
 ) {
     for child in &node.children {
@@ -80,25 +107,40 @@ fn walk_sections(
                 for (sid, text) in pkg.strings {
                     titles.entry(sid).or_insert(text);
                 }
-            } else if let Some(fs) = parse_form_package(&child.body) {
-                found.push((target, fs));
+            } else if let Some(sets) = parse_form_package_sets(&child.body) {
+                for (i, fs) in sets {
+                    found.push((target.clone(), fs, Some(i as u32)));
+                }
             }
         } else if child.subtype == EFI_SECTION_PE32 {
             let ranges = hii_resource_ranges(&child.body);
-            for blob in hii_resource_blobs(&child.body) {
-                if let Some(list) = parse_package_list(blob) {
-                    drain_list_packages(&list, &target, titles, found);
-                }
+            let writable_blob = ranges.first().copied();
+            for &(off, len) in &ranges {
+                let Some(blob) = child.body.get(off..off + len) else {
+                    continue;
+                };
+                let Some(list) = parse_package_list(blob) else {
+                    continue;
+                };
+                drain_list_packages(
+                    &list,
+                    &target,
+                    titles,
+                    found,
+                    Some((off, len)) == writable_blob,
+                );
             }
             for pkg in bare_form_packages(&child.body, &ranges) {
-                if let Some(fs) = parse_form_package(pkg) {
-                    found.push((target.clone(), fs));
+                if let Some(sets) = parse_form_package_sets(pkg) {
+                    for (_, fs) in sets {
+                        found.push((target.clone(), fs, None));
+                    }
                 }
             }
         } else if child.subtype == EFI_SECTION_FREEFORM_SUBTYPE_GUID
             && let Some(list) = parse_package_list_exact(&child.body)
         {
-            drain_list_packages(&list, &target, titles, found);
+            drain_list_packages(&list, &target, titles, found, false);
         }
         if child.subtype == EFI_SECTION_COMPRESSION || child.subtype == EFI_SECTION_GUID_DEFINED {
             walk_sections(child, fg, titles, found, counters);
@@ -110,13 +152,19 @@ fn drain_list_packages(
     list: &HiiPackageList<'_>,
     target: &str,
     titles: &mut HashMap<u16, String>,
-    found: &mut Vec<(String, FormSetInfo)>,
+    found: &mut Vec<(String, FormSetInfo, Option<u32>)>,
+    writable: bool,
 ) {
+    let mut ordinal: Option<u32> = writable.then_some(0);
     for pkg in &list.packages {
         match pkg.kind {
             PACKAGE_FORMS => {
-                if let Some(fs) = parse_form_package(pkg.bytes) {
-                    found.push((target.to_string(), fs));
+                let base = ordinal.take();
+                if let Some(sets) = parse_form_package_sets(pkg.bytes) {
+                    for (i, fs) in sets {
+                        let ord = base.map(|b| b + i as u32);
+                        found.push((target.to_string(), fs, ord));
+                    }
                 }
             }
             PACKAGE_STRINGS => {
@@ -717,5 +765,141 @@ mod tests {
         let t = crate::parser::target::parse_target(&forms[1].form_id).unwrap();
         let node = crate::parser::target::find_item(&image.root, &t).unwrap();
         assert_eq!(node.subtype, 0x19);
+    }
+
+    fn img_of(file: FfsNode) -> Image {
+        let volume = mk_node(None, FfsType::Volume, 0, vec![], vec![file]);
+        let root = mk_node(None, FfsType::Image, 0, vec![], vec![volume]);
+        Image {
+            image_id: "img".into(),
+            session_id: "s".into(),
+            root,
+            mode: ImageMode::Read,
+        }
+    }
+
+    fn hii_list_two_forms(form1: &[u8], form2: &[u8], string: &[u8]) -> Vec<u8> {
+        let g = Guid::from_str(FILE_GUID).unwrap();
+        let mut b = g.to_bytes().to_vec();
+        let total = 20 + form1.len() + form2.len() + string.len() + 4;
+        b.extend_from_slice(&(total as u32).to_le_bytes());
+        b.extend_from_slice(form1);
+        b.extend_from_slice(form2);
+        b.extend_from_slice(string);
+        b.extend_from_slice(&[4, 0, 0, r_efi::hii::PACKAGE_END]);
+        b
+    }
+
+    #[test]
+    fn collect_forms_ordinal_bare_two_formsets() {
+        let g1: [u8; 16] = [1; 16];
+        let g2: [u8; 16] = [2; 16];
+        let mut ifr = Vec::new();
+        ifr.extend_from_slice(&[IFR_FORM_SET_OP, 23 | 0x80]);
+        ifr.extend_from_slice(&g1);
+        ifr.extend_from_slice(&[1, 0, 0, 0, 0]);
+        ifr.extend_from_slice(&[IFR_FORM_OP, 6, 1, 0, 1, 0]);
+        ifr.extend_from_slice(&[IFR_END_OP, 2]);
+        ifr.extend_from_slice(&[IFR_FORM_SET_OP, 23 | 0x80]);
+        ifr.extend_from_slice(&g2);
+        ifr.extend_from_slice(&[2, 0, 0, 0, 0]);
+        ifr.extend_from_slice(&[IFR_FORM_OP, 6, 2, 0, 2, 0]);
+        ifr.extend_from_slice(&[IFR_END_OP, 2]);
+        let raw = mk_node(
+            None,
+            FfsType::Section,
+            EFI_SECTION_RAW,
+            package(&ifr),
+            vec![],
+        );
+        let file = mk_node(
+            Some(Guid::from_str(FILE_GUID).unwrap()),
+            FfsType::File,
+            0x07,
+            vec![],
+            vec![raw],
+        );
+        let image = img_of(file);
+        let forms = collect_forms_with_ordinals(&image);
+        let f1 = forms.iter().find(|(f, _)| f.form_id_ifr == 1).unwrap();
+        let f2 = forms.iter().find(|(f, _)| f.form_id_ifr == 2).unwrap();
+        assert_eq!(f1.1, Some(0));
+        assert_eq!(f2.1, Some(1));
+        assert_eq!(
+            f1.0.formset_guid,
+            guid_to_upper_string(&Guid::from_bytes(g1))
+        );
+        assert_eq!(
+            f2.0.formset_guid,
+            guid_to_upper_string(&Guid::from_bytes(g2))
+        );
+        let plain = collect_forms(&image);
+        assert_eq!(
+            plain
+                .iter()
+                .find(|f| f.form_id_ifr == 1)
+                .unwrap()
+                .formset_ordinal,
+            Some(0)
+        );
+        assert_eq!(
+            plain
+                .iter()
+                .find(|f| f.form_id_ifr == 2)
+                .unwrap()
+                .formset_ordinal,
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn collect_forms_ordinal_pe32_only_first_resource_forms_pkg() {
+        let g1: [u8; 16] = [1; 16];
+        let g3: [u8; 16] = [3; 16];
+        let mut ifr1 = Vec::new();
+        ifr1.extend_from_slice(&[IFR_FORM_SET_OP, 23 | 0x80]);
+        ifr1.extend_from_slice(&g1);
+        ifr1.extend_from_slice(&[1, 0, 0, 0, 0]);
+        ifr1.extend_from_slice(&[IFR_FORM_OP, 6, 1, 0, 1, 0]);
+        ifr1.extend_from_slice(&[IFR_END_OP, 2]);
+        ifr1.extend_from_slice(&[IFR_FORM_SET_OP, 23 | 0x80]);
+        ifr1.extend_from_slice(&[2u8; 16]);
+        ifr1.extend_from_slice(&[2, 0, 0, 0, 0]);
+        ifr1.extend_from_slice(&[IFR_FORM_OP, 6, 2, 0, 2, 0]);
+        ifr1.extend_from_slice(&[IFR_END_OP, 2]);
+        let pkg1 = package(&ifr1);
+        let mut ifr2 = Vec::new();
+        ifr2.extend_from_slice(&[IFR_FORM_SET_OP, 23 | 0x80]);
+        ifr2.extend_from_slice(&g3);
+        ifr2.extend_from_slice(&[3, 0, 0, 0, 0]);
+        ifr2.extend_from_slice(&[IFR_FORM_OP, 6, 3, 0, 3, 0]);
+        ifr2.extend_from_slice(&[IFR_END_OP, 2]);
+        let pkg2 = package(&ifr2);
+
+        let list = hii_list_two_forms(&pkg1, &pkg2, &string_pkg());
+        let pe = crate::hii::pe_resource::synth_hii_pe("HII", &list);
+        let pe_sec = mk_node(None, FfsType::Section, EFI_SECTION_PE32, pe, vec![]);
+        let file = mk_node(
+            Some(Guid::from_str(FILE_GUID).unwrap()),
+            FfsType::File,
+            0x07,
+            vec![],
+            vec![pe_sec],
+        );
+        let image = img_of(file);
+        let forms = collect_forms_with_ordinals(&image);
+        let ord_of = |fid: u32| forms.iter().find(|(f, _)| f.form_id_ifr == fid).unwrap().1;
+        assert_eq!(ord_of(1), Some(0));
+        assert_eq!(ord_of(2), Some(1));
+        assert_eq!(ord_of(3), None);
+    }
+
+    #[test]
+    fn collect_forms_ordinal_freeform_list_is_none() {
+        let list = hii_list_raw(&form_pkg(1), &string_pkg());
+        let image = mk_0x18_image(list, true);
+        let forms = collect_forms_with_ordinals(&image);
+        assert_eq!(forms.len(), 2);
+        assert!(forms.iter().all(|(_, ord)| ord.is_none()));
     }
 }

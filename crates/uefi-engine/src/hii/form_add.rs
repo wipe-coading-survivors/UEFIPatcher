@@ -677,6 +677,56 @@ mod tests {
     }
 
     #[test]
+    fn list_add_roundtrip_formset_ordinal() {
+        let data = two_formset_flash_image();
+        let target = "5C60F367-A505-419A-859E-2A4FF6CA6FE5:0x19:1";
+
+        let img = parse_image(&data, ImageMode::Read, "i", "s").unwrap();
+        let before = crate::hii::forms::collect_forms(&img);
+        assert_eq!(
+            before
+                .iter()
+                .filter(|f| f.form_id == target)
+                .map(|f| f.formset_ordinal)
+                .collect::<Vec<_>>(),
+            vec![Some(0), Some(1)]
+        ); // фикстура: fs1=[form 1], fs2=[form 2] (two_formset_package, form_add.rs:406)
+        // guid-атрибутция fs1:
+        let g1 = before
+            .iter()
+            .find(|f| f.form_id == target && f.form_id_ifr == 1)
+            .unwrap()
+            .formset_guid
+            .clone();
+
+        let mut img = parse_image(&data, ImageMode::Write, "i", "s").unwrap();
+        add_form(&mut img, &format!("{target}#1"), &add_form_schema()).unwrap();
+        let after = crate::hii::forms::collect_forms(&img);
+        let f42 = after
+            .iter()
+            .find(|f| f.form_id == target && f.form_id_ifr == 42)
+            .unwrap();
+        assert_eq!(f42.formset_ordinal, Some(1));
+        assert_ne!(f42.formset_guid, g1); // форма 42 приписана fs2, не fs1
+        assert_eq!(
+            after
+                .iter()
+                .filter(|f| f.form_id == target && f.formset_ordinal == Some(0))
+                .map(|f| f.form_id_ifr)
+                .collect::<Vec<_>>(),
+            vec![1]
+        );
+        assert_eq!(
+            after
+                .iter()
+                .filter(|f| f.form_id == target && f.formset_ordinal == Some(1))
+                .map(|f| f.form_id_ifr)
+                .collect::<Vec<_>>(),
+            vec![2, 42]
+        );
+    }
+
+    #[test]
     fn add_form_rejects_read_only_mode() {
         let mut img = parse_image(&bare_flash_image(), ImageMode::Read, "i", "s").unwrap();
         let err = add_form(

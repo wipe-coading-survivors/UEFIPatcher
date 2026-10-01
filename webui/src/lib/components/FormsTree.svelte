@@ -55,6 +55,7 @@
                     }}
                 >
                     {row.form.formIdIfr} {row.form.title}
+                    {#if row.form.formsetOrdinal != null}<span class="dim">#{row.form.formsetOrdinal}</span>{/if}
                 </button>
                 {#if !row.form.visible}
                     <span class="dim" title="hidden">hidden</span>

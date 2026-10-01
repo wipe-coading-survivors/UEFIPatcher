@@ -207,6 +207,7 @@ impl EngineService for MockEngine {
                     form_id_ifr: 1,
                     title: "Main".into(),
                     visible: true,
+                    formset_ordinal: None,
                 },
                 FormInfo {
                     form_id: "899407d7-99fe-43d8-9a21-79ec328cac21:0x10:0".into(),
@@ -214,6 +215,7 @@ impl EngineService for MockEngine {
                     form_id_ifr: 5002,
                     title: "IntelRC".into(),
                     visible: true,
+                    formset_ordinal: None,
                 },
             ],
         }))

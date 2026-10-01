@@ -26,7 +26,7 @@
 - Modify: `crates/uefi-engine/src/hii/ifr.rs` (после `parse_form_package`, ~:600)
 
 **Interfaces:**
-- Produces: `pub fn parse_form_package_sets(body: &[u8]) -> Option<Vec<(usize, FormSetInfo)>>` — на каждый IFR_FORM_SET_OP свой `(ordinal, FormSetInfo)`; ordinal = порядковый номер FORM_SET_OP в пакете (0..); формы до первого FORM_SET_OP пропускаются; malformed-опкод → None (паритет `parse_form_package`).
+- Produces: `pub fn parse_form_package_sets(body: &[u8]) -> Option<Vec<(usize, FormSetInfo)>>` — на каждый IFR_FORM_SET_OP свой `(ordinal, FormSetInfo)`; ordinal = порядковый номер FORM_SET_OP в пакете (0..); пакет, не начинающийся с FORM_SET_OP, отвергается гейтом `is_form_package` → None (паритет `parse_form_package`); malformed-опкод → None.
 
 - [ ] **Step 1: Write the failing tests** (в существующий `mod tests` ifr.rs, рядом с тестами `parse_form_package`; хелпер `package(&ifr)` уже есть в тестах)
 
@@ -38,12 +38,12 @@ fn parse_form_package_sets_splits_two_formsets() {
     let mut ifr = Vec::new();
     ifr.extend_from_slice(&[IFR_FORM_SET_OP, 23 | 0x80]);
     ifr.extend_from_slice(&g1);
-    ifr.extend_from_slice(&[7, 0]); // title sid 7
+    ifr.extend_from_slice(&[7, 0, 0, 0, 0]); // title sid 7 + help sid 0 + flags 0
     ifr.extend_from_slice(&[IFR_FORM_OP, 6, 1, 0, 8, 0]); // form 1, title 8
     ifr.extend_from_slice(&[IFR_END_OP, 2]);
     ifr.extend_from_slice(&[IFR_FORM_SET_OP, 23 | 0x80]);
     ifr.extend_from_slice(&g2);
-    ifr.extend_from_slice(&[9, 0]);
+    ifr.extend_from_slice(&[9, 0, 0, 0, 0]);
     ifr.extend_from_slice(&[IFR_FORM_OP, 6, 2, 0, 10, 0]); // form 2, title 10
     ifr.extend_from_slice(&[IFR_END_OP, 2]);
     let sets = parse_form_package_sets(&package(&ifr)).unwrap();
@@ -57,18 +57,17 @@ fn parse_form_package_sets_splits_two_formsets() {
 }
 
 #[test]
-fn parse_form_package_sets_skips_forms_before_first_set() {
+fn parse_form_package_sets_rejects_package_not_starting_with_formset() {
     let g: [u8; 16] = [3; 16];
     let mut ifr = Vec::new();
     ifr.extend_from_slice(&[IFR_FORM_OP, 6, 5, 0, 1, 0]); // мусор до FORM_SET
     ifr.extend_from_slice(&[IFR_FORM_SET_OP, 23 | 0x80]);
     ifr.extend_from_slice(&g);
-    ifr.extend_from_slice(&[1, 0]);
+    ifr.extend_from_slice(&[1, 0, 0, 0, 0]);
     ifr.extend_from_slice(&[IFR_FORM_OP, 6, 1, 0, 2, 0]);
     ifr.extend_from_slice(&[IFR_END_OP, 2]);
-    let sets = parse_form_package_sets(&package(&ifr)).unwrap();
-    assert_eq!(sets.len(), 1);
-    assert_eq!(sets[0].1.forms.iter().map(|f| f.form_id).collect::<Vec<_>>(), vec![1]);
+    let body = package(&ifr);
+    assert!(parse_form_package_sets(&body).is_none());
 }
 
 #[test]
@@ -91,9 +90,9 @@ Expected: FAIL — «cannot find function `parse_form_package_sets`»
 /// Пер-формсетный проход form-пакета: на каждый IFR_FORM_SET_OP — свой
 /// `(ordinal, FormSetInfo)` с guid/title/формами до следующего FORM_SET_OP.
 /// Ordinal = индекс FORM_SET_OP в пакете — семантика дискриминатора `#n`
-/// (locate_formset_insert_points). Формы до первого FORM_SET_OP не
-/// атрибуцируются (пропуск). Malformed-опкод → None, как у
-/// parse_form_package. НЕ используется мутациями — только списки/просмотр.
+/// (locate_formset_insert_points). Пакет, не начинающийся с FORM_SET_OP,
+/// отвергается гейтом is_form_package (None). Malformed-опкод → None, как
+/// у parse_form_package. НЕ используется мутациями — только списки/просмотр.
 pub fn parse_form_package_sets(body: &[u8]) -> Option<Vec<(usize, FormSetInfo)>> {
     if !is_form_package(body) {
         return None;
@@ -194,12 +193,12 @@ fn collect_forms_ordinal_bare_two_formsets() {
     let mut ifr = Vec::new();
     ifr.extend_from_slice(&[IFR_FORM_SET_OP, 23 | 0x80]);
     ifr.extend_from_slice(&g1);
-    ifr.extend_from_slice(&[1, 0]);
+    ifr.extend_from_slice(&[1, 0, 0, 0, 0]);
     ifr.extend_from_slice(&[IFR_FORM_OP, 6, 1, 0, 1, 0]);
     ifr.extend_from_slice(&[IFR_END_OP, 2]);
     ifr.extend_from_slice(&[IFR_FORM_SET_OP, 23 | 0x80]);
     ifr.extend_from_slice(&g2);
-    ifr.extend_from_slice(&[2, 0]);
+    ifr.extend_from_slice(&[2, 0, 0, 0, 0]);
     ifr.extend_from_slice(&[IFR_FORM_OP, 6, 2, 0, 2, 0]);
     ifr.extend_from_slice(&[IFR_END_OP, 2]);
     let raw = mk_node(None, FfsType::Section, EFI_SECTION_RAW, package(&ifr), vec![]);
@@ -224,19 +223,19 @@ fn collect_forms_ordinal_pe32_only_first_resource_forms_pkg() {
     let mut ifr1 = Vec::new();
     ifr1.extend_from_slice(&[IFR_FORM_SET_OP, 23 | 0x80]);
     ifr1.extend_from_slice(&g1);
-    ifr1.extend_from_slice(&[1, 0]);
+    ifr1.extend_from_slice(&[1, 0, 0, 0, 0]);
     ifr1.extend_from_slice(&[IFR_FORM_OP, 6, 1, 0, 1, 0]);
     ifr1.extend_from_slice(&[IFR_END_OP, 2]);
     ifr1.extend_from_slice(&[IFR_FORM_SET_OP, 23 | 0x80]);
     ifr1.extend_from_slice(&[2u8; 16]);
-    ifr1.extend_from_slice(&[2, 0]);
+    ifr1.extend_from_slice(&[2, 0, 0, 0, 0]);
     ifr1.extend_from_slice(&[IFR_FORM_OP, 6, 2, 0, 2, 0]);
     ifr1.extend_from_slice(&[IFR_END_OP, 2]);
     let pkg1 = package(&ifr1);
     let mut ifr2 = Vec::new();
     ifr2.extend_from_slice(&[IFR_FORM_SET_OP, 23 | 0x80]);
     ifr2.extend_from_slice(&g3);
-    ifr2.extend_from_slice(&[3, 0]);
+    ifr2.extend_from_slice(&[3, 0, 0, 0, 0]);
     ifr2.extend_from_slice(&[IFR_FORM_OP, 6, 3, 0, 3, 0]);
     ifr2.extend_from_slice(&[IFR_END_OP, 2]);
     let pkg2 = package(&ifr2);
@@ -648,7 +647,7 @@ git commit -m "feat(webui): dim-суффикс #ordinal у строки форм
 **Interfaces:**
 - Consumes: хелперы тестов form_add.rs: `two_formset_flash_image()`, `parse_image`, `add_form_schema()`, `section_of`; `crate::hii::forms::collect_forms`.
 
-- [ ] **Step 1: Write the failing-style invariant test** (фикстура уже даёт 2 формсета: fs1 forms [1,2], fs2 пустой до add)
+- [ ] **Step 1: Write the failing-style invariant test** (фикстура даёт 2 формсета: fs1 [form 1], fs2 [form 2] — two_formset_package, form_add.rs:406)
 
 ```rust
 #[test]
@@ -664,11 +663,8 @@ fn list_add_roundtrip_formset_ordinal() {
             .filter(|f| f.form_id == target)
             .map(|f| f.formset_ordinal)
             .collect::<Vec<_>>(),
-        vec![Some(0), Some(0)]
-    ); // fs1: forms 1,2; fs2 до add пуст — строк нет
-    assert!(!before
-        .iter()
-        .any(|f| f.form_id == target && f.formset_ordinal == Some(1)));
+        vec![Some(0), Some(1)]
+    ); // фикстура: fs1=[form 1], fs2=[form 2] (two_formset_package, form_add.rs:406)
     // guid-атрибутция fs1:
     let g1 = before
         .iter()
@@ -686,7 +682,12 @@ fn list_add_roundtrip_formset_ordinal() {
     assert_eq!(
         after.iter().filter(|f| f.form_id == target && f.formset_ordinal == Some(0))
             .map(|f| f.form_id_ifr).collect::<Vec<_>>(),
-        vec![1, 2]
+        vec![1]
+    );
+    assert_eq!(
+        after.iter().filter(|f| f.form_id == target && f.formset_ordinal == Some(1))
+            .map(|f| f.form_id_ifr).collect::<Vec<_>>(),
+        vec![2, 42]
     );
 }
 ```

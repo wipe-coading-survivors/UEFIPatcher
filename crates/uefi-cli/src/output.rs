@@ -167,6 +167,15 @@ pub fn print_questions(
     }
 }
 
+/// Ячейка колонки `n` списка форм: `#<n>` для writable-канала, `—` —
+/// формсет не адресуем `form add TARGET#n` (read-only список шире).
+pub(crate) fn ordinal_cell(ord: Option<u32>) -> String {
+    match ord {
+        Some(n) => format!("#{n}"),
+        None => "—".to_string(),
+    }
+}
+
 pub fn print_forms(forms: &[FormInfo], format: OutputFormat) {
     match format {
         OutputFormat::Json => {
@@ -174,19 +183,29 @@ pub fn print_forms(forms: &[FormInfo], format: OutputFormat) {
             println!("{v}");
         }
         OutputFormat::Tsv => {
-            println!("form_id\tformset_guid\tform_id_ifr\ttitle\tvisible");
+            println!("form_id\tformset_guid\tform_id_ifr\ttitle\tvisible\tn");
             for f in forms {
                 println!(
-                    "{}\t{}\t{}\t{}\t{}",
-                    f.form_id, f.formset_guid, f.form_id_ifr, f.title, f.visible
+                    "{}\t{}\t{}\t{}\t{}\t{}",
+                    f.form_id,
+                    f.formset_guid,
+                    f.form_id_ifr,
+                    f.title,
+                    f.visible,
+                    ordinal_cell(f.formset_ordinal)
                 );
             }
         }
         OutputFormat::Text => {
             for f in forms {
                 println!(
-                    "{}\t{}\t{}\t{}\tvisible={}",
-                    f.form_id, f.formset_guid, f.form_id_ifr, f.title, f.visible
+                    "{}\t{}\t{}\t{}\tvisible={}\t{}",
+                    f.form_id,
+                    f.formset_guid,
+                    f.form_id_ifr,
+                    f.title,
+                    f.visible,
+                    ordinal_cell(f.formset_ordinal)
                 );
             }
         }
@@ -1220,5 +1239,19 @@ mod tests {
             j.contains("\"type\":65"),
             "expected `\"type\"` field, got: {j}"
         );
+    }
+
+    #[test]
+    fn ordinal_cell_formats_ordinal_and_dash() {
+        let f = FormInfo {
+            form_id: "G:0x19:0".into(),
+            formset_guid: "S".into(),
+            form_id_ifr: 1,
+            title: "Main".into(),
+            visible: true,
+            formset_ordinal: Some(1),
+        };
+        assert_eq!(ordinal_cell(f.formset_ordinal), "#1");
+        assert_eq!(ordinal_cell(None), "—");
     }
 }

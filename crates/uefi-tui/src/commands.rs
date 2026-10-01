@@ -3194,6 +3194,7 @@ mod tests {
             form_id_ifr: 10001,
             title: "Main".into(),
             visible: true,
+            formset_ordinal: None,
         }];
         let c = complete(&app, "hii ");
         assert_eq!(
@@ -3231,6 +3232,7 @@ mod tests {
                 form_id_ifr: 10001,
                 title: "Main".into(),
                 visible: true,
+                formset_ordinal: None,
             },
             uefi_proto::FormInfo {
                 form_id: "t:0x19:0".into(),
@@ -3238,6 +3240,7 @@ mod tests {
                 form_id_ifr: 10019,
                 title: "Serial".into(),
                 visible: false,
+                formset_ordinal: None,
             },
         ];
         let c = complete(&app, "hii form ");
@@ -3408,6 +3411,7 @@ mod tests {
             form_id_ifr: 10001,
             title: "Main".into(),
             visible: true,
+            formset_ordinal: None,
         }];
         let c = complete(&app, &format!("hii formset add {base}/schema-x"));
         assert_eq!(
@@ -3435,6 +3439,7 @@ mod tests {
             form_id_ifr: 10001,
             title: "Main".into(),
             visible: true,
+            formset_ordinal: None,
         }];
         let c = complete(&app, "hii formset add f.json --");
         assert_eq!(c.common.as_deref(), Some("hii formset add f.json --ffs "));
@@ -3468,6 +3473,7 @@ mod tests {
             form_id_ifr: 10001,
             title: "Main".into(),
             visible: true,
+            formset_ordinal: None,
         }];
         let c = complete(
             &app,
@@ -3489,6 +3495,7 @@ mod tests {
             form_id_ifr: 10001,
             title: "Main".into(),
             visible: true,
+            formset_ordinal: None,
         }];
         let c = complete(&app, "hii formset add --ffs SET-A f.json --f");
         assert_eq!(
@@ -3551,6 +3558,7 @@ mod tests {
             form_id_ifr: 10001,
             title: "Main".into(),
             visible: true,
+            formset_ordinal: None,
         }];
         app.forms.edges = vec![uefi_proto::FormEdge {
             formset_guid: "SET-A".into(),
@@ -3602,6 +3610,7 @@ mod tests {
                 form_id_ifr: 10001,
                 title: "Main".into(),
                 visible: true,
+                formset_ordinal: None,
             },
             uefi_proto::FormInfo {
                 form_id: "t1:0x19:0".into(),
@@ -3609,6 +3618,7 @@ mod tests {
                 form_id_ifr: 10019,
                 title: "Serial".into(),
                 visible: false,
+                formset_ordinal: None,
             },
             uefi_proto::FormInfo {
                 form_id: "t2:0x19:0".into(),
@@ -3616,6 +3626,7 @@ mod tests {
                 form_id_ifr: 902,
                 title: "Platform".into(),
                 visible: true,
+                formset_ordinal: None,
             },
         ];
         app.forms.edges = vec![uefi_proto::FormEdge {
@@ -3784,6 +3795,7 @@ mod tests {
             form_id_ifr: fid,
             title: String::new(),
             visible: true,
+            formset_ordinal: None,
         };
         let forms = vec![form("g:0x19:0", "G-1", 1), form("other:0x10:0", "G-2", 7)];
         assert!(check_parent(&forms, "g:0x19:0", 1).is_ok());

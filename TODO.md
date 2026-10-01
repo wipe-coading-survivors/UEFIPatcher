@@ -548,13 +548,17 @@
   `:hii hijack`/`:hii import` (e730dad+), WebUI SchemaDialog/ExportDialog с
   formSetAdd/formAdd/questionAdd/pageAdd/formHijack (558073c, webui-parity W3).
   Следующий живой пробел зоны — formset-ordinal discoverability (запись ниже).
-* [ ] **FormInfo: formset-порядковый номер не виден в `hii form list`** —
+* [x] **FormInfo: formset-порядковый номер не виден в `hii form list`** —
   дискриминатор `#<n>` таргета `hii form add` не дискаверибелен: FormInfo не
   несёт formset ordinal, на multi-formset-пакетах пользователь не может
   узнать `n` (промах `#1` на single-formset-пакете — лёгкий first-attempt
   typo). Кандидат — расширить FormInfo (engine+proto+CLI) formset-порядковым
   номером или селектором по anchor-форме. Дополняет pre-check I1: неверный
   ordinal теперь отбивается NotFound до мутации строк.
+  Закрыто циклом formset-ordinal (2026-10-01): FormInfo.formset_ordinal
+  (optional), колонка n в CLI, Ordinal-строка в TUI, #n в WebUI;
+  attribution-дефект multi-formset тоже закрыт (спека
+  2026-10-01-formset-ordinal-design.md).
 * [ ] **add_form: `default_stores` игнорируются by design (решение R2)** — v1
   сознательно не обрабатывает `default_stores` (и прочие formset-level поля
   схемы); автор схемы не получает фидбека, что поле отброшено. Вернуться к
@@ -4745,3 +4749,29 @@ Task 3 (проверено git stash). Штатная команда цикла 
   rest-of-line для path-аргументов (образец грамматики — `--file`-флаги,
   которые идут одним токеном). Контекст: `crates/uefi-tui/src/commands.rs`
   (`split_whitespace` + path-ветки).
+
+## Отложенное финального ревью formset-ordinal (2026-10-01)
+
+> Фоллоу-апы финального ревью ветки `feat/formset-ordinal` (спека
+> `2026-10-01-formset-ordinal-design.md`).
+
+* [ ] **класс: limitation: `hii varstore list` игнорирует formset-ординал в
+  `TARGET[#n]`** — справка обещает выбор формсета, движковый `list_varstores`
+  парсит и отбрасывает ординал (премисса §1 спеки formset-ordinal неверна;
+  поведение запинено тестом «карта не зависит от formset-ординала»).
+  Контекст: `crates/uefi-engine/src/hii/mod.rs` (`list_varstores`); владелец
+  запланировал отдельный мини-цикл (2026-10-01).
+* [ ] **класс: limitation: PE с дублирующимися resource-записями (одинаковые
+  off,len) — обе считаются writable-каналом в collect_forms** — `ranges.first()`
+  сравнивает кортеж по значению, дубль-диапазон матчится как writable у обеих
+  записей; патологический случай (живых прецедентов нет). Контекст:
+  `crates/uefi-engine/src/hii/forms.rs:116-131` (PE32-ветка walk_sections).
+* [ ] **uefi-engine: явная фикстура «второй resource-entry → ordinal None»
+  отсутствует** — поведение покрыто только косвенно (FREEFORM-пакеты +
+  конструкция `ranges.first()`); кандидат теста при следующем касании.
+  Контекст: `crates/uefi-engine/src/hii/forms.rs` (collect_forms, тест
+  `collect_forms_ordinal_pe32_only_first_resource_forms_pkg`).
+* [ ] **uefi-cli: print_forms — обвязка колонки `n` без прямого теста** —
+  заголовок TSV + хвост строки собираются в print-функции, stdout-захват
+  недоступен (unit-тест бьёт только `ordinal_cell`); кандидат — extraction
+  в чистый форматтер. Контекст: `crates/uefi-cli/src/output.rs` (print_forms).
