@@ -95,7 +95,9 @@ ordinal редкий кейс. FormKey (ключ кэшей) не расширя
 
 ### 3.5 WebUI
 
-FormsView: колонка `n` («—» для None). api.ts — тип после регена.
+FormsTree (дерево форм, `webui/src/lib/components/FormsTree.svelte`): у
+строки формы dim-суффикс `#n` при `formsetOrdinal != null` (после regen
+типов). api.ts — без изменений (generic-мост, поле приезжает само).
 
 ## 4. Тесты-инварианты
 
