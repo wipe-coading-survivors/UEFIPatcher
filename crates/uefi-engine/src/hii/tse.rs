@@ -271,6 +271,49 @@ pub fn tse_unhide(
     })
 }
 
+use crate::hii::spf::{self, SpfFormsetEntry, SpfVarEntry};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpfSummary {
+    pub page_count: u32,
+    pub pages_per_formset: Vec<(u16, u32)>,
+    pub formsets: Vec<SpfFormsetEntry>,
+    pub vars: Vec<SpfVarEntry>,
+    pub string_controls: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TseReport {
+    pub blocks: Vec<StrideBlock>,
+    pub spf: Option<SpfSummary>,
+    pub pe_len: usize,
+}
+
+/// Recon-инвентарь AMITSE: stride-блоки PE (root-фильтр НЕ применяется —
+/// инвентарь полный, блоки могут перекрываться) + $SPF-сводка, если у
+/// файла есть секция с magic. NotFound — только если файла/PE AMITSE
+/// нет. Спека tse-unhide §2.3.
+pub fn tse_report(image: &Image) -> Result<TseReport, HiiError> {
+    let (file_path, file) = amitse_file(image)?;
+    let rel = pe32_rel(file).ok_or(HiiError::NotFound)?;
+    let path: Vec<usize> = [file_path, rel].concat();
+    let pe = crate::hii::node_at(&image.root, &path).body.clone();
+    let known = known_formsets(image);
+    let blocks = scan_stride_blocks(&pe, &known);
+    let spf = spf_section_body(file).map(|b| SpfSummary {
+        page_count: spf::pages_count(b),
+        pages_per_formset: spf::pages_fs_counts(b),
+        formsets: spf::scan_formsets(b),
+        vars: spf::scan_var_catalog(b),
+        string_controls: spf::scan_string_controls(b).len(),
+    });
+    Ok(TseReport {
+        blocks,
+        spf,
+        pe_len: pe.len(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -567,5 +610,73 @@ mod tests {
             matches!(err, HiiError::InvalidSchema(ref m) if m.contains("ambiguous")),
             "{err:?}"
         );
+    }
+
+    /// Минимальное $SPF-тело секции: [subtype-guid 16 б (значение не
+    /// важно — детект по magic)][фикстура]. Слоты/данные — по образцу
+    /// spf_fixture из Task 2, но локально (модули тестов разные).
+    fn spf_section() -> FfsNode {
+        let m = 0x10;
+        let mut b = vec![0u8; m + 0x500];
+        b[m..m + 4].copy_from_slice(b"$SPF");
+        put32(&mut b, m + 0x40, 0x200); // SPF_SLOT_FORMSETS
+        put32(&mut b, m + 0x34, 0x300); // SPF_SLOT_VAR_CATALOG
+        put32(&mut b, m + 0x2c, 0x60); // SPF_SLOT_PAGES
+        put32(&mut b, m + 0x60, 1); // pages count
+        put32(&mut b, m + 0x64, 0x100);
+        put16(&mut b, m + 0x100 + 0x08, 0);
+        put32(&mut b, m + 0x200, 1); // formsets count
+        put32(&mut b, m + 0x204, 0x20);
+        let g = Guid::try_parse(A).unwrap();
+        b[m + 0x220..m + 0x230].copy_from_slice(&g.to_bytes());
+        put32(&mut b, m + 0x230, 7);
+        put32(&mut b, m + 0x300, 1); // vars count
+        put32(&mut b, m + 0x304, 0x10);
+        let gv = Guid::try_parse("899407D7-99FE-43D8-9A21-79EC328CAC21").unwrap();
+        b[m + 0x310..m + 0x320].copy_from_slice(&gv.to_bytes());
+        for (i, ch) in "Setup".encode_utf16().enumerate() {
+            put16(&mut b, m + 0x310 + 0x10 + i * 2, ch);
+        }
+        put32(&mut b, m + 0x310 + 0x60, 3);
+        put32(&mut b, m + 0x310 + 0x78, 148);
+        mk_node(FfsType::Section, b, vec![])
+    }
+
+    fn put32(b: &mut [u8], off: usize, v: u32) {
+        b[off..off + 4].copy_from_slice(&v.to_le_bytes());
+    }
+
+    fn put16(b: &mut [u8], off: usize, v: u16) {
+        b[off..off + 2].copy_from_slice(&v.to_le_bytes());
+    }
+
+    fn root_image_with_spf(pe: Vec<u8>, mode: ImageMode) -> Image {
+        let mut img = root_image(pe, mode);
+        let vol = &mut img.root.children[0];
+        let file = &mut vol.children[0];
+        file.children.push(spf_section());
+        img
+    }
+
+    #[test]
+    fn tse_report_collects_blocks_and_spf() {
+        let img = root_image_with_spf(tse_pe_body(), ImageMode::Read);
+        let rep = tse_report(&img).unwrap();
+        assert_eq!(rep.blocks.len(), 3, "hide @0x40 + бар @0xA0 + хвост @0xC0");
+        assert_eq!(rep.blocks[0].pe_offset, 0x40);
+        let s = rep.spf.as_ref().expect("spf summary");
+        assert_eq!(s.page_count, 1);
+        assert_eq!(s.formsets.len(), 1);
+        assert_eq!(s.formsets[0].raw_u32, 7);
+        assert_eq!(s.vars.len(), 1);
+        assert_eq!(s.vars[0].name, "Setup");
+    }
+
+    #[test]
+    fn tse_report_without_spf_section() {
+        let img = root_image(tse_pe_body(), ImageMode::Read);
+        let rep = tse_report(&img).unwrap();
+        assert!(rep.spf.is_none());
+        assert_eq!(rep.blocks.len(), 3);
     }
 }
