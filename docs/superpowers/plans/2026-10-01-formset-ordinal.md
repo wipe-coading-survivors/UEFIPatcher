@@ -38,12 +38,12 @@ fn parse_form_package_sets_splits_two_formsets() {
     let mut ifr = Vec::new();
     ifr.extend_from_slice(&[IFR_FORM_SET_OP, 23 | 0x80]);
     ifr.extend_from_slice(&g1);
-    ifr.extend_from_slice(&[7, 0]); // title sid 7
+    ifr.extend_from_slice(&[7, 0, 0, 0, 0]); // title sid 7 + help sid 0 + flags 0
     ifr.extend_from_slice(&[IFR_FORM_OP, 6, 1, 0, 8, 0]); // form 1, title 8
     ifr.extend_from_slice(&[IFR_END_OP, 2]);
     ifr.extend_from_slice(&[IFR_FORM_SET_OP, 23 | 0x80]);
     ifr.extend_from_slice(&g2);
-    ifr.extend_from_slice(&[9, 0]);
+    ifr.extend_from_slice(&[9, 0, 0, 0, 0]);
     ifr.extend_from_slice(&[IFR_FORM_OP, 6, 2, 0, 10, 0]); // form 2, title 10
     ifr.extend_from_slice(&[IFR_END_OP, 2]);
     let sets = parse_form_package_sets(&package(&ifr)).unwrap();
@@ -63,7 +63,7 @@ fn parse_form_package_sets_skips_forms_before_first_set() {
     ifr.extend_from_slice(&[IFR_FORM_OP, 6, 5, 0, 1, 0]); // мусор до FORM_SET
     ifr.extend_from_slice(&[IFR_FORM_SET_OP, 23 | 0x80]);
     ifr.extend_from_slice(&g);
-    ifr.extend_from_slice(&[1, 0]);
+    ifr.extend_from_slice(&[1, 0, 0, 0, 0]);
     ifr.extend_from_slice(&[IFR_FORM_OP, 6, 1, 0, 2, 0]);
     ifr.extend_from_slice(&[IFR_END_OP, 2]);
     let sets = parse_form_package_sets(&package(&ifr)).unwrap();
@@ -194,12 +194,12 @@ fn collect_forms_ordinal_bare_two_formsets() {
     let mut ifr = Vec::new();
     ifr.extend_from_slice(&[IFR_FORM_SET_OP, 23 | 0x80]);
     ifr.extend_from_slice(&g1);
-    ifr.extend_from_slice(&[1, 0]);
+    ifr.extend_from_slice(&[1, 0, 0, 0, 0]);
     ifr.extend_from_slice(&[IFR_FORM_OP, 6, 1, 0, 1, 0]);
     ifr.extend_from_slice(&[IFR_END_OP, 2]);
     ifr.extend_from_slice(&[IFR_FORM_SET_OP, 23 | 0x80]);
     ifr.extend_from_slice(&g2);
-    ifr.extend_from_slice(&[2, 0]);
+    ifr.extend_from_slice(&[2, 0, 0, 0, 0]);
     ifr.extend_from_slice(&[IFR_FORM_OP, 6, 2, 0, 2, 0]);
     ifr.extend_from_slice(&[IFR_END_OP, 2]);
     let raw = mk_node(None, FfsType::Section, EFI_SECTION_RAW, package(&ifr), vec![]);
@@ -224,19 +224,19 @@ fn collect_forms_ordinal_pe32_only_first_resource_forms_pkg() {
     let mut ifr1 = Vec::new();
     ifr1.extend_from_slice(&[IFR_FORM_SET_OP, 23 | 0x80]);
     ifr1.extend_from_slice(&g1);
-    ifr1.extend_from_slice(&[1, 0]);
+    ifr1.extend_from_slice(&[1, 0, 0, 0, 0]);
     ifr1.extend_from_slice(&[IFR_FORM_OP, 6, 1, 0, 1, 0]);
     ifr1.extend_from_slice(&[IFR_END_OP, 2]);
     ifr1.extend_from_slice(&[IFR_FORM_SET_OP, 23 | 0x80]);
     ifr1.extend_from_slice(&[2u8; 16]);
-    ifr1.extend_from_slice(&[2, 0]);
+    ifr1.extend_from_slice(&[2, 0, 0, 0, 0]);
     ifr1.extend_from_slice(&[IFR_FORM_OP, 6, 2, 0, 2, 0]);
     ifr1.extend_from_slice(&[IFR_END_OP, 2]);
     let pkg1 = package(&ifr1);
     let mut ifr2 = Vec::new();
     ifr2.extend_from_slice(&[IFR_FORM_SET_OP, 23 | 0x80]);
     ifr2.extend_from_slice(&g3);
-    ifr2.extend_from_slice(&[3, 0]);
+    ifr2.extend_from_slice(&[3, 0, 0, 0, 0]);
     ifr2.extend_from_slice(&[IFR_FORM_OP, 6, 3, 0, 3, 0]);
     ifr2.extend_from_slice(&[IFR_END_OP, 2]);
     let pkg2 = package(&ifr2);
