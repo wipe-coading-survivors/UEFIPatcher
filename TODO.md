@@ -4867,3 +4867,44 @@ Task 3 (проверено git stash). Штатная команда цикла 
   collect_forms) для pkg_before/verify-снимка/splice-цели; отказ
   NotASetupItem до разбора схем; тест
   add_varstores_multi_entry_pe_validates_writable_channel_only.
+
+## Отложенное цикла tse-unhide (2026-10-02)
+
+> Находки ревью задач и real-image инвентаря ветки `feat/tse-unhide`
+> (спека `2026-10-02-tse-unhide-design.md`). Все — вне объёма цикла,
+> решение владельца 2026-10-02: занести до финального ревью.
+
+* [ ] **класс: silent-data: uefi-engine: spf — ложное срабатывание
+  $SPF-мага** — на mz32-ar0-RBU.rom `tse_report` находит $SPF-секцию,
+  у которой page_count = 1231561796 (ASCII "Inte", 0x496E7465):
+  magic-детект без проверки правдоподобия. Read-only канал (отчёты),
+  write-путь (tse_unhide) не затронут — stride-скан там независим.
+  Фикс-направление: после мага валидировать page_count против длины
+  тела и таблицу указателей (см. P1 в docs/analyzer-patterns.md).
+  Контекст: `crates/uefi-engine/src/hii/spf.rs` (container_start,
+  pages_count); инвентарь real_neighbors_tse_report_inventory.
+* [ ] **класс: errors: uefi-engine: tse — unchecked `off +
+  STRIDE_ENTRY_SIZE` в byte-guard экспертного режима** —
+  `pe.get(off..off + STRIDE_ENTRY_SIZE)`: на near-usize::MAX
+  block_pe_offset (парсится из CLI/TUI hex-аргумента) сложение
+  переполняет и паникует в debug. Фикс: checked_add → guard mismatch.
+  Контекст: `crates/uefi-engine/src/hii/tse.rs`
+  (entry_bytes_match/tse_unhide); ревью Task 3.
+* [ ] **класс: errors: uefi-tui: :tse-unhide — dangling
+  `--block-offset` без значения молча трактуется как «нет оффсета»** —
+  `parts.get(i + 1)` → None → and_then-коллапс; `… 1 --block-offset`
+  (без аргумента) уходит авто-режимом вместо usage-ошибки. Фикс:
+  явная диагностика отсутствующего значения флага.
+  Контекст: `crates/uefi-tui/src/commands.rs` (:tse-unhide arm);
+  ревью Task 7.
+* [ ] **uefi-tui: COMMANDS-комплишен не знает tse/tse-unhide** —
+  таб-комплишен перечисляет nvar/hii/artifacts, новые команды
+  префиксного семейства не добавлены (план §3.3 hint-бар не трогал;
+  discoverability). Контекст: `crates/uefi-tui/src/commands.rs`
+  (COMMANDS); ревью Task 7.
+* [ ] **uefi-cli + uefi-tui: hex-парсинг `--block-offset` ест
+  повторы префикса и голый hex** — `trim_start_matches("0x")` срезает
+  все вхождения ("0x0x10" → 0x10) и без префикса "16" парсится как
+  0x16; для оффсета безвредно, но контринтуитивно. Фикс-направление:
+  strip_prefix однократно. Контекст: `crates/uefi-cli/src/main.rs`
+  (Cmd::Tse arm), `crates/uefi-tui/src/commands.rs`; ревью Task 6/7.
