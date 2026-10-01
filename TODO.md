@@ -540,9 +540,14 @@
   планнер `plan_varstores` (uefi-common::envelope) drop'ает идентичные
   декларации по карте `HiiListVarstores` / fail-fast на отличающиеся
   (контракт varstore-contract §6).
-* [ ] **TUI/WebUI обёртки над `HiiFormAdd`/`HiiFormsetAdd` RPC** — CLI-обёртки
+* [x] **TUI/WebUI обёртки над `HiiFormAdd`/`HiiFormsetAdd` RPC** — CLI-обёртки
   есть (`hii form add`, `hii formset add`), интерактивных/WebUI-путей нет;
   отложено планом фазы C (§«Отложенное»).
+  Закрыто ревизией 2026-10-01: поверхности исполнены позже записи — TUI
+  `:hii formset add|--ffs`/`:hii form add`/`:hii question add`/`:hii page add`/
+  `:hii hijack`/`:hii import` (e730dad+), WebUI SchemaDialog/ExportDialog с
+  formSetAdd/formAdd/questionAdd/pageAdd/formHijack (558073c, webui-parity W3).
+  Следующий живой пробел зоны — formset-ordinal discoverability (запись ниже).
 * [ ] **FormInfo: formset-порядковый номер не виден в `hii form list`** —
   дискриминатор `#<n>` таргета `hii form add` не дискаверибелен: FormInfo не
   несёт formset ordinal, на multi-formset-пакетах пользователь не может
