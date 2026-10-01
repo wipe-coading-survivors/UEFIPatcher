@@ -1374,6 +1374,9 @@ atomic_write. После первой мутации хранимый файл �
   экземпляр того же bounds-хелпера после выноса в `hii::ifr::package_bounds`
   (pub(crate), цикл hii-walker-consistency §3.8 дедуплицировал только
   gates.rs). Контекст: выровнять при следующем касании values.rs.
+  Ещё один ручной экземпляр того же u24-decode длины пакета —
+  `ifr::formset_spans` (цикл formset-ordinal-followups), кандидат на тот же
+  общий хелпер.
 * [ ] **hii/ifr: единый generic opcode-walker (вариант B) — отложен** — на
   дизайне цикла hii-walker-consistency (2026-09-10) рассмотрен и отклонён:
   переписать все find_*/walk-обходчики на один generic walker с колбэками —
@@ -4786,3 +4789,36 @@ Task 3 (проверено git stash). Штатная команда цикла 
   в чистый форматтер. Контекст: `crates/uefi-cli/src/output.rs` (print_forms).
   Закрыто циклом formset-ordinal-followups (2026-10-01): forms_tsv_header/
   forms_tsv_row/forms_text_row extraction с прямыми unit-тестами.
+
+## Отложенное финального ревью formset-ordinal-followups (2026-10-01)
+
+> Фоллоу-апы финального ревью ветки `feat/formset-ordinal-followups` (спека
+> `2026-10-01-formset-ordinal-followups-design.md`).
+
+* [ ] **класс: write-path: uefi-engine/ifr: splice_varstore_ops/
+  splice_question_ops молча усекают u24-длину пакета** — `plen + ops.len()`
+  пишется в три заголовочных байта без проверки переполнения: пакет
+  >0xFFFFFF (~16MB) после splice получает молча обрезанную длину.
+  Нереалистично для живых IFR-пакетов, но pre-existing паттерн write-path,
+  общий у обеих функций. Контекст: `crates/uefi-engine/src/hii/ifr.rs`
+  (splice_varstore_ops, splice_question_ops); найдено финальным ревью
+  цикла formset-ordinal-followups.
+* [ ] **uefi-engine: нет прямого теста foreign-reference на form-add-пути** —
+  отказ question/form-add-ссылки на варстор, объявленный только в
+  НЕцелевом формсете, обеспечивается скоупингом `validate_form_varstores`
+  (Task 2), но прямым тестом не покрыт; эквивалентный кейс на
+  question-add-пути протестирован
+  (`check_question_add_scopes_varstore_checks_to_owning_formset`).
+  Контекст: `crates/uefi-engine/src/hii/form_add.rs`
+  (validate_form_varstores); финальное ревью formset-ordinal-followups.
+* [ ] **класс: errors: uefi-engine: add_varstores — расхождение селекторов
+  валидации и splice на multi-entry PE** — атрибуция/валидация идут по
+  `form_package_ranges(node).next()` (первый forms-пакет по всем
+  resource-записям), а resource-splice — по `form_add::resource_forms_package`
+  (первый forms-пакет только первой записи): на патологическом multi-entry
+  PE без PACKAGE_FORMS в первой записи валидация проходит, splice падает
+  NotASetupItem — громко, без мутации, но ошибка вводит в заблуждение.
+  Фикс — унификация: оба селектора из одного источника. Контекст:
+  `crates/uefi-engine/src/hii/mod.rs` (add_varstores),
+  `crates/uefi-engine/src/hii/form_add.rs` (resource_forms_package);
+  pre-existing шов, найден финальным ревью formset-ordinal-followups.
