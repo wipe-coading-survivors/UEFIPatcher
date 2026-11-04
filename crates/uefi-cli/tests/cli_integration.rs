@@ -840,6 +840,20 @@ async fn tse_report_and_unhide_roundtrip() {
         .stderr(predicates::str::contains("invalid formset guid"));
 
     cli(&sock, cwd)
+        .args([
+            "tse",
+            "unhide",
+            &image_id,
+            "EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9",
+            "1",
+            "--block-offset",
+            "0x0x10",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("--block-offset"));
+
+    cli(&sock, cwd)
         .args(["session", "destroy"])
         .assert()
         .success();

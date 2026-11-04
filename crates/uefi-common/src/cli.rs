@@ -24,6 +24,14 @@ impl NodeCmdArgs {
     }
 }
 
+/// Hex-only offset (CLI/TUI `--block-offset`): `0x`-префикс срезается
+/// однократно; голый hex принят (`16` = 0x16); повтор префикса
+/// (`0x0x10`) — ошибка парсинга. Спека tse-followups §4.5.
+pub fn parse_hex_offset(s: &str) -> Result<usize, String> {
+    let digits = s.strip_prefix("0x").unwrap_or(s);
+    usize::from_str_radix(digits, 16).map_err(|e| format!("invalid hex offset {s:?}: {e}"))
+}
+
 pub fn parse_node_flags(parts: &[&str]) -> NodeCmdArgs {
     let mut a = NodeCmdArgs::default();
     let mut i = 1;
@@ -81,5 +89,24 @@ mod tests {
         let a = parse_node_flags(&["replace", "0/3", "--body-only"]);
         assert_eq!(a.source().unwrap(), None);
         assert!(a.body_only);
+    }
+
+    #[test]
+    fn hex_offset_accepts_prefixed_and_bare() {
+        assert_eq!(parse_hex_offset("0x1b40").unwrap(), 0x1b40);
+        assert_eq!(parse_hex_offset("1b40").unwrap(), 0x1b40);
+        assert_eq!(
+            parse_hex_offset("16").unwrap(),
+            0x16,
+            "голый hex принят: 16 = 0x16"
+        );
+    }
+
+    #[test]
+    fn hex_offset_rejects_double_prefix_and_garbage() {
+        assert!(parse_hex_offset("0x0x10").is_err());
+        assert!(parse_hex_offset("zz").is_err());
+        assert!(parse_hex_offset("").is_err());
+        assert!(parse_hex_offset("0x").is_err());
     }
 }
