@@ -573,6 +573,29 @@ formset_idx; collect_forms: writable по индексу resource-записи +
 прямыми тестами. Закрывает 4 записи TODO-секции «Отложенное финального
 ревью formset-ordinal».
 
+## Мини-цикл tse-followups — WebUI TSE-страница + миноры tse-unhide (2026-11-04)
+
+`docs/superpowers/specs/2026-11-03-tse-followups-design.md` (правка §1:
+Tse*-типы webui не сгенерированы — inline api.ts) + план
+`docs/superpowers/plans/2026-11-04-tse-followups.md` (8 задач, TDD,
+субагент-исполнение; plan-review FIX-FIRST → 1 major formId-uint64-строка +
+5 миноров закрыты до старта). Реализовано: WebUI `/tse/[id]` — отчёт
+(stride-таблица `@hex × GUID #fid` c префиллом по клику, $SPF-карточка /
+«no $SPF», pe_len) + панель unhide (двухшаговый inline-confirm, валидация
+до RPC, ошибки движка verbatim, refresh после успеха; `formId` uint64 →
+строка proto3-JSON); вход — кнопка «TSE» с image/[id]; 8 msw-тестов.
+Миноры: spf `pages_count` правдоподобие `count > len/4` → warn+0 (mz32
+«Inte»); tse byte-guard `checked_add` (overflow = InvalidSchema guard
+mismatch); TUI dangling `--block-offset` → usage-ошибка; COMMANDS +=
+tse/tse-unhide; `uefi_common::cli::parse_hex_offset` — `0x`-префикс
+однократно в CLI+TUI (`0x0x10` — ошибка, голый hex `16`=0x16). Gateway —
+integration-тест TseUnhide (bridge без кода). Гейты: test --all 1230/0,
+webui 137/137 + check 0/0. Финальное ревью plan-reviewer: approve-to-merge
+(3 deferred-минора: TUI-недискриминирующий assert, gateway-mock без echo
+blockPeOffset, нет теста disarm-on-change). MERGED: PR #42 (merge 75f3d1d,
+2026-11-04).
+
+
 ## Мини-цикл tse-unhide — снятие hide-маркера AMITSE + SPF/stride recon (2026-10-02)
 
 `docs/superpowers/specs/2026-10-02-tse-unhide-design.md` + план
