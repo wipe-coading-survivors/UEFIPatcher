@@ -218,6 +218,29 @@ export const nvarList = (imageId: string, path?: string, includeData = false) =>
         { imageId, path, includeData },
     );
 
+export interface TseStrideEntry { formsetGuid: string; formId: string; }
+export interface TseStrideBlock { peOffset: number; entries: TseStrideEntry[]; }
+export interface TseSpfFormset { guid: string; rawU32: number; pages: number; }
+export interface TseSpfVar { guid: string; name: string; attrs: number; size: number; }
+export interface TseSpfSummary {
+    pageCount: number; formsets: TseSpfFormset[]; vars: TseSpfVar[]; stringControls: number;
+}
+export interface TseReportResponse { blocks: TseStrideBlock[]; spf?: TseSpfSummary | null; peLen: number; }
+
+export const tseReport = (imageId: string) =>
+    bridge<{ imageId: string }, TseReportResponse>('TseReport', { imageId });
+
+export const tseUnhide = (
+    imageId: string,
+    formsetGuid: string,
+    formId: number,
+    blockPeOffset?: number,
+) =>
+    bridge<
+        { imageId: string; formsetGuid: string; formId: number; blockPeOffset?: number },
+        { peOffset: number; entryPeOffset: number }
+    >('TseUnhide', { imageId, formsetGuid, formId, blockPeOffset });
+
 export const nvarSet = (
     imageId: string,
     name: string,
