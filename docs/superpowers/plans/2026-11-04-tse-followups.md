@@ -48,7 +48,7 @@ git commit -m "docs: fix tse-followups spec — Tse*-типы webui не сге�
 
 ### Task 1: engine — spf `pages_count` правдоподобие (класс silent-data)
 
-Спека §4.1: после детекта мага валидировать правдоподобие `count > body.len()/4` → `tracing::warn!` + возврат 0. mz32-кейс: page_count = 0x496E7465 (ASCII "Inte") более не показывается как число страниц. `pages_fs_counts` уже fail-soft и вызывает `pages_count` —获益 автоматически; `scan_formsets`/`scan_var_catalog` не зависят от page_count.
+Спека §4.1: после детекта мага валидировать правдоподобие `count > body.len()/4` → `tracing::warn!` + возврат 0. mz32-кейс: page_count = 0x496E7465 (ASCII "Inte") более не показывается как число страниц. `pages_fs_counts` уже fail-soft и вызывает `pages_count` — выигрывает автоматически; `scan_formsets`/`scan_var_catalog` не зависят от page_count.
 
 **Files:**
 - Modify: `crates/uefi-engine/src/hii/spf.rs` (pages_count, ~:99)
@@ -79,7 +79,7 @@ git commit -m "docs: fix tse-followups spec — Tse*-типы webui не сге�
     }
 ```
 
-Run: `cargo test -p uefi-engine --lib spf::` — Expected: 2 FAILED (первый вернёт 0x496E7465, не 0).
+Run: `cargo test -p uefi-engine --lib spf::` — Expected: 1 FAILED (implausible-тест: pages_count вернёт 0x496E7465, не 0) + 1 passed (boundary — pin-тест на допустимость `count == len/4`, на текущем коде уже зелёный).
 
 - [ ] **Step 2: Реализация (GREEN)** — в `pages_count` после чтения raw-значения:
 
@@ -193,7 +193,7 @@ git commit -m "fix(engine): tse byte-guard — checked_add, overflow = guard mis
     }
 ```
 
-Run: `cargo test -p uefi-common` — Expected: 2 FAILED (нет функции).
+Run: `cargo test -p uefi-common` — Expected: компиляция падает (E0425, `parse_hex_offset` не существует) — это RED; после реализации PASS.
 
 - [ ] **Step 2: Реализация хелпера (GREEN)** — в uefi-common/src/cli.rs:
 
@@ -414,7 +414,7 @@ git commit -m "test(gateway): TseUnhide bridge-интеграция (tse-followu
 - [ ] **Step 1: API-обёртки (api.ts)** — inline-типы по образцу соседей:
 
 ```ts
-export interface TseStrideEntry { formsetGuid: string; formId: number; }
+export interface TseStrideEntry { formsetGuid: string; formId: string; }
 export interface TseStrideBlock { peOffset: number; entries: TseStrideEntry[]; }
 export interface TseSpfFormset { guid: string; rawU32: number; pages: number; }
 export interface TseSpfVar { guid: string; name: string; attrs: number; size: number; }
@@ -422,6 +422,9 @@ export interface TseSpfSummary {
     pageCount: number; formsets: TseSpfFormset[]; vars: TseSpfVar[]; stringControls: number;
 }
 export interface TseReportResponse { blocks: TseStrideBlock[]; spf?: TseSpfSummary | null; peLen: number; }
+```
+
+(`formId` — строка: proto-поле `uint64 form_id`, gateway отдаёт канонический proto3-JSON (64-битные — строки; прецедент `NvarVarInfo.offset` в `nvar.ts`).)
 
 export const tseReport = (imageId: string) =>
     bridge<{ imageId: string }, TseReportResponse>('TseReport', { imageId });
@@ -449,9 +452,9 @@ export const load: PageLoad = ({ params }) => ({ imageId: params.id });
 - [ ] **Step 3: `+page.svelte`** — структура (runes, идиомы nvar/`image/[id]`; loadSeq-guard на загрузку):
 
   - `refresh()` → `tseReport(imageId)`; `$effect` на `imageId`. `pending` — «loading…» пока нет отчёта и нет ошибки; ошибка — `<p class="error" role="alert">`.
-  - **Stride-блоки**: `<table>`; строка на запись: `@{block.peOffset.toString(16)}` (hex), `{entry.formsetGuid} #{entry.formId}`; запись — `<button>` (клик → префилл: `unhideGuid = entry.formsetGuid; unhideFid = String(entry.formId)`).
+  - **Stride-блоки**: `<table>`; строка на запись: `@{block.peOffset.toString(16)}` (hex), `{entry.formsetGuid} #{entry.formId}`; запись — `<button>` (клик → префилл: `unhideGuid = entry.formsetGuid; unhideFid = entry.formId` — formId уже строка).
   - **$SPF-карточка**: при `spf` — список `pageCount`, `formsets` (`{guid} raw={rawU32} pages={pages}`), `vars` (`{guid} {name} attrs=#{attrs.toString(16)} size={size}`), `stringControls`, `peLen`; при `spf == null` — заметка `no $SPF` (не пустая карточка).
-  - **Панель unhide** (`<section aria-label="tse unhide">`): поля `formset-guid` (text), `form-id` (text); экспертный `block-offset` в `<details><input inputmode="hex">…`; inline-подтверждение паттерна ConfirmDialog: первый сабмит ставит `armed` (кнопка «Unhide — confirm»), повторный — RPC; смена любого поля сбрасывает `armed`; `busy` — disabled.
+  - **Панель unhide** (`<section aria-label="tse unhide">`): поля `formset-guid` (text), `form-id` (text); экспертный `block-offset` в `<details><input placeholder="hex, e.g. 1b40">…`; inline-подтверждение на busy/disabled-идиоме ConfirmDialog: первый сабмит ставит `armed` (кнопка «Unhide — confirm»), повторный — RPC; смена любого поля сбрасывает `armed`; `busy` — disabled.
   - Валидация до RPC (ошибка в тот же `role="alert"`): guid пустой → «formset guid required»; fid не `/^\d+$/` → «form id must be a number»; block-offset: `strip one leading "0x"` → `/^[0-9a-f]+$/` → `parseInt(·, 16)` → `> 0xFFFFFFFF` → «block offset exceeds u32»; `0x0x10` падает на regex.
   - Сабмит: `tseUnhide(...)` → результат `unhidden: entry @ 0x{entryPeOffset.toString(16)}` (`role="status"`) → `refresh()`. Ошибки RPC — текст ApiError как есть (движок — source of truth).
   - Кнопка-ссылка назад не нужна (layout nav); Download не входит (image/[id] уже имеет).
@@ -475,13 +478,15 @@ const report = {
     blocks: [{
         peOffset: 0x1b40,
         entries: [
-            { formsetGuid: 'EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9', formId: 1 },
-            { formsetGuid: '7B59104A-C00D-4158-87FF-F04D6396A915', formId: 10000 },
+            { formsetGuid: 'EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9', formId: '1' },
+            { formsetGuid: '7B59104A-C00D-4158-87FF-F04D6396A915', formId: '10000' },
         ],
     }],
     spf, peLen: 0x48860,
 };
 ```
+
+  (formId — строки: uint64 в proto3-JSON; см. Step 1.)
 
   Тесты (по спеке §5):
   1. **рендер с $SPF**: виден `@1b40`, обе записи `#1`/`#10000`, `raw=2 pages=161`, `Setup`, `no $SPF` отсутствует.
