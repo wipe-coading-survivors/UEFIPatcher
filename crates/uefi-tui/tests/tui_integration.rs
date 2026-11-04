@@ -1548,6 +1548,34 @@ async fn tse_commands_report_and_unhide() {
             .await
             .is_err()
     );
+    assert!(
+        uefi_tui::commands::execute_command(
+            &mut app,
+            "tse-unhide EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9 1 --block-offset",
+            &mut client
+        )
+        .await
+        .is_err(),
+        "dangling --block-offset без значения — usage-ошибка, не авто-режим"
+    );
+    assert!(
+        uefi_tui::commands::execute_command(
+            &mut app,
+            "tse-unhide EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9 1 --block-offset 0x0x10",
+            &mut client
+        )
+        .await
+        .is_err(),
+        "повтор 0x-префикса — ошибка парсинга"
+    );
+    uefi_tui::commands::execute_command(
+        &mut app,
+        "tse-unhide EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9 1 --block-offset 0x1b40",
+        &mut client,
+    )
+    .await
+    .unwrap();
+    assert!(app.status_msg.contains("0x1b40"));
 }
 
 #[tokio::test]

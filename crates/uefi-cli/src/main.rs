@@ -621,14 +621,12 @@ async fn dispatch(cli: &Cli, format: output::OutputFormat) -> Result<(), error::
             } => {
                 let off = match block_offset.as_deref() {
                     None => None,
-                    Some(s) => Some(
-                        usize::from_str_radix(s.trim_start_matches("0x"), 16).map_err(|e| {
-                            error::AppError::new(
-                                error::ErrKind::RpcInvalidArgument,
-                                format!("invalid --block-offset: {e}"),
-                            )
-                        })?,
-                    ),
+                    Some(s) => Some(uefi_common::cli::parse_hex_offset(s).map_err(|e| {
+                        error::AppError::new(
+                            error::ErrKind::RpcInvalidArgument,
+                            format!("--block-offset: {e}"),
+                        )
+                    })?),
                 };
                 commands::tse::unhide(image_id, formset_guid, *form_id, off, sock).await
             }

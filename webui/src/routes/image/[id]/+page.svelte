@@ -152,6 +152,7 @@
     <button onclick={onDownload} disabled={busy}>Download</button>
     <button onclick={() => (saveOpen = true)}>Save…</button>
     <button onclick={() => goto('/image')}>Switch/upload…</button>
+    <button onclick={() => goto(`/tse/${imageId}`)}>TSE</button>
 </div>
 
 {#if results}

@@ -95,14 +95,22 @@ pub fn scan_var_catalog(body: &[u8]) -> Vec<SpfVarEntry> {
     })
 }
 
-/// Число страниц: u32 @magic+SPF_PAGE_COUNT_OFFSET (0x60). Fail-soft 0.
+/// Число страниц: u32 @magic+SPF_PAGE_COUNT_OFFSET (0x60). Fail-soft 0;
+/// правдоподобие `count > body.len()/4` → warn + 0 (ложный $SPF-маг в
+/// mz32; спека tse-followups §4.1).
 pub fn pages_count(body: &[u8]) -> u32 {
     let Some(m) = container_start(body) else {
         return 0;
     };
-    body.get(m + SPF_PAGE_COUNT_OFFSET..m + SPF_PAGE_COUNT_OFFSET + 4)
+    let count = body
+        .get(m + SPF_PAGE_COUNT_OFFSET..m + SPF_PAGE_COUNT_OFFSET + 4)
         .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
-        .unwrap_or(0)
+        .unwrap_or(0);
+    if count as usize > body.len() / 4 {
+        tracing::warn!(count, len = body.len(), "spf page count implausible");
+        return 0;
+    }
+    count
 }
 
 /// Число страниц по fsIdx: указатели таблицы @magic+0x64+4·i, у каждой
@@ -1260,5 +1268,28 @@ mod tests {
         assert!(pages_fs_counts(b"garbage").is_empty());
         assert_eq!(pages_count(b"garbage"), 0);
         assert_eq!(header_slot(b"garbage", SPF_SLOT_FORMSETS), None);
+    }
+
+    #[test]
+    fn pages_count_implausible_value_returns_zero() {
+        let mut b = vec![0u8; 0x100];
+        b[0..4].copy_from_slice(b"$SPF");
+        let mz32_false_count: u32 = 0x496E7465; // ASCII "Inte"
+        b[SPF_PAGE_COUNT_OFFSET..SPF_PAGE_COUNT_OFFSET + 4]
+            .copy_from_slice(&mz32_false_count.to_le_bytes());
+        assert_eq!(pages_count(&b), 0);
+        assert!(pages_fs_counts(&b).is_empty());
+    }
+
+    #[test]
+    fn pages_count_boundary_len_div_4_accepted() {
+        let mut b = vec![0u8; 0x100];
+        b[0..4].copy_from_slice(b"$SPF");
+        b[SPF_PAGE_COUNT_OFFSET..SPF_PAGE_COUNT_OFFSET + 4].copy_from_slice(&64u32.to_le_bytes());
+        assert_eq!(
+            pages_count(&b),
+            64,
+            "count == len/4 — допустимо (отказ только при >)"
+        );
     }
 }
