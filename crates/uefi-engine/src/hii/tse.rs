@@ -178,7 +178,10 @@ fn spf_section_body(file: &FfsNode) -> Option<&[u8]> {
 }
 
 fn entry_bytes_match(pe: &[u8], off: usize, guid: &Guid, form_id: u16) -> bool {
-    let Some(rec) = pe.get(off..off + STRIDE_ENTRY_SIZE) else {
+    let Some(end) = off.checked_add(STRIDE_ENTRY_SIZE) else {
+        return false;
+    };
+    let Some(rec) = pe.get(off..end) else {
         return false;
     };
     rec[..16] == guid.to_bytes()
@@ -595,6 +598,22 @@ mod tests {
             file.children[0].action,
             Action::NoAction,
             "rollback: мутаций нет"
+        );
+    }
+
+    #[test]
+    fn tse_unhide_guard_overflow_is_mismatch_not_panic() {
+        let mut img = root_image(tse_pe_body(), ImageMode::Write);
+        let err = tse_unhide(
+            &mut img,
+            &Guid::try_parse(A).unwrap(),
+            1,
+            Some(usize::MAX - 8),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, HiiError::InvalidSchema(ref m) if m.contains("guard mismatch")),
+            "{err:?}"
         );
     }
 
