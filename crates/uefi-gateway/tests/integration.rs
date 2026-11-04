@@ -197,6 +197,39 @@ async fn bridge_roundtrip_images_list() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn bridge_tse_unhide_roundtrip() {
+    let (_td, base) = setup_gateway().await;
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{base}/api/v1/session"))
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    let sid = resp.json::<serde_json::Value>().await.unwrap()["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let resp = client
+        .post(format!("{base}/api/v1/rpc/TseUnhide"))
+        .header("cookie", format!("uefipatcher_session={sid}"))
+        .json(&json!({
+            "imageId": "img-1",
+            "formsetGuid": "EC87D643-EBA4-4BB5-A1E5-3F3E36B20DA9",
+            "formId": 1,
+            "blockPeOffset": 0x1b40
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let v: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(v["peOffset"], json!(0x1b40));
+    assert_eq!(v["entryPeOffset"], json!(0x1b40));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn upload_image_opens_in_engine() {
     let (_td, base) = setup_gateway().await;
     let client = reqwest::Client::new();
