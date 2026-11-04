@@ -14,8 +14,13 @@ unhide), отдельная страница, один мини-цикл/оди�
   `POST /api/v1/rpc/TseReport|TseUnhide` (bridge.rs, base64/JSON-конвенции).
 - WebUI-прецеденты: страницы-просмотры `nvar`, `artifacts`, `forms/[id]`;
   mutation-диалоги GatesDialog/SetValueDialog/ConfirmDialog; API-слой
-  `webui/src/lib/api.ts` (типизированные обёртки над bridge); proto-типы
-  `webui/src/lib/proto/engine.ts` (Tse* уже сгенерированы).
+  `webui/src/lib/api.ts` (типизированные обёртки над bridge).
+  Правка 2026-11-04: proto-типов Tse* в `webui/src/lib/proto/engine.ts`
+  НЕТ (protoc v3.19.6, 100 типов; регенерация в цикле tse-unhide не
+  выполнялась) — обёртки tseReport/tseUnhide строятся на
+  inline-структурных типах в api.ts (идиома большинства соседних
+  обёрток `nvarList`, `setValue`, …); регенерация engine.ts — вне
+  цикла (требует protoc в окружении, дифф на 11k-строчный генерат).
 - TODO-записи (TODO.md, fc785e9): spf silent-data (mz32 «Inte»),
   byte-guard unchecked-add, TUI dangling `--block-offset`, COMMANDS-
   комплишен, hex-префикс `trim_start_matches`.
