@@ -1547,13 +1547,13 @@ pub async fn execute_command(
                 .ok_or("no active image")?;
             let guid = parts.get(1).ok_or(usage)?.to_string();
             let fid: u32 = parts.get(2).ok_or(usage)?.parse().map_err(|_| usage)?;
-            let off = parts
-                .iter()
-                .position(|p| *p == "--block-offset")
-                .and_then(|i| parts.get(i + 1))
-                .map(|s| usize::from_str_radix(s.trim_start_matches("0x"), 16))
-                .transpose()
-                .map_err(|_| usage)?;
+            let off = match parts.iter().position(|p| *p == "--block-offset") {
+                None => None,
+                Some(i) => {
+                    let raw = parts.get(i + 1).ok_or(usage)?;
+                    Some(uefi_common::cli::parse_hex_offset(raw).map_err(|_| usage)?)
+                }
+            };
             let off_u32 = off
                 .map(u32::try_from)
                 .transpose()
@@ -1638,6 +1638,8 @@ const COMMANDS: &[&str] = &[
     "snapshot",
     "snapshots",
     "restore",
+    "tse",
+    "tse-unhide",
     "help",
     "h",
     "quit",
@@ -2995,6 +2997,12 @@ mod tests {
             COMMANDS.contains(&"image"),
             "bare :image остаётся view-переключателем"
         );
+    }
+
+    #[test]
+    fn commands_completion_includes_tse() {
+        assert!(COMMANDS.contains(&"tse"));
+        assert!(COMMANDS.contains(&"tse-unhide"));
     }
 
     #[test]
