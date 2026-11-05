@@ -691,6 +691,58 @@ export interface ImageSnapshotRestoreRequest {
   snapshotId: string;
 }
 
+export interface TseStrideEntry {
+  formsetGuid: string;
+  formId: string;
+}
+
+export interface TseStrideBlock {
+  peOffset: number;
+  entries: TseStrideEntry[];
+}
+
+export interface TseSpfFormset {
+  guid: string;
+  rawU32: number;
+  pages: number;
+}
+
+export interface TseSpfVar {
+  guid: string;
+  name: string;
+  attrs: number;
+  size: number;
+}
+
+export interface TseSpfSummary {
+  pageCount: number;
+  formsets: TseSpfFormset[];
+  vars: TseSpfVar[];
+  stringControls: number;
+}
+
+export interface TseReportRequest {
+  imageId: string;
+}
+
+export interface TseReportResponse {
+  blocks: TseStrideBlock[];
+  spf?: TseSpfSummary | undefined;
+  peLen: number;
+}
+
+export interface TseUnhideRequest {
+  imageId: string;
+  formsetGuid: string;
+  formId: number;
+  blockPeOffset?: number | undefined;
+}
+
+export interface TseUnhideResponse {
+  peOffset: number;
+  entryPeOffset: number;
+}
+
 export interface Empty {
 }
 
@@ -10988,6 +11040,943 @@ export const ImageSnapshotRestoreRequest: MessageFns<ImageSnapshotRestoreRequest
   },
 };
 
+function createBaseTseStrideEntry(): TseStrideEntry {
+  return { formsetGuid: "", formId: "0" };
+}
+
+export const TseStrideEntry: MessageFns<TseStrideEntry> = {
+  encode(message: TseStrideEntry, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.formsetGuid !== "") {
+      writer.uint32(10).string(message.formsetGuid);
+    }
+    if (message.formId !== "0") {
+      writer.uint32(16).uint64(message.formId);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): TseStrideEntry {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const previousRecursionDepth = (reader as any).__tsProtoDecodeDepth ?? 0;
+    if (previousRecursionDepth >= 100) {
+      throw new globalThis.Error("protobuf decode recursion limit exceeded");
+    }
+    (reader as any).__tsProtoDecodeDepth = previousRecursionDepth + 1;
+    try {
+      const end = length === undefined ? reader.len : reader.pos + length;
+      const message = createBaseTseStrideEntry();
+      while (reader.pos < end) {
+        const tag = reader.uint32();
+        switch (tag >>> 3) {
+          case 1: {
+            if (tag !== 10) {
+              break;
+            }
+
+            message.formsetGuid = reader.string();
+            continue;
+          }
+          case 2: {
+            if (tag !== 16) {
+              break;
+            }
+
+            message.formId = reader.uint64().toString();
+            continue;
+          }
+        }
+        if ((tag & 7) === 4 || tag === 0) {
+          break;
+        }
+        reader.skip(tag & 7);
+      }
+      return message;
+    } finally {
+      (reader as any).__tsProtoDecodeDepth = previousRecursionDepth;
+    }
+  },
+
+  fromJSON(object: any): TseStrideEntry {
+    return {
+      formsetGuid: isSet(object.formsetGuid)
+        ? globalThis.String(object.formsetGuid)
+        : isSet(object.formset_guid)
+        ? globalThis.String(object.formset_guid)
+        : "",
+      formId: isSet(object.formId)
+        ? globalThis.String(object.formId)
+        : isSet(object.form_id)
+        ? globalThis.String(object.form_id)
+        : "0",
+    };
+  },
+
+  toJSON(message: TseStrideEntry): unknown {
+    const obj: any = {};
+    if (message.formsetGuid !== "") {
+      obj.formsetGuid = message.formsetGuid;
+    }
+    if (message.formId !== "0") {
+      obj.formId = message.formId;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<TseStrideEntry>, I>>(base?: I): TseStrideEntry {
+    return TseStrideEntry.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<TseStrideEntry>, I>>(object: I): TseStrideEntry {
+    const message = createBaseTseStrideEntry();
+    message.formsetGuid = object.formsetGuid ?? "";
+    message.formId = object.formId ?? "0";
+    return message;
+  },
+};
+
+function createBaseTseStrideBlock(): TseStrideBlock {
+  return { peOffset: 0, entries: [] };
+}
+
+export const TseStrideBlock: MessageFns<TseStrideBlock> = {
+  encode(message: TseStrideBlock, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.peOffset !== 0) {
+      writer.uint32(8).uint32(message.peOffset);
+    }
+    for (const v of message.entries) {
+      TseStrideEntry.encode(v!, writer.uint32(18).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): TseStrideBlock {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const previousRecursionDepth = (reader as any).__tsProtoDecodeDepth ?? 0;
+    if (previousRecursionDepth >= 100) {
+      throw new globalThis.Error("protobuf decode recursion limit exceeded");
+    }
+    (reader as any).__tsProtoDecodeDepth = previousRecursionDepth + 1;
+    try {
+      const end = length === undefined ? reader.len : reader.pos + length;
+      const message = createBaseTseStrideBlock();
+      while (reader.pos < end) {
+        const tag = reader.uint32();
+        switch (tag >>> 3) {
+          case 1: {
+            if (tag !== 8) {
+              break;
+            }
+
+            message.peOffset = reader.uint32();
+            continue;
+          }
+          case 2: {
+            if (tag !== 18) {
+              break;
+            }
+
+            message.entries.push(TseStrideEntry.decode(reader, reader.uint32()));
+            continue;
+          }
+        }
+        if ((tag & 7) === 4 || tag === 0) {
+          break;
+        }
+        reader.skip(tag & 7);
+      }
+      return message;
+    } finally {
+      (reader as any).__tsProtoDecodeDepth = previousRecursionDepth;
+    }
+  },
+
+  fromJSON(object: any): TseStrideBlock {
+    return {
+      peOffset: isSet(object.peOffset)
+        ? globalThis.Number(object.peOffset)
+        : isSet(object.pe_offset)
+        ? globalThis.Number(object.pe_offset)
+        : 0,
+      entries: globalThis.Array.isArray(object?.entries)
+        ? object.entries.map((e: any) => TseStrideEntry.fromJSON(e))
+        : [],
+    };
+  },
+
+  toJSON(message: TseStrideBlock): unknown {
+    const obj: any = {};
+    if (message.peOffset !== 0) {
+      obj.peOffset = Math.round(message.peOffset);
+    }
+    if (message.entries?.length) {
+      obj.entries = message.entries.map((e) => TseStrideEntry.toJSON(e));
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<TseStrideBlock>, I>>(base?: I): TseStrideBlock {
+    return TseStrideBlock.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<TseStrideBlock>, I>>(object: I): TseStrideBlock {
+    const message = createBaseTseStrideBlock();
+    message.peOffset = object.peOffset ?? 0;
+    message.entries = object.entries?.map((e) => TseStrideEntry.fromPartial(e)) || [];
+    return message;
+  },
+};
+
+function createBaseTseSpfFormset(): TseSpfFormset {
+  return { guid: "", rawU32: 0, pages: 0 };
+}
+
+export const TseSpfFormset: MessageFns<TseSpfFormset> = {
+  encode(message: TseSpfFormset, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.guid !== "") {
+      writer.uint32(10).string(message.guid);
+    }
+    if (message.rawU32 !== 0) {
+      writer.uint32(16).uint32(message.rawU32);
+    }
+    if (message.pages !== 0) {
+      writer.uint32(24).uint32(message.pages);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): TseSpfFormset {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const previousRecursionDepth = (reader as any).__tsProtoDecodeDepth ?? 0;
+    if (previousRecursionDepth >= 100) {
+      throw new globalThis.Error("protobuf decode recursion limit exceeded");
+    }
+    (reader as any).__tsProtoDecodeDepth = previousRecursionDepth + 1;
+    try {
+      const end = length === undefined ? reader.len : reader.pos + length;
+      const message = createBaseTseSpfFormset();
+      while (reader.pos < end) {
+        const tag = reader.uint32();
+        switch (tag >>> 3) {
+          case 1: {
+            if (tag !== 10) {
+              break;
+            }
+
+            message.guid = reader.string();
+            continue;
+          }
+          case 2: {
+            if (tag !== 16) {
+              break;
+            }
+
+            message.rawU32 = reader.uint32();
+            continue;
+          }
+          case 3: {
+            if (tag !== 24) {
+              break;
+            }
+
+            message.pages = reader.uint32();
+            continue;
+          }
+        }
+        if ((tag & 7) === 4 || tag === 0) {
+          break;
+        }
+        reader.skip(tag & 7);
+      }
+      return message;
+    } finally {
+      (reader as any).__tsProtoDecodeDepth = previousRecursionDepth;
+    }
+  },
+
+  fromJSON(object: any): TseSpfFormset {
+    return {
+      guid: isSet(object.guid) ? globalThis.String(object.guid) : "",
+      rawU32: isSet(object.rawU32)
+        ? globalThis.Number(object.rawU32)
+        : isSet(object.raw_u32)
+        ? globalThis.Number(object.raw_u32)
+        : 0,
+      pages: isSet(object.pages) ? globalThis.Number(object.pages) : 0,
+    };
+  },
+
+  toJSON(message: TseSpfFormset): unknown {
+    const obj: any = {};
+    if (message.guid !== "") {
+      obj.guid = message.guid;
+    }
+    if (message.rawU32 !== 0) {
+      obj.rawU32 = Math.round(message.rawU32);
+    }
+    if (message.pages !== 0) {
+      obj.pages = Math.round(message.pages);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<TseSpfFormset>, I>>(base?: I): TseSpfFormset {
+    return TseSpfFormset.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<TseSpfFormset>, I>>(object: I): TseSpfFormset {
+    const message = createBaseTseSpfFormset();
+    message.guid = object.guid ?? "";
+    message.rawU32 = object.rawU32 ?? 0;
+    message.pages = object.pages ?? 0;
+    return message;
+  },
+};
+
+function createBaseTseSpfVar(): TseSpfVar {
+  return { guid: "", name: "", attrs: 0, size: 0 };
+}
+
+export const TseSpfVar: MessageFns<TseSpfVar> = {
+  encode(message: TseSpfVar, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.guid !== "") {
+      writer.uint32(10).string(message.guid);
+    }
+    if (message.name !== "") {
+      writer.uint32(18).string(message.name);
+    }
+    if (message.attrs !== 0) {
+      writer.uint32(24).uint32(message.attrs);
+    }
+    if (message.size !== 0) {
+      writer.uint32(32).uint32(message.size);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): TseSpfVar {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const previousRecursionDepth = (reader as any).__tsProtoDecodeDepth ?? 0;
+    if (previousRecursionDepth >= 100) {
+      throw new globalThis.Error("protobuf decode recursion limit exceeded");
+    }
+    (reader as any).__tsProtoDecodeDepth = previousRecursionDepth + 1;
+    try {
+      const end = length === undefined ? reader.len : reader.pos + length;
+      const message = createBaseTseSpfVar();
+      while (reader.pos < end) {
+        const tag = reader.uint32();
+        switch (tag >>> 3) {
+          case 1: {
+            if (tag !== 10) {
+              break;
+            }
+
+            message.guid = reader.string();
+            continue;
+          }
+          case 2: {
+            if (tag !== 18) {
+              break;
+            }
+
+            message.name = reader.string();
+            continue;
+          }
+          case 3: {
+            if (tag !== 24) {
+              break;
+            }
+
+            message.attrs = reader.uint32();
+            continue;
+          }
+          case 4: {
+            if (tag !== 32) {
+              break;
+            }
+
+            message.size = reader.uint32();
+            continue;
+          }
+        }
+        if ((tag & 7) === 4 || tag === 0) {
+          break;
+        }
+        reader.skip(tag & 7);
+      }
+      return message;
+    } finally {
+      (reader as any).__tsProtoDecodeDepth = previousRecursionDepth;
+    }
+  },
+
+  fromJSON(object: any): TseSpfVar {
+    return {
+      guid: isSet(object.guid) ? globalThis.String(object.guid) : "",
+      name: isSet(object.name) ? globalThis.String(object.name) : "",
+      attrs: isSet(object.attrs) ? globalThis.Number(object.attrs) : 0,
+      size: isSet(object.size) ? globalThis.Number(object.size) : 0,
+    };
+  },
+
+  toJSON(message: TseSpfVar): unknown {
+    const obj: any = {};
+    if (message.guid !== "") {
+      obj.guid = message.guid;
+    }
+    if (message.name !== "") {
+      obj.name = message.name;
+    }
+    if (message.attrs !== 0) {
+      obj.attrs = Math.round(message.attrs);
+    }
+    if (message.size !== 0) {
+      obj.size = Math.round(message.size);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<TseSpfVar>, I>>(base?: I): TseSpfVar {
+    return TseSpfVar.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<TseSpfVar>, I>>(object: I): TseSpfVar {
+    const message = createBaseTseSpfVar();
+    message.guid = object.guid ?? "";
+    message.name = object.name ?? "";
+    message.attrs = object.attrs ?? 0;
+    message.size = object.size ?? 0;
+    return message;
+  },
+};
+
+function createBaseTseSpfSummary(): TseSpfSummary {
+  return { pageCount: 0, formsets: [], vars: [], stringControls: 0 };
+}
+
+export const TseSpfSummary: MessageFns<TseSpfSummary> = {
+  encode(message: TseSpfSummary, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.pageCount !== 0) {
+      writer.uint32(8).uint32(message.pageCount);
+    }
+    for (const v of message.formsets) {
+      TseSpfFormset.encode(v!, writer.uint32(18).fork()).join();
+    }
+    for (const v of message.vars) {
+      TseSpfVar.encode(v!, writer.uint32(26).fork()).join();
+    }
+    if (message.stringControls !== 0) {
+      writer.uint32(32).uint32(message.stringControls);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): TseSpfSummary {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const previousRecursionDepth = (reader as any).__tsProtoDecodeDepth ?? 0;
+    if (previousRecursionDepth >= 100) {
+      throw new globalThis.Error("protobuf decode recursion limit exceeded");
+    }
+    (reader as any).__tsProtoDecodeDepth = previousRecursionDepth + 1;
+    try {
+      const end = length === undefined ? reader.len : reader.pos + length;
+      const message = createBaseTseSpfSummary();
+      while (reader.pos < end) {
+        const tag = reader.uint32();
+        switch (tag >>> 3) {
+          case 1: {
+            if (tag !== 8) {
+              break;
+            }
+
+            message.pageCount = reader.uint32();
+            continue;
+          }
+          case 2: {
+            if (tag !== 18) {
+              break;
+            }
+
+            message.formsets.push(TseSpfFormset.decode(reader, reader.uint32()));
+            continue;
+          }
+          case 3: {
+            if (tag !== 26) {
+              break;
+            }
+
+            message.vars.push(TseSpfVar.decode(reader, reader.uint32()));
+            continue;
+          }
+          case 4: {
+            if (tag !== 32) {
+              break;
+            }
+
+            message.stringControls = reader.uint32();
+            continue;
+          }
+        }
+        if ((tag & 7) === 4 || tag === 0) {
+          break;
+        }
+        reader.skip(tag & 7);
+      }
+      return message;
+    } finally {
+      (reader as any).__tsProtoDecodeDepth = previousRecursionDepth;
+    }
+  },
+
+  fromJSON(object: any): TseSpfSummary {
+    return {
+      pageCount: isSet(object.pageCount)
+        ? globalThis.Number(object.pageCount)
+        : isSet(object.page_count)
+        ? globalThis.Number(object.page_count)
+        : 0,
+      formsets: globalThis.Array.isArray(object?.formsets)
+        ? object.formsets.map((e: any) => TseSpfFormset.fromJSON(e))
+        : [],
+      vars: globalThis.Array.isArray(object?.vars) ? object.vars.map((e: any) => TseSpfVar.fromJSON(e)) : [],
+      stringControls: isSet(object.stringControls)
+        ? globalThis.Number(object.stringControls)
+        : isSet(object.string_controls)
+        ? globalThis.Number(object.string_controls)
+        : 0,
+    };
+  },
+
+  toJSON(message: TseSpfSummary): unknown {
+    const obj: any = {};
+    if (message.pageCount !== 0) {
+      obj.pageCount = Math.round(message.pageCount);
+    }
+    if (message.formsets?.length) {
+      obj.formsets = message.formsets.map((e) => TseSpfFormset.toJSON(e));
+    }
+    if (message.vars?.length) {
+      obj.vars = message.vars.map((e) => TseSpfVar.toJSON(e));
+    }
+    if (message.stringControls !== 0) {
+      obj.stringControls = Math.round(message.stringControls);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<TseSpfSummary>, I>>(base?: I): TseSpfSummary {
+    return TseSpfSummary.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<TseSpfSummary>, I>>(object: I): TseSpfSummary {
+    const message = createBaseTseSpfSummary();
+    message.pageCount = object.pageCount ?? 0;
+    message.formsets = object.formsets?.map((e) => TseSpfFormset.fromPartial(e)) || [];
+    message.vars = object.vars?.map((e) => TseSpfVar.fromPartial(e)) || [];
+    message.stringControls = object.stringControls ?? 0;
+    return message;
+  },
+};
+
+function createBaseTseReportRequest(): TseReportRequest {
+  return { imageId: "" };
+}
+
+export const TseReportRequest: MessageFns<TseReportRequest> = {
+  encode(message: TseReportRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.imageId !== "") {
+      writer.uint32(10).string(message.imageId);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): TseReportRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const previousRecursionDepth = (reader as any).__tsProtoDecodeDepth ?? 0;
+    if (previousRecursionDepth >= 100) {
+      throw new globalThis.Error("protobuf decode recursion limit exceeded");
+    }
+    (reader as any).__tsProtoDecodeDepth = previousRecursionDepth + 1;
+    try {
+      const end = length === undefined ? reader.len : reader.pos + length;
+      const message = createBaseTseReportRequest();
+      while (reader.pos < end) {
+        const tag = reader.uint32();
+        switch (tag >>> 3) {
+          case 1: {
+            if (tag !== 10) {
+              break;
+            }
+
+            message.imageId = reader.string();
+            continue;
+          }
+        }
+        if ((tag & 7) === 4 || tag === 0) {
+          break;
+        }
+        reader.skip(tag & 7);
+      }
+      return message;
+    } finally {
+      (reader as any).__tsProtoDecodeDepth = previousRecursionDepth;
+    }
+  },
+
+  fromJSON(object: any): TseReportRequest {
+    return {
+      imageId: isSet(object.imageId)
+        ? globalThis.String(object.imageId)
+        : isSet(object.image_id)
+        ? globalThis.String(object.image_id)
+        : "",
+    };
+  },
+
+  toJSON(message: TseReportRequest): unknown {
+    const obj: any = {};
+    if (message.imageId !== "") {
+      obj.imageId = message.imageId;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<TseReportRequest>, I>>(base?: I): TseReportRequest {
+    return TseReportRequest.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<TseReportRequest>, I>>(object: I): TseReportRequest {
+    const message = createBaseTseReportRequest();
+    message.imageId = object.imageId ?? "";
+    return message;
+  },
+};
+
+function createBaseTseReportResponse(): TseReportResponse {
+  return { blocks: [], spf: undefined, peLen: 0 };
+}
+
+export const TseReportResponse: MessageFns<TseReportResponse> = {
+  encode(message: TseReportResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    for (const v of message.blocks) {
+      TseStrideBlock.encode(v!, writer.uint32(10).fork()).join();
+    }
+    if (message.spf !== undefined) {
+      TseSpfSummary.encode(message.spf, writer.uint32(18).fork()).join();
+    }
+    if (message.peLen !== 0) {
+      writer.uint32(24).uint32(message.peLen);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): TseReportResponse {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const previousRecursionDepth = (reader as any).__tsProtoDecodeDepth ?? 0;
+    if (previousRecursionDepth >= 100) {
+      throw new globalThis.Error("protobuf decode recursion limit exceeded");
+    }
+    (reader as any).__tsProtoDecodeDepth = previousRecursionDepth + 1;
+    try {
+      const end = length === undefined ? reader.len : reader.pos + length;
+      const message = createBaseTseReportResponse();
+      while (reader.pos < end) {
+        const tag = reader.uint32();
+        switch (tag >>> 3) {
+          case 1: {
+            if (tag !== 10) {
+              break;
+            }
+
+            message.blocks.push(TseStrideBlock.decode(reader, reader.uint32()));
+            continue;
+          }
+          case 2: {
+            if (tag !== 18) {
+              break;
+            }
+
+            message.spf = TseSpfSummary.decode(reader, reader.uint32());
+            continue;
+          }
+          case 3: {
+            if (tag !== 24) {
+              break;
+            }
+
+            message.peLen = reader.uint32();
+            continue;
+          }
+        }
+        if ((tag & 7) === 4 || tag === 0) {
+          break;
+        }
+        reader.skip(tag & 7);
+      }
+      return message;
+    } finally {
+      (reader as any).__tsProtoDecodeDepth = previousRecursionDepth;
+    }
+  },
+
+  fromJSON(object: any): TseReportResponse {
+    return {
+      blocks: globalThis.Array.isArray(object?.blocks) ? object.blocks.map((e: any) => TseStrideBlock.fromJSON(e)) : [],
+      spf: isSet(object.spf) ? TseSpfSummary.fromJSON(object.spf) : undefined,
+      peLen: isSet(object.peLen)
+        ? globalThis.Number(object.peLen)
+        : isSet(object.pe_len)
+        ? globalThis.Number(object.pe_len)
+        : 0,
+    };
+  },
+
+  toJSON(message: TseReportResponse): unknown {
+    const obj: any = {};
+    if (message.blocks?.length) {
+      obj.blocks = message.blocks.map((e) => TseStrideBlock.toJSON(e));
+    }
+    if (message.spf !== undefined) {
+      obj.spf = TseSpfSummary.toJSON(message.spf);
+    }
+    if (message.peLen !== 0) {
+      obj.peLen = Math.round(message.peLen);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<TseReportResponse>, I>>(base?: I): TseReportResponse {
+    return TseReportResponse.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<TseReportResponse>, I>>(object: I): TseReportResponse {
+    const message = createBaseTseReportResponse();
+    message.blocks = object.blocks?.map((e) => TseStrideBlock.fromPartial(e)) || [];
+    message.spf = (object.spf !== undefined && object.spf !== null) ? TseSpfSummary.fromPartial(object.spf) : undefined;
+    message.peLen = object.peLen ?? 0;
+    return message;
+  },
+};
+
+function createBaseTseUnhideRequest(): TseUnhideRequest {
+  return { imageId: "", formsetGuid: "", formId: 0, blockPeOffset: undefined };
+}
+
+export const TseUnhideRequest: MessageFns<TseUnhideRequest> = {
+  encode(message: TseUnhideRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.imageId !== "") {
+      writer.uint32(10).string(message.imageId);
+    }
+    if (message.formsetGuid !== "") {
+      writer.uint32(18).string(message.formsetGuid);
+    }
+    if (message.formId !== 0) {
+      writer.uint32(24).uint32(message.formId);
+    }
+    if (message.blockPeOffset !== undefined) {
+      writer.uint32(32).uint32(message.blockPeOffset);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): TseUnhideRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const previousRecursionDepth = (reader as any).__tsProtoDecodeDepth ?? 0;
+    if (previousRecursionDepth >= 100) {
+      throw new globalThis.Error("protobuf decode recursion limit exceeded");
+    }
+    (reader as any).__tsProtoDecodeDepth = previousRecursionDepth + 1;
+    try {
+      const end = length === undefined ? reader.len : reader.pos + length;
+      const message = createBaseTseUnhideRequest();
+      while (reader.pos < end) {
+        const tag = reader.uint32();
+        switch (tag >>> 3) {
+          case 1: {
+            if (tag !== 10) {
+              break;
+            }
+
+            message.imageId = reader.string();
+            continue;
+          }
+          case 2: {
+            if (tag !== 18) {
+              break;
+            }
+
+            message.formsetGuid = reader.string();
+            continue;
+          }
+          case 3: {
+            if (tag !== 24) {
+              break;
+            }
+
+            message.formId = reader.uint32();
+            continue;
+          }
+          case 4: {
+            if (tag !== 32) {
+              break;
+            }
+
+            message.blockPeOffset = reader.uint32();
+            continue;
+          }
+        }
+        if ((tag & 7) === 4 || tag === 0) {
+          break;
+        }
+        reader.skip(tag & 7);
+      }
+      return message;
+    } finally {
+      (reader as any).__tsProtoDecodeDepth = previousRecursionDepth;
+    }
+  },
+
+  fromJSON(object: any): TseUnhideRequest {
+    return {
+      imageId: isSet(object.imageId)
+        ? globalThis.String(object.imageId)
+        : isSet(object.image_id)
+        ? globalThis.String(object.image_id)
+        : "",
+      formsetGuid: isSet(object.formsetGuid)
+        ? globalThis.String(object.formsetGuid)
+        : isSet(object.formset_guid)
+        ? globalThis.String(object.formset_guid)
+        : "",
+      formId: isSet(object.formId)
+        ? globalThis.Number(object.formId)
+        : isSet(object.form_id)
+        ? globalThis.Number(object.form_id)
+        : 0,
+      blockPeOffset: isSet(object.blockPeOffset)
+        ? globalThis.Number(object.blockPeOffset)
+        : isSet(object.block_pe_offset)
+        ? globalThis.Number(object.block_pe_offset)
+        : undefined,
+    };
+  },
+
+  toJSON(message: TseUnhideRequest): unknown {
+    const obj: any = {};
+    if (message.imageId !== "") {
+      obj.imageId = message.imageId;
+    }
+    if (message.formsetGuid !== "") {
+      obj.formsetGuid = message.formsetGuid;
+    }
+    if (message.formId !== 0) {
+      obj.formId = Math.round(message.formId);
+    }
+    if (message.blockPeOffset !== undefined) {
+      obj.blockPeOffset = Math.round(message.blockPeOffset);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<TseUnhideRequest>, I>>(base?: I): TseUnhideRequest {
+    return TseUnhideRequest.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<TseUnhideRequest>, I>>(object: I): TseUnhideRequest {
+    const message = createBaseTseUnhideRequest();
+    message.imageId = object.imageId ?? "";
+    message.formsetGuid = object.formsetGuid ?? "";
+    message.formId = object.formId ?? 0;
+    message.blockPeOffset = object.blockPeOffset ?? undefined;
+    return message;
+  },
+};
+
+function createBaseTseUnhideResponse(): TseUnhideResponse {
+  return { peOffset: 0, entryPeOffset: 0 };
+}
+
+export const TseUnhideResponse: MessageFns<TseUnhideResponse> = {
+  encode(message: TseUnhideResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.peOffset !== 0) {
+      writer.uint32(8).uint32(message.peOffset);
+    }
+    if (message.entryPeOffset !== 0) {
+      writer.uint32(16).uint32(message.entryPeOffset);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): TseUnhideResponse {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const previousRecursionDepth = (reader as any).__tsProtoDecodeDepth ?? 0;
+    if (previousRecursionDepth >= 100) {
+      throw new globalThis.Error("protobuf decode recursion limit exceeded");
+    }
+    (reader as any).__tsProtoDecodeDepth = previousRecursionDepth + 1;
+    try {
+      const end = length === undefined ? reader.len : reader.pos + length;
+      const message = createBaseTseUnhideResponse();
+      while (reader.pos < end) {
+        const tag = reader.uint32();
+        switch (tag >>> 3) {
+          case 1: {
+            if (tag !== 8) {
+              break;
+            }
+
+            message.peOffset = reader.uint32();
+            continue;
+          }
+          case 2: {
+            if (tag !== 16) {
+              break;
+            }
+
+            message.entryPeOffset = reader.uint32();
+            continue;
+          }
+        }
+        if ((tag & 7) === 4 || tag === 0) {
+          break;
+        }
+        reader.skip(tag & 7);
+      }
+      return message;
+    } finally {
+      (reader as any).__tsProtoDecodeDepth = previousRecursionDepth;
+    }
+  },
+
+  fromJSON(object: any): TseUnhideResponse {
+    return {
+      peOffset: isSet(object.peOffset)
+        ? globalThis.Number(object.peOffset)
+        : isSet(object.pe_offset)
+        ? globalThis.Number(object.pe_offset)
+        : 0,
+      entryPeOffset: isSet(object.entryPeOffset)
+        ? globalThis.Number(object.entryPeOffset)
+        : isSet(object.entry_pe_offset)
+        ? globalThis.Number(object.entry_pe_offset)
+        : 0,
+    };
+  },
+
+  toJSON(message: TseUnhideResponse): unknown {
+    const obj: any = {};
+    if (message.peOffset !== 0) {
+      obj.peOffset = Math.round(message.peOffset);
+    }
+    if (message.entryPeOffset !== 0) {
+      obj.entryPeOffset = Math.round(message.entryPeOffset);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<TseUnhideResponse>, I>>(base?: I): TseUnhideResponse {
+    return TseUnhideResponse.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<TseUnhideResponse>, I>>(object: I): TseUnhideResponse {
+    const message = createBaseTseUnhideResponse();
+    message.peOffset = object.peOffset ?? 0;
+    message.entryPeOffset = object.entryPeOffset ?? 0;
+    return message;
+  },
+};
+
 function createBaseEmpty(): Empty {
   return {};
 }
@@ -11077,6 +12066,8 @@ export interface EngineService {
   HiiGetValue(request: HiiGetValueRequest): Promise<HiiGetValueResponse>;
   HiiQuestionAdd(request: HiiQuestionAddRequest): Promise<HiiQuestionAddResponse>;
   HiiPageAdd(request: HiiPageAddRequest): Promise<HiiPageAddResponse>;
+  TseReport(request: TseReportRequest): Promise<TseReportResponse>;
+  TseUnhide(request: TseUnhideRequest): Promise<TseUnhideResponse>;
   NvarList(request: NvarListRequest): Promise<NvarListResponse>;
   NvarSet(request: NvarSetRequest): Promise<NvarSetResponse>;
   ImageSnapshotCreate(request: ImageSnapshotCreateRequest): Promise<ImageSnapshotCreateResponse>;
@@ -11127,6 +12118,8 @@ export class EngineServiceClientImpl implements EngineService {
     this.HiiGetValue = this.HiiGetValue.bind(this);
     this.HiiQuestionAdd = this.HiiQuestionAdd.bind(this);
     this.HiiPageAdd = this.HiiPageAdd.bind(this);
+    this.TseReport = this.TseReport.bind(this);
+    this.TseUnhide = this.TseUnhide.bind(this);
     this.NvarList = this.NvarList.bind(this);
     this.NvarSet = this.NvarSet.bind(this);
     this.ImageSnapshotCreate = this.ImageSnapshotCreate.bind(this);
@@ -11347,6 +12340,18 @@ export class EngineServiceClientImpl implements EngineService {
     const data = HiiPageAddRequest.encode(request).finish();
     const promise = this.rpc.request(this.service, "HiiPageAdd", data);
     return promise.then((data) => HiiPageAddResponse.decode(new BinaryReader(data)));
+  }
+
+  TseReport(request: TseReportRequest): Promise<TseReportResponse> {
+    const data = TseReportRequest.encode(request).finish();
+    const promise = this.rpc.request(this.service, "TseReport", data);
+    return promise.then((data) => TseReportResponse.decode(new BinaryReader(data)));
+  }
+
+  TseUnhide(request: TseUnhideRequest): Promise<TseUnhideResponse> {
+    const data = TseUnhideRequest.encode(request).finish();
+    const promise = this.rpc.request(this.service, "TseUnhide", data);
+    return promise.then((data) => TseUnhideResponse.decode(new BinaryReader(data)));
   }
 
   NvarList(request: NvarListRequest): Promise<NvarListResponse> {

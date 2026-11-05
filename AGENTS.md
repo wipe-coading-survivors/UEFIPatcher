@@ -59,6 +59,11 @@ UEFIPatcher — многокомпонентное приложение для �
 
 **Принцип:** не писать самописный byte-offset парсинг. Использовать binrw-макросы и типы из r-efi. Checksum — через `wrapping_add`/`wrapping_sub`.
 
+### Proto-контракты
+
+- Единый источник — `crates/uefi-proto/proto/engine.proto` (Rust-кодеген — автоматически при cargo build). После правки `.proto` регенерируй webui: `cd webui && npm run proto` + коммит `engine.ts`.
+- Дрифт пиннится тестом `webui/src/lib/proto/drift.test.ts` (парсер protobufjs — чтобы тест не требовал protoc-бинарь; это осознанное упрощение, каноничная регенерация — только protoc через `npm run proto`).
+
 ### Референсы (читать при необходимости)
 
 - `../refs/UEFITool-ai-fork/common/ffsparser.{h,cpp}` — парсер UEFI
