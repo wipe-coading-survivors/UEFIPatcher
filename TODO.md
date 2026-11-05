@@ -3404,47 +3404,54 @@ Subsystem Settings» на месте со сток title, строки 749/750 =
 ## HOWTO-документация: сценарии пользователя (2026-09-10)
 
 > Поручение владельца: HOWTO-доки + ссылка на них из README.
-> README.md в репо сейчас нет — создать вместе с HOWTO. Прошивка —
-> всегда руками владельца: HOWTO описывают подготовку образа,
-> команды CLI и проверку результата, не заливку.
+> Прошивка — всегда руками владельца: HOWTO описывают подготовку
+> образа, команды CLI и проверку результата.
 
-* [ ] **docs/howto/cli.md — работа с CLI в целом** — сквозной
-  workflow: запуск движка (сокет, `UEFIPATCHER_SOCK`), session
-  init/list, image open/find/dump/save, edit-операции
-  (insert/remove/replace/rebuild), setup/hii-команды; форматы вывода
-  json/text/tsv; переменные окружения. Источники: план цикла 2,
-  `uefi-cli --help`.
-* [ ] **docs/howto/add-form-serial-console.md — добавление формы
-  Setup на примере серийной консоли** — полный путь дуги
-  setup-new-page: `hii form add` (varstore+форма) → `hii question
-  add` ($SPF-записи) → `hii page add` (страница) → REF; боевой
-  минимальный паттерн E43 `7e5d4bba…` (вопросы add_question на
-  мёртвую сток-форму 10009 + REF, ноль новых форм — обход
-  IntelRC-стены: любая новая форма Setup-формсета ломает вход в
-  IntelRCSetup, раунды 12–13-бис); предостережения дуги: varstore
-  ids 1..20 заняты / 21–30 не проверены / 31+ свободны, дубли qid —
-  не крашер, REF-эмит voff=0xFFFF, $SPF ifr-фиксап add_form
-  (`c5a5c09`), протокол прошивки (розетка перед каждым образом,
-  батарейка вынута). Источники: спека setup-new-page, pack/вердикты
-  E36–E43.
-* [ ] **docs/howto/open-hidden-form.md — открытие скрытой формы,
-  пример Advanced → PCI Configuration (HNX99TF)** — конвейер
-  unhide-цикла: `hii form gates` → `hii form unlock` (E12-классы
-  флипов UPG/PRC; item_id `#<form_id>[:<qid>]`), set-value,
-  проверка на плате. Исторический прецедент: скрытая страница PCI +
-  Above 4G Decoding (E12 unlock, E14 значение). Источники: спека
-  unlock-op, `docs/reports/2026-09-02-hw-validation-hnx99tf.md`.
-* [ ] **docs/howto/bifurcation-rd450x.md — настройка PCIe-бифуркации
-  на Lenovo RD450x** — поиск вопросов бифуркации (формы «PCI Express
-  Settings» 10057+, varstore ServerSetup/IntelSetup — v5-маппинг по
-  имени), различие SDP/IFR-дефолтов vs живого StdDefaults-снимка
-  (гипотеза «мёртвых структур»: AMIBCP правит инертные дефолты —
-  «правит, но на плате не применяется»), set-default в обе копии
-  StdDefaults, чеклист проверки (lspci/линки, живучесть после
-  reseed). Источник: раздел «450x: PCIe-бифуркация» выше.
-* [ ] **README.md — создать и сослаться на HOWTO** — короткий README
-  (назначение, компоненты, сборка/контейнеры, указатель
-  docs/howto/*.md).
+> **Исполнено (2026-11-05)**: `README.md` + `docs/howto/` созданы.
+> Структура отличается от исходного плана по решению владельца
+> (брейнсторм 2026-11-05): add-form-serial-console разбит на два
+> документа (setup-section-intelrc + serial-console-huananzhi);
+> open-hidden-form объединён с tse-unhide в unlock-hidden-forms;
+> добавлены flashrom-write, asrock-baked-defaults, page-hijack;
+> bifurcation-rd450x — конспект саги со статусом «в работе».
+
+* [x] **docs/howto/cli.md — сквозной workflow CLI** — движок/сокет,
+  session/image (mode write, save на ФС движка), node list/search/
+  extract/insert/replace (TARGET-грамматика, приоритет GUID-target),
+  artifact, форматы json/tsv, грабли (мёртвый сокет, read-режим).
+* [x] **docs/howto/flashrom-write.md — прошивка подготовленного образа**
+  — бэкап/регион/чип/--noverify-all, iomem=strict-обход (BLS), BMC/TMM
+  (mc reset warm, SOL-клавиши ESC+N), «розетка+батарейка» — курьёз.
+* [x] **docs/howto/unlock-hidden-forms.md — открытие скрытого** —
+  IFR-гейты (`hii form/question gates|unlock`, E12-классы флипов,
+  item_id `#<form_id>[:<qid>]`, живой пример 10029) + hide-маркер
+  AMITSE (`tse report|unhide`, гейт v3). Источники: спека unlock-op,
+  `docs/reports/2026-09-02-hw-validation-hnx99tf.md`, спека tse-unhide.
+* [x] **docs/howto/setup-section-intelrc.md — свой раздел Setup**
+  — IntelRC-стена (E36–E42), боевой минимальный паттерн E43 `7e5d4bba…`
+  (мёртвая сток-форма 10009 + `hii question add` + REF), правила
+  varstore/qid/офсетов, примеры схем. Источники: спека setup-new-page,
+  pack/вердикты E36–E43.
+* [x] **docs/howto/serial-console-huananzhi.md — серийная консоль с нуля**
+  — архитектура E32 (донор SerialIo 97C81E5D + TerminalDxe + glue v2,
+  TermSrc токсичен), команды сборки (node insert ×3 + question add),
+  верификация (три зоны диффа, fv_audit), протокол приёмки S4.
+* [x] **docs/howto/asrock-baked-defaults.md — запекание дефолтов** —
+  hii question info/value/set-value (обе копии StdDefaults), метод
+  маппинга живого BIOS (efivars-слепки, дифф, откат), nvar set,
+  прошитый пресет 226D2IL (4G/SOL/EMS/Timeout), грабли (0x18-канал,
+  вендорский seed, формы-призраки, инертность IFR/SDP-дефолтов).
+* [x] **docs/howto/page-hijack.md — подмена текстов страницы** — карта
+  каналов рендера 6/6 (help = обе копии id: s14-запись + пул-контрол),
+  `hii form hijack --setupdata-guid`, полный живой пример E29.
+* [x] **docs/howto/bifurcation-rd450x.md — конспект саги, «в работе»** —
+  карта миров (HNX=посев ✓/натив=✗/超微=✓), замок OEM-гейта PE 0xbc4a4
+  (v14), серия публикации 00:02.1 (v15–v20c, что не сработало и почему),
+  открытые lead'ы, артефакты, SOL-процедуры.
+* [x] **README.md** — назначение, компоненты, сборка/контейнеры, env,
+  указатель docs/howto/*.md.
+* [ ] **bifurcation-rd450x.md — актуализировать по мере прогресса саги**
+  (новые v-кандидаты, закрытие lead'ов) — документ живой.
 
 ## Цикл TUI Revival A (2026-09-11): реализован
 
